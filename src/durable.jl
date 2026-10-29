@@ -11,7 +11,10 @@ abstract type Record end
 struct Conversation <: Record
     id::Int
     value::Any
+    parent::Union{Nothing, Tuple{Int, Int}}
 end
+
+Conversation(id, value) = Conversation(id, value, nothing)
 
 struct Entry <: Record
     id::Int
@@ -70,7 +73,7 @@ mutable struct Transaction
     failure::Union{Nothing, Rejected}
 end
 
-encode(r::Conversation) = (; type="conversation", r.id, r.value)
+encode(r::Conversation) = (; type="conversation", r.id, r.value, parent=isnothing(r.parent) ? nothing : (; conversation=r.parent[1], at=r.parent[2]))
 encode(r::Entry) = (; type="entry", r.id, r.conversation, r.kind, r.value)
 encode(r::Task) = (; type="task", r.id, r.conversation, r.state)
 encode(r::Document) = (; type="document", r.id, r.conversation, r.value)
@@ -80,7 +83,15 @@ function decode(row)
     type = row["type"]
     id = row["id"]
     id isa Int || return nothing
-    type == "conversation" && return Conversation(id, row["value"])
+    if type == "conversation"
+        parent = get(row, "parent", nothing)
+        parent === nothing && return Conversation(id, row["value"])
+        parent isa AbstractDict || return nothing
+        conversation = get(parent, "conversation", nothing)
+        at = get(parent, "at", nothing)
+        conversation isa Int && at isa Int || return nothing
+        return Conversation(id, row["value"], (conversation, at))
+    end
     conversation = row["conversation"]
     conversation isa Int || return nothing
     type == "entry" && return Entry(id, conversation, row["kind"], row["value"])
@@ -92,6 +103,46 @@ end
 
 detach(record::Record) = decode(JSON3.read(JSON3.write(encode(record)), Dict{String, Any}))
 
+function visible(state::State, conversation::Int, id::Int)
+    entry = get(state.records, id, nothing)
+    entry isa Entry || return false
+    upper = typemax(Int)
+    while true
+        entry.conversation == conversation && id <= upper && return true
+        record = state.records[conversation]
+        record.parent === nothing && return false
+        conversation, at = record.parent
+        upper = min(upper, at)
+    end
+end
+
+function hasdocuments(state::State, conversation::Int)
+    while true
+        any(record isa Document && record.conversation == conversation for record in values(state.records)) && return true
+        record = state.records[conversation]
+        record.parent === nothing && return false
+        conversation = record.parent[1]
+    end
+end
+
+function forkcheck(state::State, record::Conversation)
+    record.parent === nothing && return nothing
+    conversation, at = record.parent
+    get(state.records, conversation, nothing) isa Conversation || return Rejected(:conversation_missing)
+    visible(state, conversation, at) || return Rejected(:fork_point_missing)
+    hasdocuments(state, conversation) && return Rejected(:fork_documents_unsupported)
+    nothing
+end
+
+function forkcheck(state::State, records::Vector{Record})
+    for record in records
+        record isa Conversation || continue
+        result = forkcheck(state, record)
+        result === nothing || return result
+    end
+    nothing
+end
+
 function apply!(state::State, record::Record)
     existing = get(state.records, record.id, nothing)
     record.id > 0 || return Rejected(:invalid_id)
@@ -102,7 +153,10 @@ function apply!(state::State, record::Record)
         if record isa Submission
             (existing.request, existing.kind) == (record.request, record.kind) || return Rejected(:immutable)
         end
-    elseif !(record isa Conversation)
+    elseif record isa Conversation
+        result = forkcheck(state, record)
+        result === nothing || return result
+    else
         get(state.records, record.conversation, nothing) isa Conversation || return Rejected(:conversation_missing)
     end
     if record isa Submission && record.request !== nothing
@@ -123,12 +177,21 @@ function replay!(state::State, row)
         nextid isa Int && nextid >= state.nextid || return false
         writes = row["writes"]
         writes isa AbstractVector && !isempty(writes) || return false
+        records = Record[]
         for encoded in writes
             record = decode(encoded)
             record isa Record || return false
             record.id <= nextid || return false
+            haskey(state.records, record.id) || record.id > state.nextid || return false
+            if record isa Conversation
+                forkcheck(state, record) === nothing || return false
+            end
+            push!(records, record)
+        end
+        for record in records
             apply!(state, record) === nothing || return false
         end
+        forkcheck(state, records) === nothing || return false
         state.seq += 1
         state.nextid = nextid
         true
@@ -274,6 +337,36 @@ function scan(store::Store, ::Type{T}; conversation::Union{Nothing, Integer}=not
     end
 end
 
+function entries(state::State, conversation::Integer)
+    get(state.records, conversation, nothing) isa Conversation || return Rejected(:conversation_missing)
+    segments = Vector{Entry}[]
+    upper = typemax(Int)
+    while true
+        segment = Entry[record for record in values(state.records) if record isa Entry && record.conversation == conversation && record.id <= upper]
+        sort!(segment; by=record -> record.id)
+        push!(segments, segment)
+        record = state.records[conversation]
+        record.parent === nothing && break
+        conversation, at = record.parent
+        upper = min(upper, at)
+    end
+    Entry[entry for segment in reverse(segments) for entry in segment]
+end
+
+function entries(store::Store, conversation::Integer)
+    lock(store.lock) do
+        result = status(store)
+        result === nothing || return result
+        deepcopy(entries(store.state, conversation))
+    end
+end
+
+function entries(tx::Transaction, conversation::Integer)
+    result = status(tx)
+    result === nothing || return result
+    deepcopy(entries(tx.state, conversation))
+end
+
 function Base.get(tx::Transaction, ::Type{T}, id::Integer) where {T <: Record}
     result = status(tx)
     result === nothing || return result
@@ -298,11 +391,22 @@ function put!(tx::Transaction, record::Record)
     result = status(tx)
     result === nothing || return result
     haskey(tx.state.records, record.id) || record.id in tx.minted || return reject!(tx, :unminted_id)
+    if record isa Conversation && !haskey(tx.state.records, record.id)
+        result = forkcheck(tx.store.state, record)
+        result === nothing || return reject!(tx, result.reason)
+    end
     saved = detach(record)
     result = apply!(tx.state, saved)
     result === nothing || return reject!(tx, result.reason)
     push!(tx.writes, saved)
     record.id
+end
+
+function fork!(tx::Transaction, conversation::Integer, at::Integer; value=nothing)
+    result = status(tx)
+    result === nothing || return result
+    id = mint!(tx)
+    put!(tx, Conversation(id, value, (conversation, at)))
 end
 
 function submit!(tx::Transaction, conversation::Integer; request::Union{Nothing, String}=nothing, kind::String="input", value=nothing)
@@ -335,6 +439,8 @@ function commit!(f, store::Store)
                 tx.active = false
             end
             tx.failure === nothing || return tx.failure
+            result = forkcheck(tx.state, tx.writes)
+            result === nothing || return result
             value = deepcopy(value)
             isempty(tx.writes) && return value
             seq = store.state.seq + 1

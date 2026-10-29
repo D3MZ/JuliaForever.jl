@@ -79,6 +79,7 @@ end
 
 include("system.jl")
 include("durable.jl")
+include("durable_forks.jl")
 include("history.jl")
 include("session.jl")
 include("kernel.jl")
@@ -103,6 +104,7 @@ if haskey(ENV, "PI_SOURCE")
 end
 include("scheduler.jl")
 if haskey(ENV, "PI_SOURCE")
+    include("durable_forks_differential.jl")
     include("session_differential.jl")
     include("system_differential.jl")
     mktempdir() do oracle
