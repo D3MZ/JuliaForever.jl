@@ -10,6 +10,7 @@ mutable struct Agent{P}
     lock::ReentrantLock
     running::Bool
     cancelled::Bool
+    handle::Any
     history::Union{Nothing, History.Store}
     history_revision::Int
     fault::Union{Nothing, History.Rejected}
@@ -61,13 +62,15 @@ end
 
 "Request cancellation at the next boundary; in-flight provider and tool calls are not interrupted."
 function cancel!(agent::Agent)
-    lock(agent.lock) do
-        agent.running || return false
+    result, handle = lock(agent.lock) do
+        agent.running || return false, nothing
         result, _ = transition!(revision -> Conversation.Cancel(revision), agent)
-        result isa History.Rejected && return result
+        result isa History.Rejected && return result, nothing
         agent.cancelled = true
-        true
+        true, agent.handle
     end
+    isnothing(handle) || Execution.cancel!(handle)
+    result
 end
 
 cancelled(agent::Agent) = lock(() -> agent.cancelled, agent.lock)
@@ -299,11 +302,16 @@ function modelresponse(agent, effect, parameters, on_event, on_agent_event)
 end
 
 """
-    respond!(agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential)
+    respond!(agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential, executor=nothing, context=nothing)
 
 Run a turn and queued messages. `on_event` receives provider stream events; `on_agent_event` receives lifecycle events. Tool calls run sequentially unless `tool_execution=:parallel`; recorded agents currently support sequential execution only. Returns `:busy` for an overlapping run and `:cancelled` for cooperative cancellation. Providers returning a `Completion` retain finish metadata; a custom provider returning only a message cannot report truncation.
+
+Supplying `executor` and `context` selects the executor-backed path. It returns an `Execution.Turn` with the outcome and per-model usage and error metadata; unsupported combinations return `Execution.Rejected` before starting. See `docs/execution.md` for its limitations.
 """
-function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential)
+function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential, executor=nothing, context=nothing)
+    if !isnothing(executor) || !isnothing(context)
+        return respond_execution!(agent, prompt, executor, context; on_event, on_agent_event, parameters, tool_execution)
+    end
     !isnothing(agent.history) && return respond_recorded!(agent, prompt; on_event, on_agent_event, parameters, tool_execution)
     begin!(agent) || return :busy
     messages = Dict{String, Any}[]

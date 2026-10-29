@@ -72,4 +72,19 @@ For a remote process, load JuliaForever and create and install that process's ca
 
 The adapter invokes the provider's non-streaming `complete` method and preserves its assistant message metadata, finish reason, and completion status in `ModelReply`. In particular, Responses `response_output` items survive the next model request. The existing `ModelReply` type does not carry `Completion.usage` or `Completion.error`. A provider exception yields `ModelFailure("provider did not return")` without copying its diagnostic into the observation; a missing context or dispatch failure yields `Execution.Failed`. Tool exceptions become error `ToolReply` values; successful tool results retain their text and error flag. `SkipRequest` returns the truncated-call error without executing the tool. A provider's incomplete result becomes an incomplete model reply and does not run its proposed tools. Queued cancellation is honored before dispatch, but the adapter does not interrupt a running provider or tool. A completed or failed effect may already have caused external actions.
 
-`Agent.respond!` does not select this adapter yet. Integrating it requires the agent's supervisor to install worker capabilities, submit each planned effect with its context ID, apply current `Completed` observations at the matching conversation revision, and decide how to handle stale attempts, `Failed`, `Cancelled`, interrupted workers, and unrecorded side effects. Streaming callbacks, durable scheduling, retries, worker authentication, transport security, isolation, and exactly-once execution are not supplied by this adapter.
+## Agent execution
+
+An agent can explicitly use the adapter after the caller installs a context on every executor process:
+
+```julia
+agent = Agent(nothing, []) # capabilities are installed independently on each worker
+result = respond!(agent, "Hello"; executor, context=context_id)
+result.value # final text, :cancelled, or an explicit failure result
+result.models # ordered ModelResult values, including per-call usage and provider error metadata
+```
+
+The caller owns the executor and its contexts. The agent dispatches sequentially and makes no retries or fallback to its local provider. An `Execution.Turn` contains the final value and ordered `ModelResult` values. Each model result contains its typed observation, usage, and provider error metadata. These results are ephemeral: usage and errors are not in replayed events, and provider error text can contain sensitive data. Assistant metadata, finish reason, completion status, tool results, and transitions remain in the replayable event stream. A provider exception instead produces a redacted `ModelFailure` and `Execution.Rejected(:provider_failure)`; an incomplete reply produces `Execution.Rejected(:incomplete_model)` and retains the partial observation and provider error in the turn. An `Execution.Failed` identifies dispatch or worker failure.
+
+The path currently rejects a history-backed agent, stream callbacks, per-call parameters, and parallel tool execution with `Execution.Rejected` before starting a turn. Supply parameters through the installed context. Lifecycle callbacks remain supported. A rejected preflight request has no events or effects; a request on a running agent returns `:busy`.
+
+`cancel!(agent)` signals admitted work and prevents later work from starting. The adapter cannot stop a running provider or tool; an in-flight completion is observed before the turn stops. Queued work may be cancelled, while a result already executing may have caused an effect. Worker loss, submission failure, callbacks that throw, and other interruptions leave an incomplete in-memory conversation. A failed worker could have acted before its response was lost: reconcile external effects and ensure the old work has stopped before starting another turn. No durable worker leases, recovery, transport security, authentication, isolation, or exactly-once execution are supplied.

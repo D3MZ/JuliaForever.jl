@@ -87,8 +87,9 @@ function Executor(pid::Int, pids::Int...; capacity=length(pids) + 1)
     Executor(queue, tasks)
 end
 
-function submit!(executor::Executor, id::AbstractString, attempt::Integer, work)
+function submit!(executor::Executor, id::AbstractString, attempt::Integer, work; on_handle=nothing)
     handle = Handle(String(id), Int(attempt), Cancellation(), Channel{Result}(1))
+    isnothing(on_handle) || on_handle(handle)
     put!(executor.queue, Request(work, handle))
     handle
 end

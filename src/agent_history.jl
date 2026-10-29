@@ -1,5 +1,5 @@
 function openagent(provider, tools, messages, initial, ::Nothing)
-    Agent(provider, tools, messages, initial, initial, Kernel.Event[], ReentrantLock(), false, false, nothing, 0, nothing)
+    Agent(provider, tools, messages, initial, initial, Kernel.Event[], ReentrantLock(), false, false, nothing, nothing, 0, nothing)
 end
 
 function openagent(provider, tools, messages, initial, history::History.Store)
@@ -10,7 +10,7 @@ function openagent(provider, tools, messages, initial, history::History.Store)
         record isa History.Rejected && return record
         revision = History.append!(history, 0, Any[record])
         revision isa History.Rejected && return revision
-        return Agent(provider, tools, messages, initial, initial, Kernel.Event[], ReentrantLock(), false, false, history, revision, nothing)
+        return Agent(provider, tools, messages, initial, initial, Kernel.Event[], ReentrantLock(), false, false, nothing, history, revision, nothing)
     end
     isempty(messages) || return History.Rejected(:history_exists)
     batches = snapshot.batches
@@ -37,7 +37,7 @@ function openagent(provider, tools, messages, initial, history::History.Store)
     else
         nothing
     end
-    Agent(provider, tools, messages, initial, state, events, ReentrantLock(), false, false, history, snapshot.revision, fault)
+    Agent(provider, tools, messages, initial, state, events, ReentrantLock(), false, false, nothing, history, snapshot.revision, fault)
 end
 
 persist!(agent::Agent, event) = persist!(agent, agent.history, event)
