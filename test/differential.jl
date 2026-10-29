@@ -26,6 +26,22 @@ using JSON3
         (; tool="edit", initial="\ufeffone\r\ntwo\r\n", args=(; path="a.txt", edits=[(; oldText="two", newText="TWO")])),
         (; tool="edit", initial="one\ntwo\r\nthree", args=(; path="a.txt", edits=[(; oldText="two", newText="TWO")])),
         (; tool="edit", initial="call \"x\"\ncall “x”", args=(; path="a.txt", edits=[(; oldText="call \"x\"", newText="done")])),
+        (; tool="edit", initial="call “hello” — 世界  \nuntouched “quoted”  \n", args=(; path="a.txt", edits=[(; oldText="call \"hello\" - 世界", newText="done")])),
+        (; tool="edit", initial="x  \nβ\t\nTAIL “line”  \n", args=(; path="a.txt", edits=[(; oldText="x\nβ", newText="X\nB")])),
+        (; tool="edit", initial="pre 🌱 ﬃ ＡﬁΩ\nuntouched “q”  \n", args=(; path="a.txt", edits=[(; oldText="ffi Afi", newText="ok")])),
+        (; tool="edit", initial="before “untouched”  \nﬁ fuzzy\nexact  \nend “untouched”  \n", args=(; path="a.txt", edits=[(; oldText="fi fuzzy", newText="changed"), (; oldText="exact", newText="EXACT")])),
+        (; tool="edit", initial="emoji 🌱 ﬁ and exact “curly”  \n", args=(; path="a.txt", edits=[(; oldText="fi", newText="FI"), (; oldText="exact", newText="EXACT")])),
+        (; tool="edit", initial="\ufeffstart  \r\nﬁrst  \r\nsecond\t\r\nuntouched “quote”  \r\n", args=(; path="a.txt", edits=[(; oldText="first\nsecond", newText="middle\r\nline")])),
+        (; tool="edit", initial="first\r\nﬁ second\nlast\rline", args=(; path="a.txt", edits=[(; oldText="fi second", newText="changed")])),
+        (; tool="edit", initial="x\ufeff\ny", args=(; path="a.txt", edits=[(; oldText="x\ny", newText="done")])),
+        (; tool="edit", initial="ﬁ\nnext", args=(; path="a.txt", edits=[(; oldText="fi", newText="FI"), (; oldText="\n", newText="-")])),
+        (; tool="edit", initial="ﬁ\nnext", args=(; path="a.txt", edits=[(; oldText="fi\n", newText="FI")])),
+        (; tool="edit", initial="before  \nﬁ\nafter  ", args=(; path="a.txt", edits=[(; oldText="\nfi", newText="-FI")])),
+        (; tool="edit", initial="first  \nﬁrst\nthird", args=(; path="a.txt", edits=[(; oldText="first\nthird", newText="done")])),
+        (; tool="edit", initial="ﬁ ﬁ", args=(; path="a.txt", edits=[(; oldText="fi", newText="done")])),
+        (; tool="edit", initial="ﬁrst", args=(; path="a.txt", edits=[(; oldText="fir", newText="A"), (; oldText="rst", newText="B")])),
+        (; tool="edit", initial="ﬁ foo", args=(; path="a.txt", edits=[(; oldText="fi", newText="done"), (; oldText="missing", newText="x")])),
+        (; tool="edit", initial="x\u0085\ny", args=(; path="a.txt", edits=[(; oldText="x\ny", newText="done")])),
     ]
     mktempdir() do dir
         input = joinpath(dir, "cases.json")

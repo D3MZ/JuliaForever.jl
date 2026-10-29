@@ -73,8 +73,49 @@ end
 normalize(text) = replace(text, "\r\n" => "\n", "\r" => "\n")
 
 function fuzzy(text)
-    lines = rstrip.(split(Unicode.normalize(normalize(text), :NFKC), '\n'; keepempty=true))
+    lines = replace.(split(Unicode.normalize(normalize(text), :NFKC), '\n'; keepempty=true), r"[\t\x0b\x0c \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+$" => "")
     replace(join(lines, '\n'), r"[\u2018\u2019\u201a\u201b]" => "'", r"[\u201c\u201d\u201e\u201f]" => "\"", r"[\u2010-\u2015\u2212]" => "-", r"[\u00a0\u2002-\u200a\u202f\u205f\u3000]" => " ")
+end
+
+function duplicate(text, content)
+    match = findfirst(text, content)
+    !isnothing(match) && !isnothing(findnext(text, content, nextind(content, first(match))))
+end
+
+function apply(content, edits, offset=0)
+    for edit in Iterators.reverse(edits)
+        start = first(edit.range) - offset
+        stop = last(edit.range) - offset
+        content = string(content[begin:prevind(content, start)], edit.text, content[nextind(content, stop):end])
+    end
+    content
+end
+
+function overlay(original, base, edits)
+    original_lines = collect(eachline(IOBuffer(original); keep=true))
+    base_lines = collect(eachline(IOBuffer(base); keep=true))
+    length(original_lines) == length(base_lines) || return nothing
+    ends = cumsum(ncodeunits.(base_lines))
+    spans = [(start=searchsortedfirst(ends, first(edit.range)), stop=searchsortedfirst(ends, last(edit.range))) for edit in edits]
+    output = IOBuffer()
+    nextline = 1
+    index = 1
+    while index <= length(edits)
+        start = spans[index].start
+        stop = spans[index].stop
+        lastedit = index
+        while lastedit < length(edits) && spans[lastedit + 1].start <= stop
+            lastedit += 1
+            stop = max(stop, spans[lastedit].stop)
+        end
+        write(output, join(original_lines[nextline:start-1]))
+        offset = start == 1 ? 0 : ends[start-1]
+        write(output, apply(join(base_lines[start:stop]), @view(edits[index:lastedit]), offset))
+        nextline = stop + 1
+        index = lastedit + 1
+    end
+    write(output, join(original_lines[nextline:end]))
+    String(take!(output))
 end
 
 function execute(tool::Edit, args)
@@ -83,18 +124,31 @@ function execute(tool::Edit, args)
     bom = startswith(original, '\ufeff') ? "\ufeff" : ""
     originalcontent = normalize(chopprefix(original, bom))
     ending = occursin(r"^[^\n]*\r\n", original) ? "\r\n" : "\n"
-    any(edit -> isempty(edit.oldText), args.edits) && return ToolResult("Edit text must not be empty", true)
+    isempty(args.edits) && return ToolResult("No edits provided", true)
+    requested = [(old=normalize(edit.oldText), text=normalize(edit.newText), fuzzy=fuzzy(edit.oldText)) for edit in args.edits]
+    any(edit -> isempty(edit.old), requested) && return ToolResult("Edit text must not be empty", true)
     comparable = fuzzy(originalcontent)
-    any(edit -> length(findall(fuzzy(edit.oldText), comparable)) > 1, args.edits) && return ToolResult("Edit text must match exactly once", true)
-    matches = [findall(normalize(edit.oldText), originalcontent) for edit in args.edits]
-    isempty(matches) && return ToolResult("No edits provided", true)
-    all(m -> length(m) == 1, matches) || return ToolResult("Edit text must match exactly once", true)
-    edits = sort([(range=only(match), text=normalize(edit.newText)) for (match, edit) in zip(matches, args.edits)]; by=x -> first(x.range))
-    all(i -> last(edits[i-1].range) < first(edits[i].range), 2:length(edits)) || return ToolResult("Edit ranges overlap", true)
-    content = originalcontent
-    for edit in Iterators.reverse(edits)
-        content = string(content[begin:prevind(content, first(edit.range))], edit.text, content[nextind(content, last(edit.range)):end])
+    for edit in requested
+        duplicate(edit.old, originalcontent) && return ToolResult("Edit text must match exactly once", true)
+        if isempty(edit.fuzzy)
+            (isempty(comparable) && !isnothing(findfirst(edit.old, originalcontent))) || return ToolResult("Edit text must match exactly once", true)
+        else
+            duplicate(edit.fuzzy, comparable) && return ToolResult("Edit text must match exactly once", true)
+        end
     end
+    usedfuzzy = any(edit -> isnothing(findfirst(edit.old, originalcontent)), requested)
+    base = usedfuzzy ? comparable : originalcontent
+    edits = NamedTuple{(:range, :text), Tuple{UnitRange{Int}, String}}[]
+    for edit in requested
+        match = findfirst(edit.old, base)
+        isnothing(match) && !isempty(edit.fuzzy) && (match = findfirst(edit.fuzzy, base))
+        isnothing(match) && return ToolResult("Edit text must match exactly once", true)
+        push!(edits, (; range=match, text=edit.text))
+    end
+    sort!(edits; by=x -> first(x.range))
+    all(i -> last(edits[i-1].range) < first(edits[i].range), 2:length(edits)) || return ToolResult("Edit ranges overlap", true)
+    content = usedfuzzy ? overlay(originalcontent, base, edits) : apply(base, edits)
+    isnothing(content) && return ToolResult("Edit lines could not be preserved", true)
     content == originalcontent && return ToolResult("No changes made", true)
     write(destination, bom * replace(content, "\n" => ending))
     ToolResult("Successfully replaced $(length(edits)) block(s) in $(args.path).")

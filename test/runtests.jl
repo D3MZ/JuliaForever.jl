@@ -23,6 +23,8 @@ include("quality.jl")
     end
 end
 
+include("edit.jl")
+
 mutable struct Scripted
     responses::Vector{Any}
     requests::Vector{Any}
