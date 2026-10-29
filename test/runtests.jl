@@ -61,6 +61,7 @@ end
 
 include("system.jl")
 include("durable.jl")
+include("history.jl")
 include("session.jl")
 include("kernel.jl")
 include("conversation.jl")
