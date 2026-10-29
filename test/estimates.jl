@@ -56,6 +56,9 @@ const EC = JuliaForever.Conversation
     @test CT.tokens(nested) == CT.tokens("a")
     rawalias = EC.RawMessage(Dict{String, Any}("role" => "assistant", "content" => "a", "reasoning" => "fall😀"))
     @test CT.tokens(rawalias) == CT.tokens("afall😀")
+    response_reasoning = Dict("type" => "reasoning", "summary" => [Dict("type" => "summary_text", "text" => "a longer visible reasoning summary")], "encrypted_content" => "synthetic")
+    response = EC.Assistant("a", EC.ToolCall[], "stop", true; metadata=Dict("response_output" => [response_reasoning]))
+    @test CT.tokens(response) == CT.tokens("a")
     @test_throws KeyError CT.tokens(EC.RawMessage(Dict{String, Any}("role" => "developer", "content" => "hi")))
     @test_throws KeyError CT.tokens(EC.RawMessage(Dict{String, Any}("role" => "user", "content" => [Dict("type" => "file")])))
 
