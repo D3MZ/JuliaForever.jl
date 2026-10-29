@@ -358,4 +358,6 @@ function commit!(f, store::Store)
     end
 end
 
+include("scheduler.jl")
+
 end

@@ -63,6 +63,7 @@ include("system.jl")
 include("durable.jl")
 include("search.jl")
 include("codemode.jl")
+include("scheduler.jl")
 if haskey(ENV, "PI_SOURCE")
     include("system_differential.jl")
     mktempdir() do oracle
