@@ -11,6 +11,13 @@ end
 
 abstract type Store end
 
+"A SQLite-backed history; load SQLite.jl before opening one."
+mutable struct SQLite{T} <: Store
+    db::T
+    lock::ReentrantLock
+    status::Symbol
+end
+
 mutable struct Memory <: Store
     lock::ReentrantLock
     batches::Vector{Vector{Any}}
