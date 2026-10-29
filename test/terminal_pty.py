@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 class Session:
-    def __init__(self, julia, project, directory, *, stdout_tty=True, stderr_tty=True, term="xterm-256color"):
+    def __init__(self, julia, project, directory, *, stdout_tty=True, stderr_tty=True, term="xterm-256color", args=(), mode="echo", plugin=""):
         self.directory = Path(directory)
         self.capture = self.directory / "capture.jsonl"
         self.stdout = self.directory / "stdout"
@@ -23,14 +23,14 @@ class Session:
         self.initial_mode = termios.tcgetattr(self.slave)
         self.output = b""
         self.files = []
-        env = dict(os.environ, HOME=str(self.directory), TERM=term, JF_INSTRUCTIONS_DIR=str(self.directory), JF_FIXTURE="echo", JF_CAPTURE=str(self.capture), JF_PROVIDER="openai", OPENAI_MODEL="fixture", OPENAI_API_KEY="fixture-key")
+        env = dict(os.environ, HOME=str(self.directory), TERM=term, JF_INSTRUCTIONS_DIR=str(self.directory), JF_FIXTURE=mode, JF_CAPTURE=str(self.capture), JF_PROVIDER="openai", OPENAI_MODEL="fixture", OPENAI_API_KEY="fixture-key", JF_TEST_EVENTS=str(self.directory / "plugin-events"), JF_TEST_PLUGIN=plugin)
         def destination(enabled, path):
             if enabled:
                 return self.slave
             f = open(path, "wb")
             self.files.append(f)
             return f
-        self.process = subprocess.Popen([julia, "--startup-file=no", "--project=" + str(project), str(project / "test/terminal_process.jl")], cwd=self.directory, stdin=self.slave, stdout=destination(stdout_tty, self.stdout), stderr=destination(stderr_tty, self.stderr), env=env, close_fds=True)
+        self.process = subprocess.Popen([julia, "--startup-file=no", "--project=" + str(project), str(project / "test/terminal_process.jl"), *args], cwd=self.directory, stdin=self.slave, stdout=destination(stdout_tty, self.stdout), stderr=destination(stderr_tty, self.stderr), env=env, close_fds=True)
 
     def read(self):
         ready, _, _ = select.select([self.master], [], [], 0.1)
@@ -145,10 +145,29 @@ def dumb_terminal(julia, project, directory):
         session.close()
 
 
+def plugin_terminal(julia, project, directory):
+    args = ("--plugin-env", str(project / "test/fixtures"), "--plugin", "GreetingPlugin")
+    session = Session(julia, project, directory, args=args, mode="plugin", plugin="hook")
+    try:
+        session.ready()
+        for prompt in ("one", "two"):
+            offset = len(session.output)
+            os.write(session.master, prompt.encode() + b"\r")
+            session.until(lambda: b"plugin:Hello, Ada!" in session.output[offset:] and b"> " in session.output[offset:].split(b"plugin:Hello, Ada!", 1)[1], "plugin reply and prompt")
+        events = (directory / "plugin-events").read_text().splitlines()
+        assert events == ["agent_start", "tool_execution_end", "agent_end"] * 2, events
+        assert session.output.count(b"hook failure: synthetic-secret") == 2, session.output
+        os.write(session.master, b"/exit\r")
+        session.wait_exit()
+        assert session.process.returncode == 0, session.output
+    finally:
+        session.close()
+
+
 def main():
     julia, project = sys.argv[1], Path(sys.argv[2])
     with tempfile.TemporaryDirectory(prefix="jf-terminal-pty-") as root:
-        for name, scenario in (("editor", editor), ("redirected", redirected), ("no-terminal-output", no_terminal_output), ("dumb-terminal", dumb_terminal)):
+        for name, scenario in (("editor", editor), ("redirected", redirected), ("no-terminal-output", no_terminal_output), ("dumb-terminal", dumb_terminal), ("plugin", plugin_terminal)):
             directory = Path(root) / name
             directory.mkdir()
             scenario(julia, project, directory)

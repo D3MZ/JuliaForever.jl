@@ -172,9 +172,22 @@ function request!(f, terminal::Terminal)
     (; value=fetch(task), status=0)
 end
 
-function run!(terminal::Terminal, agent::Agent, prompt)
-    result = request!(terminal) do
-        respond!(agent, prompt; on_event=event -> event.type == :text && text!(terminal, event.text), on_agent_event=event -> render!(terminal, event))
+function failures!(terminal::Terminal, listener::Extensions.Listener)
+    for failure in Extensions.failures(listener)
+        println(terminal.diagnostics, "[plugin] ", redact(terminal, failure.plugin), " ", failure.event, ": ", redact(terminal, sprint(showerror, failure.exception)))
+    end
+    flush(terminal.diagnostics)
+end
+
+function run!(terminal::Terminal, agent::Agent, prompt, snapshot=nothing)
+    listener = isnothing(snapshot) ? nothing : Extensions.listen(snapshot; on_event=event -> render!(terminal, event))
+    callback = isnothing(listener) ? event -> render!(terminal, event) : listener
+    result = try
+        request!(terminal) do
+            respond!(agent, prompt; on_event=event -> event.type == :text && text!(terminal, event.text), on_agent_event=callback)
+        end
+    finally
+        isnothing(listener) || failures!(terminal, listener)
     end
     result.status == 0 || return result.status
     result!(terminal, result.value)
@@ -234,7 +247,7 @@ function unsupported!(state::REPL.LineEdit.MIState, action)
     edit.refresh_line(state)
 end
 
-function edit!(terminal::Terminal, agent::Agent)
+function edit!(terminal::Terminal, agent::Agent, snapshot=nothing)
     edit = REPL.LineEdit
     history = InputHistory()
     newline = (state, args...) -> edit.edit_insert_newline(state, 0)
@@ -287,7 +300,7 @@ function edit!(terminal::Terminal, agent::Agent)
         text = String(take!(buffer))
         edit.reset_state(state)
         text == "/exit" && break
-        status = max(status, run!(terminal, agent, text))
+        status = max(status, run!(terminal, agent, text, snapshot))
     end
     status
 end
