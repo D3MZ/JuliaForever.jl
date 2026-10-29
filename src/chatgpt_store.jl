@@ -1,4 +1,4 @@
-using FileWatching, UUIDs
+using UUIDs
 
 struct Busy end
 
@@ -19,19 +19,21 @@ struct Store
     end
 end
 
-function locked(f, ::Bool)
-    Busy()
-end
-
-function locked(f, lock)
+function guarded(f, store::Store)
+    file = Base.Filesystem.open(joinpath(store.root, "lock"), Base.Filesystem.JL_O_CREAT | Base.Filesystem.JL_O_RDWR | Base.Filesystem.JL_O_NOFOLLOW, 0o600)
     try
+        info = stat(file)
+        isfile(info) && info.uid == ccall(:geteuid, Cuint, ()) && info.mode & 0o077 == 0 || return Rejected(:permissions)
+        if ccall(:flock, Cint, (Cint, Cint), Base.fd(file), 6) != 0
+            code = Base.Libc.errno()
+            code == Base.Libc.EAGAIN && return Busy()
+            Base.systemerror("flock", code)
+        end
         f()
     finally
-        close(lock)
+        close(file)
     end
 end
-
-guarded(f, store::Store) = locked(f, FileWatching.trymkpidlock(joinpath(store.root, "lock"); mode=0o600))
 
 function writeprivate(path, value)
     temporary, io = mktemp(dirname(path))

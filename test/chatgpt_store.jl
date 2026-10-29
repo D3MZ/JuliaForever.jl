@@ -1,4 +1,10 @@
-using JSON3, HTTP, FileWatching
+using JSON3, HTTP
+
+function fixturelock(path)
+    file = Base.Filesystem.open(path, Base.Filesystem.JL_O_CREAT | Base.Filesystem.JL_O_RDWR | Base.Filesystem.JL_O_NOFOLLOW, 0o600)
+    ccall(:flock, Cint, (Cint, Cint), Base.fd(file), 6) == 0 || error("fixture lock failed")
+    file
+end
 
 @testset "protected ChatGPT storage and refresh" begin
     pending = CG.Pending(CG.Register(), "urn:uuid:fixture")
@@ -21,20 +27,25 @@ using JSON3, HTTP, FileWatching
             @test CG.path(store, session.client, session.identity.subject) != CG.path(store, other.client, other.identity.subject)
             @test CG.load(store, other.client, other.identity.subject).access == "other-access"
             @test CG.load(store, "missing", "missing") isa CG.Rejected
-            locked = FileWatching.trymkpidlock(joinpath(store.root, "lock"); mode=0o600)
+            locked = fixturelock(joinpath(store.root, "lock"))
             try
                 @test CG.refresh(store, session.client, session.identity.subject; now=() -> identitytime) isa CG.Busy
             finally
                 close(locked)
             end
             project = dirname(@__DIR__)
-            script = "using FileWatching; lock = FileWatching.trymkpidlock(ARGS[1]; mode=0o600); print(lock === false ? \"busy\" : \"acquired\"); lock === false || close(lock)"
-            locked = FileWatching.trymkpidlock(joinpath(store.root, "lock"); mode=0o600)
+            lockpath = joinpath(store.root, "lock")
+            ready = joinpath(root, "child-ready")
+            script = "file = Base.Filesystem.open(ARGS[1], Base.Filesystem.JL_O_CREAT | Base.Filesystem.JL_O_RDWR, 0o600); ccall(:flock, Cint, (Cint, Cint), Base.fd(file), 6) == 0 || exit(1); touch(ARGS[2]); sleep(3600)"
+            process = run(pipeline(`$(Base.julia_cmd()) --startup-file=no --project=$project -e $script $lockpath $ready`; stdout=devnull, stderr=devnull); wait=false)
             try
-                output = read(`$(Base.julia_cmd()) --startup-file=no --project=$project -e $script $(joinpath(store.root, "lock"))`, String)
-                @test output == "busy"
+                @test timedwait(() -> isfile(ready), 15; pollint=0.01) == :ok
+                @test CG.refresh(store, session.client, session.identity.subject; now=() -> identitytime) isa CG.Busy
+                kill(process, 9)
+                wait(process)
+                @test CG.load(store, session.client, session.identity.subject).refresh == "synthetic-refresh"
             finally
-                close(locked)
+                process_running(process) && kill(process, 9)
             end
             captured = Channel{String}(1)
             started = Channel{Nothing}(1)
