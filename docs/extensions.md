@@ -1,6 +1,6 @@
 # Native Julia extensions
 
-`JuliaForever.Extensions` collects tools and synchronous lifecycle observers from Julia values or packages. It does not load plugins automatically or convert Pi extensions. The host chooses and loads trusted Julia code with the usual Julia package mechanisms; it runs with the host's permissions.
+`JuliaForever.Extensions` collects tools and synchronous lifecycle observers from Julia values or packages. The host chooses and loads trusted Julia code with the usual Julia package mechanisms; it runs with the host's permissions.
 
 ```julia
 using JuliaForever
@@ -36,6 +36,6 @@ Pass `E.listen(snapshot)` as `on_agent_event` to receive the agent's existing no
 
 ## Reference and limits
 
-The selected reference is Pi revision `e7a0df27c09d11bf4161d3605246cbf57a129cb2`, `packages/coding-agent/docs/extensions.md`. Pi also orders notifications by extension and handler registration, reports a failed handler and continues, and exposes custom tool metadata and results. `test/extensions_differential.jl` compares these selected outcomes against Pi when `PI_SOURCE` is set. Pi silently permits built-in tool overrides; this registry deliberately rejects all name collisions. Pi's event payloads and lifecycle boundaries differ, and this is not a Pi ABI or TypeScript plugin host.
+The selected reference is Pi revision `e7a0df27c09d11bf4161d3605246cbf57a129cb2`, `packages/coding-agent/docs/extensions.md`. Pi also orders notifications by extension and handler registration, reports a failed handler and continues, and exposes custom tool metadata and results. `test/extensions_differential.jl` compares these selected outcomes against Pi when `PI_SOURCE` is set. Pi silently permits built-in tool overrides; this registry deliberately rejects all name collisions. Pi's event payloads and lifecycle boundaries differ.
 
 There is no CLI discovery, package installation, reload command, automatic cleanup, session lifecycle, commands, flags, renderers, provider registration, or model/input/context hooks. The observer hooks cannot block or transform inputs, tools, or results, request continuation, or persist extension state. There is no sandbox, durable replay of plugin side effects, or automatic distribution to executor workers. The comparison covers selected notification and custom-tool behavior, not full Pi parity.
