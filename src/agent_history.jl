@@ -44,14 +44,34 @@ persist!(agent::Agent, event) = persist!(agent, agent.history, event)
 persist!(agent::Agent, ::Nothing, event) = nothing
 
 function persist!(agent::Agent, history::History.Store, event)
-    record = History.encode(event)
-    result = record isa History.Rejected ? record : History.append!(history, agent.history_revision, Any[record])
-    if result isa History.Rejected
-        agent.fault = result
-        return result
+    complete = false
+    try
+        record = History.encode(event)
+        result = record isa History.Rejected ? record : History.append!(history, agent.history_revision, Any[record])
+        complete = true
+        if result isa History.Rejected
+            agent.fault = result
+            return result
+        end
+        agent.history_revision = result
+        nothing
+    finally
+        complete || (agent.fault = History.Rejected(:uncertain))
     end
-    agent.history_revision = result
-    nothing
+end
+
+fault(agent::Agent) = lock(() -> agent.fault, agent.lock)
+
+function interrupted!(agent::Agent)
+    lock(agent.lock) do
+        if isnothing(agent.fault)
+            if !isempty(agent.state.kernel.pending)
+                agent.fault = History.Rejected(:uncertain_effect)
+            elseif agent.state.phase in (Conversation.ReadyModel, Conversation.ReadyDecision, Conversation.WaitingModel, Conversation.WaitingTools)
+                agent.fault = History.Rejected(:incomplete_turn)
+            end
+        end
+    end
 end
 
 "Record an explicit decision to abandon an interrupted or uncertain turn; this does not undo external effects."
@@ -169,13 +189,7 @@ function respond_recorded!(agent::Agent, prompt; on_event=nothing, on_agent_even
         end
     finally
         try
-            if isnothing(agent.fault)
-                if !isempty(agent.state.kernel.pending)
-                    agent.fault = History.Rejected(:uncertain_effect)
-                elseif agent.state.phase in (Conversation.ReadyModel, Conversation.ReadyDecision, Conversation.WaitingModel, Conversation.WaitingTools)
-                    agent.fault = History.Rejected(:incomplete_turn)
-                end
-            end
+            interrupted!(agent)
             emit(on_agent_event, (; type=:agent_end, messages=deepcopy(messages)))
         finally
             finish!(agent)

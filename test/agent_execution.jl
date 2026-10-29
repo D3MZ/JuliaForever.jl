@@ -22,6 +22,7 @@ function agent_execution(pid)
             result = respond!(agent, "two"; executor=pool, context, on_agent_event=event -> begin
                 push!(events, event)
                 event.type == :tool_execution_start && event.tool_call_id == "one" && JuliaForever.steer!(agent, "steer")
+                event.type == :tool_execution_end && @test agent.state.phase == AC.WaitingTools
             end)
             @test result isa AE.Turn && result.value == "done"
             @test length(result.models) == 2 && all(model -> isnothing(model.usage), result.models)
@@ -82,9 +83,7 @@ function agent_execution(pid)
             @test respond!(agent, "x"; executor=pool, context, parameters=Dict("x" => 1)) == AE.Rejected(:parameters)
             @test respond!(agent, "x"; executor=pool) == AE.Rejected(:context)
             @test respond!(agent, "x"; context) == AE.Rejected(:executor)
-            recorded = Agent(nothing, []; history=AH.Memory())
-            @test respond!(recorded, "x"; executor=pool, context) == AE.Rejected(:history)
-            @test isempty(agent.events) && isempty(recorded.events) && !isready(requests)
+            @test isempty(agent.events) && !isready(requests)
 
             missing = Agent(nothing, [])
             outcome = respond!(missing, "x"; executor=pool, context="missing-context")

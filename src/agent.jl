@@ -63,16 +63,24 @@ end
 
 "Cancel in-flight Unix shell calls in the in-process driver and request cancellation at the next boundary for other work."
 function cancel!(agent::Agent)
-    result, handle, shell = lock(agent.lock) do
-        agent.running || return false, nothing, nothing
-        result, _ = transition!(revision -> Conversation.Cancel(revision), agent)
-        result isa History.Rejected && return result, nothing, nothing
-        agent.cancelled = true
-        true, agent.handle, agent.shell
+    handle = nothing
+    shell = nothing
+    try
+        lock(agent.lock) do
+            agent.running || return false
+            try
+                result, _ = transition!(revision -> Conversation.Cancel(revision), agent)
+                result isa History.Rejected ? result : true
+            finally
+                agent.cancelled = true
+                handle = agent.handle
+                shell = agent.shell
+            end
+        end
+    finally
+        isnothing(shell) || cancel!(shell)
+        isnothing(handle) || Execution.cancel!(handle)
     end
-    isnothing(shell) || cancel!(shell)
-    isnothing(handle) || Execution.cancel!(handle)
-    result
 end
 
 cancelled(agent::Agent) = lock(() -> agent.cancelled, agent.lock)
@@ -312,7 +320,7 @@ end
 
 Run a turn and queued messages. `on_event` receives provider stream events; `on_agent_event` receives lifecycle events. Tool calls run sequentially unless `tool_execution=:parallel`; recorded agents currently support sequential execution only. Returns `:busy` for an overlapping run and `:cancelled` for cooperative cancellation. Providers returning a `Completion` retain finish metadata; a custom provider returning only a message cannot report truncation.
 
-Supplying `executor` and `context` selects the executor-backed path. It returns an `Execution.Turn` with the outcome and per-model usage and error metadata; unsupported combinations return `Execution.Rejected` before starting. See `docs/execution.md` for its limitations.
+Supplying `executor` and `context` selects the executor-backed path, including for a recorded agent. It returns an `Execution.Turn` with the outcome and per-model usage and error metadata; unsupported combinations return `Execution.Rejected` before starting. See `docs/execution.md` for its limitations.
 """
 function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential, executor=nothing, context=nothing)
     if !isnothing(executor) || !isnothing(context)

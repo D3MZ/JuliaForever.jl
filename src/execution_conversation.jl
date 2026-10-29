@@ -48,6 +48,10 @@ struct Rejected
     reason::Symbol
 end
 
+struct Uncertain{T}
+    cause::T
+end
+
 struct ModelResult{O <: Kernel.Observation}
     observation::O
     usage::Union{Nothing, Usage}

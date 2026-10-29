@@ -24,10 +24,37 @@ function JuliaForever.execute(tool::DelayedWrite, args)
     ToolResult("written")
 end
 
+struct GateWrite <: JuliaForever.Tool
+    directory::String
+    started::RemoteChannel
+    release::RemoteChannel
+    before::Bool
+end
+
+JuliaForever.name(::GateWrite) = "write"
+function JuliaForever.execute(tool::GateWrite, args)
+    if tool.before
+        put!(tool.started, myid())
+        take!(tool.release)
+    end
+    open(joinpath(tool.directory, String(args.path)), "a") do io
+        write(io, String(args.content))
+    end
+    if !tool.before
+        put!(tool.started, myid())
+        take!(tool.release)
+    end
+    ToolResult("written")
+end
+
+function install_gate(id, directory, requests, started, release, before)
+    E.install!(id, Synthetic(requests, started, release, "fixture-secret"), [GateWrite(directory, started, release, before)])
+end
+
 function JuliaForever.complete(provider::Synthetic, messages, tools; parameters=Dict())
     put!(provider.requests, (; worker=myid(), messages=deepcopy(messages), parameters=deepcopy(parameters)))
     prompt = only(message["content"] for message in messages if message["role"] == "user" && message["content"] != "steer")
-    if prompt == "block"
+    if prompt == "block" || prompt == "block-once" && !any(message -> message["role"] == "tool", messages)
         put!(provider.started, myid())
         take!(provider.release)
     elseif prompt == "fail"
@@ -42,6 +69,8 @@ function JuliaForever.complete(provider::Synthetic, messages, tools; parameters=
         usage = Usage(1, 1, 0, 0, 0, 2, nothing)
     elseif prompt == "error-metadata"
         done = false
+        failure = "private error detail"
+    elseif prompt == "error-done"
         failure = "private error detail"
     elseif prompt == "incomplete"
         done = false
