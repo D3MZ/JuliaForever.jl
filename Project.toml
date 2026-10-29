@@ -5,6 +5,7 @@ version = "0.1.0"
 [deps]
 HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
 JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+Unicode = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
 
 [compat]
 Aqua = "0.8"
@@ -12,6 +13,7 @@ HTTP = "2.7.1"
 JET = "0.11, 0.12"
 JSON3 = "1.14.3"
 Test = "1.11"
+Unicode = "1.11"
 julia = "1.12"
 
 [apps.jf]

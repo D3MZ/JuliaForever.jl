@@ -19,6 +19,11 @@ using JSON3
         (; tool="edit", initial="x x", args=(; path="a.txt", edits=[(; oldText="x", newText="y")])),
         (; tool="edit", initial="abcdef", args=(; path="a.txt", edits=[(; oldText="abc", newText="x"), (; oldText="cde", newText="y")])),
         (; tool="edit", initial="x", args=(; path="a.txt", edits=[(; oldText="missing", newText="y")])),
+        (; tool="edit", initial="x", args=(; path="a.txt", edits=[(; oldText="x", newText="x")])),
+        (; tool="edit", initial="x", args=(; path="a.txt", edits=[(; oldText="", newText="y")])),
+        (; tool="edit", initial="\ufeffone\r\ntwo\r\n", args=(; path="a.txt", edits=[(; oldText="two", newText="TWO")])),
+        (; tool="edit", initial="one\ntwo\r\nthree", args=(; path="a.txt", edits=[(; oldText="two", newText="TWO")])),
+        (; tool="edit", initial="call \"x\"\ncall “x”", args=(; path="a.txt", edits=[(; oldText="call \"x\"", newText="done")])),
     ]
     mktempdir() do dir
         input = joinpath(dir, "cases.json")

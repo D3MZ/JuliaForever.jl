@@ -68,12 +68,20 @@ end
 
 normalize(text) = replace(text, "\r\n" => "\n", "\r" => "\n")
 
+function fuzzy(text)
+    lines = rstrip.(split(Unicode.normalize(normalize(text), :NFKC), '\n'; keepempty=true))
+    replace(join(lines, '\n'), r"[\u2018\u2019\u201a\u201b]" => "'", r"[\u201c\u201d\u201e\u201f]" => "\"", r"[\u2010-\u2015\u2212]" => "-", r"[\u00a0\u2002-\u200a\u202f\u205f\u3000]" => " ")
+end
+
 function execute(tool::Edit, args)
     destination = path(tool, args.path)
     original = read(destination, String)
     bom = startswith(original, '\ufeff') ? "\ufeff" : ""
     originalcontent = normalize(chopprefix(original, bom))
-    ending = occursin("\r\n", original) ? "\r\n" : "\n"
+    ending = occursin(r"^[^\n]*\r\n", original) ? "\r\n" : "\n"
+    any(edit -> isempty(edit.oldText), args.edits) && return ToolResult("Edit text must not be empty", true)
+    comparable = fuzzy(originalcontent)
+    any(edit -> length(findall(fuzzy(edit.oldText), comparable)) > 1, args.edits) && return ToolResult("Edit text must match exactly once", true)
     matches = [findall(normalize(edit.oldText), originalcontent) for edit in args.edits]
     isempty(matches) && return ToolResult("No edits provided", true)
     all(m -> length(m) == 1, matches) || return ToolResult("Edit text must match exactly once", true)
@@ -83,6 +91,7 @@ function execute(tool::Edit, args)
     for edit in Iterators.reverse(edits)
         content = string(content[begin:prevind(content, first(edit.range))], edit.text, content[nextind(content, last(edit.range)):end])
     end
+    content == originalcontent && return ToolResult("No changes made", true)
     write(destination, bom * replace(content, "\n" => ending))
     ToolResult("Successfully replaced $(length(edits)) block(s) in $(args.path).")
 end

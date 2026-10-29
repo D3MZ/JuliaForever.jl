@@ -1,6 +1,6 @@
 module JuliaForever
 
-using HTTP, JSON3
+using HTTP, JSON3, Unicode
 
 export Read, Write, Edit, ToolResult, execute, Agent, OpenAI, respond!
 
