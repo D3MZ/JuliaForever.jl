@@ -40,4 +40,5 @@ jobs:
       - name: Julia tests and differential cases
         env:
           PI_SOURCE: ${{ runner.temp }}/pi-source
+          JULIA_NUM_THREADS: 4
         run: julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'

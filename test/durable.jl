@@ -1,7 +1,6 @@
-using Test, JSON3
+using Test, JSON3, JuliaForever
 
-include("../src/durable.jl")
-import .Durable as D
+import JuliaForever.Durable as D
 
 mutable struct BadCopy end
 Base.deepcopy_internal(::BadCopy, ::IdDict) = error("cannot detach return value")

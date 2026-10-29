@@ -1,10 +1,10 @@
 # Durable storage foundation
 
-`src/durable.jl` is a standalone Julia module. It does not depend on the provider or tools. It implements a small storage boundary informed by the pinned Pi durable specification, not the Pi storage format or the full Pi harness.
+`JuliaForever.Durable` does not depend on the provider or tools. It implements a small storage boundary informed by the pinned Pi durable specification, not the Pi storage format or the full Pi harness.
 
 ```julia
-include("src/durable.jl")
-import .Durable as D
+using JuliaForever
+import JuliaForever.Durable as D
 
 store = open(D.Store, "session.jsonl")
 conversation, submission = D.commit!(store) do tx
@@ -27,7 +27,7 @@ One process owns the file through an advisory exclusive `flock`; nested commits,
 
 Each committed batch is one newline-terminated JSON record. The store flushes and calls `fsync` before adopting it in memory; when creating a file it also syncs its parent directory. Reopening replays complete records in order, removes an incomplete trailing line, and rejects a malformed complete line without truncating it. If a storage operation fails, the open store is failed and must be closed and reopened: a complete batch may or may not have reached disk. A retry with the same request key resolves an admission whose outcome was uncertain. These checks cover abrupt process exit and controlled torn tails, not hardware power-loss qualification. OS and filesystem errors propagate normally.
 
-The implementation reads the log into memory at open and copies its in-memory state for a transaction; it has no compaction or performance claims. It has no Pi-format compatibility, ancestry and forks, document deltas or history, submission transition rules, task scheduler, timers, observers, deferred commits, or automatic recovery of execution. External effects must occur outside a transaction and need their own idempotency; durable admission alone does not make effects exactly once. The module is not yet wired into `JuliaForever` or its agent loop.
+The implementation reads the log into memory at open and copies its in-memory state for a transaction; it has no compaction or performance claims. It has no Pi-format compatibility, ancestry and forks, document deltas or history, submission transition rules, task scheduler, timers, observers, deferred commits, or automatic recovery of execution. External effects must occur outside a transaction and need their own idempotency; durable admission alone does not make effects exactly once. The module is not yet wired into the agent loop.
 
 Run its synthetic tests with Julia 1.12 or newer:
 

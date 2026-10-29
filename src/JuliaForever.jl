@@ -2,12 +2,13 @@ module JuliaForever
 
 using HTTP, JSON3, Unicode, Base64, Random, SHA
 
-export Read, Write, Edit, Bash, PowerShell, Ls, ToolResult, execute, Agent, OpenAI, Usage, Completion, OpenRouterLogin, provider, authorize, exchange, stream, respond!
+export Read, Write, Edit, Bash, PowerShell, Ls, ToolResult, execute, Agent, OpenAI, Usage, Completion, OpenRouterLogin, provider, authorize, exchange, stream, respond!, Durable
 
 include("tools.jl")
 include("provider.jl")
 include("agent.jl")
 include("system.jl")
+include("durable.jl")
 
 function (@main)(args)
     if args == ["--help"] || args == ["-h"]

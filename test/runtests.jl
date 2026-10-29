@@ -56,6 +56,7 @@ if haskey(ENV, "PI_SOURCE")
 end
 
 include("system.jl")
+include("durable.jl")
 if haskey(ENV, "PI_SOURCE")
     include("system_differential.jl")
 end
