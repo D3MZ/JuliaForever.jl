@@ -1,4 +1,4 @@
-using JSON3
+const JSON3 = Base.require(Base.PkgId(Base.UUID("0f8b85d8-7281-11e9-16c2-39a750bddbf1"), "JSON3"))
 
 const input = open(Base.Libc.dup(Base.RawFD(0)))
 const output = open(Base.Libc.dup(Base.RawFD(1)))

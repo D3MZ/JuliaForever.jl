@@ -178,3 +178,17 @@ end
         @test provider.messages[2][end]["tool_call_id"] == "code-1"
     end
 end
+
+@testset "worker from a dependent project" begin
+    mktempdir() do dir
+        package = Base.pkgdir(JuliaForever)
+        manifest = read(joinpath(dirname(Base.active_project()), "Manifest.toml"), String)
+        manifest = replace(manifest, r"(?ms)^\[\[deps\.JuliaForever\]\]\n.*?(?=^\[\[deps\.|\z)" => "")
+        manifest *= "\n[[deps.JuliaForever]]\ndeps = [\"HTTP\", \"JSON3\", \"Unicode\"]\npath = $(JSON3.write(package))\nuuid = \"2b71f2a2-b786-4fd0-b9cc-80b6322c5084\"\nversion = \"0.1.0\"\n"
+        write(joinpath(dir, "Project.toml"), "[deps]\nJuliaForever = \"2b71f2a2-b786-4fd0-b9cc-80b6322c5084\"\n")
+        write(joinpath(dir, "Manifest.toml"), manifest)
+        script = "using JuliaForever; if !isdefined(JuliaForever, :CodeMode); Base.include(JuliaForever, joinpath(dirname(pathof(JuliaForever)), \"codemode.jl\")); end; result = JuliaForever.codeexecute(JuliaForever.CodeMode(JuliaForever.Tool[]; timeout=30), \"1 + 1\"); println(result.ok && result.value == 2)"
+        cmd = `$(Base.julia_cmd()) --startup-file=no --project=$dir -e $script`
+        @test strip(read(cmd, String)) == "true"
+    end
+end
