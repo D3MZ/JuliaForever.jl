@@ -14,7 +14,9 @@ function input(messages)
     for message in messages
         role = message["role"]
         if role == "tool"
-            push!(items, Dict("type" => "function_call_output", "call_id" => message["tool_call_id"], "output" => message["content"]))
+            image = get(message, "image", nothing)
+            output = isnothing(image) ? message["content"] : [Dict("type" => "input_text", "text" => message["content"]), Dict("type" => "input_image", "detail" => "auto", "image_url" => "data:$(image["mime"]);base64,$(image["data"])")]
+            push!(items, Dict("type" => "function_call_output", "call_id" => message["tool_call_id"], "output" => output))
         elseif role == "assistant" && haskey(message, "response_output")
             append!(items, message["response_output"])
         else

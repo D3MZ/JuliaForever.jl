@@ -148,6 +148,7 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
                                     ToolResult(sprint(showerror, exception), true)
                                 end
                             end
+                            isnothing(answer.image) || (answer = ToolResult("Image output is not supported by CodeMode", true))
                             duration = (time_ns() - callstart) / 1e9
                             enqueue(events, (; type="call_done", index, status=answer.iserror ? :error : :ok, duration))
                             lock(lockwrite) do

@@ -18,7 +18,7 @@ finished = K.step(state, K.Observe(state.revision, model.id, answer))
 finished.state.phase == C.Complete
 ```
 
-Messages are `User`, `Assistant`, and `ToolMessage` values. A completed assistant reply with tool calls emits a `ToolRequest` for each call. Results can arrive in any order: the transcript records them in the assistant's call order, and only then emits the next `ModelRequest`. A tool failure becomes an error tool message. A reply with finish reason `length` records errors for its tool calls without emitting tool requests, then asks the model again. An incomplete model result stops in `Incomplete` without adding its partial assistant message to the transcript.
+Messages are `User`, `Assistant`, and `ToolMessage` values. A completed assistant reply with tool calls emits a `ToolRequest` for each call. Results can arrive in any order: the transcript records them in the assistant's call order, and only then emits the next `ModelRequest`. A tool failure becomes an error tool message. `ToolReply` and `ToolMessage` can also carry one optional `Image` alongside their text; the image remains part of the observation and replayed transcript. A reply with finish reason `length` records errors for its tool calls without emitting tool requests, then asks the model again. An incomplete model result stops in `Incomplete` without adding its partial assistant message to the transcript.
 
 `Assistant` accepts an optional `metadata` dictionary for provider-specific fields such as Responses `response_output`, including encrypted reasoning and tool items. The constructor copies that dictionary, and subsequent transcript and request snapshots preserve it. The driver must reconstruct provider messages with those fields when it handles a `ModelRequest`.
 

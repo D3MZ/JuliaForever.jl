@@ -12,12 +12,21 @@ struct Edit <: Tool
     cwd::String
 end
 
+struct Image
+    mime::String
+    data::String
+end
+
+Base.isequal(a::Image, b::Image) = isequal((a.mime, a.data), (b.mime, b.data))
+Base.hash(image::Image, h::UInt) = hash((image.mime, image.data), hash(Image, h))
+
 struct ToolResult
     text::String
     iserror::Bool
+    image::Union{Nothing, Image}
 end
 
-ToolResult(text) = ToolResult(text, false)
+ToolResult(text, iserror=false) = ToolResult(text, iserror, nothing)
 
 path(tool::Tool, name) = normpath(joinpath(tool.cwd, expanduser(name)))
 
@@ -109,8 +118,76 @@ function execute(tool::Write, args)
     end
 end
 
+const imagelimit = 10 * 1024 * 1024
+const pngsignature = UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+
+prefix(bytes, signature) = length(bytes) >= length(signature) && @view(bytes[1:length(signature)]) == signature
+
+little(bytes, start, count) = foldl((n, byte) -> 256 * n + Int(byte), Iterators.reverse(@view(bytes[start:start+count-1])); init=0)
+
+function bmp(bytes)
+    length(bytes) >= 26 && prefix(bytes, codeunits("BM")) || return false
+    size = little(bytes, 3, 4)
+    offset = little(bytes, 11, 4)
+    header = little(bytes, 15, 4)
+    (size == 0 || size >= 26 && offset < size) && offset >= 14 + header || return false
+    if header == 12
+        planes, bits = little(bytes, 23, 2), little(bytes, 25, 2)
+    elseif 40 <= header <= 124 && length(bytes) >= 30
+        planes, bits = little(bytes, 27, 2), little(bytes, 29, 2)
+    else
+        return false
+    end
+    planes == 1 && bits in (1, 4, 8, 16, 24, 32)
+end
+
+function imageformat(bytes)
+    prefix(bytes, pngsignature) && return :png
+    prefix(bytes, UInt8[0xff, 0xd8, 0xff]) && return length(bytes) >= 4 && bytes[4] == 0xf7 ? :unsupported : :jpeg
+    (prefix(bytes, codeunits("GIF87a")) || prefix(bytes, codeunits("GIF89a"))) && return :unsupported
+    (length(bytes) >= 12 && prefix(bytes, codeunits("RIFF")) && @view(bytes[9:12]) == codeunits("WEBP")) && return :unsupported
+    bmp(bytes) && return :unsupported
+    :text
+end
+
+function pngformat(bytes)
+    length(bytes) >= 33 || return :invalid
+    bytes[9:16] == UInt8[0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52] || return :invalid
+    offset = 9
+    while offset + 7 <= length(bytes)
+        size = foldl((n, byte) -> n * 256 + Int(byte), @view(bytes[offset:offset+3]); init=0)
+        stop = offset + size + 11
+        stop <= length(bytes) || return :invalid
+        kind = @view bytes[offset+4:offset+7]
+        kind == codeunits("acTL") && return :animated
+        kind == codeunits("IDAT") && return :static
+        offset = stop + 1
+    end
+    :invalid
+end
+
+function readimage(io, format)
+    format == :unsupported && return ToolResult("Image format is not supported", true)
+    seekstart(io)
+    bytes = read(io, imagelimit + 1)
+    length(bytes) <= imagelimit || return ToolResult("Image exceeds the 10 MiB limit", true)
+    if format == :png
+        kind = pngformat(bytes)
+        kind == :animated && return ToolResult("Animated PNG is not supported", true)
+        kind == :invalid && return ToolResult("PNG structure is not supported", true)
+    end
+    mime = format == :png ? "image/png" : "image/jpeg"
+    ToolResult("Read image file [$mime]", false, Image(mime, base64encode(bytes)))
+end
+
 function execute(tool::Read, args)
-    content = read(path(tool, args.path), String)
+    content = open(path(tool, args.path)) do io
+        format = imageformat(read(io, 32))
+        format == :text || return readimage(io, format)
+        seekstart(io)
+        read(io, String)
+    end
+    content isa ToolResult && return content
     if !haskey(args, :offset) && !haskey(args, :limit) && ncodeunits(content) <= 51200 && count(==('\n'), content) + (!isempty(content) && !endswith(content, '\n')) <= 2000
         return ToolResult(content)
     end

@@ -90,7 +90,7 @@ function perform(work::Work{Conversation.ToolRequest}, cancellation::Cancellatio
     catch exception
         ToolResult(sprint(showerror, exception), true)
     end
-    Conversation.ToolReply(result.text, result.iserror)
+    Conversation.ToolReply(result.text, result.iserror, result.image)
 end
 
 function perform(work::Work{Conversation.SkipRequest}, cancellation::Cancellation)

@@ -25,6 +25,8 @@ include("instructions_cli.jl")
     end
 end
 
+include("image.jl")
+
 include("edit.jl")
 include("file_mutations.jl")
 
@@ -70,6 +72,7 @@ if haskey(ENV, "PI_SOURCE")
     include("agent_core_differential.jl")
     include("extensions_differential.jl")
     include("differential.jl")
+    include("image_differential.jl")
     include("file_mutations_differential.jl")
 end
 

@@ -106,7 +106,7 @@ function recorded_tools!(agent, effects, messages, callback)
         !isnothing(agent.fault) && return agent.fault
         result = toolresult(agent, call, callback; truncated=effect.effect isa Conversation.SkipRequest)
         !isnothing(agent.fault) && return agent.fault
-        transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ToolReply(result.text, result.iserror)), agent)
+        transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ToolReply(result.text, result.iserror, result.image)), agent)
         transition isa Kernel.Applied || return transition
         present!(agent, added, messages, callback)
         !isnothing(agent.fault) && return agent.fault

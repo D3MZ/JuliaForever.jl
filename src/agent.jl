@@ -122,7 +122,9 @@ function Base.convert(::Type{Dict{String, Any}}, call::Conversation.ToolCall)
 end
 
 function Base.convert(::Type{Dict{String, Any}}, message::Conversation.ToolMessage)
-    Dict{String, Any}("role" => "tool", "tool_call_id" => message.id, "content" => message.content)
+    value = Dict{String, Any}("role" => "tool", "tool_call_id" => message.id, "content" => message.content)
+    isnothing(message.image) || (value["image"] = Dict("mime" => message.image.mime, "data" => message.image.data))
+    value
 end
 
 Base.convert(::Type{Dict{String, Any}}, message::Conversation.RawMessage) = deepcopy(message.value)
@@ -155,7 +157,7 @@ schema(::Read) = Dict("type" => "object", "properties" => Dict("path" => Dict("t
 schema(::Write) = Dict("type" => "object", "properties" => Dict("path" => Dict("type" => "string"), "content" => Dict("type" => "string")), "required" => ["path", "content"])
 schema(::Edit) = Dict("type" => "object", "properties" => Dict("path" => Dict("type" => "string"), "edits" => Dict("type" => "array", "items" => Dict("type" => "object", "properties" => Dict("oldText" => Dict("type" => "string"), "newText" => Dict("type" => "string")), "required" => ["oldText", "newText"]))), "required" => ["path", "edits"])
 
-description(::Read) = "Read a text file. Offset and limit are line based."
+description(::Read) = "Read a text file or a PNG/JPEG image up to 10 MiB. Offset and limit are line based for text."
 description(::Write) = "Create or overwrite a text file."
 description(::Edit) = "Replace unique, non-overlapping text in a file."
 
@@ -259,11 +261,11 @@ end
 
 function toolmessage(call, result)
     content = result.iserror ? "Error: $(result.text)" : result.text
-    Dict{String, Any}("role" => "tool", "tool_call_id" => call["id"], "content" => content)
+    convert(Dict{String, Any}, Conversation.ToolMessage(call["id"], content, result.iserror, result.image))
 end
 
 function toolobserve!(agent, effect, result, messages, on_agent_event)
-    transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ToolReply(result.text, result.iserror)), agent)
+    transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ToolReply(result.text, result.iserror, result.image)), agent)
     present!(agent, added, messages, on_agent_event)
     transition
 end

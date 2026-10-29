@@ -137,10 +137,32 @@ function usage(data)
     Usage(input, output, cache_read, cache_write, reasoning, input + output + cache_read + cache_write, isnothing(cost) ? nothing : Float64(cost))
 end
 
+function chat(messages)
+    result = Any[]
+    images = Any[]
+    for message in messages
+        if message["role"] != "tool" && !isempty(images)
+            push!(result, Dict("role" => "user", "content" => [Dict("type" => "text", "text" => "Attached image(s) from tool result:"), images...]))
+            empty!(images)
+        end
+        image = get(message, "image", nothing)
+        if message["role"] == "tool" && !isnothing(image)
+            value = copy(message)
+            delete!(value, "image")
+            push!(result, value)
+            push!(images, Dict("type" => "image_url", "image_url" => Dict("url" => "data:$(image["mime"]);base64,$(image["data"])")))
+        else
+            push!(result, message)
+        end
+    end
+    isempty(images) || push!(result, Dict("role" => "user", "content" => [Dict("type" => "text", "text" => "Attached image(s) from tool result:"), images...]))
+    result
+end
+
 function payload(provider::OpenAI, messages, tools, parameters; streaming=false)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(parameters))
     data["model"] = provider.model
-    data["messages"] = messages
+    data["messages"] = chat(messages)
     data["stream"] = streaming
     delete!(data, "tools")
     delete!(data, "stream_options")

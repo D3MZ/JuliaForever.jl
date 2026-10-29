@@ -46,7 +46,7 @@ function execution_tools!(agent, executor, context, effects, messages, callback)
         else
             return outcome
         end
-        result = ToolResult(reply.text, reply.iserror)
+        result = ToolResult(reply.text, reply.iserror, reply.image)
         ended = (; type=:tool_execution_end, tool_call_id=call["id"], tool_name=callinfo(call).name, result, iserror=result.iserror)
         isnothing(agent.history) && emit(callback, ended)
         transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, reply), agent)
