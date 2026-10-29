@@ -26,6 +26,7 @@ include("instructions_cli.jl")
 end
 
 include("image.jl")
+include("image_stream.jl")
 
 include("edit.jl")
 include("file_mutations.jl")

@@ -120,6 +120,8 @@ end
 
 const imagelimit = 10 * 1024 * 1024
 const pngsignature = UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+# Candidate first bytes for the signatures recognized by imageformat.
+const imageheads = (0x89, 0xff, 0x47, 0x52, 0x42)
 
 prefix(bytes, signature) = length(bytes) >= length(signature) && @view(bytes[1:length(signature)]) == signature
 
@@ -166,10 +168,9 @@ function pngformat(bytes)
     :invalid
 end
 
-function readimage(io, format)
+function readimage(io, format, bytes)
     format == :unsupported && return ToolResult("Image format is not supported", true)
-    seekstart(io)
-    bytes = read(io, imagelimit + 1)
+    append!(bytes, read(io, imagelimit + 1 - length(bytes)))
     length(bytes) <= imagelimit || return ToolResult("Image exceeds the 10 MiB limit", true)
     if format == :png
         kind = pngformat(bytes)
@@ -180,13 +181,18 @@ function readimage(io, format)
     ToolResult("Read image file [$mime]", false, Image(mime, base64encode(bytes)))
 end
 
-function execute(tool::Read, args)
-    content = open(path(tool, args.path)) do io
-        format = imageformat(read(io, 32))
-        format == :text || return readimage(io, format)
-        seekstart(io)
-        read(io, String)
+function readfile(io)
+    if !eof(io) && peek(io, UInt8) in imageheads
+        bytes = read(io, 32)
+        format = imageformat(bytes)
+        format == :text && return String(bytes) * read(io, String)
+        return readimage(io, format, bytes)
     end
+    read(io, String)
+end
+
+function execute(tool::Read, args)
+    content = open(readfile, path(tool, args.path))
     content isa ToolResult && return content
     if !haskey(args, :offset) && !haskey(args, :limit) && ncodeunits(content) <= 51200 && count(==('\n'), content) + (!isempty(content) && !endswith(content, '\n')) <= 2000
         return ToolResult(content)
