@@ -29,7 +29,11 @@ function execute(tool::Write, args)
 end
 
 function execute(tool::Read, args)
-    lines = split(read(path(tool, args.path), String), '\n'; keepempty=true)
+    content = read(path(tool, args.path), String)
+    if !haskey(args, :offset) && !haskey(args, :limit) && ncodeunits(content) <= 51200 && count(==('\n'), content) + (!isempty(content) && !endswith(content, '\n')) <= 2000
+        return ToolResult(content)
+    end
+    lines = split(content, '\n'; keepempty=true)
     offset = max(1, get(args, :offset, 1))
     offset > length(lines) && return ToolResult("Offset $offset is beyond end of file ($(length(lines)) lines total)", true)
     limit = get(args, :limit, length(lines))
