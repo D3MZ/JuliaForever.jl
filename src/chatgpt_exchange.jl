@@ -17,10 +17,32 @@ validclient(::Register, client) = !isempty(client) && client != "dynamic_agent_c
 validclient(registration::Returning, client) = client == registration.client
 validclient(registration::Reconsent, client) = validclient(registration.registration, client)
 
-function posttoken(body)
-    response = HTTP.post("https://auth.openai.com/api/accounts/oauth/token", ["Content-Type" => "application/x-www-form-urlencoded"], body; redirect=false, retry=false, cookies=false, request_timeout=10, read_idle_timeout=5, max_decompressed_size=1_048_576)
-    response.status == 200 ? String(response.body) : "{}"
+struct TokenReply
+    status::Int
+    body::String
 end
+
+Base.show(io::IO, reply::TokenReply) = print(io, "TokenReply(", reply.status, ", [redacted])")
+
+struct OAuthError
+    status::Int
+    code::Union{Nothing, String}
+end
+
+Base.show(io::IO, failure::OAuthError) = print(io, "OAuthError(", failure.status, ", [redacted])")
+
+function posttoken(body; request=HTTP.post)
+    response = request("https://auth.openai.com/api/accounts/oauth/token", ["Content-Type" => "application/x-www-form-urlencoded"], body; status_exception=false, redirect=false, retry=false, cookies=false, request_timeout=10, read_idle_timeout=5, max_decompressed_size=1_048_576)
+    TokenReply(response.status, String(response.body))
+end
+
+errorcode(::InvalidResponse) = nothing
+errorcode(data::AbstractDict) = codevalue(get(data, "error", nothing))
+codevalue(value::AbstractString) = String(value)
+codevalue(value::AbstractDict) = codevalue(get(value, "code", nothing))
+codevalue(value) = nothing
+
+tokendata(reply::TokenReply) = reply.status == 200 ? decode(reply.body) : OAuthError(reply.status, errorcode(decode(reply.body)))
 
 function exchange(pending::Pending, code::Code; post=posttoken, fetcher=fetch, now=time)
     validclient(pending.registration, code.client) || return nothing
@@ -34,10 +56,11 @@ function exchange(pending::Pending, code::Code, value::AbstractString; post, fet
     body = join(("$(HTTP.escapeuri(key))=$(HTTP.escapeuri(value))" for (key, value) in fields), "&")
     raw = post(body)
     received = now()
-    exchange(pending, code, decode(raw); fetcher, now, received)
+    exchange(pending, code, tokendata(raw); fetcher, now, received)
 end
 
 exchange(pending::Pending, code::Code, ::InvalidResponse; fetcher, now, received) = nothing
+exchange(pending::Pending, code::Code, failure::OAuthError; fetcher, now, received) = failure
 
 function exchange(pending::Pending, code::Code, data::AbstractDict; fetcher, now, received)
     access = get(data, "access_token", nothing)

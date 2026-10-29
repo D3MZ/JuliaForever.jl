@@ -9,7 +9,7 @@ function fixtureexchange(pending, code; changes=Dict{String, Any}(), fetcher=url
     body = Ref("")
     post = value -> begin
         body[] = value
-        JSON3.write(fixturetokens(pending, code.client; changes))
+        CG.TokenReply(200, JSON3.write(fixturetokens(pending, code.client; changes)))
     end
     session = CG.exchange(pending, code; post, fetcher, now=() -> identitytime)
     (; session, body=body[])
@@ -41,7 +41,7 @@ end
             JSON3.write(Dict("keys" => identitykeys))
         end
         timedtoken = signedidentity(identityclaims(; changes=Dict("nonce" => pending.nonce, "exp" => identitytime + 3600)))
-        post = body -> JSON3.write(fixturetokens(pending; changes=Dict("id_token" => timedtoken)))
+        post = body -> CG.TokenReply(200, JSON3.write(fixturetokens(pending; changes=Dict("id_token" => timedtoken))))
         timed = CG.exchange(pending, CG.Code("synthetic-code", "oaiapp_fixture"); post, fetcher=delayed, now=() -> clock[])
         @test timed.expires == identitytime + 3600
         duplicate = CG.Code("synthetic-code", "oaiapp_fixture")
@@ -56,7 +56,7 @@ end
         @test_throws JWTs.JWTClaimError fixtureexchange(pending, CG.Code("synthetic-code", "oaiapp_fixture"); changes=Dict("id_token" => badnonce))
         @test_throws JWTs.JWTVerificationError fixtureexchange(pending, CG.Code("synthetic-code", "oaiapp_fixture"); changes=Dict("id_token" => "bad.token.payload"))
         code = CG.Code("synthetic-code", "oaiapp_fixture")
-        @test isnothing(CG.exchange(pending, code; post=body -> "not-json", fetcher=url -> "{}", now=() -> identitytime))
+        @test isnothing(CG.exchange(pending, code; post=body -> CG.TokenReply(200, "not-json"), fetcher=url -> "{}", now=() -> identitytime))
     finally
         close(pending)
     end

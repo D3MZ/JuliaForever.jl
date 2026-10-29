@@ -54,7 +54,7 @@ end
                 put!(captured, body)
                 put!(started, nothing)
                 take!(release)
-                JSON3.write(Dict("access_token" => "rotated-access", "refresh_token" => "rotated-refresh", "scope" => identityscope, "token_type" => "Bearer", "expires_in" => 3600))
+                CG.TokenReply(200, JSON3.write(Dict("access_token" => "rotated-access", "refresh_token" => "rotated-refresh", "scope" => identityscope, "token_type" => "Bearer", "expires_in" => 3600)))
             end
             job = Threads.@spawn CG.refresh(store, session.client, session.identity.subject; post, now=() -> identitytime + 3590)
             take!(started)
@@ -68,7 +68,7 @@ end
             @test rotated.identity.subject == session.identity.subject && rotated.id_token == session.id_token
             @test CG.load(store, session.client, session.identity.subject).refresh == "rotated-refresh"
             @test CG.refresh(store, session.client, session.identity.subject; post=body -> error("must not refresh"), now=() -> identitytime + 3591).access == "rotated-access"
-            invalid = body -> JSON3.write(Dict("access_token" => "bad", "refresh_token" => "", "token_type" => "Bearer", "expires_in" => 3600))
+            invalid = body -> CG.TokenReply(200, JSON3.write(Dict("access_token" => "bad", "refresh_token" => "", "token_type" => "Bearer", "expires_in" => 3600)))
             @test CG.refresh(store, session.client, session.identity.subject; post=invalid, now=() -> identitytime + 7180) isa CG.Rejected
             @test CG.load(store, session.client, session.identity.subject).refresh == "rotated-refresh"
             @test_throws ErrorException CG.refresh(store, session.client, session.identity.subject; post=body -> error("network fixture"), now=() -> identitytime + 7180)

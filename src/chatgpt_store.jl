@@ -81,11 +81,20 @@ hostvalue(value::AbstractString) = occursin(r"^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-
 
 path(store::Store, client::AbstractString, subject::AbstractString) = joinpath(store.root, bytes2hex(sha256(JSON3.write([client, subject]))) * ".json")
 
+struct Account
+    client::String
+    identity::Identity
+end
+
+function record(account::Account)
+    JSON3.write((; issuer, subject=account.identity.subject, email=account.identity.email, client_id=account.client))
+end
+
 function record(session::Session)
     JSON3.write((; issuer, subject=session.identity.subject, email=session.identity.email, client_id=session.client, access_token=session.access, refresh_token=session.refresh, id_token=session.id_token, scope=session.scope, expires_at=session.expires))
 end
 
-function saveunlocked(store::Store, session::Session)
+function saveunlocked(store::Store, session::Union{Session, Account})
     writeprivate(path(store, session.client, session.identity.subject), record(session))
     session
 end
@@ -99,14 +108,26 @@ loadrecord(::InvalidResponse, client, subject) = Rejected(:invalid)
 
 function loadrecord(data::AbstractDict, client, subject)
     get(data, "issuer", nothing) == issuer && get(data, "client_id", nothing) == client && get(data, "subject", nothing) == subject || return Rejected(:identity)
-    access, refresh, token, scope = (get(data, key, nothing) for key in ("access_token", "refresh_token", "id_token", "scope"))
+    email = get(data, "email", nothing)
+    isnothing(email) || email isa AbstractString || return Rejected(:invalid)
+    identity = Identity(String(subject), isnothing(email) ? nothing : String(email))
+    credentials(get(data, "access_token", nothing), data, client, identity)
+end
+
+function credentials(::Nothing, data, client, identity)
+    all(key -> !haskey(data, key), ("access_token", "refresh_token", "id_token", "scope", "expires_at")) || return Rejected(:invalid)
+    Account(String(client), identity)
+end
+
+function credentials(access::AbstractString, data, client, identity)
+    refresh, token, scope = (get(data, key, nothing) for key in ("refresh_token", "id_token", "scope"))
     all(value -> value isa AbstractString && !isempty(value), (access, refresh, token, scope)) || return Rejected(:invalid)
     expires = get(data, "expires_at", nothing)
     expires isa Real && !(expires isa Bool) && isfinite(expires) && expires > 0 || return Rejected(:invalid)
-    email = get(data, "email", nothing)
-    isnothing(email) || email isa AbstractString || return Rejected(:invalid)
-    Session(String(client), Identity(String(subject), isnothing(email) ? nothing : String(email)), String(access), String(refresh), String(token), String(scope), Float64(expires))
+    Session(String(client), identity, String(access), String(refresh), String(token), String(scope), Float64(expires))
 end
+
+credentials(access, data, client, identity) = Rejected(:invalid)
 
 load(store::Store, client::AbstractString, subject::AbstractString) = guarded(() -> loadunlocked(store, client, subject), store)
 
@@ -117,6 +138,7 @@ function refresh(store::Store, client::AbstractString, identity::AbstractString;
 end
 
 renew(store::Store, rejected::Rejected; post, now) = rejected
+renew(store::Store, account::Account; post, now) = Rejected(:reauthorize)
 
 function renew(store::Store, session::Session; post, now)
     session.expires > now() + 60 && return session
@@ -124,10 +146,18 @@ function renew(store::Store, session::Session; post, now)
     body = join(("$(HTTP.escapeuri(key))=$(HTTP.escapeuri(value))" for (key, value) in fields), "&")
     raw = post(body)
     received = now()
-    renew(store, session, decode(raw); received)
+    renew(store, session, tokendata(raw); received)
 end
 
 renew(store::Store, session::Session, ::InvalidResponse; received) = Rejected(:response)
+
+function renew(store::Store, session::Session, failure::OAuthError; received)
+    unusable = ("invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused")
+    if 400 <= failure.status < 500 && failure.code in unusable
+        saveunlocked(store, Account(session.client, session.identity))
+    end
+    failure
+end
 
 function renew(store::Store, session::Session, data::AbstractDict; received)
     access = get(data, "access_token", nothing)
