@@ -15,8 +15,8 @@ using HTTP, JSON3
             post = body -> CG.posttoken(body; request=sender)
             mktempdir() do root
                 store = CG.Store(root)
-                for code in ("invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused")
-                    CG.save(store, session)
+                for (index, code) in enumerate(("invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused"))
+                    index == 1 ? CG.save(store, session) : CG.replace(store, CG.load(store, session.client, session.identity.subject), session)
                     put!(replies, HTTP.Response(400, ["Content-Type" => "application/json"], JSON3.write(Dict("error" => code))))
                     failure = CG.refresh(store, session.client, session.identity.subject; post, now=() -> identitytime + 3590)
                     @test failure isa CG.OAuthError && failure.status == 400 && failure.code == code
@@ -26,7 +26,7 @@ using HTTP, JSON3
                     record = read(CG.path(store, session.client, session.identity.subject), String)
                     @test !occursin("synthetic-access", record) && !occursin("synthetic-refresh", record) && !occursin(session.id_token, record)
                 end
-                CG.save(store, session)
+                CG.replace(store, CG.load(store, session.client, session.identity.subject), session)
                 for (status, code) in ((503, "invalid_grant"), (401, "invalid_client"), (400, "unknown_error"))
                     put!(replies, HTTP.Response(status, ["Content-Type" => "application/json"], JSON3.write(Dict("error" => code))))
                     failure = CG.refresh(store, session.client, session.identity.subject; post, now=() -> identitytime + 3590)

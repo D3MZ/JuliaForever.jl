@@ -44,9 +44,21 @@ function writeprivate(path, value)
         close(io)
         chmod(temporary, 0o600)
         Base.Filesystem.rename(temporary, path)
+        syncdirectory(path)
     finally
         isopen(io) && close(io)
         rm(temporary; force=true)
+    end
+    nothing
+end
+
+function syncdirectory(path)
+    descriptor = ccall(:open, Cint, (Cstring, Cint), dirname(path), 0)
+    Base.systemerror("open directory", descriptor < 0)
+    try
+        Base.systemerror("fsync directory", ccall(:fsync, Cint, (Cint,), descriptor) != 0)
+    finally
+        ccall(:close, Cint, (Cint,), descriptor)
     end
     nothing
 end
@@ -103,7 +115,26 @@ function saveunlocked(store::Store, session::Union{Credential, Account})
     session
 end
 
-save(store::Store, session::Credential) = guarded(() -> saveunlocked(store, session), store)
+function save(store::Store, session::Credential)
+    guarded(store) do
+        file = path(store, session.client, session.identity.subject)
+        (ispath(file) || islink(file)) && return Rejected(:exists)
+        saveunlocked(store, session)
+    end
+end
+
+function Base.replace(store::Store, expected::Union{Credential, Account}, next::Credential)
+    (expected.client, expected.identity.subject) == (next.client, next.identity.subject) || return Rejected(:identity)
+    guarded(store) do
+        replaceunlocked(store, expected, next, loadunlocked(store, expected.client, expected.identity.subject))
+    end
+end
+
+replaceunlocked(store::Store, expected, next, actual::Rejected) = actual
+function replaceunlocked(store::Store, expected, next, actual::Union{Credential, Account})
+    record(actual) == record(expected) || return Rejected(:changed)
+    saveunlocked(store, next)
+end
 
 loadunlocked(store::Store, client::AbstractString, subject::AbstractString) = loadrecord(readprivate(path(store, client, subject)), client, subject)
 loadrecord(value::Rejected, client, subject) = value
