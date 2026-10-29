@@ -59,6 +59,8 @@ const EC = JuliaForever.Conversation
     response_reasoning = Dict("type" => "reasoning", "summary" => [Dict("type" => "summary_text", "text" => "a longer visible reasoning summary")], "encrypted_content" => "synthetic")
     response = EC.Assistant("a", EC.ToolCall[], "stop", true; metadata=Dict("response_output" => [response_reasoning]))
     @test CT.tokens(response) == CT.tokens("a")
+    mixed = EC.Assistant("a", EC.ToolCall[], "stop", true; metadata=Dict("response_output" => [response_reasoning], "reasoning_content" => "a top-level alias"))
+    @test CT.tokens(mixed) == CT.tokens("aa top-level alias")
     @test_throws KeyError CT.tokens(EC.RawMessage(Dict{String, Any}("role" => "developer", "content" => "hi")))
     @test_throws KeyError CT.tokens(EC.RawMessage(Dict{String, Any}("role" => "user", "content" => [Dict("type" => "file")])))
 
