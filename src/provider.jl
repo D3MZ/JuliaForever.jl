@@ -220,6 +220,7 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
     finish = Ref{Union{Nothing, String}}(nothing)
     failure = Ref{Union{Nothing, String, InvalidResponse}}(nothing)
     marker = Ref(false)
+    reasoningfield = Ref{Union{Nothing, String}}(nothing)
     response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, sse_callback=event -> begin
         failure[] isa InvalidResponse && return
         if event.data == "[DONE]"
@@ -254,6 +255,9 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
         for field in ("reasoning_content", "reasoning", "reasoning_text")
             text = get(delta, field, nothing)
             if text isa AbstractString && !isempty(text)
+                reasoningfield[] = something(reasoningfield[], field)
+                key = reasoningfield[]
+                message[key] = get(message, key, "") * text
                 on_event((; type=:thinking, text, field))
                 break
             end
