@@ -14,3 +14,4 @@ end
 flush(stdout)
 Pkg.instantiate()
 Pkg.test(; julia_args=`--startup-file=no --threads=$(Threads.nthreads())`)
+include(joinpath(@__DIR__, "..", "test", "terminal_plugin_install.jl"))

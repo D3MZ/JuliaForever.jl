@@ -20,7 +20,7 @@ with tempfile.TemporaryDirectory(prefix="jf-plugin-app-") as temporary:
     environment.mkdir()
     (environment / "Project.toml").write_text('[deps]\nGreetingPlugin = "ae76cdcb-7d2c-4eba-93ad-b5f8b9e38b49"\n')
     package = tomllib.loads((project / "Project.toml").read_text())
-    manifest = (project / "Manifest.toml").read_text()
+    manifest = Path(os.environ.get("JF_TEST_MANIFEST", project / "Manifest.toml")).read_text()
     manifest = re.sub(r"(?ms)^\[\[deps\.JuliaForever\]\]\n.*?(?=^\[\[deps\.|\Z)", "", manifest)
     manifest += f'\n[[deps.JuliaForever]]\ndeps = {json.dumps(sorted(package["deps"]))}\npath = {json.dumps(str(project))}\nuuid = "{package["uuid"]}"\nversion = "{package["version"]}"\n'
     manifest += f'\n[[deps.GreetingPlugin]]\ndeps = ["JuliaForever"]\npath = {json.dumps(str(project / "test/fixtures/GreetingPlugin"))}\nuuid = "ae76cdcb-7d2c-4eba-93ad-b5f8b9e38b49"\nversion = "0.1.0"\n'
