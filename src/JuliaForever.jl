@@ -24,6 +24,7 @@ include("logs.jl")
 include("search.jl")
 include("codemode.jl")
 include("terminal.jl")
+include("mcp.jl")
 
 function configured(env, login)
     selected = get(env, "JF_PROVIDER", "openai")
