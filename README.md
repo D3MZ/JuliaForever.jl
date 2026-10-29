@@ -2,7 +2,7 @@
 
 An experimental native Julia agent harness, working toward compatibility with [Pi](https://github.com/earendil-works/pi). The current target is Pi revision `e7a0df27c09d11bf4161d3605246cbf57a129cb2`.
 
-The current prototype supports OpenAI Responses and OpenAI-compatible chat completions for OpenAI and OpenRouter, streamed text and function calls, agent lifecycle events and queued turns, text `read`, `write`, `edit`, shell, directory-listing and native search tools, an independent durable-storage foundation, and opt-in Julia code mode. Pi sessions, plugin conversion, MCP, terminal UI, and other features remain unimplemented. Text editing currently supports exact matches only. See [providers](docs/providers.md), [shell](docs/system-tools.md), [search](docs/search-tools.md), [durable storage](docs/durable.md), and [code mode](docs/codemode.md) for limitations.
+The current prototype supports OpenAI Responses and OpenAI-compatible chat completions for OpenAI and OpenRouter, streamed text and function calls, agent lifecycle events and queued turns, text `read`, `write`, `edit`, shell, directory-listing and native search tools, an independent durable-storage foundation, and opt-in Julia code mode. Native Julia plugins, MCP, terminal UI, and other features remain unimplemented. The current synchronous agent loop is a prototype; the intended core is a typed, replayable state machine with replaceable storage and execution. Text editing currently supports exact matches only. See [providers](docs/providers.md), [shell](docs/system-tools.md), [search](docs/search-tools.md), [durable storage](docs/durable.md), and [code mode](docs/codemode.md) for limitations.
 
 ## Run from a checkout
 
