@@ -10,6 +10,7 @@ mutable struct Agent{P}
     lock::ReentrantLock
     running::Bool
     cancelled::Bool
+    shell::ShellCancellation
     handle::Any
     history::Union{Nothing, History.Store}
     history_revision::Int
@@ -60,15 +61,16 @@ function followup!(agent::Agent, prompt)
     result isa History.Rejected ? result : nothing
 end
 
-"Request cancellation at the next boundary; in-flight provider and tool calls are not interrupted."
+"Cancel in-flight Unix shell calls in the in-process driver and request cancellation at the next boundary for other work."
 function cancel!(agent::Agent)
-    result, handle = lock(agent.lock) do
-        agent.running || return false, nothing
+    result, handle, shell = lock(agent.lock) do
+        agent.running || return false, nothing, nothing
         result, _ = transition!(revision -> Conversation.Cancel(revision), agent)
-        result isa History.Rejected && return result, nothing
+        result isa History.Rejected && return result, nothing, nothing
         agent.cancelled = true
-        true, agent.handle
+        true, agent.handle, agent.shell
     end
+    isnothing(shell) || cancel!(shell)
     isnothing(handle) || Execution.cancel!(handle)
     result
 end
@@ -80,6 +82,7 @@ function begin!(agent::Agent)
         agent.running && return false
         agent.running = true
         agent.cancelled = false
+        agent.shell = ShellCancellation()
         true
     end
 end
@@ -150,10 +153,13 @@ description(::Edit) = "Replace unique, non-overlapping text in a file."
 
 definition(tool) = Dict("type" => "function", "function" => Dict("name" => name(tool), "description" => description(tool), "parameters" => schema(tool)))
 
+invoke(tool::Tool, args, ::ShellCancellation) = execute(tool, args)
+invoke(tool::Union{Bash, PowerShell}, args, cancel::ShellCancellation) = Sys.iswindows() ? execute(tool, args) : execute(tool, args; cancel)
+
 function invoke(agent, call)
     try
         tool = call["function"]
-        execute(agent.tools[tool["name"]], JSON3.read(tool["arguments"]))
+        invoke(agent.tools[tool["name"]], JSON3.read(tool["arguments"]), agent.shell)
     catch exception
         ToolResult(sprint(showerror, exception), true)
     end

@@ -10,6 +10,33 @@ struct Ls <: Tool
     cwd::String
 end
 
+export ShellCancellation
+
+mutable struct ShellRun
+    process::Base.Process
+    lock::ReentrantLock
+    outcome::Union{Nothing, Symbol}
+    done::Channel{Symbol}
+end
+
+ShellRun(process::Base.Process) = ShellRun(process, ReentrantLock(), nothing, Channel{Symbol}(1))
+
+mutable struct ShellCancellation
+    lock::ReentrantLock
+    cancelled::Bool
+    runs::Set{ShellRun}
+end
+
+ShellCancellation() = ShellCancellation(ReentrantLock(), false, Set{ShellRun}())
+
+function cancel!(cancel::ShellCancellation)
+    lock(cancel.lock) do
+        cancel.cancelled = true
+        foreach(run -> signal!(run, :cancelled), cancel.runs)
+    end
+    nothing
+end
+
 name(::Bash) = "bash"
 name(::PowerShell) = "powershell"
 name(::Ls) = "ls"
@@ -54,11 +81,28 @@ shellname(::PowerShell) = "PowerShell"
 shellcommand(::Bash, command) = command
 shellcommand(::PowerShell, command) = "try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n" * command
 
-function stop(process)
-    if Sys.iswindows()
-        kill(process)
-    else
-        ccall(:kill, Cint, (Cint, Cint), -getpid(process), 9)
+function stop(process::Base.Process)
+    # Keep Julia's process handle locked until signalling finishes, so its PID cannot be reaped and reused in between.
+    Base.iolock_begin()
+    try
+        process_exited(process) && return :complete
+        pid = ccall(:jl_uv_process_pid, Cint, (Ptr{Cvoid},), process.handle)
+        ccall(:kill, Cint, (Cint, Cint), -pid, Base.SIGKILL) == 0 && return :signalled
+        Base.Libc.errno() == Base.Libc.ESRCH ? :complete : :stop_failed
+    finally
+        Base.iolock_end()
+    end
+end
+
+function signal!(run::ShellRun, outcome::Symbol)
+    lock(run.lock) do
+        isnothing(run.outcome) || return
+        if outcome != :complete
+            status = Sys.iswindows() ? :stop_failed : stop(run.process)
+            status == :signalled || (outcome = status)
+        end
+        run.outcome = outcome
+        put!(run.done, outcome)
     end
 end
 
@@ -144,11 +188,12 @@ function tail(io, file)
     ("$output\n\n[$notice]", true)
 end
 
-function execute(tool::Union{Bash, PowerShell}, args)
+function execute(tool::Union{Bash, PowerShell}, args; cancel=nothing)
     timeout = get(args, :timeout, nothing)
     !isnothing(timeout) && (!isfinite(timeout) || timeout <= 0) && return ToolResult("Invalid timeout: must be a finite number of seconds", true)
     !isnothing(timeout) && timeout * 1000 > 2147483647 && return ToolResult("Invalid timeout: maximum is 2147483.647 seconds", true)
     Sys.iswindows() && !isnothing(timeout) && return ToolResult("Timeout is not supported on Windows", true)
+    Sys.iswindows() && !isnothing(cancel) && return ToolResult("Cancellation is not supported on Windows", true)
     !isdir(tool.cwd) && return ToolResult("Working directory does not exist: $(tool.cwd)\nCannot execute $(shellname(tool)) commands.", true)
     settings = config(tool)
     if isnothing(settings)
@@ -163,15 +208,31 @@ function execute(tool::Union{Bash, PowerShell}, args)
     command = Cmd(Cmd([executable; arguments; shellcommand(tool, args.command)]); dir=tool.cwd, detach=!Sys.iswindows(), env)
     file, io = mktemp(; cleanup=false)
     keep = false
+    token = isnothing(cancel) ? ShellCancellation() : cancel
+    shellrun = nothing
+    watcher = nothing
+    timer = nothing
     try
-        process = run(pipeline(ignorestatus(command); stdin=devnull, stdout=io, stderr=io); wait=false)
-        expired = !isnothing(timeout) && timedwait(() -> process_exited(process), timeout; pollint=0.01) == :timed_out
-        expired && stop(process)
-        wait(process)
+        shellrun = lock(token.lock) do
+            token.cancelled && return nothing
+            process = run(pipeline(ignorestatus(command); stdin=devnull, stdout=io, stderr=io); wait=false)
+            shellrun = ShellRun(process)
+            push!(token.runs, shellrun)
+            shellrun
+        end
+        isnothing(shellrun) && return ToolResult("Command aborted", true)
+        process = shellrun.process
+        watcher = @async begin
+            wait(process)
+            signal!(shellrun, :complete)
+        end
+        !isnothing(timeout) && (timer = Timer(_ -> signal!(shellrun, :timeout), timeout))
+        outcome = take!(shellrun.done)
+        outcome != :stop_failed && wait(watcher)
         flush(io)
         output, keep = tail(io, file)
-        if expired
-            status = "Command timed out after $timeout seconds"
+        if outcome in (:timeout, :cancelled, :stop_failed)
+            status = outcome == :timeout ? "Command timed out after $timeout seconds" : outcome == :cancelled ? "Command aborted" : "Could not stop shell process group; the command may still be running"
             return ToolResult(isempty(output) ? status : "$output\n\n$status", true)
         end
         isempty(output) && (output = "(no output)")
@@ -179,6 +240,14 @@ function execute(tool::Union{Bash, PowerShell}, args)
         code != 0 && return ToolResult("$output\n\nCommand exited with code $code", true)
         ToolResult(output)
     finally
+        !isnothing(timer) && close(timer)
+        if !isnothing(shellrun)
+            lock(token.lock) do
+                delete!(token.runs, shellrun)
+            end
+            signal!(shellrun, :cancelled)
+            shellrun.outcome != :stop_failed && !isnothing(watcher) && wait(watcher)
+        end
         close(io)
         !keep && rm(file; force=true)
     end
