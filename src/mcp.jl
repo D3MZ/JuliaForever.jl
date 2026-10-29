@@ -1,7 +1,7 @@
 module MCP
 
-using JSON3
-import ..JuliaForever: Tool, ToolResult, name, description, schema, execute
+using JSON3, Base64
+import ..JuliaForever: Tool, ToolResult, Image, imagelimit, imageformat, pngformat, name, description, schema, execute
 
 struct Failure
     kind::Symbol
@@ -235,19 +235,67 @@ name(tool::RemoteTool) = tool.alias
 description(tool::RemoteTool) = tool.doc
 schema(tool::RemoteTool) = tool.parameters
 
+function imagecontent(block)
+    block isa AbstractDict || return nothing
+    kind = get(block, "type", nothing)
+    kind == "image" && return (; mime=get(block, "mimeType", nothing), data=get(block, "data", nothing))
+    kind == "resource" || return nothing
+    resource = get(block, "resource", nothing)
+    resource isa AbstractDict && !haskey(resource, "text") || return nothing
+    mime = get(resource, "mimeType", nothing)
+    mime isa AbstractString && startswith(mime, "image/") || return nothing
+    (; mime, data=get(resource, "blob", nothing))
+end
+
+function image(content)
+    mime, data = content.mime, content.data
+    mime isa AbstractString && data isa AbstractString || return Failure(:protocol, "Malformed image content")
+    mime in ("image/png", "image/jpeg") || return Failure(:capability, "Image MIME type $mime is not supported")
+    ncodeunits(data) <= 4 * cld(imagelimit, 3) || return Failure(:capability, "Image exceeds the 10 MiB limit")
+    bytes = try
+        base64decode(data)
+    catch
+        return Failure(:protocol, "Invalid image base64")
+    end
+    base64encode(bytes) == data || return Failure(:protocol, "Invalid image base64")
+    length(bytes) <= imagelimit || return Failure(:capability, "Image exceeds the 10 MiB limit")
+    format = imageformat(bytes)
+    (mime == "image/png" && format == :png || mime == "image/jpeg" && format == :jpeg) || return Failure(:protocol, "Mismatched image data for $mime")
+    if format == :png
+        kind = pngformat(bytes)
+        kind == :animated && return Failure(:capability, "Animated PNG is not supported")
+        kind == :invalid && return Failure(:capability, "PNG structure is not supported")
+    end
+    Image(mime, data)
+end
+
 function execute(tool::RemoteTool, args)
     result = call(tool.client, tool.remote, args)
     result isa Failure && return ToolResult("MCP $(result.kind): $(result.message)", true)
     content = String[]
-    for block in get(result, "content", [])
-        if block isa AbstractDict && get(block, "type", nothing) == "text" && get(block, "text", nothing) isa AbstractString
+    blocks = get(result, "content", [])
+    countimages = count(block -> !isnothing(imagecontent(block)), blocks)
+    attachment = nothing
+    failed = get(result, "isError", false)
+    for block in blocks
+        candidate = imagecontent(block)
+        if !isnothing(candidate)
+            value = countimages > 1 ? Failure(:capability, "Multiple images are not supported") : image(candidate)
+            if value isa Failure
+                push!(content, "[MCP image omitted: $(value.message)]")
+                failed = true
+            else
+                attachment = value
+                push!(content, "[MCP image attached]")
+            end
+        elseif block isa AbstractDict && get(block, "type", nothing) == "text" && get(block, "text", nothing) isa AbstractString
             push!(content, block["text"])
         else
             push!(content, JSON3.write(block))
         end
     end
     haskey(result, "structuredContent") && push!(content, JSON3.write(result["structuredContent"]))
-    ToolResult(join(content, "\n"), get(result, "isError", false))
+    ToolResult(join(content, "\n"), failed, attachment)
 end
 
 function tools(client::Client; prefix="mcp_")

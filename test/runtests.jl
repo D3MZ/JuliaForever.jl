@@ -97,6 +97,7 @@ include("logs.jl")
 include("search.jl")
 include("codemode.jl")
 include("mcp.jl")
+include("mcp_image.jl")
 if haskey(ENV, "PI_SOURCE")
     include("mcp_differential.jl")
 end
