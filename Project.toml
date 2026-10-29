@@ -1,0 +1,12 @@
+name = "JuliaForever"
+uuid = "2b71f2a2-b786-4fd0-b9cc-80b6322c5084"
+version = "0.1.0"
+
+[apps]
+jf = {}
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
