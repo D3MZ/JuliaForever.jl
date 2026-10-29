@@ -1,6 +1,6 @@
 # Context estimates
 
-`ContextEstimates` estimates the size of native `Conversation.Message` values. It is an approximation, not a tokenizer, billing calculation, context-window guarantee, or automatic compaction policy. Text is measured as UTF-16 code units at 3.5 units per estimated token; each image is assigned 4,800 units. Text, thinking, tool calls, tool results, system content, and selected tool declarations contribute to the estimate.
+`ContextEstimates` estimates the size of native `Conversation.Message` values. It is an approximation, not a tokenizer, billing calculation, context-window guarantee, or automatic compaction policy. Text is measured as UTF-16 code units at 3.5 units per estimated token. Each image in user, assistant, or tool-result content is assigned 4,800 units; images in system content are ignored. Text, thinking, tool calls, tool results, system content, and selected tool declarations contribute to the estimate. Thinking uses the first nonempty string among `reasoning_content`, `reasoning`, and `reasoning_text`, matching the provider's alias precedence.
 
 ```julia
 using JuliaForever

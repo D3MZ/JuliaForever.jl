@@ -49,7 +49,11 @@ callunits(call::Conversation.ToolCall) = units(call.name) + argument(call.argume
 callunits(call::AbstractDict) = functionunits(call["function"])
 functionunits(data::AbstractDict) = units(get(data, "name", nothing)) + argument(get(data, "arguments", nothing))
 
-assistantunits(content, calls, metadata) = units(content) + units(get(metadata, "reasoning_content", nothing)) + sum(callunits, calls; init=0)
+thinking() = 0
+thinking(text::AbstractString, rest...) = isempty(text) ? thinking(rest...) : units(text)
+thinking(value, rest...) = thinking(rest...)
+reasoningunits(metadata::AbstractDict) = thinking(get(metadata, "reasoning_content", nothing), get(metadata, "reasoning", nothing), get(metadata, "reasoning_text", nothing))
+assistantunits(content, calls, metadata) = units(content) + reasoningunits(metadata) + sum(callunits, calls; init=0)
 tokens(message::Conversation.Assistant) = cld(2 * assistantunits(message.content, message.calls, message.metadata), 7)
 tokens(message::Conversation.ToolMessage) = cld(2 * (units(message.content) + attached(message.image)), 7)
 
