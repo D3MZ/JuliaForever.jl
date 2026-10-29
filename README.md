@@ -26,5 +26,3 @@ julia --project=. -e 'using Pkg; Pkg.test()'
 ```
 
 Set `PI_SOURCE` to a checkout of the pinned Pi revision with its Node dependencies available to also run differential agent, tool and provider cases. The CI workflow prepares that reference on macOS, Linux, and Windows. Until a particular run passes, a configured CI job is not evidence of platform compatibility. Test results cover selected cases, not full Pi compatibility.
-
-Pi is MIT-licensed; its copyright and license notice is included in `third_party/pi-LICENSE`.
