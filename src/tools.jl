@@ -31,8 +31,7 @@ ToolResult(text, iserror=false) = ToolResult(text, iserror, nothing)
 path(tool::Tool, name) = normpath(joinpath(tool.cwd, expanduser(name)))
 
 mutable struct Mutation
-    condition::Threads.Condition
-    waiters::Vector{Task}
+    waiters::Channel{Tuple{Task, Channel{Nothing}}}
     owner::Union{Task, Nothing}
     depth::Int
     users::Int
@@ -67,44 +66,48 @@ function mutationkey(destination::AbstractString)
     current
 end
 
+function resume!(entry::Mutation)
+    entry.owner = nothing
+    while isready(entry.waiters)
+        task, signal = take!(entry.waiters)
+        isopen(signal) || continue
+        entry.owner = task
+        entry.depth = 1
+        put!(signal, nothing)
+        break
+    end
+end
+
 function mutate(f, destination::AbstractString)
     task = current_task()
-    key, entry, queued = lock(mutationguard) do
+    key, entry, signal = lock(mutationguard) do
         key = mutationkey(destination)
-        entry = get!(() -> Mutation(Threads.Condition(mutationguard), Task[], nothing, 0, 0), mutations, key)
-        queued = entry.owner !== task
-        queued && push!(entry.waiters, task)
-        entry.users += 1
-        key, entry, queued
-    end
-    acquired = false
-    try
-        lock(mutationguard) do
-            while queued && (!isnothing(entry.owner) || first(entry.waiters) !== task)
-                wait(entry.condition)
-            end
-            if queued
-                popfirst!(entry.waiters)
-                entry.owner = task
-            end
+        entry = get!(() -> Mutation(Channel{Tuple{Task, Channel{Nothing}}}(Inf), nothing, 0, 0), mutations, key)
+        signal = if isnothing(entry.owner) || entry.owner === task
+            entry.owner = task
             entry.depth += 1
-            acquired = true
+            nothing
+        else
+            signal = Channel{Nothing}(1)
+            put!(entry.waiters, (task, signal))
+            signal
         end
+        entry.users += 1
+        key, entry, signal
+    end
+    try
+        isnothing(signal) || take!(signal)
         f()
     finally
         lock(mutationguard) do
-            if acquired
+            if entry.owner === task
                 entry.depth -= 1
-                entry.depth == 0 && (entry.owner = nothing)
-            elseif queued
-                filter!(waiter -> waiter !== task, entry.waiters)
+                entry.depth == 0 && resume!(entry)
+            else
+                close(signal)
             end
             entry.users -= 1
-            if entry.users == 0
-                delete!(mutations, key)
-            else
-                notify(entry.condition; all=true)
-            end
+            entry.users == 0 && delete!(mutations, key)
         end
     end
 end

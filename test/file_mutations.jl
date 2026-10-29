@@ -237,6 +237,47 @@ end
     end
 
     mktempdir() do dir
+        path = joinpath(dir, "reentrant.txt")
+        events = Channel{Symbol}(8)
+        nest, release = Channel{Nothing}(1), Channel{Nothing}(1)
+        first = Threads.@spawn JuliaForever.mutate(path) do
+            put!(events, :outer)
+            take!(nest)
+            try
+                JuliaForever.mutate(path) do
+                    put!(events, :inner)
+                    read(joinpath(dir, "missing"))
+                end
+            catch
+                put!(events, :inner_failed)
+            end
+            take!(release)
+        end
+        second = nothing
+        third = nothing
+        try
+            @test started!(events, first) == :outer
+            second = Threads.@spawn JuliaForever.mutate(() -> put!(events, :second), path)
+            @test waitusers(path, 2)
+            third = Threads.@spawn JuliaForever.mutate(() -> put!(events, :third), path)
+            @test waitusers(path, 3)
+            put!(nest, nothing)
+            @test started!(events, first) == :inner
+            @test started!(events, first) == :inner_failed
+            @test !istaskdone(second) && !istaskdone(third)
+        finally
+            isready(nest) || put!(nest, nothing)
+            put!(release, nothing)
+        end
+        @test waittask(first) && waittask(second) && waittask(third)
+        @test isnothing(fetch(first))
+        @test fetch(third) == :third
+        @test isready(events) && take!(events) == :second
+        @test isready(events) && take!(events) == :third
+        @test isempty(JuliaForever.mutations)
+    end
+
+    mktempdir() do dir
         path = joinpath(dir, "recovery.txt")
         started, release = Channel{Nothing}(1), Channel{Nothing}(1)
         content = FailingContent(joinpath(dir, "absent"), started, release)
@@ -255,6 +296,80 @@ end
         @test_throws TaskFailedException fetch(first)
         @test !fetch(second).iserror
         @test read(path, String) == "recovered"
+        @test isempty(JuliaForever.mutations)
+    end
+
+    mktempdir() do dir
+        path = joinpath(dir, "interrupted.txt")
+        entered, release, events = Channel{Nothing}(1), Channel{Nothing}(1), Channel{Symbol}(2)
+        first = Threads.@spawn JuliaForever.mutate(path) do
+            put!(entered, nothing)
+            take!(release)
+        end
+        second = nothing
+        third = nothing
+        try
+            started!(entered, first)
+            second = Threads.@spawn JuliaForever.mutate(() -> put!(events, :second), path)
+            @test waitusers(path, 2)
+            third = Threads.@spawn JuliaForever.mutate(() -> put!(events, :third), path)
+            @test waitusers(path, 3)
+            lock(JuliaForever.mutationguard) do
+                entry = JuliaForever.mutations[JuliaForever.mutationkey(path)]
+                _, signal = fetch(entry.waiters)
+                close(signal)
+            end
+            @test waittask(second)
+            @test_throws TaskFailedException fetch(second)
+            @test waitusers(path, 2)
+            @test !istaskdone(third)
+        finally
+            put!(release, nothing)
+        end
+        @test waittask(first) && waittask(third)
+        @test isnothing(fetch(first))
+        @test fetch(third) == :third
+        @test isready(events) && take!(events) == :third
+        @test !isready(events)
+        @test isempty(JuliaForever.mutations)
+    end
+
+    mktempdir() do dir
+        path = joinpath(dir, "interrupted-reservation.txt")
+        entered, release, events = Channel{Nothing}(1), Channel{Nothing}(1), Channel{Symbol}(2)
+        first = Threads.@spawn JuliaForever.mutate(path) do
+            put!(entered, nothing)
+            take!(release)
+        end
+        second = nothing
+        third = nothing
+        try
+            started!(entered, first)
+            second = Threads.@spawn JuliaForever.mutate(() -> put!(events, :second), path)
+            @test waitusers(path, 2)
+            third = Threads.@spawn JuliaForever.mutate(() -> put!(events, :third), path)
+            @test waitusers(path, 3)
+            signal = lock(JuliaForever.mutationguard) do
+                entry = JuliaForever.mutations[JuliaForever.mutationkey(path)]
+                last(fetch(entry.waiters))
+            end
+            @test timedwait(() -> lock(() -> !isempty(signal.cond_take), signal), 10; pollint=0.002) == :ok
+            lock(signal) do
+                put!(release, nothing)
+                channel_lock = signal.cond_take.lock
+                # The owner reserves the next task before blocking on this channel lock.
+                @test timedwait(() -> ((@atomic :acquire channel_lock.havelock) & Base.PARKED_BIT) != 0, 10; pollint=0.002) == :ok
+                @test notify(signal.cond_take, InterruptException(); all=false, error=true) == 1
+            end
+        finally
+            isready(release) || put!(release, nothing)
+        end
+        @test waittask(first) && waittask(second) && waittask(third)
+        @test isnothing(fetch(first))
+        @test fetch(third) == :third
+        @test_throws TaskFailedException fetch(second)
+        @test isready(events) && take!(events) == :third
+        @test !isready(events)
         @test isempty(JuliaForever.mutations)
     end
 
