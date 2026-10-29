@@ -2,7 +2,7 @@ module JuliaForever
 
 using HTTP, JSON3, StructTypes, Unicode, Base64, Random, SHA, REPL
 
-export Execution
+export Execution, ContextEstimates
 export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, cancel!, codeexecute, Image, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, Truncated, InvalidResponse, ProviderStatus, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
 
 include("instructions.jl")
@@ -15,6 +15,7 @@ include("durable.jl")
 include("history.jl")
 include("sqlite_history.jl")
 include("agent.jl")
+include("estimates.jl")
 include("extensions.jl")
 include("agent_history.jl")
 include("responses.jl")
