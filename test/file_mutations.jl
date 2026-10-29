@@ -146,6 +146,22 @@ end
     end
 
     mktempdir() do dir
+        path = joinpath(dir, "stress.txt")
+        for _ in 1:20
+            active = Threads.Atomic{Int}(0)
+            overlaps = Threads.Atomic{Int}(0)
+            tasks = [Threads.@spawn JuliaForever.mutate(path) do
+                Threads.atomic_add!(active, 1) == 0 || Threads.atomic_add!(overlaps, 1)
+                yield()
+                Threads.atomic_add!(active, -1)
+            end for _ in 1:100]
+            fetch.(tasks)
+            @test overlaps[] == 0
+            @test isempty(JuliaForever.mutations)
+        end
+    end
+
+    mktempdir() do dir
         if !canlink(dir)
             @test_skip false
             return
