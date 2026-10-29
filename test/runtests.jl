@@ -62,6 +62,7 @@ end
 include("system.jl")
 include("durable.jl")
 include("session.jl")
+include("kernel.jl")
 include("search.jl")
 include("codemode.jl")
 include("scheduler.jl")

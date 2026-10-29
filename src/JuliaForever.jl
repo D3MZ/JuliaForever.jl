@@ -2,7 +2,7 @@ module JuliaForever
 
 using HTTP, JSON3, Unicode, Base64, Random, SHA
 
-export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, cancel!, codeexecute, ToolResult, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, OpenRouterLogin, provider, authorize, exchange, stream, respond!, Durable, Sessions
+export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, cancel!, codeexecute, ToolResult, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, OpenRouterLogin, provider, authorize, exchange, stream, respond!, Durable, Sessions, Kernel
 
 include("tools.jl")
 include("provider.jl")
@@ -11,6 +11,7 @@ include("responses.jl")
 include("system.jl")
 include("durable.jl")
 include("sessions.jl")
+include("kernel.jl")
 include("search.jl")
 include("codemode.jl")
 
