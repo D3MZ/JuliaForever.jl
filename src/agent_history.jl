@@ -61,7 +61,7 @@ function abandon!(agent::Agent, reason::AbstractString)
         isnothing(agent.history) && return History.Rejected(:no_history)
         isnothing(agent.fault) && return History.Rejected(:not_interrupted)
         agent.fault.reason in (:uncertain_effect, :incomplete_turn) || return agent.fault
-        event = Conversation.Interrupt(agent.state.revision, String(reason))
+        event = Conversation.Abandon(agent.state.revision, String(reason))
         result = Kernel.step(agent.state, event)
         result isa Kernel.Applied || return History.Rejected(result.reason)
         agent.fault = nothing

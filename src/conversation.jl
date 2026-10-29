@@ -143,6 +143,11 @@ struct Interrupt <: K.Event
     reason::String
 end
 
+struct Abandon <: K.Event
+    revision::Int
+    reason::String
+end
+
 function update(state::State; kernel=getfield(state, :kernel), messages=getfield(state, :messages), phase=state.phase, order=getfield(state, :order), calls=getfield(state, :calls), steering=getfield(state, :steering), followups=getfield(state, :followups), cancelled=state.cancelled, flushed=state.flushed)
     State(kernel, state.revision + 1, messages, phase, order, calls, steering, followups, state.automatic, cancelled, flushed)
 end
@@ -205,6 +210,31 @@ function K.step(state::State, event::Interrupt)
         kernel = result.state
     end
     K.Applied(update(state; kernel, phase=Incomplete, order=String[], calls=ToolCall[], flushed=0), ())
+end
+
+function K.step(state::State, event::Abandon)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    kernel = state.kernel
+    for pending in kernel.pending
+        result = K.step(kernel, K.Observe(kernel.revision, pending.id, Abandoned(event.reason)))
+        kernel = result.state
+    end
+    messages = copy(getfield(state, :messages))
+    if state.phase == WaitingTools
+        order = getfield(state, :order)
+        calls = getfield(state, :calls)
+        observations = kernel.observations
+        for index in state.flushed+1:length(order)
+            observation = only(item.observation for item in observations if item.id == order[index])
+            if observation isa ToolReply
+                content = observation.iserror ? "Error: " * observation.text : observation.text
+                push!(messages, ToolMessage(calls[index].id, content, observation.iserror))
+            else
+                push!(messages, ToolMessage(calls[index].id, "Error: Tool outcome unknown; abandoned: " * event.reason, true))
+            end
+        end
+    end
+    K.Applied(update(state; kernel, messages, phase=Incomplete, order=String[], calls=ToolCall[], flushed=0), ())
 end
 
 function K.step(state::State, event::Advance)
