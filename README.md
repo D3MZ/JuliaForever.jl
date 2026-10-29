@@ -13,7 +13,7 @@ julia --project=. -e 'using Pkg; Pkg.instantiate()'
 julia --project=. -m JuliaForever 'Create a hello.txt file'
 ```
 
-Run without a prompt for a simple line-oriented session; `/exit` ends it. The declared Julia app name is `jf`.
+To install the `jf` command from the checkout, run `julia -e 'using Pkg; Pkg.Apps.add(path=pwd())'` and put the Julia depot's `bin` directory on your `PATH`. Julia's app support is experimental. Run `jf` without a prompt for a simple line-oriented session; `/exit` ends it.
 
 ## Test
 

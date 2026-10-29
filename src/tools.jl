@@ -72,13 +72,14 @@ function execute(tool::Edit, args)
     destination = path(tool, args.path)
     original = read(destination, String)
     bom = startswith(original, '\ufeff') ? "\ufeff" : ""
-    content = normalize(chopprefix(original, bom))
+    originalcontent = normalize(chopprefix(original, bom))
     ending = occursin("\r\n", original) ? "\r\n" : "\n"
-    matches = [findall(normalize(edit.oldText), content) for edit in args.edits]
+    matches = [findall(normalize(edit.oldText), originalcontent) for edit in args.edits]
     isempty(matches) && return ToolResult("No edits provided", true)
     all(m -> length(m) == 1, matches) || return ToolResult("Edit text must match exactly once", true)
     edits = sort([(range=only(match), text=normalize(edit.newText)) for (match, edit) in zip(matches, args.edits)]; by=x -> first(x.range))
     all(i -> last(edits[i-1].range) < first(edits[i].range), 2:length(edits)) || return ToolResult("Edit ranges overlap", true)
+    content = originalcontent
     for edit in Iterators.reverse(edits)
         content = string(content[begin:prevind(content, first(edit.range))], edit.text, content[nextind(content, last(edit.range)):end])
     end

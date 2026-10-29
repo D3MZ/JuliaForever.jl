@@ -21,4 +21,7 @@ end
     end
     Aqua.test_all(JuliaForever)
     JET.@test_opt JuliaForever.name(Read(pwd()))
+    JET.@test_call target_modules=(JuliaForever,) execute(Write(pwd()), (; path="a.txt", content="hello"))
+    JET.@test_call target_modules=(JuliaForever,) execute(Read(pwd()), (; path="a.txt", offset=1, limit=2))
+    JET.@test_call target_modules=(JuliaForever,) execute(Edit(pwd()), (; path="a.txt", edits=[(; oldText="a", newText="b")]))
 end
