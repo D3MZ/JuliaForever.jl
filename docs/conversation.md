@@ -28,4 +28,28 @@ Messages are `User`, `Assistant`, and `ToolMessage` values. A completed assistan
 
 `Agent.respond!` drives these transitions. `agent.state` is its current conversation state, `agent.initial` is its initial snapshot, and `agent.events` returns detached event data. `K.Replay(agent.initial, agent.events)` reconstructs the conversation without invoking the provider or tools. The driver uses explicit `Advance` events to make its next decision after lifecycle callbacks have run, and it records changes to the public `agent.messages` transcript as `History` events. An interrupted provider or callback leaves an incomplete state that can accept a later turn. Truncated calls become `SkipRequest` values that the driver resolves as errors without invoking the tools.
 
-Provider and tool execution currently runs in the caller, with optional local threaded tool execution; `Agent` is not yet wired to `Durable.Store` or a distributed executor. A durable driver must persist each accepted event and its resulting state atomically before dispatching any newly planned effect, reconcile uncertain external effects, and avoid dispatching replay output. Neither observation deduplication nor replay guarantees exactly-once execution. Serialization, worker leases, cross-machine retries, and durable execution recovery are not implemented. Provider objects, tool instances, and per-call parameters remain driver configuration rather than recorded request data.
+An agent can opt into a replaceable `History.Store`:
+
+```julia
+import JuliaForever.History as H
+import JuliaForever.Durable as D
+
+store = open(D.Store, "history.jsonl")
+history = H.create(store)
+id = history.id                         # retain the ID for reopening
+agent = Agent(provider, tools; history)
+answer = respond!(agent, "Hello")
+close(store)
+
+store = open(D.Store, "history.jsonl")
+agent = Agent(provider, tools; history=H.Journal(store, id))
+replay = K.Replay(agent.initial, agent.events) # passive, repeatable
+```
+
+The constructor records the initial transcript in an empty history or restores an existing history by validating and replaying its events; supplying nonempty initial messages for an existing history returns `H.Rejected(:history_exists)`. Use only one active driver for a history at a time. Each accepted transition is appended with a revision check before the in-memory state advances and before any emitted model or tool request is dispatched. History append, unsupported-value, and revision failures return `H.Rejected` and latch the agent; reopen and inspect the history before deciding what to do. A failed durable write can have an uncertain outcome. An unknown event format, malformed record, or invalid event sequence is rejected. Recorded mode currently supports sequential tool execution; `tool_execution=:parallel` returns `H.Rejected(:unsupported_execution)` before starting a turn. The legacy constructor without `history` retains its existing behavior, including local parallel tools.
+
+After restart, a pending request causes `respond!` to return `H.Rejected(:uncertain_effect)`. An interrupted turn with no pending request returns `H.Rejected(:incomplete_turn)`. Neither case automatically repeats a request. Once the caller has inspected and reconciled external effects, `abandon!(agent, "reason")` explicitly records an interruption and permits a new turn; it does not cancel or undo any external action. These boundaries also apply to an exception during recorded execution. The caller must ensure no earlier executor is still running before abandoning a turn. Reopening is required after an append failure or conflict; abandonment does not repair storage or resolve a conflicting writer.
+
+`History.encode` and `History.decode_event` use a versioned, explicit codec for built-in conversation and kernel events. Metadata supports `nothing`, `Bool`, `Int`, finite `Float64`, valid `String`, and Julia `Vector`s and `Dict{String,T}` whose element types are `Any`, one of those concrete scalar types, or a recursively supported container type. Container types and floating-point bits are preserved; union and abstract element types other than `Any` are unsupported. Other values and cycles return `H.Rejected(:unsupported_value)` rather than being coerced. Native extension event types require a codec extension before they can be recorded. The event stream contains transcripts, tool arguments/results and provider response metadata, so it can itself contain sensitive information. Provider objects, credentials stored on those objects, tool instances, callbacks, and per-call parameters are not stored as configuration.
+
+Provider and tool execution runs in the caller. This is not a worker lease, distributed execution, automatic retry, or exactly-once guarantee. Replay emits descriptions and never dispatches them. Store exclusivity and recovery limits are described in [replaceable histories](history.md). The recorded and legacy loops are currently separate so storage failures can stop every dispatch boundary; their execution behaviors must be maintained and tested separately.

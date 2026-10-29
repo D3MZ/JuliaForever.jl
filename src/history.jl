@@ -2,6 +2,8 @@ module History
 
 import Base: append!
 import ..Durable as D
+import ..Kernel as K
+import ..Conversation as C
 
 struct Rejected
     reason::Symbol
@@ -171,5 +173,7 @@ function append!(history::Journal, revision::Integer, batch::Vector)
     end
     result isa D.Rejected ? Rejected(result.reason) : result
 end
+
+include("conversation_codec.jl")
 
 end

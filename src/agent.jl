@@ -1,4 +1,4 @@
-export steer!, followup!, cancel!
+export steer!, followup!, cancel!, abandon!
 
 mutable struct Agent{P}
     provider::P
@@ -10,15 +10,18 @@ mutable struct Agent{P}
     lock::ReentrantLock
     running::Bool
     cancelled::Bool
+    history::Union{Nothing, History.Store}
+    history_revision::Int
+    fault::Union{Nothing, History.Rejected}
 end
 
-function Agent(provider, tools, messages)
-    history = Conversation.Message[Conversation.RawMessage(deepcopy(message)) for message in messages]
-    initial = Conversation.State("agent-" * randstring(16); automatic=false, messages=history)
-    Agent(provider, tools, messages, initial, initial, Kernel.Event[], ReentrantLock(), false, false)
+function Agent(provider, tools, messages; history=nothing)
+    transcript = Conversation.Message[Conversation.RawMessage(deepcopy(message)) for message in messages]
+    initial = Conversation.State("agent-" * randstring(16); automatic=false, messages=transcript)
+    openagent(provider, tools, messages, initial, history)
 end
 
-Agent(provider, tools) = Agent(provider, Dict{String, Tool}(name(tool) => tool for tool in tools), Dict{String, Any}[])
+Agent(provider, tools; history=nothing) = Agent(provider, Dict{String, Tool}(name(tool) => tool for tool in tools), Dict{String, Any}[]; history)
 
 function Base.getproperty(agent::Agent, name::Symbol)
     value = getfield(agent, name)
@@ -27,12 +30,15 @@ end
 
 function transition!(f, agent::Agent)
     lock(agent.lock) do
+        !isnothing(agent.fault) && return agent.fault, Conversation.Message[]
         event = f(agent.state.revision)
         before = length(agent.state.messages)
         result = Kernel.step(agent.state, event)
         added = Conversation.Message[]
         if result isa Kernel.Applied
             saved = deepcopy(event)
+            committed = persist!(agent, saved)
+            committed isa History.Rejected && return committed, added
             agent.state = result.state
             push!(getfield(agent, :events), saved)
             added = result.state.messages[before+1:end]
@@ -43,22 +49,23 @@ end
 
 "Queue a user message for the next turn; steering is consumed one message at a time."
 function steer!(agent::Agent, prompt)
-    transition!(revision -> Conversation.Steer(revision, prompt), agent)
-    nothing
+    result, _ = transition!(revision -> Conversation.Steer(revision, prompt), agent)
+    result isa History.Rejected ? result : nothing
 end
 
 "Queue a user message for when the agent would otherwise stop."
 function followup!(agent::Agent, prompt)
-    transition!(revision -> Conversation.Followup(revision, prompt), agent)
-    nothing
+    result, _ = transition!(revision -> Conversation.Followup(revision, prompt), agent)
+    result isa History.Rejected ? result : nothing
 end
 
 "Request cancellation at the next boundary; in-flight provider and tool calls are not interrupted."
 function cancel!(agent::Agent)
     lock(agent.lock) do
         agent.running || return false
+        result, _ = transition!(revision -> Conversation.Cancel(revision), agent)
+        result isa History.Rejected && return result
         agent.cancelled = true
-        transition!(revision -> Conversation.Cancel(revision), agent)
         true
     end
 end
@@ -107,14 +114,16 @@ end
 Base.convert(::Type{Dict{String, Any}}, message::Conversation.RawMessage) = deepcopy(message.value)
 
 function sync!(agent::Agent)
-    lock(agent.lock) do
+    result = lock(agent.lock) do
         recorded = [convert(Dict{String, Any}, message) for message in agent.state.messages]
         if !Kernel.same(recorded, agent.messages)
             history = Conversation.Message[Conversation.RawMessage(deepcopy(message)) for message in agent.messages]
-            transition!(revision -> Conversation.History(revision, history), agent)
+            result, _ = transition!(revision -> Conversation.History(revision, history), agent)
+            result isa History.Rejected && return result
         end
+        nothing
     end
-    nothing
+    result
 end
 
 function finish!(agent::Agent)
@@ -292,9 +301,10 @@ end
 """
     respond!(agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential)
 
-Run a turn and queued messages. `on_event` receives provider stream events; `on_agent_event` receives lifecycle events. Tool calls run sequentially unless `tool_execution=:parallel`. Returns `:busy` for an overlapping run and `:cancelled` for cooperative cancellation. Providers returning a `Completion` retain finish metadata; a custom provider returning only a message cannot report truncation.
+Run a turn and queued messages. `on_event` receives provider stream events; `on_agent_event` receives lifecycle events. Tool calls run sequentially unless `tool_execution=:parallel`; recorded agents currently support sequential execution only. Returns `:busy` for an overlapping run and `:cancelled` for cooperative cancellation. Providers returning a `Completion` retain finish metadata; a custom provider returning only a message cannot report truncation.
 """
 function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential)
+    !isnothing(agent.history) && return respond_recorded!(agent, prompt; on_event, on_agent_event, parameters, tool_execution)
     begin!(agent) || return :busy
     messages = Dict{String, Any}[]
     event_lock = ReentrantLock()
