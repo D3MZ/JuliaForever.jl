@@ -70,6 +70,7 @@ include("chatgpt_identity.jl")
 include("chatgpt_callback.jl")
 include("chatgpt_exchange.jl")
 include("chatgpt_plan.jl")
+include("chatgpt_store.jl")
 include("provider_invalid.jl")
 
 if haskey(ENV, "PI_SOURCE")
