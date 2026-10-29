@@ -15,11 +15,19 @@ schema(::Grep) = Dict("type" => "object", "properties" => Dict("pattern" => Dict
 description(::Find) = "Find files and directories by glob pattern, respecting ignore files. Output is limited to 1000 results or 50KB."
 description(::Grep) = "Search file contents for a regex or literal pattern, respecting ignore files. Output is limited to 100 matches or 50KB."
 
+function fileurlpath(name, windows=Sys.iswindows())
+    uri = HTTP.URI(name)
+    path = HTTP.unescapeuri(uri.path)
+    windows && !isempty(uri.host) && lowercase(uri.host) != "localhost" && return "//$(uri.host)$path"
+    windows && occursin(r"^/[A-Za-z]:/", path) && return path[2:end]
+    path
+end
+
 function searchpath(tool, name)
     name = isempty(name) ? "." : name
     name = replace(name, r"[\u00a0\u2000-\u200a\u202f\u205f\u3000]" => " ")
     name = chopprefix(name, "@")
-    startswith(name, "file://") && (name = HTTP.unescapeuri(HTTP.URI(name).path))
+    startswith(name, "file://") && (name = fileurlpath(name))
     abspath(path(tool, name))
 end
 

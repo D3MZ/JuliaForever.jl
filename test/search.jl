@@ -17,6 +17,18 @@ function searchfixture(dir)
     write(joinpath(dir, "binary.txt"), UInt8[0x6e, 0x65, 0x65, 0x64, 0x6c, 0x65, 0x00])
 end
 
+@testset "file URL paths" begin
+    @test JuliaForever.fileurlpath("file:///C:/Users/Example%20User/note.txt", true) == "C:/Users/Example User/note.txt"
+    @test JuliaForever.fileurlpath("file://server/share/note%20one.txt", true) == "//server/share/note one.txt"
+    @test JuliaForever.fileurlpath("file:///tmp/note%20one.txt", false) == "/tmp/note one.txt"
+    mktempdir() do dir
+        write(joinpath(dir, "space file.txt"), "needle\n")
+        normalized = replace(dir, '\\' => '/', " " => "%20")
+        url = (Sys.iswindows() ? "file:///" : "file://") * normalized * "/space%20file.txt"
+        @test execute(Grep(dir), (; pattern="needle", path=url)).text == "space file.txt:1: needle"
+    end
+end
+
 @testset "native find and grep" begin
     mktempdir() do dir
         searchfixture(dir)

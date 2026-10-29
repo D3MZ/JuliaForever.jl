@@ -39,7 +39,9 @@
         write(joinpath(dir, "empty"), "")
         write(joinpath(dir, "UPPER.TXT"), "needle\n")
         write(joinpath(dir, "space file.txt"), "needle\n")
-        push!(cases, (; tool="grep", args=(; pattern="needle", path="file://$(replace(dir, " " => "%20"))/space%20file.txt")))
+        normalized = replace(dir, '\\' => '/', " " => "%20")
+        url = (Sys.iswindows() ? "file:///" : "file://") * normalized * "/space%20file.txt"
+        push!(cases, (; tool="grep", args=(; pattern="needle", path=url)))
         write(joinpath(dir, "trailing space "), "needle\n")
         write(joinpath(dir, "long.txt"), repeat("x", 501) * "needle\n")
         write(joinpath(dir, "unicode.txt"), repeat("🌱", 250) * "needle\n")
