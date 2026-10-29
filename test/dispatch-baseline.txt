@@ -1,7 +1,6 @@
 JuliaForever.jl	:(agent isa History.Rejected)
 JuliaForever.jl	:(history isa History.Rejected)
 JuliaForever.jl	:(isnothing(agent.fault))
-JuliaForever.jl	:(isnothing(context))
 JuliaForever.jl	:(isnothing(history))
 JuliaForever.jl	:(isnothing(history))
 JuliaForever.jl	:(isnothing(path))
@@ -9,7 +8,6 @@ JuliaForever.jl	:(isnothing(path))
 JuliaForever.jl	:(isnothing(path))
 JuliaForever.jl	:(isnothing(reason))
 JuliaForever.jl	:(isnothing(reason))
-JuliaForever.jl	:(isnothing(snapshot))
 JuliaForever.jl	:(snapshot isa History.Rejected)
 JuliaForever.jl	:codemode
 JuliaForever.jl	:inspect

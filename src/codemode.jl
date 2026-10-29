@@ -9,10 +9,10 @@ end
 CodeMode(tools; timeout=300.0) = CodeMode(Dict{String, Tool}(name(tool) => tool for tool in tools if !(tool isa CodeMode)), Float64(timeout), Dict{String, Any}(), ReentrantLock())
 name(::CodeMode) = "codemode"
 schema(::CodeMode) = Dict("type" => "object", "properties" => Dict("code" => Dict("type" => "string")), "required" => ["code"])
+guidance(::CodeMode) = "Run Julia source in a separate process. Call tools.read((; path=\"...\")) or tools[\"name\"](args); each tool returns an object with text and iserror. ALL_TOOLS lists names, descriptions, and argument schemas. text(value) adds output; the last expression is the result. store(key, value) and load(key) keep JSON values across successful calls. The process inherits the host permissions and environment, including permitted filesystem, network, and subprocess access; it is not a security sandbox."
 function description(mode::CodeMode)
-    intro = "Run Julia source in a separate process. Call tools.read((; path=\"...\")) or tools[\"name\"](args); each tool returns an object with text and iserror. ALL_TOOLS lists names, descriptions, and argument schemas. text(value) adds output; the last expression is the result. store(key, value) and load(key) keep JSON values across successful calls. The process inherits the host permissions and environment, including permitted filesystem, network, and subprocess access; it is not a security sandbox."
     specs = ["- $(name(tool)): $(description(tool)) Arguments: $(JSON3.write(schema(tool)))" for tool in sort!(collect(values(mode.tools)); by=name)]
-    join([intro; specs], "\n")
+    join([guidance(mode); specs], "\n")
 end
 
 struct CodeCancellation

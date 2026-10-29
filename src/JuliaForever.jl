@@ -24,6 +24,7 @@ include("execution_kernel.jl")
 include("agent_execution.jl")
 include("logs.jl")
 include("search.jl")
+include("context.jl")
 include("codemode.jl")
 include("terminal.jl")
 include("mcp.jl")
@@ -278,6 +279,16 @@ end
 
 terminal!(terminal::Terminal, model, registry::Integer, codemode, path, args) = registry
 
+function initial(extensions)
+    cwd = pwd()
+    files = Instructions.load(cwd; agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing))
+    prompt = context(cwd, Extensions.tools(extensions), files)
+    Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+end
+
+initial(extensions, ::Nothing) = initial(extensions)
+initial(extensions, snapshot::History.Snapshot) = iszero(snapshot.revision) ? initial(extensions) : Dict{String, Any}[]
+
 function terminal!(terminal::Terminal, model, registry::Extensions.Registry, codemode, path, args)
     if codemode
         mode = CodeMode(Extensions.tools(Extensions.snapshot(registry)))
@@ -290,11 +301,7 @@ function terminal!(terminal::Terminal, model, registry::Extensions.Registry, cod
     try
         snapshot = isnothing(history) ? nothing : History.snapshot(history)
         snapshot isa History.Rejected && return result!(terminal, snapshot)
-        messages = Dict{String, Any}[]
-        if isnothing(snapshot) || snapshot.revision == 0
-            context = Instructions.render(Instructions.load(pwd(); agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing)))
-            isnothing(context) || push!(messages, Dict("role" => "system", "content" => context))
-        end
+        messages = initial(extensions, snapshot)
         agent = Agent(model, extensions, messages; history)
         agent isa History.Rejected && return result!(terminal, agent)
         isnothing(agent.fault) || return result!(terminal, agent.fault)
