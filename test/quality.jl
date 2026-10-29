@@ -4,8 +4,8 @@ function prohibited(expression)
     expression isa Expr || return false
     if expression.head == :call
         callee = first(expression.args)
-        callee in (:throw, :error) && return true
-        callee isa Expr && callee.head == :. && last(callee.args) in (QuoteNode(:throw), QuoteNode(:error)) && return true
+        callee in (:throw, :error, :rethrow) && return true
+        callee isa Expr && callee.head == :. && last(callee.args) in (QuoteNode(:throw), QuoteNode(:error), QuoteNode(:rethrow)) && return true
     end
     expression.head == :macrocall && first(expression.args) == Symbol("@assert") && return true
     any(prohibited, expression.args)
@@ -13,6 +13,7 @@ end
 
 @testset "quality" begin
     @test prohibited(Meta.parseall("throw(ArgumentError())"))
+    @test prohibited(Meta.parseall("rethrow()"))
     @test prohibited(Meta.parseall("Base.error(\"bad\")"))
     @test prohibited(Meta.parseall("@assert x"))
     @test !prohibited(Meta.parseall("f(x) = x + 1"))
