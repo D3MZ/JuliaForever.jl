@@ -1,0 +1,216 @@
+using HTTP, JSON3
+
+response_sse(data) = "data: $(JSON3.write(data))\n\n"
+response_call(id, call, path, content) = Dict("type" => "function_call", "id" => id, "call_id" => call, "name" => "write", "arguments" => JSON3.write((; path, content)), "status" => "completed")
+response_text(text) = Dict("type" => "message", "id" => "msg_1", "status" => "completed", "role" => "assistant", "content" => [Dict("type" => "output_text", "text" => text, "annotations" => [])])
+response_reasoning() = Dict("type" => "reasoning", "id" => "rs_1", "summary" => [], "encrypted_content" => "synthetic-encrypted")
+response_done(output; status="completed", usage=nothing) = Dict("id" => "resp_1", "status" => status, "output" => output, "usage" => usage)
+
+@testset "Responses configuration" begin
+    model = provider(Dict("JF_PROVIDER" => "openai-responses", "OPENAI_MODEL" => "gpt-6-astra", "OPENAI_API_KEY" => "synthetic", "OPENAI_BASE_URL" => "http://localhost/v1/"))
+    @test model isa OpenAIResponses
+    @test model.model == "gpt-6-astra"
+    @test !occursin("synthetic", sprint(show, model))
+    @test provider(Dict("OPENAI_MODEL" => "old", "OPENAI_API_KEY" => "synthetic")) isa OpenAI
+end
+
+@testset "Responses nonstreamed function loop and replay" begin
+    requests = Any[]
+    calls = [response_call("fc_1", "call_1", "a.txt", "first"), response_call("fc_2", "call_2", "b.txt", "second")]
+    original = [response_reasoning(), calls...]
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        push!(requests, (; target=request.target, auth=HTTP.header(request, "Authorization"), body=JSON3.read(String(request.body))))
+        output = length(requests) == 1 ? original : [response_text("done")]
+        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(response_done(output)))
+    end
+    try
+        mktempdir() do dir
+            model = OpenAIResponses("http://$(HTTP.server_addr(server))/v1/", "gpt-6-astra", "synthetic-key")
+            agent = Agent(model, [Write(dir)])
+            @test respond!(agent, "write both"; parameters=Dict("model" => "ignored", "input" => ["ignored"], "messages" => ["ignored"], "stream" => true, "tools" => ["ignored"], "reasoning" => Dict("effort" => "low"))) == "done"
+            @test read(joinpath(dir, "a.txt"), String) == "first"
+            @test read(joinpath(dir, "b.txt"), String) == "second"
+            @test length(requests) == 2
+            first, second = requests
+            @test first.target == "/v1/responses"
+            @test first.auth == "Bearer synthetic-key"
+            @test first.body.model == "gpt-6-astra"
+            @test first.body.stream == false
+            @test first.body.store == false
+            @test "reasoning.encrypted_content" in first.body.include
+            @test first.body.reasoning.effort == "low"
+            @test !haskey(first.body, :messages)
+            @test first.body.input[1].role == "user"
+            @test first.body.tools[1].type == "function"
+            @test first.body.tools[1].name == "write"
+            @test first.body.tools[1].parameters.type == "object"
+            @test first.body.tools[1].strict == false
+            @test !haskey(first.body.tools[1], :function)
+            @test second.body.input[2].type == "reasoning"
+            @test second.body.input[2].encrypted_content == "synthetic-encrypted"
+            @test second.body.input[3].id == "fc_1"
+            @test second.body.input[3].call_id == "call_1"
+            @test second.body.input[4].call_id == "call_2"
+            @test second.body.input[5].type == "function_call_output"
+            @test second.body.input[5].call_id == "call_1"
+            @test second.body.input[5].output == "Successfully wrote to a.txt"
+            @test second.body.input[6].call_id == "call_2"
+        end
+    finally
+        close(server)
+        wait(server)
+    end
+end
+
+@testset "Responses streaming events and function loop" begin
+    requests = Any[]
+    waiting = Channel{Nothing}(1)
+    acknowledged = Channel{Nothing}(1)
+    call = response_call("fc_1", "call_1", "stream.txt", "streamed")
+    args = call["arguments"]
+    firstpart, secondpart = args[1:10], args[11:end]
+    server = HTTP.listen!("127.0.0.1", 0; listenany=true) do io
+        request = HTTP.startread(io)
+        push!(requests, (; target=request.target, body=JSON3.read(String(read(io)))))
+        HTTP.setheader(io, "Content-Type" => "text/event-stream")
+        HTTP.startwrite(io)
+        if length(requests) == 1
+            write(io, response_sse((; type="response.reasoning_summary_text.delta", output_index=0, item_id="rs_1", delta="think")))
+            write(io, response_sse((; type="response.output_item.added", output_index=1, item=Dict("type" => "function_call", "id" => "fc_1", "call_id" => "call_1", "name" => "write", "arguments" => ""))))
+            write(io, response_sse((; type="response.function_call_arguments.delta", output_index=1, item_id="fc_1", delta=firstpart)))
+            flush(io)
+            put!(waiting, nothing)
+            take!(acknowledged)
+            write(io, response_sse((; type="response.function_call_arguments.delta", output_index=1, item_id="fc_1", delta=secondpart)))
+            write(io, response_sse((; type="response.function_call_arguments.done", output_index=1, item_id="fc_1", arguments=args)))
+            write(io, response_sse((; type="response.output_item.done", output_index=0, item=response_reasoning())))
+            write(io, response_sse((; type="response.output_item.done", output_index=1, item=call)))
+            write(io, response_sse((; type="response.completed", response=response_done([response_reasoning(), call]; usage=Dict("input_tokens" => 20, "output_tokens" => 5, "total_tokens" => 25, "input_tokens_details" => Dict("cached_tokens" => 4, "cache_write_tokens" => 2), "output_tokens_details" => Dict("reasoning_tokens" => 3))))))
+        else
+            write(io, response_sse((; type="response.output_text.delta", output_index=0, item_id="msg_1", content_index=0, delta="done")))
+            write(io, response_sse((; type="response.output_item.done", output_index=0, item=response_text("done"))))
+            write(io, response_sse((; type="response.completed", response=response_done([response_text("done")]))))
+        end
+    end
+    try
+        mktempdir() do dir
+            agent = Agent(OpenAIResponses("http://$(HTTP.server_addr(server))/v1", "test", "synthetic"), [Write(dir)])
+            events = []
+            @test respond!(agent, "create"; on_event=event -> begin
+                push!(events, event)
+                if event.type == :tool_call && event.arguments == firstpart
+                    take!(waiting)
+                    put!(acknowledged, nothing)
+                end
+            end) == "done"
+            @test read(joinpath(dir, "stream.txt"), String) == "streamed"
+            @test length(requests) == 2
+            @test all(request -> request.target == "/v1/responses" && request.body.stream, requests)
+            @test requests[2].body.input[2].encrypted_content == "synthetic-encrypted"
+            @test requests[2].body.input[end].call_id == "call_1"
+            @test [event.text for event in events if event.type == :thinking] == ["think"]
+            @test [event.arguments for event in events if event.type == :tool_call] == [firstpart, secondpart]
+            @test [event.text for event in events if event.type == :text] == ["done"]
+            u = only(event.usage for event in events if event.type == :usage)
+            @test (u.input, u.output, u.cache_read, u.cache_write, u.reasoning, u.total) == (14, 5, 4, 2, 3, 25)
+            @test count(event -> event.type == :done, events) == 2
+            @test any(event -> event.type == :provider && event.data["type"] == "response.completed", events)
+        end
+    finally
+        close(server)
+        wait(server)
+    end
+end
+
+@testset "Responses failure boundaries" begin
+    call = response_call("fc_1", "call_1", "unsafe.txt", "must not run")
+    started = Dict("type" => "response.output_item.added", "output_index" => 0, "item" => call)
+    replies = [
+        response_sse((; type="response.output_text.delta", output_index=0, item_id="msg_1", content_index=0, delta="partial")),
+        response_sse((; type="response.failed", response=Dict("status" => "failed", "error" => Dict("message" => "capacity"), "output" => []))),
+        response_sse(started) * response_sse((; type="response.completed", response=response_done([call]))),
+        response_sse((; type="response.incomplete", response=Dict("status" => "incomplete", "incomplete_details" => Dict("reason" => "max_output_tokens"), "output" => [call]))),
+        JSON3.write(Dict("status" => "incomplete", "incomplete_details" => Dict("reason" => "max_output_tokens"), "output" => [call]))
+    ]
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        content_type = length(replies) > 1 ? "text/event-stream" : "application/json"
+        HTTP.Response(200, ["Content-Type" => content_type], popfirst!(replies))
+    end
+    try
+        mktempdir() do dir
+            model = OpenAIResponses("http://$(HTTP.server_addr(server))/v1", "test", "synthetic")
+            partial = stream(model, [], Dict())
+            @test !partial.done
+            @test partial.message["content"] == "partial"
+            failed = stream(model, [], Dict())
+            @test !failed.done
+            @test occursin("capacity", failed.error)
+            unfinished = respond!(Agent(model, [Write(dir)]), "create"; on_event=identity)
+            @test !unfinished.done
+            @test occursin("unfinished", unfinished.error)
+            incomplete = respond!(Agent(model, [Write(dir)]), "create"; on_event=identity)
+            @test !incomplete.done
+            @test occursin("max_output_tokens", incomplete.error)
+            nonstream = respond!(Agent(model, [Write(dir)]), "create")
+            @test !nonstream.done
+            @test occursin("max_output_tokens", nonstream.error)
+            @test !isfile(joinpath(dir, "unsafe.txt"))
+        end
+    finally
+        close(server)
+        wait(server)
+    end
+end
+
+@testset "Responses interleaved calls and terminal reconciliation" begin
+    first = response_call("fc_1", "call_1", "one.txt", "one")
+    second = response_call("fc_2", "call_2", "two.txt", "two")
+    added(call, index) = (; type="response.output_item.added", output_index=index, item=merge(call, Dict("arguments" => "", "status" => "in_progress")))
+    delta(call, index, text) = (; type="response.function_call_arguments.delta", output_index=index, item_id=call["id"], delta=text)
+    done(call, index) = (; type="response.output_item.done", output_index=index, item=call)
+    completed(output) = (; type="response.completed", response=response_done(output))
+    streams = [
+        response_sse(added(first, 0)) * response_sse(added(second, 1)) * response_sse(delta(second, 1, second["arguments"])) * response_sse(delta(first, 0, first["arguments"])) * response_sse(done(second, 1)) * response_sse(done(first, 0)) * response_sse(completed([first, second])),
+        response_sse(done(first, 0)) * response_sse(completed([])),
+        response_sse(done(first, 0)) * response_sse(completed([merge(first, Dict("arguments" => "{}"))])),
+        response_sse(added(first, 0)) * response_sse(delta(first, 0, "{}") |> x -> merge(Dict(pairs(x)), Dict("item_id" => "fc_wrong"))) * response_sse(done(first, 0)) * response_sse(completed([first])),
+        response_sse(done(first, 0)) * response_sse(done(merge(second, Dict("call_id" => "call_1")), 1)) * response_sse(completed([first, merge(second, Dict("call_id" => "call_1"))]))
+    ]
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        HTTP.Response(200, ["Content-Type" => "text/event-stream"], popfirst!(streams))
+    end
+    try
+        model = OpenAIResponses("http://$(HTTP.server_addr(server))/v1", "test", "synthetic")
+        events = []
+        result = stream(model, [], Dict(); on_event=event -> push!(events, event))
+        @test result.done
+        @test [call["id"] for call in result.message["tool_calls"]] == ["call_1", "call_2"]
+        @test [(event.id, event.index) for event in events if event.type == :tool_call] == [("call_2", 1), ("call_1", 0)]
+        for _ in 1:4
+            result = stream(model, [], Dict())
+            @test !result.done
+            @test result.error isa AbstractString
+        end
+    finally
+        close(server)
+        wait(server)
+    end
+end
+
+@testset "Responses streamed reasoning replay" begin
+    reasoning = response_reasoning()
+    final_reasoning = Dict("type" => "reasoning", "id" => "rs_1", "summary" => [])
+    payload = response_sse((; type="response.output_item.done", output_index=0, item=reasoning)) * response_sse((; type="response.output_item.done", output_index=1, item=response_text("ok"))) * response_sse((; type="response.completed", response=response_done([final_reasoning, response_text("ok")])))
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        HTTP.Response(200, ["Content-Type" => "text/event-stream"], payload)
+    end
+    try
+        model = OpenAIResponses("http://$(HTTP.server_addr(server))/v1", "test", "synthetic")
+        result = stream(model, [], Dict())
+        @test result.done
+        @test get(result.message["response_output"][1], "encrypted_content", nothing) == "synthetic-encrypted"
+    finally
+        close(server)
+        wait(server)
+    end
+end

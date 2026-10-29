@@ -2,11 +2,12 @@ module JuliaForever
 
 using HTTP, JSON3, Unicode, Base64, Random, SHA
 
-export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, cancel!, codeexecute, ToolResult, execute, Agent, OpenAI, Usage, Completion, OpenRouterLogin, provider, authorize, exchange, stream, respond!, Durable
+export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, cancel!, codeexecute, ToolResult, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, OpenRouterLogin, provider, authorize, exchange, stream, respond!, Durable
 
 include("tools.jl")
 include("provider.jl")
 include("agent.jl")
+include("responses.jl")
 include("system.jl")
 include("durable.jl")
 include("search.jl")
@@ -16,7 +17,7 @@ function (@main)(args)
     codemode = !isempty(args) && first(args) == "--codemode"
     codemode && (args = args[2:end])
     if args == ["--help"] || args == ["-h"]
-        println("jf [--codemode] [prompt] | jf [--codemode] --login-openrouter [prompt]\nSet OPENAI_API_KEY and OPENAI_MODEL. Set JF_PROVIDER=openrouter and OPENROUTER_API_KEY and OPENROUTER_MODEL for OpenRouter. Code mode runs Julia with your permissions.")
+        println("jf [--codemode] [prompt] | jf [--codemode] --login-openrouter [prompt]\nSet OPENAI_API_KEY and OPENAI_MODEL. Set JF_PROVIDER=openai-responses for Responses or JF_PROVIDER=openrouter and OPENROUTER_API_KEY and OPENROUTER_MODEL for OpenRouter. Code mode runs Julia with your permissions.")
         return 0
     end
     if !isempty(args) && first(args) == "--login-openrouter"
@@ -37,7 +38,7 @@ function (@main)(args)
         model = provider()
     end
     if isnothing(model)
-        println(stderr, "Unknown JF_PROVIDER; choose openai or openrouter.")
+        println(stderr, "Unknown JF_PROVIDER; choose openai, openai-responses, or openrouter.")
         return 2
     end
     tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]

@@ -9,6 +9,7 @@ Base.show(io::IO, provider::OpenAI) = print(io, "OpenAI(", repr(provider.base), 
 function provider(env=ENV)
     selected = get(env, "JF_PROVIDER", "openai")
     selected == "openai" && return OpenAI(get(env, "OPENAI_BASE_URL", "https://api.openai.com/v1"), env["OPENAI_MODEL"], env["OPENAI_API_KEY"])
+    selected == "openai-responses" && return OpenAIResponses(get(env, "OPENAI_BASE_URL", "https://api.openai.com/v1"), env["OPENAI_MODEL"], env["OPENAI_API_KEY"])
     selected == "openrouter" && return OpenAI(get(env, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"), env["OPENROUTER_MODEL"], env["OPENROUTER_API_KEY"])
     nothing
 end

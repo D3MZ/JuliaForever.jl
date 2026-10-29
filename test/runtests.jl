@@ -52,6 +52,7 @@ include("agent_core.jl")
 
 include("provider.jl")
 include("provider_stream.jl")
+include("provider_responses.jl")
 
 if haskey(ENV, "PI_SOURCE")
     include("agent_core_differential.jl")

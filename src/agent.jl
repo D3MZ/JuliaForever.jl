@@ -112,6 +112,7 @@ end
 function response(agent, parameters, on_event, on_agent_event)
     if isnothing(on_event)
         message = isempty(parameters) ? complete(agent.provider, agent.messages, agent.tools) : complete(agent.provider, agent.messages, agent.tools; parameters)
+        message isa Completion && return (; message=message.message, result=message, started=false)
         return (; message, result=nothing, started=false)
     end
     partial = Dict{String, Any}("role" => "assistant", "content" => nothing)
