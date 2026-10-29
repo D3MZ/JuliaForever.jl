@@ -7,6 +7,31 @@ mutable struct OnceHistory{T}
     started::Bool
 end
 
+@testset "conversation history export" begin
+    C = JuliaForever.Conversation
+    K = JuliaForever.Kernel
+    start = C.State("session")
+    input = C.Input(0, "read")
+    requested = K.step(start, input)
+    call = C.ToolCall("c1", "read", "{\"path\":\"a.txt\"}")
+    metadata = Dict("response_output" => [Dict("type" => "reasoning", "encrypted_content" => "cipher")])
+    answer = C.Assistant(nothing, [call], "tool_calls", true; metadata)
+    model = K.Observe(1, only(requested.effects).id, C.ModelReply(answer))
+    tools = K.step(requested.state, model)
+    result = K.Observe(2, only(tools.effects).id, C.ToolReply("text", false))
+    events = K.Event[input, model, result]
+    exported = JSON3.read(L.json(events))
+    @test [row.type for row in exported] == ["input", "observe", "observe"]
+    @test exported[2].observation.type == "model_reply"
+    @test exported[3].observation.type == "tool_reply"
+    @test exported[2].observation.message.metadata.response_output[1].encrypted_content == "cipher"
+    replay = JSON3.read(L.json(K.Replay(start, events)))
+    @test replay[2].state.phase == "WaitingTools"
+    @test replay[2].effects[1].effect.type == "tool_request"
+    @test replay[3].state.messages[end].content == "text"
+    @test occursin("cipher", L.html(K.Replay(start, events)))
+end
+
 Base.IteratorSize(::Type{<:OnceHistory}) = Base.SizeUnknown()
 Base.IteratorEltype(::Type{<:OnceHistory}) = Base.EltypeUnknown()
 function Base.iterate(history::OnceHistory)

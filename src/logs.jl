@@ -2,6 +2,7 @@ module Logs
 
 using JSON3
 import ..Kernel
+import ..Conversation
 
 record(value) = value
 record(value::Kernel.Call) = (; type="call", value.name, input=record(value.input))
@@ -16,6 +17,18 @@ record(value::Kernel.State) = (; type="state", value.id, value.revision, pending
 record(value::Kernel.Applied) = (; type="applied", state=record(value.state), effects=map(record, value.effects))
 record(value::Kernel.Duplicate) = (; type="duplicate", state=record(value.state))
 record(value::Kernel.Rejected) = (; type="rejected", state=record(value.state), reason=String(value.reason))
+record(value::Conversation.User) = (; type="user", value.content)
+record(value::Conversation.ToolCall) = (; type="tool_call", value.id, value.name, value.arguments)
+record(value::Conversation.Assistant) = (; type="assistant", value.content, calls=map(record, value.calls), value.finish, value.done, value.metadata)
+record(value::Conversation.ToolMessage) = (; type="tool_message", value.id, value.content, value.iserror)
+record(value::Conversation.ModelRequest) = (; type="model_request", messages=map(record, value.messages))
+record(value::Conversation.ToolRequest) = (; type="tool_request", call=record(value.call))
+record(value::Conversation.ModelReply) = (; type="model_reply", message=record(value.message))
+record(value::Conversation.ToolReply) = (; type="tool_reply", value.text, value.iserror)
+record(value::Conversation.Input) = (; type="input", value.revision, value.text)
+record(value::Conversation.Steer) = (; type="steer", value.revision, value.text)
+record(value::Conversation.Followup) = (; type="followup", value.revision, value.text)
+record(value::Conversation.State) = (; type="conversation", kernel=record(value.kernel), value.revision, messages=map(record, value.messages), phase=string(value.phase), value.order, calls=map(record, value.calls), value.steering, value.followups)
 
 """
     json([io,] history; project=record)

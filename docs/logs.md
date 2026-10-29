@@ -20,7 +20,7 @@ open("history.html", "w") do io
 end
 ```
 
-The string-returning methods are convenient for small histories; pass an `IO` for larger ones. Records can also come from another iterator or storage backend. The built-in projection covers the kernel's `Plan`, `Observe`, and `Finish` events, its `Call`, `Return`, and `Fail` data, and its replay results and state. Custom native types can extend `Logs.record` to return a JSON3-compatible value, or callers can supply `project` to transform every item:
+The string-returning methods are convenient for small histories; pass an `IO` for larger ones. Records can also come from another iterator or storage backend. The built-in projection covers kernel events, effects, observations, replay results and state, along with the typed conversation's messages, requests, replies, events and state. Custom native types can extend `Logs.record` to return a JSON3-compatible value, or callers can supply `project` to transform every item:
 
 ```julia
 L.json(records; project = item -> (; revision=item.revision))
