@@ -1,0 +1,6 @@
+name = "GreetingPlugin"
+uuid = "ae76cdcb-7d2c-4eba-93ad-b5f8b9e38b49"
+version = "0.1.0"
+
+[deps]
+JuliaForever = "2b71f2a2-b786-4fd0-b9cc-80b6322c5084"

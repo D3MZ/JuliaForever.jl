@@ -54,6 +54,7 @@ end
 end
 
 include("agent_core.jl")
+include("extensions.jl")
 include("terminal.jl")
 include("terminal_http.jl")
 include("terminal_history.jl")
@@ -67,6 +68,7 @@ include("provider_invalid.jl")
 if haskey(ENV, "PI_SOURCE")
     include("instructions_differential.jl")
     include("agent_core_differential.jl")
+    include("extensions_differential.jl")
     include("differential.jl")
     include("file_mutations_differential.jl")
 end
