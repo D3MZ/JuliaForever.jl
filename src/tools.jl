@@ -21,11 +21,92 @@ ToolResult(text) = ToolResult(text, false)
 
 path(tool::Tool, name) = normpath(joinpath(tool.cwd, expanduser(name)))
 
+mutable struct Mutation
+    condition::Threads.Condition
+    waiters::Vector{Task}
+    owner::Union{Task, Nothing}
+    depth::Int
+    users::Int
+end
+
+const mutationguard = ReentrantLock()
+const mutations = Dict{String, Mutation}()
+
+function mutationkey(destination::AbstractString)
+    parts = splitpath(abspath(destination))
+    current = popfirst!(parts)
+    links = 0
+    while !isempty(parts)
+        part = popfirst!(parts)
+        part == "." && continue
+        if part == ".."
+            current = dirname(current)
+            continue
+        end
+        next = joinpath(current, part)
+        if islink(next)
+            links += 1
+            links > 256 && return realpath(destination)
+            target = readlink(next)
+            expanded = splitpath(target)
+            isabspath(target) && (current = popfirst!(expanded))
+            prepend!(parts, expanded)
+        else
+            current = ispath(next) ? realpath(next) : next
+        end
+    end
+    current
+end
+
+function mutate(f, destination::AbstractString)
+    task = current_task()
+    key, entry, queued = lock(mutationguard) do
+        key = mutationkey(destination)
+        entry = get!(() -> Mutation(Threads.Condition(mutationguard), Task[], nothing, 0, 0), mutations, key)
+        queued = entry.owner !== task
+        queued && push!(entry.waiters, task)
+        entry.users += 1
+        key, entry, queued
+    end
+    acquired = false
+    try
+        lock(mutationguard) do
+            while queued && (!isnothing(entry.owner) || first(entry.waiters) !== task)
+                wait(entry.condition)
+            end
+            if queued
+                popfirst!(entry.waiters)
+                entry.owner = task
+            end
+            entry.depth += 1
+            acquired = true
+        end
+        f()
+    finally
+        lock(mutationguard) do
+            if acquired
+                entry.depth -= 1
+                entry.depth == 0 && (entry.owner = nothing)
+            elseif queued
+                filter!(waiter -> waiter !== task, entry.waiters)
+            end
+            entry.users -= 1
+            if entry.users == 0
+                delete!(mutations, key)
+            else
+                notify(entry.condition; all=true)
+            end
+        end
+    end
+end
+
 function execute(tool::Write, args)
     destination = path(tool, args.path)
-    mkpath(dirname(destination))
-    write(destination, args.content)
-    ToolResult("Successfully wrote to $(args.path)")
+    mutate(destination) do
+        mkpath(dirname(destination))
+        write(destination, args.content)
+        ToolResult("Successfully wrote to $(args.path)")
+    end
 end
 
 function execute(tool::Read, args)
@@ -120,6 +201,12 @@ end
 
 function execute(tool::Edit, args)
     destination = path(tool, args.path)
+    mutate(destination) do
+        edit(destination, args)
+    end
+end
+
+function edit(destination, args)
     original = read(destination, String)
     bom = startswith(original, '\ufeff') ? "\ufeff" : ""
     originalcontent = normalize(chopprefix(original, bom))

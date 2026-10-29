@@ -26,6 +26,7 @@ include("instructions_cli.jl")
 end
 
 include("edit.jl")
+include("file_mutations.jl")
 
 mutable struct Scripted
     responses::Vector{Any}
@@ -66,6 +67,7 @@ if haskey(ENV, "PI_SOURCE")
     include("instructions_differential.jl")
     include("agent_core_differential.jl")
     include("differential.jl")
+    include("file_mutations_differential.jl")
 end
 
 include("system.jl")
