@@ -26,5 +26,3 @@ PI_SOURCE=/path/to/pi julia --startup-file=no --threads=4 --project=. scripts/ci
 ```
 
 This runs the native quality and behavior tests plus selected Pi comparisons locally. `PI_SOURCE` must point to the pinned Pi checkout with its Node dependencies available. Pass `--native-only` instead to run without Pi; that mode explicitly skips differential tests. The GitHub workflow also prepares the reference and tests macOS. Linux and Windows testing will follow. Until a particular run passes, a configured CI job is not evidence of platform compatibility. Test results cover selected cases, not full Pi compatibility.
-
-Pi is MIT-licensed; its copyright and license notice is included in `third_party/pi-LICENSE`.
