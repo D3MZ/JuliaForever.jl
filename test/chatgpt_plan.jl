@@ -86,3 +86,19 @@ end
         close(pending)
     end
 end
+
+@testset "ChatGPT nonrenewable direct grant" begin
+    grant = CG.Grant("oaiapp_fixture", CG.Identity("account-fixture", nothing), "synthetic-access", "synthetic-id-token", identityscope, identitytime + 3600)
+    output = plantext("ok")
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        HTTP.Response(200, ["Content-Type" => "text/event-stream"], plansse((; type="response.output_item.done", output_index=0, item=output)) * plansse((; type="response.completed", response=planresponse([output]))))
+    end
+    try
+        post = (url, headers, body; kwargs...) -> HTTP.post("http://$(HTTP.server_addr(server))/v1/responses", headers, body; kwargs...)
+        result = JuliaForever.stream(CG.Plan("fixture-model", grant; post, now=() -> identitytime), [], Dict())
+        @test result.done && result.message["content"] == "ok"
+    finally
+        close(server)
+        wait(server)
+    end
+end

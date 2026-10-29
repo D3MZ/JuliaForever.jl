@@ -1,4 +1,6 @@
-struct Session
+abstract type Credential end
+
+struct Session <: Credential
     client::String
     identity::Identity
     access::String
@@ -8,7 +10,17 @@ struct Session
     expires::Float64
 end
 
+struct Grant <: Credential
+    client::String
+    identity::Identity
+    access::String
+    id_token::String
+    scope::String
+    expires::Float64
+end
+
 Base.show(io::IO, ::Session) = print(io, "Session([redacted])")
+Base.show(io::IO, ::Grant) = print(io, "Grant([redacted])")
 
 subject(::Register) = nothing
 subject(registration::Returning) = registration.subject
@@ -69,7 +81,8 @@ function exchange(pending::Pending, code::Code, data::AbstractDict; fetcher, now
     scope = get(data, "scope", nothing)
     kind = get(data, "token_type", nothing)
     expires = get(data, "expires_in", nothing)
-    all(value -> value isa AbstractString && !isempty(value), (access, refresh, token, scope)) || return nothing
+    all(value -> value isa AbstractString && !isempty(value), (access, token, scope)) || return nothing
+    isnothing(refresh) || (refresh isa AbstractString && !isempty(refresh)) || return nothing
     kind isa AbstractString && lowercase(kind) == "bearer" || return nothing
     expires isa Real && !(expires isa Bool) && isfinite(expires) && expires > 0 || return nothing
     identity = validate(token, code.client, pending.nonce; subject=subject(pending.registration), fetcher, now)
@@ -77,4 +90,5 @@ function exchange(pending::Pending, code::Code, data::AbstractDict; fetcher, now
 end
 
 session(::Nothing, client, access, refresh, token, scope, expires) = nothing
-session(identity::Identity, client, access, refresh, token, scope, expires) = Session(String(client), identity, String(access), String(refresh), String(token), String(scope), Float64(expires))
+session(identity::Identity, client, access, ::Nothing, token, scope, expires) = Grant(String(client), identity, String(access), String(token), String(scope), Float64(expires))
+session(identity::Identity, client, access, refresh::AbstractString, token, scope, expires) = Session(String(client), identity, String(access), String(refresh), String(token), String(scope), Float64(expires))

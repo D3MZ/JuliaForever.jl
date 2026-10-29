@@ -71,3 +71,28 @@ end
         close(pending)
     end
 end
+
+@testset "ChatGPT nonrenewable grants" begin
+    pending = CG.Pending(CG.Register(), "urn:uuid:host-fixture")
+    try
+        tokens = fixturetokens(pending; changes=Dict("scope" => "openid profile email"))
+        delete!(tokens, "refresh_token")
+        post = body -> CG.TokenReply(200, JSON3.write(tokens))
+        fetcher = url -> JSON3.write(Dict("keys" => identitykeys))
+        grant = CG.exchange(pending, CG.Code("fixture-code", "oaiapp_fixture"); post, fetcher, now=() -> identitytime)
+        @test grant isa CG.Grant
+        @test grant.client == "oaiapp_fixture" && grant.identity.subject == "account-fixture"
+        @test !occursin("synthetic-access", sprint(show, grant)) && !occursin(grant.id_token, sprint(show, grant))
+        @test !JuliaForever.stream(CG.Plan("fixture-model", grant; now=() -> identitytime), [], Dict()).done
+        mktempdir() do root
+            store = CG.Store(root)
+            @test CG.save(store, grant) === grant
+            saved = CG.load(store, grant.client, grant.identity.subject)
+            @test saved isa CG.Grant && saved.identity.subject == grant.identity.subject
+            @test CG.refresh(store, grant.client, grant.identity.subject; now=() -> identitytime).identity.subject == grant.identity.subject
+            @test CG.refresh(store, grant.client, grant.identity.subject; now=() -> identitytime + 3590) isa CG.Rejected
+        end
+    finally
+        close(pending)
+    end
+end

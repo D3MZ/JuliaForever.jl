@@ -90,16 +90,20 @@ function record(account::Account)
     JSON3.write((; issuer, subject=account.identity.subject, email=account.identity.email, client_id=account.client))
 end
 
+function record(grant::Grant)
+    JSON3.write((; issuer, subject=grant.identity.subject, email=grant.identity.email, client_id=grant.client, access_token=grant.access, id_token=grant.id_token, scope=grant.scope, expires_at=grant.expires))
+end
+
 function record(session::Session)
     JSON3.write((; issuer, subject=session.identity.subject, email=session.identity.email, client_id=session.client, access_token=session.access, refresh_token=session.refresh, id_token=session.id_token, scope=session.scope, expires_at=session.expires))
 end
 
-function saveunlocked(store::Store, session::Union{Session, Account})
+function saveunlocked(store::Store, session::Union{Credential, Account})
     writeprivate(path(store, session.client, session.identity.subject), record(session))
     session
 end
 
-save(store::Store, session::Session) = guarded(() -> saveunlocked(store, session), store)
+save(store::Store, session::Credential) = guarded(() -> saveunlocked(store, session), store)
 
 loadunlocked(store::Store, client::AbstractString, subject::AbstractString) = loadrecord(readprivate(path(store, client, subject)), client, subject)
 loadrecord(value::Rejected, client, subject) = value
@@ -120,12 +124,19 @@ function credentials(::Nothing, data, client, identity)
 end
 
 function credentials(access::AbstractString, data, client, identity)
-    refresh, token, scope = (get(data, key, nothing) for key in ("refresh_token", "id_token", "scope"))
-    all(value -> value isa AbstractString && !isempty(value), (access, refresh, token, scope)) || return Rejected(:invalid)
+    token, scope = (get(data, key, nothing) for key in ("id_token", "scope"))
+    all(value -> value isa AbstractString && !isempty(value), (access, token, scope)) || return Rejected(:invalid)
     expires = get(data, "expires_at", nothing)
     expires isa Real && !(expires isa Bool) && isfinite(expires) && expires > 0 || return Rejected(:invalid)
+    stored(get(data, "refresh_token", nothing), client, identity, access, token, scope, expires)
+end
+
+stored(::Nothing, client, identity, access, token, scope, expires) = Grant(String(client), identity, String(access), String(token), String(scope), Float64(expires))
+function stored(refresh::AbstractString, client, identity, access, token, scope, expires)
+    isempty(refresh) && return Rejected(:invalid)
     Session(String(client), identity, String(access), String(refresh), String(token), String(scope), Float64(expires))
 end
+stored(refresh, client, identity, access, token, scope, expires) = Rejected(:invalid)
 
 credentials(access, data, client, identity) = Rejected(:invalid)
 
@@ -139,6 +150,7 @@ end
 
 renew(store::Store, rejected::Rejected; post, now) = rejected
 renew(store::Store, account::Account; post, now) = Rejected(:reauthorize)
+renew(store::Store, grant::Grant; post, now) = grant.expires > now() + 60 ? grant : Rejected(:reauthorize)
 
 function renew(store::Store, session::Session; post, now)
     session.expires > now() + 60 && return session
