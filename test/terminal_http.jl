@@ -56,6 +56,7 @@ end
             @test terminal_http(base, "length"; history=joinpath(dir, "history.sqlite")) == expected
         end
         @test terminal_http(base, "http") == (; status=1, output="", diagnostics="Request failed (HTTP 401).\n")
+        @test terminal_http(base, "http"; provider="openai-responses") == (; status=1, output="", diagnostics="Request failed (HTTP 401).\n")
         @test terminal_http(base, "json") == (; status=1, output="", diagnostics="Request failed (invalid provider response).\n")
         invalid = terminal_http(base, "shape")
         @test invalid.status == 1

@@ -165,7 +165,7 @@ end
         failed = JuliaForever.stream(model, [], Dict())
         @test !failed.done
         @test occursin("content_filter", failed.error)
-        @test_throws HTTP.StatusError JuliaForever.stream(model, [], Dict())
+        @test JuliaForever.stream(model, [], Dict()).error == ProviderStatus(401)
         @test JuliaForever.exchange(JuliaForever.authorize(), "synthetic-code"; base) === nothing
     finally
         close(server)

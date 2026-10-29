@@ -52,6 +52,7 @@ end
 
 result!(terminal::Terminal, result::Completion) = result!(terminal, result, result.error)
 result!(terminal::Terminal, ::Completion, failure::InvalidResponse) = failure!(terminal, failure)
+result!(terminal::Terminal, ::Completion, failure::ProviderStatus) = failure!(terminal, failure)
 
 function result!(terminal::Terminal, ::Truncated)
     println(terminal.diagnostics, "Response was truncated: the model reached its output token limit.")
@@ -157,6 +158,12 @@ end
 
 function failure!(terminal::Terminal, ::InvalidResponse)
     println(terminal.diagnostics, "Request failed (invalid provider response).")
+    flush(terminal.diagnostics)
+    1
+end
+
+function failure!(terminal::Terminal, failure::ProviderStatus)
+    println(terminal.diagnostics, "Request failed (HTTP ", failure.status, ").")
     flush(terminal.diagnostics)
     1
 end

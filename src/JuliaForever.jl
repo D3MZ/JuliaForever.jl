@@ -1,9 +1,9 @@
 module JuliaForever
 
-using HTTP, JSON3, Unicode, Base64, Random, SHA, REPL
+using HTTP, JSON3, StructTypes, Unicode, Base64, Random, SHA, REPL
 
 export Execution
-export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, cancel!, codeexecute, Image, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, Truncated, InvalidResponse, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
+export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, cancel!, codeexecute, Image, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, Truncated, InvalidResponse, ProviderStatus, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
 
 include("instructions.jl")
 include("tools.jl")
@@ -91,6 +91,7 @@ function authenticated(::Nothing, base, model)
 end
 
 authenticated(failure::InvalidResponse, base, model) = failure!(Terminal(stdout, stderr, String[]), failure)
+authenticated(failure::ProviderStatus, base, model) = failure!(Terminal(stdout, stderr, String[]), failure)
 authenticated(key::AbstractString, base, model) = OpenAI(base, model, key)
 
 function login!(login::OpenRouterLogin, ::Nothing, info, model)

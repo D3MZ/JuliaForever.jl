@@ -5,6 +5,12 @@ struct OpenAI
 end
 
 struct InvalidResponse end
+struct ProviderStatus
+    status::Int
+end
+
+StructTypes.StructType(::Type{OpenAI}) = StructTypes.CustomStruct()
+StructTypes.lower(provider::OpenAI) = (; model=provider.model, credentials="[redacted]")
 
 function decode(text)
     bytes = codeunits(text)
@@ -20,7 +26,7 @@ function decode(text)
     end
 end
 
-Base.show(io::IO, provider::OpenAI) = print(io, "OpenAI(", repr(provider.base), ", ", repr(provider.model), ", [redacted])")
+Base.show(io::IO, provider::OpenAI) = print(io, "OpenAI(", repr(provider.model), ", [redacted])")
 
 function providerinfo(selected)
     selected == "openai" && return (; factory=OpenAI, base="OPENAI_BASE_URL", url="https://api.openai.com/v1", model="OPENAI_MODEL", key="OPENAI_API_KEY")
@@ -41,7 +47,9 @@ struct OpenRouterLogin
     verifier::String
 end
 
-Base.show(io::IO, login::OpenRouterLogin) = print(io, "OpenRouterLogin(", repr(login.url), ", [redacted])")
+Base.show(io::IO, ::OpenRouterLogin) = print(io, "OpenRouterLogin([redacted])")
+StructTypes.StructType(::Type{OpenRouterLogin}) = StructTypes.CustomStruct()
+StructTypes.lower(::OpenRouterLogin) = "[redacted]"
 
 base64url(bytes) = rstrip(replace(base64encode(bytes), "+" => "-", "/" => "_"), '=')
 
@@ -59,6 +67,8 @@ struct OpenRouterCallback{S}
 end
 
 Base.show(io::IO, ::OpenRouterCallback) = print(io, "OpenRouterCallback([redacted])")
+StructTypes.StructType(::Type{<:OpenRouterCallback}) = StructTypes.CustomStruct()
+StructTypes.lower(::OpenRouterCallback) = "[redacted]"
 
 function OpenRouterCallback()
     path = "/oauth/callback/" * base64url(rand(RandomDevice(), UInt8, 24))
@@ -97,7 +107,8 @@ Base.close(callback::OpenRouterCallback) = (close(callback.server); wait(callbac
 
 function exchange(login::OpenRouterLogin, code; base="https://openrouter.ai/api/v1")
     body = JSON3.write((; code, code_verifier=login.verifier, code_challenge_method="S256"))
-    response = HTTP.post("$(rstrip(base, '/'))/auth/keys", ["Content-Type" => "application/json"], body; redirect=false, retry=false, cookies=false)
+    response = HTTP.post("$(rstrip(base, '/'))/auth/keys", ["Content-Type" => "application/json"], body; redirect=false, retry=false, cookies=false, status_exception=false)
+    200 <= response.status < 300 || return ProviderStatus(response.status)
     data = decode(String(response.body))
     data isa InvalidResponse && return data
     key = get(data, "key", nothing)
@@ -119,10 +130,10 @@ struct Completion
     usage::Union{Nothing, Usage}
     finish::Union{Nothing, String}
     done::Bool
-    error::Union{Nothing, String, InvalidResponse}
+    error::Union{Nothing, String, InvalidResponse, ProviderStatus}
 end
 
-incomplete(failure::InvalidResponse) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, failure)
+incomplete(failure::Union{InvalidResponse, ProviderStatus}) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, failure)
 
 function usage(data)
     prompt = get(data, "prompt_tokens", 0)
@@ -188,7 +199,8 @@ headers(provider::OpenAI) = ["Authorization" => "Bearer $(provider.key)", "Conte
 endpoint(provider::OpenAI) = "$(rstrip(provider.base, '/'))/chat/completions"
 
 function complete(provider::OpenAI, messages, tools; parameters=Dict())
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false)
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false, status_exception=false)
+    200 <= response.status < 300 || return incomplete(ProviderStatus(response.status))
     data = decode(String(response.body))
     data isa InvalidResponse && return incomplete(data)
     choice = first(data["choices"])
@@ -208,7 +220,7 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
     finish = Ref{Union{Nothing, String}}(nothing)
     failure = Ref{Union{Nothing, String, InvalidResponse}}(nothing)
     marker = Ref(false)
-    HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, sse_callback=event -> begin
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, sse_callback=event -> begin
         failure[] isa InvalidResponse && return
         if event.data == "[DONE]"
             marker[] = true
@@ -269,6 +281,11 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
             on_event((; type=:tool_call, index, id, name, arguments))
         end
     end)
+    if !(200 <= response.status < 300)
+        result = incomplete(ProviderStatus(response.status))
+        on_event((; type=:incomplete, result))
+        return result
+    end
     isempty(order) || (message["tool_calls"] = [calls[index] for index in order])
     if !(failure[] isa InvalidResponse) && !isnothing(finish[]) && !(finish[] in ("stop", "end", "length", "tool_calls", "function_call"))
         failure[] = "Provider finish_reason: $(finish[])"

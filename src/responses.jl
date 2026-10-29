@@ -4,7 +4,9 @@ struct OpenAIResponses
     key::String
 end
 
-Base.show(io::IO, provider::OpenAIResponses) = print(io, "OpenAIResponses(", repr(provider.base), ", ", repr(provider.model), ", [redacted])")
+Base.show(io::IO, provider::OpenAIResponses) = print(io, "OpenAIResponses(", repr(provider.model), ", [redacted])")
+StructTypes.StructType(::Type{OpenAIResponses}) = StructTypes.CustomStruct()
+StructTypes.lower(provider::OpenAIResponses) = (; model=provider.model, credentials="[redacted]")
 
 headers(provider::OpenAIResponses) = ["Authorization" => "Bearer $(provider.key)", "Content-Type" => "application/json"]
 endpoint(provider::OpenAIResponses) = "$(rstrip(provider.base, '/'))/responses"
@@ -109,7 +111,8 @@ function completion(provider::OpenAIResponses, data; failure=nothing)
 end
 
 function complete(provider::OpenAIResponses, messages, tools; parameters=Dict())
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false)
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false, status_exception=false)
+    200 <= response.status < 300 || return incomplete(ProviderStatus(response.status))
     data = decode(String(response.body))
     data isa InvalidResponse ? incomplete(data) : completion(provider, data)
 end
@@ -120,7 +123,7 @@ function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), o
     finished = Dict{Any, Any}()
     terminal = Ref{Any}(nothing)
     failure = Ref{Union{Nothing, String, InvalidResponse}}(nothing)
-    HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, sse_callback=event -> begin
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, sse_callback=event -> begin
         failure[] isa InvalidResponse && return
         event.data == "[DONE]" && return
         data = decode(event.data)
@@ -179,6 +182,11 @@ function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), o
             failure[] = JSON3.write(data)
         end
     end)
+    if !(200 <= response.status < 300)
+        result = incomplete(ProviderStatus(response.status))
+        on_event((; type=:incomplete, result))
+        return result
+    end
     if isnothing(terminal[])
         result = Completion(partial, nothing, nothing, false, something(failure[], "Responses stream ended before a terminal event"))
     else

@@ -68,6 +68,7 @@ include("terminal_history.jl")
 include("terminal_models.jl")
 
 include("provider.jl")
+include("provider_status.jl")
 include("provider_stream.jl")
 include("openrouter_callback.jl")
 include("provider_responses.jl")
