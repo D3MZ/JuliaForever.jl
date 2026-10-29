@@ -76,19 +76,18 @@ encode(r::Task) = (; type="task", r.id, r.conversation, r.state)
 encode(r::Document) = (; type="document", r.id, r.conversation, r.value)
 encode(r::Submission) = (; type="submission", r.id, r.conversation, r.request, r.kind, r.status, r.value)
 
-function decode(row)
-    type = row["type"]
-    id = row["id"]
-    id isa Int || return nothing
-    type == "conversation" && return Conversation(id, row["value"])
-    conversation = row["conversation"]
-    conversation isa Int || return nothing
-    type == "entry" && return Entry(id, conversation, row["kind"], row["value"])
-    type == "task" && return Task(id, conversation, row["state"])
-    type == "document" && return Document(id, conversation, row["value"])
-    type == "submission" && return Submission(id, conversation, row["request"], row["kind"], row["status"], row["value"])
-    nothing
-end
+const recordtypes = Dict("conversation" => Conversation, "entry" => Entry, "task" => Task, "document" => Document, "submission" => Submission)
+
+decode(record::AbstractDict) = decode(get(recordtypes, record["type"], nothing), record, record["id"])
+decode(::Nothing, record, id) = nothing
+decode(::Type{<:Record}, record, id) = nothing
+decode(::Type{Conversation}, record, id::Int) = Conversation(id, record["value"])
+decode(type::Type{<:Record}, record, id::Int) = decode(type, record, id, record["conversation"])
+decode(::Type{<:Record}, record, id::Int, conversation) = nothing
+decode(::Type{Entry}, record, id::Int, conversation::Int) = Entry(id, conversation, record["kind"], record["value"])
+decode(::Type{Task}, record, id::Int, conversation::Int) = Task(id, conversation, record["state"])
+decode(::Type{Document}, record, id::Int, conversation::Int) = Document(id, conversation, record["value"])
+decode(::Type{Submission}, record, id::Int, conversation::Int) = Submission(id, conversation, record["request"], record["kind"], record["status"], record["value"])
 
 detach(record::Record) = decode(JSON3.read(JSON3.write(encode(record)), Dict{String, Any}))
 
@@ -115,16 +114,16 @@ function apply!(state::State, record::Record)
     nothing
 end
 
-function replay!(state::State, row)
+function replay!(state::State, batch)
     try
-        seq = row["seq"]
+        seq = batch["seq"]
         seq isa Int && seq == state.seq + 1 || return false
-        nextid = row["nextid"]
+        nextid = batch["nextid"]
         nextid isa Int && nextid >= state.nextid || return false
-        writes = row["writes"]
+        writes = batch["writes"]
         writes isa AbstractVector && !isempty(writes) || return false
-        for encoded in writes
-            record = decode(encoded)
+        for record in writes
+            record = decode(record)
             record isa Record || return false
             record.id <= nextid || return false
             apply!(state, record) === nothing || return false
@@ -182,12 +181,12 @@ function recover(io::IOStream)
     for last in ends
         line = bytes[start:last-1]
         isvalid(String, line) || return Rejected(:corrupt_log)
-        row = try
+        batch = try
             JSON3.read(String(line), Dict{String, Any})
         catch
             return Rejected(:corrupt_log)
         end
-        replay!(state, row) || return Rejected(:corrupt_log)
+        replay!(state, batch) || return Rejected(:corrupt_log)
         start = last + 1
     end
     complete = isempty(ends) ? 0 : ends[end]
