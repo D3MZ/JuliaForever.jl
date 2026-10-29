@@ -56,6 +56,9 @@ function codefailure(cancel, timedout, started, timeout)
     nothing
 end
 
+codeimage(result::ToolResult, ::Nothing) = result
+codeimage(::ToolResult, ::Image) = ToolResult("Image output is not supported by CodeMode", true)
+
 function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, Any}(), cancel=CodeCancellation())
     cancel.cancelled[] && return CodeResult(false, nothing, String[], NamedTuple[], Dict{String, Any}(), :cancelled, "Execution cancelled", "", "", 0)
     mktempdir() do dir
@@ -148,7 +151,7 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
                                     ToolResult(sprint(showerror, exception), true)
                                 end
                             end
-                            isnothing(answer.image) || (answer = ToolResult("Image output is not supported by CodeMode", true))
+                            answer = codeimage(answer, answer.image)
                             duration = (time_ns() - callstart) / 1e9
                             enqueue(events, (; type="call_done", index, status=answer.iserror ? :error : :ok, duration))
                             lock(lockwrite) do
