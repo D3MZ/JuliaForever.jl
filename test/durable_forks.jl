@@ -72,6 +72,7 @@ if Sys.isunix()
         @test D.revision(store) == before
         @test ids(D.entries(store, grandchild)) == [first, cutoff, childfirst, grandtail]
         @test reason(D.commit!(tx -> D.fork!(tx, 999_999, first), store)) == :conversation_missing
+        @test reason(D.commit!(tx -> D.fork!(tx, root, root), store)) == :fork_point_missing
         @test reason(D.commit!(tx -> D.fork!(tx, root, grandtail), store)) == :fork_point_missing
         @test reason(D.commit!(tx -> D.fork!(tx, child, later), store)) == :fork_point_missing
         @test reason(D.commit!(store) do tx
@@ -162,6 +163,8 @@ end
             [(; type="conversation", id=3, value=nothing, parent=(; conversation=1, at=999))],
             [(; type="conversation", id=3, value=nothing, parent=(; conversation=999, at=2))],
             [(; type="conversation", id=3, value=nothing, parent=(; conversation=1, at=true))],
+            [(; type="conversation", id=3, value=nothing, parent=(; conversation=true, at=2))],
+            [(; type="conversation", id=3, value=nothing, parent=(; conversation=1))],
             [(; type="conversation", id=3, value=nothing, parent=[1, 2])],
             [(; type="entry", id=3, conversation=1, kind="note", value="staged"), (; type="conversation", id=4, value=nothing, parent=(; conversation=1, at=3))],
             [(; type="conversation", id=3, value=nothing, parent=(; conversation=1, at=2)), (; type="document", id=4, conversation=1, value="staged")],
@@ -227,5 +230,21 @@ end
         @test read(path) == good
         close(store)
     end
+end
+
+@testset "deep fork ancestry" begin
+    state = D.State()
+    state.records[1] = D.Conversation(1, nothing)
+    state.records[2] = D.Entry(2, 1, "note", "root")
+    for id in 3:1002
+        parent = id == 3 ? 1 : id - 1
+        state.records[id] = D.Conversation(id, nothing, (parent, 2))
+    end
+    @test D.visible(state, 1002, 2)
+    @test !D.visible(state, 1002, 1)
+    @test ids(D.entries(state, 1002)) == [2]
+    @test !D.hasdocuments(state, 1002)
+    state.records[1003] = D.Document(1003, 1, "document")
+    @test D.hasdocuments(state, 1002)
 end
 end
