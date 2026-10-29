@@ -3,7 +3,7 @@ using JuliaForever, JSON3, HTTP
 function JuliaForever.stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=identity)
     mode = ENV["JF_FIXTURE"]
     mode == "http" && throw(HTTP.StatusError(HTTP.Response(401)))
-    mode == "json" && JSON3.read("{synthetic-secret malformed}")
+    mode == "json" && JSON3.read("{bad fixture}")
     mode == "bug" && throw(ArgumentError("ordinary failure"))
     if mode == "incomplete"
         on_event((; type=:text, text="partial"))

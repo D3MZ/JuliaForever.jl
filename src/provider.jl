@@ -4,6 +4,22 @@ struct OpenAI
     key::String
 end
 
+struct InvalidResponse end
+
+function decode(text)
+    bytes = codeunits(text)
+    complete = false
+    try
+        data = JSON3.read(bytes, Dict{String, Any})
+        complete = true
+        return data
+    finally
+        if !complete && last(current_exceptions()).exception isa ArgumentError
+            return InvalidResponse()
+        end
+    end
+end
+
 Base.show(io::IO, provider::OpenAI) = print(io, "OpenAI(", repr(provider.base), ", ", repr(provider.model), ", [redacted])")
 
 function provider(env=ENV)
@@ -32,7 +48,8 @@ end
 function exchange(login::OpenRouterLogin, code; base="https://openrouter.ai/api/v1")
     body = JSON3.write((; code, code_verifier=login.verifier, code_challenge_method="S256"))
     response = HTTP.post("$(rstrip(base, '/'))/auth/keys", ["Content-Type" => "application/json"], body; redirect=false, retry=false, cookies=false)
-    data = JSON3.read(String(response.body), Dict{String, Any})
+    data = decode(String(response.body))
+    data isa InvalidResponse && return data
     key = get(data, "key", nothing)
     key isa AbstractString && !isempty(key) ? key : nothing
 end
@@ -52,8 +69,10 @@ struct Completion
     usage::Union{Nothing, Usage}
     finish::Union{Nothing, String}
     done::Bool
-    error::Union{Nothing, String}
+    error::Union{Nothing, String, InvalidResponse}
 end
+
+incomplete(failure::InvalidResponse) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, failure)
 
 function usage(data)
     prompt = get(data, "prompt_tokens", 0)
@@ -93,7 +112,8 @@ endpoint(provider::OpenAI) = "$(rstrip(provider.base, '/'))/chat/completions"
 
 function complete(provider::OpenAI, messages, tools; parameters=Dict())
     response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false)
-    data = JSON3.read(String(response.body), Dict{String, Any})
+    data = decode(String(response.body))
+    data isa InvalidResponse && return incomplete(data)
     choice = first(data["choices"])
     finish = get(choice, "finish_reason", nothing)
     raw_usage = get(data, "usage", nothing)
@@ -109,14 +129,19 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
     order = Any[]
     reported_usage = Ref{Union{Nothing, Usage}}(nothing)
     finish = Ref{Union{Nothing, String}}(nothing)
-    failure = Ref{Union{Nothing, String}}(nothing)
+    failure = Ref{Union{Nothing, String, InvalidResponse}}(nothing)
     marker = Ref(false)
     HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, sse_callback=event -> begin
+        failure[] isa InvalidResponse && return
         if event.data == "[DONE]"
             marker[] = true
             return
         end
-        data = JSON3.read(event.data, Dict{String, Any})
+        data = decode(event.data)
+        if data isa InvalidResponse
+            failure[] = data
+            return
+        end
         on_event((; type=:provider, data))
         if haskey(data, "error")
             failure[] = JSON3.write(data["error"])
@@ -168,7 +193,7 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
         end
     end)
     isempty(order) || (message["tool_calls"] = [calls[index] for index in order])
-    if !isnothing(finish[]) && !(finish[] in ("stop", "end", "length", "tool_calls", "function_call"))
+    if !(failure[] isa InvalidResponse) && !isnothing(finish[]) && !(finish[] in ("stop", "end", "length", "tool_calls", "function_call"))
         failure[] = "Provider finish_reason: $(finish[])"
     end
     result = Completion(message, reported_usage[], finish[], marker[] && !isnothing(finish[]) && isnothing(failure[]), failure[])

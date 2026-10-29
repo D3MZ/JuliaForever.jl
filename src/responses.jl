@@ -105,7 +105,8 @@ end
 
 function complete(provider::OpenAIResponses, messages, tools; parameters=Dict())
     response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false)
-    completion(provider, JSON3.read(String(response.body), Dict{String, Any}))
+    data = decode(String(response.body))
+    data isa InvalidResponse ? incomplete(data) : completion(provider, data)
 end
 
 function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), on_event=identity)
@@ -113,10 +114,15 @@ function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), o
     active = Dict{Any, Any}()
     finished = Dict{Any, Any}()
     terminal = Ref{Any}(nothing)
-    failure = Ref{Union{Nothing, String}}(nothing)
+    failure = Ref{Union{Nothing, String, InvalidResponse}}(nothing)
     HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, sse_callback=event -> begin
+        failure[] isa InvalidResponse && return
         event.data == "[DONE]" && return
-        data = JSON3.read(event.data, Dict{String, Any})
+        data = decode(event.data)
+        if data isa InvalidResponse
+            failure[] = data
+            return
+        end
         on_event((; type=:provider, data))
         kind = get(data, "type", nothing)
         if kind in ("response.output_text.delta", "response.refusal.delta")
@@ -181,7 +187,7 @@ function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), o
                 item["encrypted_content"] = done["encrypted_content"]
             end
         end
-        if get(data, "status", nothing) == "completed"
+        if !(failure[] isa InvalidResponse) && get(data, "status", nothing) == "completed"
             if !isempty(active)
                 failure[] = "Responses stream contained an unfinished function call"
             end

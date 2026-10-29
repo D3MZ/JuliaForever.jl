@@ -48,6 +48,7 @@ function render!(terminal::Terminal, event)
 end
 
 function result!(terminal::Terminal, result::Completion)
+    result.error isa InvalidResponse && return failure!(terminal, result.error)
     detail = result.finish == "content_filter" ? "content was filtered" : result.finish == "failed" ? "the provider reported failure" : result.finish == "incomplete" ? "the provider reported incomplete output" : "the provider stream did not finish"
     println(terminal.diagnostics, "Response incomplete: ", detail)
     flush(terminal.diagnostics)
@@ -80,17 +81,16 @@ function failure!(terminal::Terminal, exception::HTTP.HTTPError)
     1
 end
 
-function malformed(entry)
-    entry.exception isa ArgumentError || return false
-    message = entry.exception.msg
-    any(prefix -> startswith(message, prefix), ("invalid JSON at byte position ", "JSON invalid unicode hex value", "encountered invalid escape character in json string:", "encountered unescaped control character in json:")) && return true
-    any(frame -> !isnothing(frame.linfo) && frame.linfo.def isa Method && frame.linfo.def.module === JSON3, stacktrace(entry.backtrace))
+function failure!(terminal::Terminal, ::InvalidResponse)
+    println(terminal.diagnostics, "Request failed (invalid provider response).")
+    flush(terminal.diagnostics)
+    1
 end
 
 function request!(f, terminal::Terminal)
-    task = @async f()
+    task = Threads.@spawn f()
     ready = Channel{Nothing}(1)
-    @async begin
+    Threads.@spawn begin
         try
             wait(task)
         catch
@@ -104,12 +104,6 @@ function request!(f, terminal::Terminal)
             line!(terminal)
             terminal.streamed = false
             return (; value=nothing, status=failure!(terminal, entry.exception))
-        elseif malformed(entry)
-            line!(terminal)
-            terminal.streamed = false
-            println(terminal.diagnostics, "Request failed (invalid provider response).")
-            flush(terminal.diagnostics)
-            return (; value=nothing, status=1)
         end
     end
     (; value=fetch(task), status=0)

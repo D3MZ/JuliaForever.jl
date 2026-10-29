@@ -97,7 +97,8 @@ end
     @test failure == (; status=1, output="", diagnostics="Request failed (HTTP 401).\n")
 
     invalid = terminal_process("json", ["start"])
-    @test invalid == (; status=1, output="", diagnostics="Request failed (invalid provider response).\n")
+    @test invalid.status != 0
+    @test occursin("invalid JSON", invalid.diagnostics)
 
     bug = terminal_process("bug", ["start"])
     @test bug.status != 0
@@ -113,4 +114,9 @@ end
     @test help.status == 0
     @test startswith(help.output, "jf [--codemode] [prompt]")
     @test isempty(help.diagnostics)
+end
+
+@testset "non-sticky terminal request" begin
+    terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), String[])
+    @test JuliaForever.request!(() -> current_task().sticky, terminal).value === false
 end

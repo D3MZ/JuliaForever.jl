@@ -3,7 +3,7 @@ module JuliaForever
 using HTTP, JSON3, Unicode, Base64, Random, SHA
 
 export Execution
-export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, cancel!, codeexecute, ToolResult, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, OpenRouterLogin, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
+export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, cancel!, codeexecute, ToolResult, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, InvalidResponse, OpenRouterLogin, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
 
 include("tools.jl")
 include("provider.jl")
@@ -52,6 +52,7 @@ function (@main)(args)
         end
         result.status == 0 || return result.status
         key = result.value
+        key isa InvalidResponse && return failure!(Terminal(stdout, stderr, String[]), key)
         if isnothing(key)
             println(stderr, "OpenRouter did not return an API key.")
             return 2
