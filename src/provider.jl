@@ -93,7 +93,14 @@ endpoint(provider::OpenAI) = "$(rstrip(provider.base, '/'))/chat/completions"
 
 function complete(provider::OpenAI, messages, tools; parameters=Dict())
     response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false)
-    JSON3.read(String(response.body), Dict{String, Any})["choices"][1]["message"]
+    data = JSON3.read(String(response.body), Dict{String, Any})
+    choice = first(data["choices"])
+    finish = get(choice, "finish_reason", nothing)
+    raw_usage = get(data, "usage", nothing)
+    used = isnothing(raw_usage) ? nothing : usage(raw_usage)
+    done = finish in ("stop", "end", "length", "tool_calls", "function_call")
+    failure = done ? nothing : "Provider finish_reason: $(isnothing(finish) ? "missing" : finish)"
+    Completion(choice["message"], used, finish, done, failure)
 end
 
 function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=identity)

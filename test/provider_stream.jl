@@ -182,7 +182,7 @@ end
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
         body = JSON3.read(String(request.body))
         push!(requests, (; target=request.target, authorization=HTTP.header(request, "Authorization", nothing), body))
-        response = request.target == "/api/v1/auth/keys" ? (; key="synthetic-secret") : (; choices=[(; message=(; role="assistant", content="CLI done"))])
+        response = request.target == "/api/v1/auth/keys" ? (; key="synthetic-secret") : (; choices=[(; message=(; role="assistant", content="CLI done"), finish_reason="stop")])
         HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(response))
     end
     try
@@ -218,7 +218,8 @@ end
         else
             Dict("role" => "assistant", "content" => "done")
         end
-        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(Dict("choices" => [Dict("message" => message)])))
+        finish = length(requests) == 1 ? "tool_calls" : "stop"
+        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(Dict("choices" => [Dict("message" => message, "finish_reason" => finish)])))
     end
     try
         mktempdir() do dir

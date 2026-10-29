@@ -202,7 +202,8 @@ end
         else
             Dict("role" => "assistant", "content" => "done")
         end
-        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write((; choices=[(; message)])))
+        finish_reason = length(requests) == 1 ? "tool_calls" : "stop"
+        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write((; choices=[(; message, finish_reason)])))
     end
     try
         withenv("JF_PROVIDER" => "openai", "OPENAI_BASE_URL" => "http://$(HTTP.server_addr(server))/v1", "OPENAI_MODEL" => "test", "OPENAI_API_KEY" => "synthetic") do

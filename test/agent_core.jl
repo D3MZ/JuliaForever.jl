@@ -129,17 +129,17 @@ end
 
 function JuliaForever.complete(provider::AgentFixture, messages, tools; parameters=Dict())
     push!(provider.requests, deepcopy(messages))
-    popfirst!(provider.replies).message
+    popfirst!(provider.replies)
 end
 
-@testset "nonstreaming finish-reason gap" begin
+@testset "nonstreaming truncated tool calls" begin
     mktempdir() do dir
         calls = [call("one", "write", (; path="a.txt", content="partial"))]
         provider = AgentFixture([completion(nothing; calls, finish="length"), completion("done")], [])
         agent = Agent(provider, [Write(dir)])
         @test respond!(agent, "start") == "done"
-        # complete currently discards finish reason, so the agent cannot reject this truncated call.
-        @test_broken !isfile(joinpath(dir, "a.txt"))
+        @test !isfile(joinpath(dir, "a.txt"))
+        @test occursin("output token limit", provider.requests[2][end]["content"])
     end
 end
 
