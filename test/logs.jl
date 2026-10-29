@@ -30,6 +30,16 @@ end
     @test replay[2].effects[1].effect.type == "tool_request"
     @test replay[3].state.messages[end].content == "text"
     @test occursin("cipher", L.html(K.Replay(start, events)))
+
+    control = K.Event[C.Advance(1), C.Cancel(2), C.History(3, C.Message[C.RawMessage(Dict("role" => "system", "content" => "rules"))]), C.Interrupt(4, "stopped"), K.Observe(5, "model", C.ModelFailure("failed"))]
+    rows = JSON3.read(L.json(control))
+    @test [row.type for row in rows] == ["advance", "cancel", "history", "interrupt", "observe"]
+    @test rows[3].messages[1].type == "raw_message"
+    @test rows[5].observation.type == "model_failure"
+    state = JSON3.read(L.json([C.State("manual"; automatic=false)]))[1]
+    @test !state.automatic && !state.cancelled && state.flushed == 0
+    call = C.ToolCall("c1", "read", "{}"; metadata=Dict("extra" => "preserved"))
+    @test JSON3.read(L.json([call]))[1].metadata.extra == "preserved"
 end
 
 Base.IteratorSize(::Type{<:OnceHistory}) = Base.SizeUnknown()
