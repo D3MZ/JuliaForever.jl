@@ -129,7 +129,7 @@ function Base.convert(::Type{Dict{String, Any}}, call::Conversation.ToolCall)
 end
 
 function Base.convert(::Type{Dict{String, Any}}, message::Conversation.ToolMessage)
-    Dict{String, Any}("role" => "tool", "tool_call_id" => message.id, "content" => message.content)
+    Dict{String, Any}("role" => "tool", "tool_call_id" => message.id, "content" => message.content, "is_error" => message.iserror)
 end
 
 Base.convert(::Type{Dict{String, Any}}, message::Conversation.RawMessage) = deepcopy(message.value)

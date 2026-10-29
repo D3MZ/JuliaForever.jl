@@ -67,6 +67,7 @@ include("provider.jl")
 include("provider_stream.jl")
 include("openrouter_callback.jl")
 include("provider_responses.jl")
+include("provider_anthropic.jl")
 include("provider_invalid.jl")
 
 if haskey(ENV, "PI_SOURCE")
