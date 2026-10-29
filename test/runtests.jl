@@ -56,6 +56,7 @@ end
 end
 
 include("agent_core.jl")
+include("tool_faults.jl")
 include("terminal.jl")
 include("terminal_http.jl")
 include("terminal_history.jl")

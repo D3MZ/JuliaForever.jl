@@ -1,4 +1,4 @@
-import ..JuliaForever: Tool, ToolResult, ToolFailure, Completion, Usage, InvalidResponse, name, execute, complete, conversation_reply
+import ..JuliaForever: Tool, ToolResult, ToolFailure, Completion, Usage, InvalidResponse, name, execute, complete, conversation_reply, attempt
 import ..Conversation
 import ..Kernel
 using JSON3
@@ -85,12 +85,12 @@ end
 function perform(work::Work{Conversation.ToolRequest}, cancellation::Cancellation)
     capabilities = context(work.context)
     call = work.effect.call
-    result = try
-        execute(capabilities.tools[call.name], JSON3.read(call.arguments))
+    tool, args = try
+        capabilities.tools[call.name], JSON3.read(call.arguments)
     catch exception
-        ToolFailure(sprint(showerror, exception))
+        return Conversation.ToolReply(ToolFailure(sprint(showerror, exception)))
     end
-    Conversation.ToolReply(result)
+    Conversation.ToolReply(attempt(() -> execute(tool, args)))
 end
 
 function perform(work::Work{Conversation.SkipRequest}, cancellation::Cancellation)
