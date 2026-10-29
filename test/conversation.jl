@@ -98,6 +98,39 @@ end
     @test third.state.phase == C.Complete
 end
 
+@testset "provider metadata survives transitions and replay" begin
+    @test isempty(C.Assistant("text", C.ToolCall[], "stop", true).metadata)
+    metadata = Dict{String, Any}(
+        "response_output" => Any[Dict{String, Any}("type" => "reasoning", "encrypted_content" => "ciphertext"), Dict{String, Any}("type" => "function_call", "call_id" => "call-1", "arguments" => "{}")],
+        "reasoning_content" => "summary",
+    )
+    assistant = C.Assistant(nothing, [C.ToolCall("call-1", "read", "{}")], "tool_calls", true; metadata)
+    metadata["response_output"][1]["encrypted_content"] = "mutated source"
+    @test assistant.metadata["response_output"][1]["encrypted_content"] == "ciphertext"
+
+    initial = C.State("metadata")
+    input = C.Input(0, "read")
+    started = K.step(initial, input)
+    observation = K.Observe(1, only(started.effects).id, C.ModelReply(assistant))
+    planned = K.step(started.state, observation)
+    tool_observation = K.Observe(2, only(planned.effects).id, C.ToolReply("contents", false))
+    replay = K.Replay(initial, (input, observation, tool_observation))
+    assistant.metadata["response_output"][1]["encrypted_content"] = "mutated event"
+    next = K.step(planned.state, tool_observation)
+    saved = only(message for message in next.state.messages if message isa C.Assistant)
+    sent = only(message for message in only(next.effects).effect.messages if message isa C.Assistant)
+    @test saved.metadata["response_output"][1]["encrypted_content"] == "ciphertext"
+    @test sent.metadata["response_output"][2]["call_id"] == "call-1"
+    @test sent.metadata["reasoning_content"] == "summary"
+    sent.metadata["response_output"][1]["encrypted_content"] = "mutated executor"
+    @test only(message for message in next.state.messages if message isa C.Assistant).metadata["response_output"][1]["encrypted_content"] == "ciphertext"
+    @test only(message for message in last(collect(replay)).state.messages if message isa C.Assistant).metadata["response_output"][1]["encrypted_content"] == "ciphertext"
+
+    left = C.Assistant("x", C.ToolCall[], "stop", true; metadata=Dict{String, Any}("value" => true))
+    right = C.Assistant("x", C.ToolCall[], "stop", true; metadata=Dict{String, Any}("value" => 1))
+    @test !isequal(C.ModelReply(left), C.ModelReply(right))
+end
+
 @testset "conversation replay" begin
     mktempdir() do dir
         path = joinpath(dir, "not-executed.txt")

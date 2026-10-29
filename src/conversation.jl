@@ -19,7 +19,14 @@ struct Assistant <: Message
     calls::Vector{ToolCall}
     finish::Union{Nothing, String}
     done::Bool
+    metadata::Dict{String, Any}
+
+    function Assistant(content, calls, finish, done, metadata::AbstractDict)
+        new(content, deepcopy(calls), finish, done, deepcopy(Dict{String, Any}(metadata)))
+    end
 end
+
+Assistant(content, calls, finish, done; metadata=Dict{String, Any}()) = Assistant(content, calls, finish, done, metadata)
 
 struct ToolMessage <: Message
     id::String
@@ -45,11 +52,11 @@ struct ToolReply <: K.Observation
 end
 
 Base.isequal(a::ToolCall, b::ToolCall) = isequal((a.id, a.name, a.arguments), (b.id, b.name, b.arguments))
-Base.isequal(a::Assistant, b::Assistant) = isequal((a.content, a.calls, a.finish, a.done), (b.content, b.calls, b.finish, b.done))
+Base.isequal(a::Assistant, b::Assistant) = K.same((a.content, a.calls, a.finish, a.done, a.metadata), (b.content, b.calls, b.finish, b.done, b.metadata))
 Base.isequal(a::ModelReply, b::ModelReply) = isequal(a.message, b.message)
 Base.isequal(a::ToolReply, b::ToolReply) = isequal((a.text, a.iserror), (b.text, b.iserror))
 Base.hash(value::ToolCall, h::UInt) = hash((value.id, value.name, value.arguments), hash(ToolCall, h))
-Base.hash(value::Assistant, h::UInt) = hash((value.content, value.calls, value.finish, value.done), hash(Assistant, h))
+Base.hash(value::Assistant, h::UInt) = hash((value.content, value.calls, value.finish, value.done, value.metadata), hash(Assistant, h))
 Base.hash(value::ModelReply, h::UInt) = hash(value.message, hash(ModelReply, h))
 Base.hash(value::ToolReply, h::UInt) = hash((value.text, value.iserror), hash(ToolReply, h))
 
