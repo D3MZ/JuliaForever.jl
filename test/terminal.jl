@@ -19,10 +19,10 @@ struct TerminalFailure <: JuliaForever.Tool end
 JuliaForever.name(::TerminalFailure) = "failure"
 JuliaForever.execute(::TerminalFailure, args) = ToolResult("missing synthetic-secret", true)
 
-function terminal_completion(text; calls=[], done=true, failure=nothing)
+function terminal_completion(text; calls=[], finish="stop", done=true, failure=nothing)
     message = Dict{String, Any}("role" => "assistant", "content" => text)
     isempty(calls) || (message["tool_calls"] = calls)
-    Completion(message, nothing, done ? "stop" : nothing, done, failure)
+    Completion(message, nothing, done ? finish : nothing, done, failure)
 end
 
 function contents(io::IOBuffer)
@@ -40,6 +40,47 @@ end
 
 Base.unsafe_write(io::TerminalOutput, data::Ptr{UInt8}, count::UInt) = Base.unsafe_write(io.buffer, data, count)
 Base.flush(io::TerminalOutput) = push!(io.flushed, contents(io.buffer))
+
+@testset "terminal truncated final text" begin
+    for history in (nothing, JuliaForever.History.Memory())
+        output, diagnostics = TerminalOutput(IOBuffer(), String[]), IOBuffer()
+        seen = String[]
+        provider = TerminalFixture([(terminal_completion("partial content"; finish="length"), ["partial", " content"])], () -> push!(seen, contents(output.buffer)))
+        terminal = JuliaForever.Terminal(output, diagnostics, String[])
+        @test JuliaForever.run!(terminal, Agent(provider, []; history), "start") == 1
+        @test seen == ["partial", "partial content"]
+        @test contents(output.buffer) == "partial content\n"
+        @test "partial content" in output.flushed
+        @test String(take!(diagnostics)) == "Response was truncated: the model reached its output token limit.\n"
+    end
+end
+
+@testset "terminal incomplete stream after length reason" begin
+    output, diagnostics = IOBuffer(), IOBuffer()
+    message = Dict{String, Any}("role" => "assistant", "content" => "partial")
+    response = Completion(message, nothing, "length", false, "stream interrupted")
+    provider = TerminalFixture([(response, ["partial"])], () -> nothing)
+    terminal = JuliaForever.Terminal(output, diagnostics, String[])
+    @test JuliaForever.run!(terminal, Agent(provider, []), "start") == 1
+    @test String(take!(output)) == "partial\n"
+    @test String(take!(diagnostics)) == "Response incomplete: the provider stream did not finish\n"
+end
+
+@testset "terminal recovers from truncated tool calls" begin
+    mktempdir() do dir
+        call = Dict("id" => "one", "type" => "function", "function" => Dict("name" => "write", "arguments" => JSON3.write((; path="unsafe.txt", content="partial"))))
+        for history in (nothing, JuliaForever.History.Memory())
+            replies = [(terminal_completion("partial"; calls=[call], finish="length"), ["partial"]), (terminal_completion("recovered"), ["recovered"])]
+            provider = TerminalFixture(replies, () -> nothing)
+            output, diagnostics = IOBuffer(), IOBuffer()
+            terminal = JuliaForever.Terminal(output, diagnostics, String[])
+            @test JuliaForever.run!(terminal, Agent(provider, [Write(dir)]; history), "start") == 0
+            @test String(take!(output)) == "partial\nrecovered\n"
+            @test occursin("output token limit", String(take!(diagnostics)))
+            @test !isfile(joinpath(dir, "unsafe.txt"))
+        end
+    end
+end
 
 @testset "terminal streaming and tools" begin
     output, diagnostics = TerminalOutput(IOBuffer(), String[]), IOBuffer()
@@ -81,6 +122,16 @@ function terminal_process(mode, args; input="", key="synthetic-secret")
     end
 end
 
+function pi_terminal_truncation(source)
+    script = joinpath(@__DIR__, "terminal_truncation_pi.mjs")
+    mktempdir() do dir
+        output, diagnostics = joinpath.((dir,), ("output", "diagnostics"))
+        cmd = `node --conditions=source --experimental-strip-types $script $source`
+        process = run(pipeline(ignorestatus(cmd); stdout=output, stderr=diagnostics))
+        (; status=process.exitcode, output=read(output, String), diagnostics=read(diagnostics, String))
+    end
+end
+
 @testset "terminal process streams and status" begin
     success = terminal_process("tool", ["start"])
     @test success.status == 0
@@ -92,6 +143,17 @@ end
 
     incomplete = terminal_process("incomplete", ["start"])
     @test incomplete == (; status=1, output="partial\n", diagnostics="Response incomplete: the provider stream did not finish\n")
+
+    truncated = terminal_process("length", ["start"])
+    @test truncated == (; status=1, output="partial content\n", diagnostics="Response was truncated: the model reached its output token limit.\n")
+    mktempdir() do dir
+        @test terminal_process("length", ["--history", joinpath(dir, "history.sqlite"), "start"]) == truncated
+    end
+    if haskey(ENV, "PI_SOURCE")
+        source = ENV["PI_SOURCE"]
+        @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
+        @test pi_terminal_truncation(source) == truncated
+    end
 
     failure = terminal_process("http", ["start"])
     @test failure == (; status=1, output="", diagnostics="Request failed (HTTP 401).\n")

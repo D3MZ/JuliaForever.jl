@@ -181,7 +181,7 @@ function respond_recorded!(agent::Agent, prompt; on_event=nothing, on_agent_even
             next, added = transition!(revision -> Conversation.Advance(revision), agent)
             next isa Kernel.Applied || return next
             cancelled(agent) && return :cancelled
-            isempty(next.effects) && return message["content"]
+            isempty(next.effects) && return finish(message, result)
             emit(on_agent_event, (; type=:turn_start))
             present!(agent, added, messages, on_agent_event)
             !isnothing(agent.fault) && return agent.fault

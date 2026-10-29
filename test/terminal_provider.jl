@@ -27,6 +27,11 @@ function JuliaForever.stream(provider::OpenAI, messages, tools; parameters=Dict(
         on_event((; type=:text, text="partial"))
         return Completion(Dict{String, Any}("role" => "assistant", "content" => "partial"), nothing, nothing, false, "synthetic-secret")
     end
+    if mode == "length"
+        on_event((; type=:text, text="partial"))
+        on_event((; type=:text, text=" content"))
+        return Completion(Dict{String, Any}("role" => "assistant", "content" => "partial content"), nothing, "length", true, nothing)
+    end
     first = mode == "tool" && messages[end]["role"] == "user"
     text = first ? "Before" : mode == "tool" ? "after" : "reply:" * messages[end]["content"]
     on_event((; type=:text, text))

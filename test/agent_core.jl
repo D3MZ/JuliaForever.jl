@@ -1,4 +1,4 @@
-using JSON3
+using Distributed, JSON3
 
 mutable struct AgentFixture
     replies::Vector{Completion}
@@ -14,10 +14,15 @@ function JuliaForever.stream(provider::AgentFixture, messages, tools; parameters
     result
 end
 
-function completion(content; calls=[], finish="stop", done=true)
+function JuliaForever.complete(provider::AgentFixture, messages, tools; parameters=Dict())
+    push!(provider.requests, deepcopy(messages))
+    popfirst!(provider.replies)
+end
+
+function completion(content; calls=[], finish="stop", done=true, usage=nothing)
     message = Dict{String, Any}("role" => "assistant", "content" => content)
     isempty(calls) || (message["tool_calls"] = calls)
-    Completion(message, nothing, finish, done, done ? nothing : "interrupted")
+    Completion(message, usage, finish, done, done ? nothing : "interrupted")
 end
 
 call(id, name, args) = Dict("id" => id, "type" => "function", "function" => Dict("name" => name, "arguments" => JSON3.write(args)))
@@ -99,6 +104,36 @@ end
     @test last(events).type == :agent_end
 end
 
+@testset "truncated final model response" begin
+    for recorded in (false, true), streaming in (false, true)
+        provider = AgentFixture([completion("partial"; finish="length", usage=Usage(1, 2, 0, 0, 0, 3, nothing))], [])
+        history = recorded ? JuliaForever.History.Memory() : nothing
+        agent = Agent(provider, []; history)
+        result = respond!(agent, "start"; on_event=streaming ? identity : nothing)
+        @test nameof(typeof(result)) == :Truncated
+        if nameof(typeof(result)) == :Truncated
+            @test result isa JuliaForever.Truncated
+            @test result.completion.finish == "length"
+            @test result.completion.message["content"] == "partial"
+            @test result.completion.usage.total == 3
+        end
+        @test agent.state.phase == JuliaForever.Conversation.Complete
+    end
+
+    for recorded in (false, true)
+        provider = AgentFixture([completion("partial"; finish="length"), completion("recovered")], [])
+        history = recorded ? JuliaForever.History.Memory() : nothing
+        agent = Agent(provider, []; history)
+        result = respond!(agent, "start"; on_event=identity, on_agent_event=event -> begin
+            if event.type == :message_end && event.message["role"] == "assistant" && event.message["content"] == "partial"
+                followup!(agent, "continue")
+            end
+        end)
+        @test result == "recovered"
+        @test length(provider.requests) == 2
+    end
+end
+
 mutable struct ConcurrentTool <: JuliaForever.Tool
     release::Channel{Nothing}
 end
@@ -127,11 +162,6 @@ end
     @test [message["tool_call_id"] for message in provider.requests[2] if message["role"] == "tool"] == ["one", "two"]
 end
 
-function JuliaForever.complete(provider::AgentFixture, messages, tools; parameters=Dict())
-    push!(provider.requests, deepcopy(messages))
-    popfirst!(provider.replies)
-end
-
 @testset "nonstreaming truncated tool calls" begin
     mktempdir() do dir
         calls = [call("one", "write", (; path="a.txt", content="partial"))]
@@ -140,6 +170,32 @@ end
         @test respond!(agent, "start") == "done"
         @test !isfile(joinpath(dir, "a.txt"))
         @test occursin("output token limit", provider.requests[2][end]["content"])
+    end
+end
+
+@testset "executor truncated final model response" begin
+    execution = JuliaForever.Execution
+    for recorded in (false, true)
+        provider = AgentFixture([completion("partial"; finish="length", usage=Usage(1, 2, 0, 0, 0, 3, nothing))], [])
+        context = "truncated-final-$recorded"
+        @test execution.install!(context, provider, [])
+        pool = execution.Executor(Distributed.myid())
+        try
+            history = recorded ? JuliaForever.History.Memory() : nothing
+            agent = Agent(nothing, []; history)
+            result = respond!(agent, "start"; executor=pool, context)
+            @test nameof(typeof(result.value)) == :Truncated
+            if nameof(typeof(result.value)) == :Truncated
+                @test result.value isa JuliaForever.Truncated
+                @test result.value.completion.finish == "length"
+                @test result.value.completion.message["content"] == "partial"
+                @test result.value.completion.usage.total == 3
+            end
+            @test agent.state.phase == JuliaForever.Conversation.Complete
+        finally
+            close(pool)
+            execution.uninstall!(context)
+        end
     end
 end
 

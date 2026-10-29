@@ -50,8 +50,16 @@ function render!(terminal::Terminal, event)
     end
 end
 
-function result!(terminal::Terminal, result::Completion)
-    result.error isa InvalidResponse && return failure!(terminal, result.error)
+result!(terminal::Terminal, result::Completion) = result!(terminal, result, result.error)
+result!(terminal::Terminal, ::Completion, failure::InvalidResponse) = failure!(terminal, failure)
+
+function result!(terminal::Terminal, ::Truncated)
+    println(terminal.diagnostics, "Response was truncated: the model reached its output token limit.")
+    flush(terminal.diagnostics)
+    1
+end
+
+function result!(terminal::Terminal, result::Completion, ::Union{Nothing, String})
     detail = result.finish == "content_filter" ? "content was filtered" : result.finish == "failed" ? "the provider reported failure" : result.finish == "incomplete" ? "the provider reported incomplete output" : "the provider stream did not finish"
     println(terminal.diagnostics, "Response incomplete: ", detail)
     flush(terminal.diagnostics)

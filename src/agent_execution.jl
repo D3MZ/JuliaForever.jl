@@ -61,6 +61,11 @@ end
 respond_execution!(::Agent, prompt, executor, context; kwargs...) = Execution.Rejected(:executor)
 respond_execution!(::Agent, prompt, ::Execution.Executor, context; kwargs...) = Execution.Rejected(:context)
 
+function finish(message, result::Execution.ModelResult{Conversation.ModelReply})
+    reply = result.observation.message
+    finish(message, Completion(message, result.usage, reply.finish, reply.done, result.error))
+end
+
 function respond_execution!(agent::Agent, prompt, executor::Execution.Executor, context::AbstractString; on_event, on_agent_event, parameters, tool_execution)
     rejected = fault(agent)
     isnothing(rejected) || return rejected
@@ -142,7 +147,7 @@ function respond_execution!(agent::Agent, prompt, executor::Execution.Executor, 
             next, added = transition!(revision -> Conversation.Advance(revision), agent)
             next isa Kernel.Applied || return Execution.Turn(next, models)
             cancelled(agent) && return Execution.Turn(:cancelled, models)
-            isempty(next.effects) && return Execution.Turn(message["content"], models)
+            isempty(next.effects) && return Execution.Turn(finish(message, model), models)
             emit(on_agent_event, (; type=:turn_start))
             present!(agent, added, messages, on_agent_event)
             effect = only(next.effects)

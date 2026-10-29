@@ -1,5 +1,9 @@
 export steer!, followup!, cancel!, abandon!
 
+struct Truncated
+    completion::Completion
+end
+
 struct Cancelled end
 
 mutable struct Agent{P}
@@ -316,6 +320,9 @@ end
 conversation_reply(message, calls, ::Nothing) = Conversation.ModelReply(Conversation.Assistant(get(message, "content", nothing), calls, nothing, true; metadata=message))
 conversation_reply(message, calls, result) = Conversation.ModelReply(Conversation.Assistant(get(message, "content", nothing), calls, result.finish, result.done; metadata=message))
 
+finish(message, ::Nothing) = message["content"]
+finish(message, result::Completion) = result.finish == "length" ? Truncated(result) : message["content"]
+
 function modelresponse(agent, effect, parameters, on_event, on_agent_event)
     returned = false
     try
@@ -391,7 +398,7 @@ function respond!(agent::Agent, prompt, ::Nothing; on_event, on_agent_event, par
             sync!(agent)
             next, added = transition!(revision -> Conversation.Advance(revision), agent)
             cancelled(agent) && return :cancelled
-            isempty(next.effects) && return message["content"]
+            isempty(next.effects) && return finish(message, result)
             emit(on_agent_event, (; type=:turn_start))
             present!(agent, added, messages, on_agent_event)
             effect = only(next.effects)

@@ -25,3 +25,20 @@
         @test [message["role"] for message in agent.messages] == reference["roles"]
     end
 end
+
+@testset "Pi truncated tool call recovery" begin
+    source = ENV["PI_SOURCE"]
+    @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
+    reference = JSON3.read(read(`node $(joinpath(@__DIR__, "agent_truncation_pi.mjs")) $source`, String))
+    mktempdir() do dir
+        calls = [call("one", "write", (; path="unsafe.txt", content="partial"))]
+        provider = AgentFixture([completion("partial"; calls, finish="length"), completion("recovered")], [])
+        agent = Agent(provider, [Write(dir)])
+        @test respond!(agent, "start"; on_event=identity) == reference.output
+        @test length(provider.requests) == reference.requests == 2
+        @test !isfile(joinpath(dir, "unsafe.txt")) && reference.executions == 0
+        toolmessage = only(message for message in provider.requests[2] if message["role"] == "tool")
+        @test startswith(toolmessage["content"], "Error:") && reference.toolError
+        @test occursin("output token limit", toolmessage["content"]) && reference.limitMessage
+    end
+end
