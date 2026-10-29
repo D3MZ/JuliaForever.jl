@@ -98,6 +98,42 @@ end
     @test third.state.phase == C.Complete
 end
 
+@testset "deferred planning and ordered tool messages" begin
+    input = K.step(C.State("deferred"; automatic=false), C.Input(0, "start"))
+    @test input.state.phase == C.ReadyModel && isempty(input.effects)
+    queued = K.step(input.state, C.Steer(1, "steer"))
+    model = K.step(queued.state, C.Advance(2))
+    @test model.state.phase == C.WaitingModel
+    @test [message.content for message in only(model.effects).effect.messages] == ["start", "steer"]
+    calls = [C.ToolCall("a", "write", "{}"), C.ToolCall("b", "read", "{}")]
+    plan = K.step(model.state, K.Observe(3, only(model.effects).id, reply(nothing; calls, finish="tool_calls")))
+    first = K.step(plan.state, K.Observe(4, plan.effects[1].id, C.ToolReply("one", false)))
+    @test [message.id for message in first.state.messages if message isa C.ToolMessage] == ["a"]
+    @test first.state.phase == C.WaitingTools
+    second = K.step(first.state, K.Observe(5, plan.effects[2].id, C.ToolReply("two", false)))
+    @test [message.id for message in second.state.messages if message isa C.ToolMessage] == ["a", "b"]
+    @test second.state.phase == C.ReadyModel && isempty(second.effects)
+    steered = K.step(second.state, C.Steer(6, "after tools"))
+    next = K.step(steered.state, C.Advance(7))
+    @test last(only(next.effects).effect.messages).content == "after tools"
+    answered = K.step(next.state, K.Observe(8, only(next.effects).id, reply("answer")))
+    @test answered.state.phase == C.ReadyDecision && isempty(answered.effects)
+    completed = K.step(answered.state, C.Advance(9))
+    @test completed.state.phase == C.Complete
+
+    input = K.step(C.State("skip"; automatic=false), C.Input(0, "go"))
+    model = K.step(input.state, C.Advance(1))
+    skipped = K.step(model.state, K.Observe(2, only(model.effects).id, reply(nothing; calls=[calls[1]], finish="length")))
+    @test only(skipped.effects).effect isa C.SkipRequest
+    observed = K.step(skipped.state, K.Observe(3, only(skipped.effects).id, C.ToolReply("truncated", true)))
+    @test observed.state.phase == C.ReadyModel
+    @test last(observed.state.messages).content == "Error: truncated"
+
+    input = K.step(C.State("cancel"; automatic=false), C.Input(0, "go"))
+    cancelled = K.step(input.state, C.Cancel(1))
+    @test K.step(cancelled.state, C.Advance(2)).state.phase == C.Cancelled
+end
+
 @testset "provider metadata survives transitions and replay" begin
     @test isempty(C.Assistant("text", C.ToolCall[], "stop", true).metadata)
     metadata = Dict{String, Any}(
