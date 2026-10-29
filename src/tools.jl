@@ -78,25 +78,33 @@ function resume!(entry::Mutation)
     end
 end
 
+function acquire!(entry::Mutation, task::Task, ::Nothing)
+    entry.owner = task
+    entry.depth += 1
+    nothing
+end
+
+function acquire!(entry::Mutation, task::Task, owner::Task)
+    owner === task && return acquire!(entry, task, nothing)
+    signal = Channel{Nothing}(1)
+    put!(entry.waiters, (task, signal))
+    signal
+end
+
+await(::Nothing) = nothing
+await(signal::Channel{Nothing}) = take!(signal)
+
 function mutate(f, destination::AbstractString)
     task = current_task()
     key, entry, signal = lock(mutationguard) do
         key = mutationkey(destination)
         entry = get!(() -> Mutation(Channel{Tuple{Task, Channel{Nothing}}}(Inf), nothing, 0, 0), mutations, key)
-        signal = if isnothing(entry.owner) || entry.owner === task
-            entry.owner = task
-            entry.depth += 1
-            nothing
-        else
-            signal = Channel{Nothing}(1)
-            put!(entry.waiters, (task, signal))
-            signal
-        end
+        signal = acquire!(entry, task, entry.owner)
         entry.users += 1
         key, entry, signal
     end
     try
-        isnothing(signal) || take!(signal)
+        await(signal)
         f()
     finally
         lock(mutationguard) do
