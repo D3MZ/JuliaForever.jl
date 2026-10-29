@@ -18,6 +18,9 @@ end
         body = JSON3.read(String(request.body))
         push!(requests, (; target=request.target, authorization=HTTP.header(request, "Authorization", nothing), body))
         if request.target == "/router/auth/keys"
+            body.code == "synthetic-empty" && return HTTP.Response(200, ["Content-Type" => "application/json"], "{}")
+            body.code == "synthetic-malformed" && return HTTP.Response(200, ["Content-Type" => "application/json"], "{synthetic-login-secret")
+            body.code == "synthetic-http" && return HTTP.Response(401, ["Content-Type" => "application/json"], "synthetic-login-secret")
             return HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write((; key="synthetic-login-secret")))
         end
         if request.target != "/router/auth/keys" && haskey(body, :messages) && body.messages[end].content == "deny"
@@ -91,13 +94,25 @@ end
                 @test !occursin(secret, login.output * login.diagnostics)
             end
 
+            for (code, status, diagnostic) in (("synthetic-empty", 2, "did not return an API key"), ("synthetic-malformed", 1, "invalid provider response"), ("synthetic-http", 1, "HTTP 401"))
+                before = length(requests)
+                failed = models_process(base, workspace, ["--login-openrouter", "--model", "login/model", "hello"]; router_key=nothing, input=code * "\n")
+                @test failed.status == status
+                @test occursin(diagnostic, failed.diagnostics)
+                @test length(requests) == before + 1
+                @test requests[end].target == "/router/auth/keys"
+                for secret in (code, "synthetic-login-secret", requests[end].body.code_verifier)
+                    @test !occursin(secret, failed.output * failed.diagnostics)
+                end
+            end
+
             denied = models_process(base, workspace, ["--provider", "openrouter", "--model", "vendor/cli", "deny"])
             @test denied.status == 1
             @test occursin("HTTP 401", denied.diagnostics)
             @test !occursin("synthetic-router-secret", denied.output * denied.diagnostics)
 
             before = length(requests)
-            for args in (["--provider"], ["--model"], ["--model", "--history", path], ["--provider", "--model", "unused"], ["--provider", ""], ["--model", "  "], ["--provider", "synthetic-openai-secret", "hello"], ["--provider", "openai", "--login-openrouter", "hello"])
+            for args in (["--provider"], ["--model"], ["--model", "--history", path], ["--provider", "--model", "unused"], ["--provider", ""], ["--model", "  "], ["--provider", "synthetic-openai-secret", "hello"], ["--provider", "openai", "--login-openrouter", "hello"], ["--login-openrouter", "--login-openrouter-callback", "hello"], ["--login-openrouter-callback", "--login-openrouter", "hello"])
                 result = models_process(base, workspace, args)
                 @test result.status == 2
                 @test !occursin("synthetic-openai-secret", result.output * result.diagnostics)

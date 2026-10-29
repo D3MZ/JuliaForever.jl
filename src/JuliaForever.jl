@@ -45,6 +45,93 @@ end
 
 configuredlogin(env, info, model) = reportmissing(missingmodel(env, info, model))
 
+abstract type Authentication end
+struct APIKeyAuth <: Authentication end
+abstract type OpenRouterAuth <: Authentication end
+struct CodeAuth <: OpenRouterAuth end
+struct CallbackAuth <: OpenRouterAuth end
+
+haslogin(::APIKeyAuth) = false
+haslogin(::OpenRouterAuth) = true
+validprovider(::Nothing) = true
+validprovider(name::AbstractString) = known(providerinfo(name))
+known(::Nothing) = false
+known(::NamedTuple) = true
+compatible(::APIKeyAuth, selected) = true
+compatible(::OpenRouterAuth, ::Nothing) = true
+compatible(::OpenRouterAuth, selected::AbstractString) = selected == "openrouter"
+providername(::APIKeyAuth, ::Nothing) = get(ENV, "JF_PROVIDER", "openai")
+providername(::APIKeyAuth, selected::AbstractString) = selected
+providername(::OpenRouterAuth, selected) = "openrouter"
+
+function authorize(::CodeAuth)
+    login = authorize()
+    println("Open this URL and authorize Julia Forever: ", login.url)
+    print("Authorization code: ")
+    flush(stdout)
+    login, strip(readline(stdin))
+end
+
+function authorize(::CallbackAuth)
+    callback = OpenRouterCallback()
+    try
+        login = authorize(callback)
+        println("Open this URL and authorize Julia Forever: ", login.url)
+        flush(stdout)
+        login, wait(callback)
+    finally
+        close(callback)
+    end
+end
+
+function authenticated(::Nothing, base, model)
+    println(stderr, "OpenRouter did not return an API key.")
+    2
+end
+
+authenticated(failure::InvalidResponse, base, model) = failure!(Terminal(stdout, stderr, String[]), failure)
+authenticated(key::AbstractString, base, model) = OpenAI(base, model, key)
+
+function login!(login::OpenRouterLogin, ::Nothing, info, model)
+    println(stderr, "OpenRouter authorization was denied or timed out.")
+    2
+end
+
+function login!(login::OpenRouterLogin, code::AbstractString, info, model)
+    base = get(ENV, info.base, info.url)
+    result = request!(Terminal(stdout, stderr, String[])) do
+        exchange(login, code; base)
+    end
+    result.status == 0 || return result.status
+    authenticated(result.value, base, modelvalue(ENV, info.model, model))
+end
+
+function acquire(::Authentication, ::Nothing, model)
+    println(stderr, "Unknown provider; choose openai, openai-responses, or openrouter.")
+    2
+end
+
+function acquire(::APIKeyAuth, info::NamedTuple, model)
+    configured(ENV, info, model) || return 2
+    provider(info, ENV, model)
+end
+
+function acquire(auth::OpenRouterAuth, info::NamedTuple, model)
+    configuredlogin(ENV, info, model) || return 2
+    login, code = authorize(auth)
+    login!(login, code, info, model)
+end
+
+launch(status::Integer, packages, environments, codemode, path, args) = status
+
+function launch(model::Union{OpenAI, OpenAIResponses}, packages, environments, codemode, path, args)
+    tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
+    Sys.iswindows() && push!(tools, PowerShell(pwd()))
+    terminal = Terminal(stdout, stderr, [model.key])
+    registry = plugins(terminal, tools, packages, environments)
+    Base.invokelatest(terminal!, terminal, model, registry, codemode, path, args)
+end
+
 function pluginfailure!(terminal::Terminal, name, exception)
     exception isa InterruptException && return failure!(terminal, exception)
     println(terminal.diagnostics, "[plugin] ", redact(terminal, name), ": ", redact(terminal, sprint(showerror, exception)))
@@ -94,8 +181,7 @@ function (@main)(args)
     inspect = false
     selected = nothing
     requested_model = nothing
-    login_requested = false
-    callback_requested = false
+    auth = APIKeyAuth()
     while !isempty(args)
         if first(args) == "--codemode"
             codemode = true
@@ -113,12 +199,11 @@ function (@main)(args)
             end
             args = args[3:end]
         elseif first(args) in ("--login-openrouter", "--login-openrouter-callback")
-            if login_requested
+            if haslogin(auth)
                 println(stderr, "Select only one OpenRouter login mode.")
                 return 2
             end
-            login_requested = true
-            callback_requested = first(args) == "--login-openrouter-callback"
+            auth = first(args) == "--login-openrouter" ? CodeAuth() : CallbackAuth()
             args = args[2:end]
         elseif first(args) in ("--plugin", "--plugin-env")
             option = first(args)
@@ -153,80 +238,34 @@ function (@main)(args)
         println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter. --provider overrides JF_PROVIDER; --model overrides OPENAI_MODEL or OPENROUTER_MODEL. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
         return 0
     end
-    if !isnothing(selected) && isnothing(providerinfo(selected))
+    if !validprovider(selected)
         println(stderr, "Unknown provider; choose openai, openai-responses, or openrouter.")
         return 2
     end
     if inspect
-        if isnothing(path) || !isnothing(reason) || login_requested || !isempty(args)
+        if isnothing(path) || !isnothing(reason) || haslogin(auth) || !isempty(args)
             println(stderr, "--inspect-history requires --history PATH and no prompt or --abandon.")
             return 2
         end
         return inspecthistory!(Terminal(stdout, stderr, String[]), path)
     end
     if !isnothing(reason)
-        if isnothing(path) || login_requested || !isempty(args)
+        if isnothing(path) || haslogin(auth) || !isempty(args)
             println(stderr, "--abandon requires --history PATH and no prompt.")
             return 2
         end
         return abandonhistory!(Terminal(stdout, stderr, String[]), path, reason)
     end
-    if login_requested && !isnothing(selected) && selected != "openrouter"
+    if !compatible(auth, selected)
         println(stderr, "OpenRouter login requires --provider openrouter.")
         return 2
     end
-    selected = login_requested ? "openrouter" : something(selected, get(ENV, "JF_PROVIDER", "openai"))
-    info = providerinfo(selected)
-    if isnothing(info)
-        println(stderr, "Unknown provider; choose openai, openai-responses, or openrouter.")
-        return 2
-    end
-    if login_requested
-        configuredlogin(ENV, info, requested_model) || return 2
-        if callback_requested
-            callback = OpenRouterCallback()
-            try
-                login = authorize(callback)
-                println("Open this URL and authorize Julia Forever: ", login.url)
-                flush(stdout)
-                code = wait(callback)
-            finally
-                close(callback)
-            end
-            if isnothing(code)
-                println(stderr, "OpenRouter authorization was denied or timed out.")
-                return 2
-            end
-        else
-            login = authorize()
-            println("Open this URL and authorize Julia Forever: ", login.url)
-            print("Authorization code: ")
-            flush(stdout)
-            code = strip(readline(stdin))
-        end
-        base = get(ENV, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-        result = request!(Terminal(stdout, stderr, String[])) do
-            exchange(login, code; base)
-        end
-        result.status == 0 || return result.status
-        key = result.value
-        key isa InvalidResponse && return failure!(Terminal(stdout, stderr, String[]), key)
-        if isnothing(key)
-            println(stderr, "OpenRouter did not return an API key.")
-            return 2
-        end
-        model = OpenAI(base, modelvalue(ENV, info.model, requested_model), key)
-    else
-        configured(ENV, info, requested_model) || return 2
-        model = provider(info, ENV, requested_model)
-    end
-    tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
-    Sys.iswindows() && push!(tools, PowerShell(pwd()))
-    terminal = Terminal(stdout, stderr, [model.key])
-    registry = plugins(terminal, tools, packages, environments)
-    registry isa Integer && return registry
-    Base.invokelatest(terminal!, terminal, model, registry, codemode, path, args)
+    info = providerinfo(providername(auth, selected))
+    model = acquire(auth, info, requested_model)
+    launch(model, packages, environments, codemode, path, args)
 end
+
+terminal!(terminal::Terminal, model, registry::Integer, codemode, path, args) = registry
 
 function terminal!(terminal::Terminal, model, registry::Extensions.Registry, codemode, path, args)
     if codemode
