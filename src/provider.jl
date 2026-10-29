@@ -28,6 +28,7 @@ function provider(env=ENV)
     selected == "openai-responses" && return OpenAIResponses(get(env, "OPENAI_BASE_URL", "https://api.openai.com/v1"), env["OPENAI_MODEL"], env["OPENAI_API_KEY"])
     selected == "openrouter" && return OpenAI(get(env, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"), env["OPENROUTER_MODEL"], env["OPENROUTER_API_KEY"])
     selected == "anthropic" && return Anthropic(get(env, "ANTHROPIC_BASE_URL", "https://api.anthropic.com"), env["ANTHROPIC_MODEL"], env["ANTHROPIC_API_KEY"])
+    selected == "google" && return Google(get(env, "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"), env["GEMINI_MODEL"], env["GEMINI_API_KEY"])
     nothing
 end
 
@@ -143,6 +144,8 @@ function chatmessage(message)
     delete!(data, "is_error")
     delete!(data, "anthropic_content")
     delete!(data, "anthropic_origin")
+    delete!(data, "google_parts")
+    delete!(data, "google_origin")
     delete!(data, "response_output")
     data
 end
