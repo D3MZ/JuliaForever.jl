@@ -65,4 +65,7 @@ function validate(token::AbstractString, client::AbstractString, nonce::Abstract
     Identity(String(id), email isa AbstractString ? String(email) : nothing)
 end
 
+
+include("chatgpt_callback.jl")
+
 end
