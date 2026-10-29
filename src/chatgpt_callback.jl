@@ -5,6 +5,7 @@ struct Register end
 
 struct Returning
     client::String
+    subject::String
 end
 
 struct Denied end
@@ -12,6 +13,22 @@ struct Denied end
 struct Code
     code::String
     client::String
+    ticket::Channel{Nothing}
+    gate::ReentrantLock
+end
+
+function Code(code::AbstractString, client::AbstractString)
+    ticket = Channel{Nothing}(1)
+    put!(ticket, nothing)
+    Code(String(code), String(client), ticket, ReentrantLock())
+end
+
+function consume(code::Code)
+    lock(code.gate) do
+        isready(code.ticket) || return nothing
+        take!(code.ticket)
+        code.code
+    end
 end
 
 Base.show(io::IO, ::Code) = print(io, "Code([redacted])")

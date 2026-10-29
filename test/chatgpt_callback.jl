@@ -50,7 +50,7 @@ end
 end
 
 @testset "ChatGPT reauthorization and denial" begin
-    pending = CB.Pending(CB.Returning("oaiapp_saved"), "urn:uuid:host-fixture")
+    pending = CB.Pending(CB.Returning("oaiapp_saved", "account-fixture"), "urn:uuid:host-fixture")
     try
         params = HTTP.queryparams(HTTP.URI(CB.authorize(pending)))
         @test params["client_id"] == "oaiapp_saved"
