@@ -2,7 +2,7 @@
 
 An experimental native Julia agent harness. B1 surface-parity tests use [Pi](https://github.com/earendil-works/pi) revision `e7a0df27c09d11bf4161d3605246cbf57a129cb2` as a reference.
 
-The [architecture](docs/architecture.md) describes the native state-machine design and Pi's temporary role as a B1 differential reference.
+The [B1 specification](docs/b1.md) and [architecture](docs/architecture.md) describe the native Julia design and Pi's temporary role as a differential reference.
 
 The current prototype supports OpenAI Responses and OpenAI-compatible chat completions for OpenAI and OpenRouter, streamed text and function calls, typed agent transitions and replay, text `read`, `write`, `edit`, shell, directory-listing and native search tools, JSON and HTML history export, and opt-in Julia code mode. An agent can optionally record transitions to an interchangeable history and reopen them; the local durable store currently supports Unix platforms. A worker-side adapter can execute conversation effects on configured Julia processes, but is not yet wired into the agent. Native Julia plugins, MCP, a full-screen terminal UI, and other features remain unimplemented. Agent effects currently run locally; recorded mode supports sequential tools only. Text editing currently supports exact matches only. See [terminal](docs/terminal.md), [providers](docs/providers.md), [shell](docs/system-tools.md), [search](docs/search-tools.md), [transitions](docs/conversation.md), [execution](docs/execution.md), [durable storage](docs/durable.md), [tasks](docs/scheduler.md), [sessions](docs/sessions.md), [histories](docs/history.md), [history export](docs/logs.md), and [code mode](docs/codemode.md) for limitations.
 
