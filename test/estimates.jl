@@ -47,7 +47,7 @@ const EC = JuliaForever.Conversation
     system_image_only = EC.RawMessage(Dict{String, Any}("role" => "system", "content" => [Dict("type" => "image", "data" => "ignored")]))
     @test CT.tokens(system_image) == CT.tokens("abc")
     @test CT.tokens(system_image_only) == 0
-    aliases = [(Dict("reasoning" => "fall😀"), "fall😀"), (Dict("reasoning_text" => "texto"), "texto"), (Dict("reasoning_content" => "", "reasoning" => "é😀", "reasoning_text" => "ignored"), "é😀"), (Dict("reasoning_content" => Dict("unexpected" => true), "reasoning" => "優"), "優"), (Dict("reasoning_content" => "first", "reasoning" => "later"), "first")]
+    aliases = [(Dict("reasoning" => "fall😀"), "fall😀"), (Dict("reasoning_text" => "texto"), "texto"), (Dict("reasoning_content" => "", "reasoning" => "é😀", "reasoning_text" => "ignored"), "é😀"), (Dict("reasoning_content" => Dict("unexpected" => true), "reasoning" => "優"), "優"), (Dict("reasoning_content" => "first", "reasoning" => "much longer alternative"), "first")]
     for (metadata, thinking) in aliases
         message = EC.Assistant("a", EC.ToolCall[], "stop", true; metadata)
         @test CT.tokens(message) == CT.tokens("a" * thinking)
