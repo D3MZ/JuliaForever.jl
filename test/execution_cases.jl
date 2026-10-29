@@ -3,16 +3,16 @@ module ExecutionCases
 using Distributed, JuliaForever
 const E = JuliaForever.Execution
 
-struct Value <: E.Work
+struct Value
     value::Int
 end
 
 E.perform(work::Value, cancellation::E.Cancellation) = (work.value, myid())
 
-struct Fail <: E.Work end
+struct Fail end
 E.perform(::Fail, cancellation::E.Cancellation) = error("work failed")
 
-struct Gate <: E.Work
+struct Gate
     started::RemoteChannel
     release::RemoteChannel
     cooperative::Bool
@@ -28,7 +28,7 @@ function E.perform(work::Gate, cancellation::E.Cancellation)
     :released
 end
 
-struct Crash <: E.Work
+struct Crash
     started::RemoteChannel
     release::RemoteChannel
 end

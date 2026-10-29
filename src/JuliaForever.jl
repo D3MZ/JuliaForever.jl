@@ -14,6 +14,7 @@ include("durable.jl")
 include("sessions.jl")
 include("kernel.jl")
 include("execution.jl")
+include("execution_kernel.jl")
 include("search.jl")
 include("codemode.jl")
 

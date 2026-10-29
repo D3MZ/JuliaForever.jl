@@ -2,8 +2,6 @@ module Execution
 
 using Distributed
 
-abstract type Work end
-
 function perform end
 
 struct Cancellation
@@ -48,7 +46,7 @@ end
 Base.fetch(handle::Handle) = fetch(handle.result)
 cancel!(handle::Handle) = cancel!(handle.cancellation)
 
-struct Request{W <: Work}
+struct Request{W}
     work::W
     handle::Handle
 end
@@ -58,7 +56,7 @@ struct Executor
     tasks::Vector{Task}
 end
 
-function run(work::Work, cancellation::Cancellation)
+function run(work, cancellation::Cancellation)
     cancelled(cancellation) && return Stopped()
     perform(work, cancellation)
 end
@@ -89,7 +87,7 @@ function Executor(pid::Int, pids::Int...; capacity=length(pids) + 1)
     Executor(queue, tasks)
 end
 
-function submit!(executor::Executor, id::AbstractString, attempt::Integer, work::Work)
+function submit!(executor::Executor, id::AbstractString, attempt::Integer, work)
     handle = Handle(String(id), Int(attempt), Cancellation(), Channel{Result}(1))
     put!(executor.queue, Request(work, handle))
     handle
