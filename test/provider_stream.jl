@@ -182,8 +182,12 @@ end
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
         body = JSON3.read(String(request.body))
         push!(requests, (; target=request.target, authorization=HTTP.header(request, "Authorization", nothing), body))
-        response = request.target == "/api/v1/auth/keys" ? (; key="synthetic-secret") : (; choices=[(; message=(; role="assistant", content="CLI done"), finish_reason="stop")])
-        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(response))
+        if request.target == "/api/v1/auth/keys"
+            HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write((; key="synthetic-secret")))
+        else
+            chunk = (; choices=[(; delta=(; content="CLI done"), finish_reason="stop")])
+            HTTP.Response(200, ["Content-Type" => "text/event-stream"], sse(chunk) * "data: [DONE]\n\n")
+        end
     end
     try
         base = "http://$(HTTP.server_addr(server))/api/v1"

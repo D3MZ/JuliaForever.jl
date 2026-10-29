@@ -196,14 +196,15 @@ end
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
         body = JSON3.read(String(request.body))
         push!(requests, body)
-        message = if length(requests) == 1
-            call = Dict("id" => "code-cli", "type" => "function", "function" => Dict("name" => "codemode", "arguments" => JSON3.write((; code="1 + 1"))))
-            Dict("role" => "assistant", "content" => nothing, "tool_calls" => [call])
+        delta = if length(requests) == 1
+            call = Dict("index" => 0, "id" => "code-cli", "type" => "function", "function" => Dict("name" => "codemode", "arguments" => JSON3.write((; code="1 + 1"))))
+            Dict("tool_calls" => [call])
         else
-            Dict("role" => "assistant", "content" => "done")
+            Dict("content" => "done")
         end
         finish_reason = length(requests) == 1 ? "tool_calls" : "stop"
-        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write((; choices=[(; message, finish_reason)])))
+        data = JSON3.write((; choices=[(; delta, finish_reason)]))
+        HTTP.Response(200, ["Content-Type" => "text/event-stream"], "data: $data\n\ndata: [DONE]\n\n")
     end
     try
         withenv("JF_PROVIDER" => "openai", "OPENAI_BASE_URL" => "http://$(HTTP.server_addr(server))/v1", "OPENAI_MODEL" => "test", "OPENAI_API_KEY" => "synthetic") do
