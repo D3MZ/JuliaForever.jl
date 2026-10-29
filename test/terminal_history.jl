@@ -90,8 +90,9 @@ end
                 end
             end
             executable = realpath(joinpath(Sys.BINDIR, Base.julia_exename()))
-            relative = relpath(executable, homedir())
-            if splitpath(relative)[1] != ".."
+            userdir = realpath(homedir())
+            if Sys.isunix() && startswith(executable, joinpath(userdir, ""))
+                relative = relpath(executable, userdir)
                 tildepath = joinpath("~", relative)
                 @test open(History.SQLite, tildepath; create=false) == History.Rejected(:history_format)
                 inspected = history_process(base, workspace, ["--history", tildepath, "--inspect-history"]; configured=false)
