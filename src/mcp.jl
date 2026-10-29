@@ -1,7 +1,7 @@
 module MCP
 
 using JSON3, Base64
-import ..JuliaForever: Tool, ToolResult, Image, imagelimit, imageformat, pngformat, name, description, schema, execute
+import ..JuliaForever: Tool, ToolResult, Image, imagelimit, imageformat, imageproblem, name, description, schema, execute
 
 struct Failure
     kind::Symbol
@@ -259,15 +259,18 @@ function image(content)
     end
     base64encode(bytes) == data || return Failure(:protocol, "Invalid image base64")
     length(bytes) <= imagelimit || return Failure(:capability, "Image exceeds the 10 MiB limit")
-    format = imageformat(bytes)
-    (mime == "image/png" && format == :png || mime == "image/jpeg" && format == :jpeg) || return Failure(:protocol, "Mismatched image data for $mime")
-    if format == :png
-        kind = pngformat(bytes)
-        kind == :animated && return Failure(:capability, "Animated PNG is not supported")
-        kind == :invalid && return Failure(:capability, "PNG structure is not supported")
-    end
-    Image(mime, data)
+    image(mime, data, bytes, imageformat(bytes))
 end
+
+image(mime, data, bytes, ::MIME) = Failure(:protocol, "Mismatched image data for $mime")
+
+function image(mime, data, bytes, format::Union{MIME"image/png", MIME"image/jpeg"})
+    mime == string(format) || return Failure(:protocol, "Mismatched image data for $mime")
+    image(mime, data, imageproblem(format, bytes))
+end
+
+image(mime, data, ::Nothing) = Image(mime, data)
+image(mime, data, problem::String) = Failure(:capability, problem)
 
 function execute(tool::RemoteTool, args)
     result = call(tool.client, tool.remote, args)

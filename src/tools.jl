@@ -155,56 +155,63 @@ function bmp(bytes)
 end
 
 function imageformat(bytes)
-    prefix(bytes, pngsignature) && return :png
-    prefix(bytes, UInt8[0xff, 0xd8, 0xff]) && return length(bytes) >= 4 && bytes[4] == 0xf7 ? :unsupported : :jpeg
-    (prefix(bytes, codeunits("GIF87a")) || prefix(bytes, codeunits("GIF89a"))) && return :unsupported
-    (length(bytes) >= 12 && prefix(bytes, codeunits("RIFF")) && @view(bytes[9:12]) == codeunits("WEBP")) && return :unsupported
-    bmp(bytes) && return :unsupported
-    :text
+    prefix(bytes, pngsignature) && return MIME"image/png"()
+    prefix(bytes, UInt8[0xff, 0xd8, 0xff]) && return length(bytes) >= 4 && bytes[4] == 0xf7 ? MIME"image/jls"() : MIME"image/jpeg"()
+    (prefix(bytes, codeunits("GIF87a")) || prefix(bytes, codeunits("GIF89a"))) && return MIME"image/gif"()
+    (length(bytes) >= 12 && prefix(bytes, codeunits("RIFF")) && @view(bytes[9:12]) == codeunits("WEBP")) && return MIME"image/webp"()
+    bmp(bytes) && return MIME"image/bmp"()
+    MIME"text/plain"()
 end
 
-function pngformat(bytes)
-    length(bytes) >= 33 || return :invalid
-    bytes[9:16] == UInt8[0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52] || return :invalid
+function pngproblem(bytes)
+    length(bytes) >= 33 || return "PNG structure is not supported"
+    bytes[9:16] == UInt8[0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52] || return "PNG structure is not supported"
     offset = 9
     while offset + 7 <= length(bytes)
         size = foldl((n, byte) -> n * 256 + Int(byte), @view(bytes[offset:offset+3]); init=0)
         stop = offset + size + 11
-        stop <= length(bytes) || return :invalid
+        stop <= length(bytes) || return "PNG structure is not supported"
         kind = @view bytes[offset+4:offset+7]
-        kind == codeunits("acTL") && return :animated
-        kind == codeunits("IDAT") && return :static
+        kind == codeunits("acTL") && return "Animated PNG is not supported"
+        kind == codeunits("IDAT") && return nothing
         offset = stop + 1
     end
-    :invalid
+    "PNG structure is not supported"
 end
 
-function readimage(io, format, bytes)
-    format == :unsupported && return ToolResult("Image format is not supported", true)
+imageproblem(::MIME"image/png", bytes) = pngproblem(bytes)
+imageproblem(::MIME"image/jpeg", bytes) = nothing
+
+function readimage(io, format::Union{MIME"image/png", MIME"image/jpeg"}, bytes)
     append!(bytes, read(io, imagelimit + 1 - length(bytes)))
     length(bytes) <= imagelimit || return ToolResult("Image exceeds the 10 MiB limit", true)
-    if format == :png
-        kind = pngformat(bytes)
-        kind == :animated && return ToolResult("Animated PNG is not supported", true)
-        kind == :invalid && return ToolResult("PNG structure is not supported", true)
-    end
-    mime = format == :png ? "image/png" : "image/jpeg"
+    imagefile(format, bytes, imageproblem(format, bytes))
+end
+
+readimage(io, ::MIME, bytes) = ToolResult("Image format is not supported", true)
+
+function imagefile(format::MIME, bytes, ::Nothing)
+    mime = string(format)
     ToolResult("Read image file [$mime]", false, Image(mime, base64encode(bytes)))
 end
+
+imagefile(::MIME, bytes, problem::String) = ToolResult(problem, true)
 
 function readfile(io)
     if !eof(io) && peek(io, UInt8) in imageheads
         bytes = read(io, 32)
-        format = imageformat(bytes)
-        format == :text && return String(bytes) * read(io, String)
-        return readimage(io, format, bytes)
+        return readfile(io, bytes, imageformat(bytes))
     end
     read(io, String)
 end
 
-function execute(tool::Read, args)
-    content = open(readfile, path(tool, args.path))
-    content isa ToolResult && return content
+readfile(io, bytes, ::MIME"text/plain") = String(bytes) * read(io, String)
+readfile(io, bytes, format::MIME) = readimage(io, format, bytes)
+
+execute(tool::Read, args) = readresult(open(readfile, path(tool, args.path)), args)
+readresult(result::ToolResult, args) = result
+
+function readresult(content::String, args)
     if !haskey(args, :offset) && !haskey(args, :limit) && ncodeunits(content) <= 51200 && count(==('\n'), content) + (!isempty(content) && !endswith(content, '\n')) <= 2000
         return ToolResult(content)
     end
