@@ -124,11 +124,18 @@ hint(value::AbstractString, key) = [key => String(value)]
 hint(registration::Returning) = [hint(registration.id_token, "id_token_hint"); hint(registration.email, "login_hint")]
 hint(registration::Reconsent) = [hint(registration.registration); "prompt" => "consent"]
 
+struct Authorization
+    uri::String
+end
+
+Base.show(io::IO, ::Authorization) = print(io, "Authorization([redacted])")
+launch(open::Function, authorization::Authorization) = open(authorization.uri) ? nothing : Rejected(:browser)
+
 function authorize(pending::Pending)
     values = ["client_id" => client(pending.registration), "ext_agent_host_id" => pending.host, "response_type" => "code", "redirect_uri" => pending.redirect, "scope" => "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct", "resource" => "https://api.openai.com/v1", "state" => pending.state, "nonce" => pending.nonce, "code_challenge_method" => "S256", "code_challenge" => base64url(sha256(pending.verifier))]
     append!(values, hint(pending.registration))
     query = join(("$(HTTP.escapeuri(key))=$(HTTP.escapeuri(value))" for (key, value) in values), "&")
-    "https://auth.openai.com/api/accounts/authorize?$query"
+    Authorization("https://auth.openai.com/api/accounts/authorize?$query")
 end
 
 function Base.wait(pending::Pending; timeout=300)

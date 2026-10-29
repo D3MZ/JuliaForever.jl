@@ -2,6 +2,16 @@ using HTTP, SHA, Base64
 
 const CB = JuliaForever.ChatGPT
 
+function authparams(address)
+    captured = Ref("")
+    result = CB.launch(address) do value
+        captured[] = value
+        true
+    end
+    @test isnothing(result)
+    HTTP.queryparams(HTTP.URI(captured[]))
+end
+
 function callbackget(pending, query; path="/auth/callback", headers=[])
     base = replace(pending.redirect, "/auth/callback" => path)
     HTTP.get(base * "?" * query, headers; status_exception=false, retry=false)
@@ -11,8 +21,8 @@ end
     first = CB.Pending(CB.Register(), "urn:uuid:host-fixture")
     second = CB.Pending(CB.Register(), "urn:uuid:host-fixture")
     try
-        params = HTTP.queryparams(HTTP.URI(CB.authorize(first)))
-        other = HTTP.queryparams(HTTP.URI(CB.authorize(second)))
+        params = authparams(CB.authorize(first))
+        other = authparams(CB.authorize(second))
         @test params["client_id"] == "dynamic_agent_client"
         @test params["agent_name_hint"] == "Julia Forever"
         @test params["ext_agent_host_id"] == "urn:uuid:host-fixture"
@@ -53,12 +63,18 @@ end
     registration = CB.Returning("oaiapp_saved", "account-fixture"; id_token="synthetic-id-token", email="fixture@example.test")
     pending = CB.Pending(registration, "urn:uuid:host-fixture")
     try
-        params = HTTP.queryparams(HTTP.URI(CB.authorize(pending)))
+        params = authparams(CB.authorize(pending))
         @test params["client_id"] == "oaiapp_saved"
         @test !haskey(params, "agent_name_hint")
         @test params["id_token_hint"] == "synthetic-id-token"
         @test params["login_hint"] == "fixture@example.test"
         @test !occursin("synthetic-id-token", sprint(show, registration))
+        address = CB.authorize(pending)
+        @test !occursin("synthetic-id-token", sprint(show, address))
+        @test !occursin("synthetic-id-token", sprint(show, MIME("text/plain"), address))
+        failed = CB.launch(_ -> false, address)
+        @test failed isa CB.Rejected && failed.reason == :browser
+        @test !occursin("synthetic-id-token", sprint(show, failed))
         @test !haskey(params, "prompt")
         @test callbackget(pending, "state=$(pending.state)&code=a&client_id=oaiapp_other").status == 400
         @test callbackget(pending, "state=$(pending.state)&code=a&client_id=oaiapp_saved&client_id=oaiapp_saved").status == 400
@@ -100,7 +116,7 @@ end
 @testset "ChatGPT explicit reconsent" begin
     pending = CB.Pending(CB.Reconsent(CB.Returning("oaiapp_saved", "account-fixture")), "urn:uuid:host-fixture")
     try
-        params = HTTP.queryparams(HTTP.URI(CB.authorize(pending)))
+        params = authparams(CB.authorize(pending))
         @test params["client_id"] == "oaiapp_saved"
         @test params["prompt"] == "consent"
         @test !haskey(params, "force_reconsent")
