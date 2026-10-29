@@ -15,6 +15,241 @@ function JuliaForever.execute(tool::DelayedWrite, args)
     ToolResult("finished")
 end
 
+struct GatedCalls <: JuliaForever.Tool
+    entered::Channel{Int}
+    gates::Vector{Channel{Nothing}}
+    finished::Channel{Int}
+    tasks::Channel{Task}
+end
+GatedCalls(n) = GatedCalls(Channel{Int}(n), [Channel{Nothing}(1) for _ in 1:n], Channel{Int}(n), Channel{Task}(n))
+JuliaForever.name(::GatedCalls) = "gated"
+JuliaForever.description(::GatedCalls) = "Wait for a test gate."
+JuliaForever.schema(::GatedCalls) = Dict("type" => "object")
+function JuliaForever.execute(tool::GatedCalls, args)
+    id = Int(args.id)
+    put!(tool.tasks, current_task())
+    put!(tool.entered, id)
+    take!(tool.gates[id])
+    put!(tool.finished, id)
+    ToolResult("reply-$id")
+end
+
+struct LargeReply <: JuliaForever.Tool
+    entered::Channel{Task}
+    gate::Channel{Nothing}
+    marker::String
+end
+JuliaForever.name(::LargeReply) = "large"
+JuliaForever.description(::LargeReply) = "Send a large reply."
+JuliaForever.schema(::LargeReply) = Dict("type" => "object")
+function JuliaForever.execute(tool::LargeReply, args)
+    write(tool.marker, "started")
+    put!(tool.entered, current_task())
+    take!(tool.gate)
+    ToolResult(repeat("x", 4_000_000))
+end
+
+function arrivals(channel, count)
+    values = Int[]
+    for _ in 1:count
+        timedwait(() -> isready(channel), 20) == :ok || break
+        push!(values, take!(channel))
+    end
+    values
+end
+
+@testset "code mode coordination" begin
+    mktempdir() do dir
+        n = 12
+        if isdir("/dev/fd")
+            @test codeexecute(CodeMode(JuliaForever.Tool[]; timeout=30), "nothing").ok
+            GC.gc()
+            yield()
+            handles = length(readdir("/dev/fd"))
+        end
+        tool = GatedCalls(n)
+        mode = CodeMode([tool]; timeout=30)
+        cancel = CodeCancellation()
+        source = "jobs = [Threads.@spawn tools.gated((; id=i)) for i in 1:$n]; [fetch(job).text for job in jobs]"
+        run = Threads.@spawn codeexecute(mode, source; cancel)
+        entered = arrivals(tool.entered, n)
+        @test Set(entered) == Set(1:n)
+        if length(entered) == n
+            tasks = [take!(tool.tasks) for _ in 1:n]
+            for id in n:-1:1
+                put!(tool.gates[id], nothing)
+                @test arrivals(tool.finished, 1) == [id]
+            end
+            ready = timedwait(() -> istaskdone(run), 30)
+            @test ready == :ok
+            if ready == :ok
+                result = fetch(run)
+                @test result.ok && result.value == ["reply-$id" for id in 1:n]
+                @test length(result.calls) == n && all(call -> call.status == :ok, result.calls)
+            end
+            @test timedwait(() -> all(istaskdone, tasks), 5) == :ok
+        else
+            foreach(close, tool.gates)
+        end
+        cancel!(cancel)
+
+        tool = GatedCalls(1)
+        timeout = Threads.@spawn codeexecute(CodeMode([tool]; timeout=8), "tools.gated((; id=1))")
+        entered = arrivals(tool.entered, 1)
+        @test entered == [1]
+        if !isempty(entered)
+            task = take!(tool.tasks)
+            ready = timedwait(() -> istaskdone(timeout), 15)
+            @test ready == :ok
+            if ready == :ok
+                result = fetch(timeout)
+                @test !result.ok && result.kind == :timeout
+                @test only(result.calls).status == :unresolved
+                if Sys.isunix()
+                    @test ccall(:kill, Cint, (Cint, Cint), result.pid, 0) == -1
+                end
+            end
+            put!(tool.gates[1], nothing)
+            @test arrivals(tool.finished, 1) == [1]
+            @test timedwait(() -> istaskdone(task), 5) == :ok
+        else
+            close(tool.gates[1])
+        end
+
+        tool = GatedCalls(2)
+        cancel = CodeCancellation()
+        mode = CodeMode([tool]; timeout=30)
+        runs = [Threads.@spawn codeexecute(mode, "tools.gated((; id=$id))"; cancel) for id in 1:2]
+        entered = arrivals(tool.entered, 2)
+        @test Set(entered) == Set(1:2)
+        tasks = [take!(tool.tasks) for _ in entered]
+        cancel!(cancel)
+        cancel!(cancel)
+        ready = timedwait(() -> all(istaskdone, runs), 5)
+        @test ready == :ok
+        if ready == :ok
+            results = fetch.(runs)
+            @test all(result -> !result.ok && result.kind == :cancelled, results)
+            @test all(result -> only(result.calls).status == :unresolved, results)
+            @test isempty(cancel.events)
+            if Sys.isunix()
+                @test all(result -> ccall(:kill, Cint, (Cint, Cint), result.pid, 0) == -1, results)
+            end
+        end
+        foreach(gate -> put!(gate, nothing), tool.gates)
+        @test Set(arrivals(tool.finished, length(entered))) == Set(entered)
+        @test timedwait(() -> all(istaskdone, tasks), 5) == :ok
+
+        tool = GatedCalls(1)
+        source = "Threads.@spawn tools.gated((; id=1)); sleep(1); exit(0)"
+        run = Threads.@spawn codeexecute(CodeMode([tool]; timeout=30), source)
+        entered = arrivals(tool.entered, 1)
+        @test entered == [1]
+        if !isempty(entered)
+            task = take!(tool.tasks)
+            ready = timedwait(() -> istaskdone(run), 10)
+            @test ready == :ok
+            if ready == :ok
+                result = fetch(run)
+                @test !result.ok && result.kind == :worker
+                @test only(result.calls).status == :unresolved
+            end
+            put!(tool.gates[1], nothing)
+            @test arrivals(tool.finished, 1) == [1]
+            @test timedwait(() -> istaskdone(task), 5) == :ok
+        else
+            close(tool.gates[1])
+        end
+
+        cancel = CodeCancellation()
+        marker = joinpath(dir, "flood-started")
+        source = "write($(repr(marker)), \"started\"); while true; text(\"x\"); end"
+        run = Threads.@spawn codeexecute(CodeMode(JuliaForever.Tool[]; timeout=30), source; cancel)
+        @test timedwait(() -> isfile(marker), 20) == :ok
+        cancel!(cancel)
+        ready = timedwait(() -> istaskdone(run), 5)
+        @test ready == :ok
+        if ready == :ok
+            result = fetch(run)
+            @test !result.ok && result.kind == :cancelled
+            @test isempty(cancel.events)
+        end
+
+        cancel = CodeCancellation()
+        source = "Main.send((; type=\"call_done\", index=999, status=\"ok\", duration=0)); sleep(30)"
+        result = codeexecute(CodeMode(JuliaForever.Tool[]; timeout=30), source; cancel)
+        @test !result.ok && result.kind == :worker
+        @test isempty(cancel.events)
+        if Sys.isunix()
+            @test ccall(:kill, Cint, (Cint, Cint), result.pid, 0) == -1
+        end
+
+        started = joinpath(dir, "tool-started")
+        tool = LargeReply(Channel{Task}(1), Channel{Nothing}(1), started)
+        cancel = CodeCancellation()
+        marker = joinpath(dir, "busy-worker")
+        source = "Threads.@spawn tools.large((;)); while !isfile($(repr(started))); yield(); end; write($(repr(marker)), \"started\"); while true; end"
+        withenv("JULIA_NUM_THREADS" => "1") do
+            run = Threads.@spawn codeexecute(CodeMode([tool]; timeout=30), source; cancel)
+            ready = timedwait(() -> isready(tool.entered) && isfile(marker), 20)
+            @test ready == :ok
+            task = ready == :ok ? take!(tool.entered) : nothing
+            if !isnothing(task)
+                put!(tool.gate, nothing)
+                sleep(0.2)
+                @test !istaskdone(task)
+            else
+                close(tool.gate)
+            end
+            cancel!(cancel)
+            ready = timedwait(() -> istaskdone(run), 5)
+            @test ready == :ok
+            if ready == :ok
+                result = fetch(run)
+                @test !result.ok && result.kind == :cancelled
+                if Sys.isunix()
+                    @test ccall(:kill, Cint, (Cint, Cint), result.pid, 0) == -1
+                end
+            end
+            !isnothing(task) && @test timedwait(() -> istaskdone(task), 5) == :ok
+        end
+
+        worker = joinpath(dirname(pathof(JuliaForever)), "codemode_worker.jl")
+        project = dirname(Base.active_project())
+        cmd = `$(Base.julia_cmd()) --startup-file=no --project=$project $worker $(joinpath(dir, "stdout")) $(joinpath(dir, "stderr"))`
+        process = open(cmd, "r+")
+        try
+            code = "jobs = [Threads.@spawn tools.gated((; id=i)) for i in 1:3]; answers = fetch.(jobs); push!(answers, tools.gated((; id=4))); [answer.iserror for answer in answers]"
+            println(process, JSON3.write((; code, store=Dict(), tools=[])))
+            flush(process)
+            calls = Threads.@spawn [JSON3.read(readline(process)) for _ in 1:3]
+            ready = timedwait(() -> istaskdone(calls), 20)
+            @test ready == :ok
+            if ready == :ok
+                @test all(call -> call.type == "call", fetch(calls))
+                close(process.in)
+                response = Threads.@spawn JSON3.read(readline(process))
+                ready = timedwait(() -> istaskdone(response), 5)
+                @test ready == :ok
+                if ready == :ok
+                    result = fetch(response)
+                    @test result.type == "result" && result.ok
+                    @test result.value == [true, true, true, true]
+                end
+            end
+        finally
+            process_running(process) && kill(process, Base.SIGKILL)
+            wait(process)
+            close(process)
+        end
+        if isdir("/dev/fd")
+            GC.gc()
+            yield()
+            @test length(readdir("/dev/fd")) <= handles + 2
+        end
+    end
+end
+
 @testset "Julia code mode" begin
     mktempdir() do dir
         mode = CodeMode([Read(dir), Write(dir), Edit(dir)]; timeout=30)

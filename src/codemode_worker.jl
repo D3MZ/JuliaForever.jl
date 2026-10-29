@@ -12,6 +12,7 @@ const pendinglock = ReentrantLock()
 const storelock = ReentrantLock()
 const pending = Dict{Int, Channel{Any}}()
 const serial = Ref(0)
+const connected = Ref(true)
 const data = Dict{String, Any}(String(key) => value for (key, value) in pairs(request.store))
 const writes = Dict{String, Any}()
 
@@ -25,10 +26,13 @@ end
 function toolcall(name, args)
     channel = Channel{Any}(1)
     id = lock(pendinglock) do
-        serial[] += 1
-        pending[serial[]] = channel
-        serial[]
+        if connected[]
+            serial[] += 1
+            pending[serial[]] = channel
+            serial[]
+        end
     end
+    isnothing(id) && return (; text="Tool connection closed", iserror=true)
     send((; type="call", id, name, args))
     take!(channel)
 end
@@ -56,13 +60,22 @@ function store(key::AbstractString, value)
     nothing
 end
 
-@async begin
-    for line in eachline(input)
-        message = JSON3.read(line)
-        channel = lock(pendinglock) do
-            pop!(pending, Int(message.id), nothing)
+Threads.@spawn begin
+    try
+        for line in eachline(input)
+            message = JSON3.read(line)
+            channel = lock(pendinglock) do
+                pop!(pending, Int(message.id), nothing)
+            end
+            !isnothing(channel) && put!(channel, message.result)
         end
-        !isnothing(channel) && put!(channel, message.result)
+    catch
+    finally
+        lock(pendinglock) do
+            connected[] = false
+            foreach(channel -> put!(channel, (; text="Tool connection closed", iserror=true)), values(pending))
+            empty!(pending)
+        end
     end
 end
 
