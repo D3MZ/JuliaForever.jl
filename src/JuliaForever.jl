@@ -5,6 +5,7 @@ using HTTP, JSON3, Unicode, Base64, Random, SHA
 export Execution
 export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, cancel!, codeexecute, ToolResult, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, InvalidResponse, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
 
+include("instructions.jl")
 include("tools.jl")
 include("provider.jl")
 include("kernel.jl")
@@ -37,7 +38,7 @@ function (@main)(args)
     codemode = !isempty(args) && first(args) == "--codemode"
     codemode && (args = args[2:end])
     if args == ["--help"] || args == ["-h"]
-        println("jf [--codemode] [prompt] | jf [--codemode] --login-openrouter [prompt] | jf [--codemode] --login-openrouter-callback [prompt]\nSet OPENAI_API_KEY and OPENAI_MODEL. Set JF_PROVIDER=openai-responses for Responses or JF_PROVIDER=openrouter and OPENROUTER_API_KEY and OPENROUTER_MODEL for OpenRouter. Code mode runs Julia with your permissions.")
+        println("jf [--codemode] [prompt] | jf [--codemode] --login-openrouter [prompt] | jf [--codemode] --login-openrouter-callback [prompt]\nSet OPENAI_API_KEY and OPENAI_MODEL. Set JF_PROVIDER=openai-responses for Responses or JF_PROVIDER=openrouter and OPENROUTER_API_KEY and OPENROUTER_MODEL for OpenRouter. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
         return 0
     end
     callback_requested = !isempty(args) && first(args) == "--login-openrouter-callback"
@@ -88,7 +89,10 @@ function (@main)(args)
     tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
     Sys.iswindows() && push!(tools, PowerShell(pwd()))
     codemode && push!(tools, CodeMode(tools))
-    agent = Agent(model, tools)
+    context = Instructions.render(Instructions.load(pwd(); agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing)))
+    messages = Dict{String, Any}[]
+    isnothing(context) || push!(messages, Dict("role" => "system", "content" => context))
+    agent = Agent(model, Dict{String, Tool}(name(tool) => tool for tool in tools), messages)
     terminal = Terminal(stdout, stderr, [model.key])
     if isempty(args)
         interactive = stdin isa Base.TTY

@@ -1,6 +1,8 @@
 using Test, JuliaForever
 
 include("quality.jl")
+include("instructions.jl")
+include("instructions_cli.jl")
 
 @testset "file tools" begin
     mktempdir() do dir
@@ -61,6 +63,7 @@ include("provider_responses.jl")
 include("provider_invalid.jl")
 
 if haskey(ENV, "PI_SOURCE")
+    include("instructions_differential.jl")
     include("agent_core_differential.jl")
     include("differential.jl")
 end
