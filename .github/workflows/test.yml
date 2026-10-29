@@ -1,0 +1,38 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '25'
+      - name: Prepare pinned Pi reference
+        run: |
+          git clone --filter=blob:none https://github.com/earendil-works/pi.git "$RUNNER_TEMP/pi-source"
+          git -C "$RUNNER_TEMP/pi-source" checkout --detach e7a0df27c09d11bf4161d3605246cbf57a129cb2
+          npm install --prefix "$RUNNER_TEMP/pi-deps" --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.4.0
+          node -e "require('fs').symlinkSync(process.argv[1], process.argv[2], 'junction')" "$RUNNER_TEMP/pi-deps/node_modules" "$RUNNER_TEMP/pi-source/node_modules"
+      - name: Julia tests and differential cases
+        env:
+          PI_SOURCE: ${{ runner.temp }}/pi-source
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
