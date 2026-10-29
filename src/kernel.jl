@@ -17,8 +17,67 @@ struct Fail{T} <: Observation
     value::T
 end
 
-Base.isequal(a::Return, b::Return) = isequal(a.value, b.value)
-Base.isequal(a::Fail, b::Fail) = isequal(a.value, b.value)
+same(a, b) = same(a, b, IdDict{Any, IdDict{Any, Nothing}}())
+
+function seen!(seen, a, b)
+    pairs = get!(seen, a, IdDict{Any, Nothing}())
+    haskey(pairs, b) && return true
+    pairs[b] = nothing
+    false
+end
+
+function same(a, b, seen)
+    typeof(a) === typeof(b) && isequal(a, b) || return false
+    type = typeof(a)
+    (isbitstype(type) || a isa Union{AbstractString, Symbol, Type, Function, Ptr, Module}) && return true
+    isstructtype(type) || return true
+    ismutabletype(type) && seen!(seen, a, b) && return true
+    for field in fieldnames(type)
+        same(getfield(a, field), getfield(b, field), seen) || return false
+    end
+    true
+end
+
+function same(a::AbstractArray, b::AbstractArray, seen)
+    typeof(a) === typeof(b) && axes(a) == axes(b) || return false
+    seen!(seen, a, b) && return true
+    for (x, y) in zip(a, b)
+        same(x, y, seen) || return false
+    end
+    true
+end
+
+function same(a::AbstractDict, b::AbstractDict, seen)
+    typeof(a) === typeof(b) && length(a) == length(b) || return false
+    seen!(seen, a, b) && return true
+    for (key, value) in a
+        found = false
+        for (other, result) in b
+            if same(key, other)
+                same(value, result, seen) || return false
+                found = true
+                break
+            end
+        end
+        found || return false
+    end
+    true
+end
+
+function same(a::Tuple, b::Tuple, seen)
+    typeof(a) === typeof(b) && length(a) == length(b) || return false
+    for (x, y) in zip(a, b)
+        same(x, y, seen) || return false
+    end
+    true
+end
+
+function same(a::NamedTuple, b::NamedTuple, seen)
+    typeof(a) === typeof(b) && same(Tuple(a), Tuple(b), seen)
+end
+
+Base.isequal(a::Return, b::Return) = same(a.value, b.value)
+Base.isequal(a::Fail, b::Fail) = same(a.value, b.value)
 Base.hash(value::Return, h::UInt) = hash(value.value, hash(Return, h))
 Base.hash(value::Fail, h::UInt) = hash(value.value, hash(Fail, h))
 

@@ -12,6 +12,39 @@ end
 
 Base.isequal(a::Report, b::Report) = isequal(a.text, b.text)
 
+struct EqualBox
+    value::Any
+end
+
+Base.isequal(a::EqualBox, b::EqualBox) = isequal(a.value, b.value)
+
+@testset "observation equality preserves value types" begin
+    original = K.Return(Dict{Any, Any}("items" => Any[(flag=true,)], true => "key"))
+    duplicate = K.Return(Dict{Any, Any}(true => "key", "items" => Any[(flag=true,)]))
+    different_value = K.Return(Dict{Any, Any}("items" => Any[(flag=1,)], true => "key"))
+    different_key = K.Return(Dict{Any, Any}("items" => Any[(flag=true,)], 1 => "key"))
+    @test isequal(original, duplicate)
+    @test !isequal(original, different_value)
+    @test !isequal(original, different_key)
+    @test !isequal(K.Fail(Any[Dict{String, Any}("value" => true)]), K.Fail(Any[Dict{String, Any}("value" => 1)]))
+    @test !isequal(K.Return(EqualBox(true)), K.Return(EqualBox(1)))
+    @test isequal(K.Return(Any[NaN]), K.Return(Any[NaN]))
+
+    first = Any[]
+    second = Any[]
+    different = Any[]
+    append!(first, (first, true))
+    append!(second, (second, true))
+    append!(different, (different, 1))
+    @test isequal(K.Return(first), K.Return(second))
+    @test !isequal(K.Return(first), K.Return(different))
+
+    planned = K.step(K.State("strict"), K.Plan(0, "id", Probe("work")))
+    observed = K.step(planned.state, K.Observe(1, "id", original))
+    @test K.step(observed.state, K.Observe(1, "id", duplicate)) isa K.Duplicate
+    @test K.step(observed.state, K.Observe(1, "id", different_value)).reason == :observation_conflict
+end
+
 @testset "kernel transitions" begin
     start = K.State("conversation-1")
     @test isconcretetype(typeof(start))
