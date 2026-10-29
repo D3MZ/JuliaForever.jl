@@ -1,8 +1,8 @@
 using Test, JuliaForever, HTTP, JSON3
 
-function terminal_http(base, prompt; provider="openai", history=nothing)
+function terminal_http(base, prompt; provider="openai", history=nothing, options=nothing)
     project = dirname(@__DIR__)
-    options = isnothing(history) ? String[] : ["--history", history]
+    options = isnothing(options) ? (isnothing(history) ? ["--no-session"] : ["--history", history]) : options
     cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever $options $prompt`, "JF_PROVIDER" => provider, "OPENAI_BASE_URL" => base, "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic-secret")
     mktempdir() do dir
         output, diagnostics = joinpath.((dir,), ("output", "diagnostics"))
@@ -54,6 +54,9 @@ end
         @test terminal_http(base, "length") == expected
         mktempdir() do dir
             @test terminal_http(base, "length"; history=joinpath(dir, "history.sqlite")) == expected
+            @test terminal_http(base, "length"; options=["--session-dir", dir]) == expected
+            failed = terminal_http(base, "http"; options=["--session-dir", dir])
+            @test failed == (; status=1, output="", diagnostics="Request failed (HTTP 401).\n")
         end
         @test terminal_http(base, "http") == (; status=1, output="", diagnostics="Request failed (HTTP 401).\n")
         @test terminal_http(base, "http"; provider="openai-responses") == (; status=1, output="", diagnostics="Request failed (HTTP 401).\n")

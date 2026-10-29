@@ -443,7 +443,7 @@ end
     end
     try
         withenv("JF_PROVIDER" => "openai", "OPENAI_BASE_URL" => "http://$(HTTP.server_addr(server))/v1", "OPENAI_MODEL" => "test", "OPENAI_API_KEY" => "synthetic") do
-            @test JuliaForever.main(["--codemode", "run Julia"]) == 0
+            @test JuliaForever.main(["--no-session", "--codemode", "run Julia"]) == 0
         end
         @test any(tool -> tool.function.name == "codemode", requests[1].tools)
         @test requests[2].messages[end].content == "2"

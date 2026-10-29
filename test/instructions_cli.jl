@@ -2,7 +2,8 @@ using Test, JuliaForever, HTTP, JSON3
 
 function instructions_process(base, workspace, piagent; provider="openai", agentdir=nothing, input=nothing, options=String[])
     project = dirname(@__DIR__)
-    args = [options; isnothing(input) ? ["inspect"] : String[]]
+    session = "--history" in options ? String[] : ["--no-session"]
+    args = [session; options; isnothing(input) ? ["inspect"] : String[]]
     cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever $args`; dir=workspace)
     cmd = addenv(cmd, "JF_PROVIDER" => provider, "OPENAI_BASE_URL" => base, "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic-secret", "PI_CODING_AGENT_DIR" => piagent, "JF_INSTRUCTIONS_DIR" => agentdir)
     mktempdir() do dir

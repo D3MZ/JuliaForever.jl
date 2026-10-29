@@ -19,6 +19,7 @@ include("extensions.jl")
 include("agent_history.jl")
 include("responses.jl")
 include("sessions.jl")
+include("session_catalog.jl")
 include("execution.jl")
 include("execution_kernel.jl")
 include("agent_execution.jl")
@@ -124,14 +125,14 @@ function acquire(auth::OpenRouterAuth, info::NamedTuple, model)
     login!(login, code, info, model)
 end
 
-launch(status::Integer, packages, environments, codemode, path, args) = status
+launch(status::Integer, packages, environments, codemode, session, sessiondir, args) = status
 
-function launch(model::Union{OpenAI, OpenAIResponses}, packages, environments, codemode, path, args)
+function launch(model::Union{OpenAI, OpenAIResponses}, packages, environments, codemode, session, sessiondir, args)
     tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
     Sys.iswindows() && push!(tools, PowerShell(pwd()))
     terminal = Terminal(stdout, stderr, [model.key])
     registry = plugins(terminal, tools, packages, environments)
-    Base.invokelatest(terminal!, terminal, model, registry, codemode, path, args)
+    Base.invokelatest(terminal!, terminal, model, registry, codemode, session, sessiondir, args)
 end
 
 pluginfailure!(terminal::Terminal, name, exception::InterruptException) = failure!(terminal, exception)
@@ -195,6 +196,8 @@ function (@main)(args)
     selected = nothing
     requested_model = nothing
     auth = APIKeyAuth()
+    session = SessionCatalog.New()
+    sessiondir = SessionCatalog.directory(ENV)
     while !isempty(args)
         if first(args) == "--codemode"
             codemode = true
@@ -232,7 +235,28 @@ function (@main)(args)
                 return 2
             end
             path = args[2]
+            session = SessionCatalog.assign(session, SessionCatalog.Explicit(path))
             args = args[3:end]
+        elseif first(args) in ("--session", "--session-dir")
+            if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
+                println(stderr, first(args), " requires a value.")
+                return 2
+            end
+            if first(args) == "--session"
+                session = SessionCatalog.assign(session, SessionCatalog.Target(args[2]))
+            else
+                sessiondir = abspath(expanduser(args[2]))
+            end
+            args = args[3:end]
+        elseif first(args) in ("--continue", "-c")
+            session = SessionCatalog.assign(session, SessionCatalog.Recent())
+            args = args[2:end]
+        elseif first(args) in ("--resume", "-r")
+            session = SessionCatalog.assign(session, SessionCatalog.Picker())
+            args = args[2:end]
+        elseif first(args) == "--no-session"
+            session = SessionCatalog.assign(session, SessionCatalog.Ephemeral())
+            args = args[2:end]
         elseif first(args) == "--abandon"
             if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
                 println(stderr, "--abandon requires a reason.")
@@ -249,6 +273,7 @@ function (@main)(args)
     end
     if args == ["--help"] || args == ["-h"]
         println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter. --provider overrides JF_PROVIDER; --model overrides OPENAI_MODEL or OPENROUTER_MODEL. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
+        println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --session-dir DIR, --no-session. Set JF_SESSION_DIR to choose the default directory.")
         return 0
     end
     if !validprovider(selected)
@@ -256,14 +281,14 @@ function (@main)(args)
         return 2
     end
     if inspect
-        if isnothing(path) || !isnothing(reason) || haslogin(auth) || !isempty(args)
+        if isnothing(path) || !isnothing(reason) || haslogin(auth) || !isempty(args) || !SessionCatalog.recovery(session)
             println(stderr, "--inspect-history requires --history PATH and no prompt or --abandon.")
             return 2
         end
         return inspecthistory!(Terminal(stdout, stderr, String[]), path)
     end
     if !isnothing(reason)
-        if isnothing(path) || haslogin(auth) || !isempty(args)
+        if isnothing(path) || haslogin(auth) || !isempty(args) || !SessionCatalog.recovery(session)
             println(stderr, "--abandon requires --history PATH and no prompt.")
             return 2
         end
@@ -275,10 +300,10 @@ function (@main)(args)
     end
     info = providerinfo(providername(auth, selected))
     model = acquire(auth, info, requested_model)
-    launch(model, packages, environments, codemode, path, args)
+    launch(model, packages, environments, codemode, session, sessiondir, args)
 end
 
-terminal!(terminal::Terminal, model, registry::Integer, codemode, path, args) = registry
+terminal!(terminal::Terminal, model, registry::Integer, codemode, session, sessiondir, args) = registry
 
 function initial(extensions)
     cwd = pwd()
@@ -290,14 +315,34 @@ end
 initial(extensions, ::Nothing) = initial(extensions)
 initial(extensions, snapshot::History.Snapshot) = iszero(snapshot.revision) ? initial(extensions) : Dict{String, Any}[]
 
-function terminal!(terminal::Terminal, model, registry::Extensions.Registry, codemode, path, args)
+function terminal!(terminal::Terminal, model, registry::Extensions.Registry, codemode, session, sessiondir, args)
     if codemode
         mode = CodeMode(Extensions.tools(Extensions.snapshot(registry)))
         result = Extensions.register!(registry, gensym(:codemode), Extensions.Plugin(; tools=(mode,)))
-        return terminal!(terminal, model, registered(terminal, registry, "codemode", result), false, path, args)
+        return terminal!(terminal, model, registered(terminal, registry, "codemode", result), false, session, sessiondir, args)
     end
     extensions = Extensions.snapshot(registry)
-    history = isnothing(path) ? nothing : open(History.SQLite, path)
+    history = SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr)
+    runsession!(history, terminal, model, extensions, args)
+end
+
+runsession!(::SessionCatalog.Cancelled, terminal, model, extensions, args) = 0
+
+function runsession!(invalid::SessionCatalog.Invalid, terminal, model, extensions, args)
+    println(terminal.diagnostics, invalid.message)
+    2
+end
+
+function sessionfault!(terminal, fault, history)
+    status = result!(terminal, fault)
+    println(terminal.diagnostics, "History file: ", SessionCatalog.path(history))
+    flush(terminal.diagnostics)
+    status
+end
+
+sessionfault!(terminal, fault, ::Nothing) = result!(terminal, fault)
+
+function runsession!(history, terminal, model, extensions, args)
     history isa History.Rejected && return result!(terminal, history)
     try
         snapshot = isnothing(history) ? nothing : History.snapshot(history)
@@ -305,7 +350,7 @@ function terminal!(terminal::Terminal, model, registry::Extensions.Registry, cod
         messages = initial(extensions, snapshot)
         agent = Agent(model, extensions, messages; history)
         agent isa History.Rejected && return result!(terminal, agent)
-        isnothing(agent.fault) || return result!(terminal, agent.fault)
+        isnothing(agent.fault) || return sessionfault!(terminal, agent.fault, history)
         if isempty(args)
             return interact!(terminal, agent, extensions, stdin, stderr)
         else
