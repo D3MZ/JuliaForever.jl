@@ -14,6 +14,6 @@ Storage backends should be replaceable. Recorded transitions and outcomes should
 
 ## Current implementation
 
-The command and `Agent` currently use a synchronous prototype loop. Standalone session history and a local JSONL durable store with checkpointed task phases exist, but they are not yet connected to the agent. Code mode runs Julia in a separate process with the caller's permissions; it is not a sandbox. The current implementation does not yet provide the target transition kernel, interchangeable state backend, distributed agent execution, JSON/HTML history exports, or a native plugin interface. See the linked module documentation in the README for the exact tested boundaries.
+The command and `Agent` currently use a synchronous prototype loop. A typed transition and replay foundation, bounded local and distributed worker executor, JSON/HTML history exports, session history, and a local JSONL durable store with checkpointed task phases exist, but they are not yet connected to the agent. Code mode runs Julia in a separate process with the caller's permissions; it is not a sandbox. An interchangeable state backend, distributed agent execution, and a native plugin interface remain unimplemented. See the linked module documentation in the README for the exact tested boundaries.
 
 B1 coverage and parity are not yet established. Existing differential cases cover selected agent, provider, tool, and session behavior at a pinned Pi revision. They do not establish full surface parity, and a configured platform job is not evidence of a successful run.
