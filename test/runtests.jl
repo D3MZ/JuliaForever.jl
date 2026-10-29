@@ -57,6 +57,12 @@ end
 
 include("system.jl")
 include("durable.jl")
+include("search.jl")
 if haskey(ENV, "PI_SOURCE")
     include("system_differential.jl")
+    mktempdir() do oracle
+        withenv("PI_CODING_AGENT_DIR" => oracle) do
+            include("search_differential.jl")
+        end
+    end
 end

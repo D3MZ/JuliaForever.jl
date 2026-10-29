@@ -2,13 +2,14 @@ module JuliaForever
 
 using HTTP, JSON3, Unicode, Base64, Random, SHA
 
-export Read, Write, Edit, Bash, PowerShell, Ls, ToolResult, execute, Agent, OpenAI, Usage, Completion, OpenRouterLogin, provider, authorize, exchange, stream, respond!, Durable
+export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, ToolResult, execute, Agent, OpenAI, Usage, Completion, OpenRouterLogin, provider, authorize, exchange, stream, respond!, Durable
 
 include("tools.jl")
 include("provider.jl")
 include("agent.jl")
 include("system.jl")
 include("durable.jl")
+include("search.jl")
 
 function (@main)(args)
     if args == ["--help"] || args == ["-h"]
@@ -36,7 +37,7 @@ function (@main)(args)
         println(stderr, "Unknown JF_PROVIDER; choose openai or openrouter.")
         return 2
     end
-    agent = Agent(model, [Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), (Sys.iswindows() ? [PowerShell(pwd())] : Tool[])...])
+    agent = Agent(model, [Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd()), (Sys.iswindows() ? [PowerShell(pwd())] : Tool[])...])
     if isempty(args)
         println("Julia Forever — enter a message, or /exit to quit")
         for line in eachline(stdin)
