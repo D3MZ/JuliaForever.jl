@@ -45,3 +45,31 @@ close(executor)
 ```
 
 This example handles a successful result only. The supervisor decides whether to observe `Failed` or `Cancelled`, retry, or reconcile an uncertain effect, and must verify the current revision and attempt before recording an outcome. Submitting an effect does not persist the plan or its observation.
+
+## Conversation effects
+
+A worker can execute `Conversation.ModelRequest`, `ToolRequest`, and `SkipRequest` with capabilities installed in that process. A context contains the live provider, an iterable of tool values, and provider parameters; the submitted `Work` contains only its context ID and the typed effect. Install the same fresh, non-secret ID independently on every worker that an executor may select. `install!` returns `false` if that ID is already installed on the process. `uninstall!` removes the context for subsequent lookups.
+
+```julia
+using JuliaForever, Distributed
+import JuliaForever.Execution as E
+import JuliaForever.Conversation as C
+import JuliaForever.Kernel as K
+
+# Construct model and tools in this process, using its own configuration.
+E.install!(context_id, model, tools; parameters=Dict())
+executor = E.Executor(myid())
+started = K.step(C.State("session"), C.Input(0, "Hello"))
+outcome = fetch(E.submit!(executor, only(started.effects), 1, context_id))
+if outcome isa E.Completed
+    observed = K.step(started.state, K.Observe(started.state.revision, outcome.id, outcome.value))
+end
+close(executor)
+E.uninstall!(context_id)
+```
+
+For a remote process, load JuliaForever and create and install that process's capabilities there before dispatch. Provision credentials using the deployment's own trusted process setup; the adapter does not provision credentials or protect Julia's interprocess traffic. Do not serialize a provider or credentials in an effect, event, work item, or remote installation call. Context IDs identify capabilities, not an authorization boundary. Conversation messages, observations, and tool results still travel between the supervisor and worker and may themselves contain sensitive data; providers and tools must not put credentials in their outputs. All workers in a pool need the same intended capabilities for that ID. Use a new ID for each context lifetime and drain or resolve its admitted work before uninstalling; never reuse an ID for another context while old work might still run. Existing in-flight calls retain their context after uninstall. Concurrent calls share the installed provider and tool objects, which must support the chosen concurrency.
+
+The adapter invokes the provider's non-streaming `complete` method and preserves its assistant message metadata, finish reason, and completion status in `ModelReply`. In particular, Responses `response_output` items survive the next model request. The existing `ModelReply` type does not carry `Completion.usage` or `Completion.error`. A provider exception yields `ModelFailure("provider did not return")` without copying its diagnostic into the observation; a missing context or dispatch failure yields `Execution.Failed`. Tool exceptions become error `ToolReply` values; successful tool results retain their text and error flag. `SkipRequest` returns the truncated-call error without executing the tool. A provider's incomplete result becomes an incomplete model reply and does not run its proposed tools. Queued cancellation is honored before dispatch, but the adapter does not interrupt a running provider or tool. A completed or failed effect may already have caused external actions.
+
+`Agent.respond!` does not select this adapter yet. Integrating it requires the agent's supervisor to install worker capabilities, submit each planned effect with its context ID, apply current `Completed` observations at the matching conversation revision, and decide how to handle stale attempts, `Failed`, `Cancelled`, interrupted workers, and unrecorded side effects. Streaming callbacks, durable scheduling, retries, worker authentication, transport security, isolation, and exactly-once execution are not supplied by this adapter.
