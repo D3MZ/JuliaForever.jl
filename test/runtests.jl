@@ -60,6 +60,8 @@ include("tool_faults.jl")
 include("terminal.jl")
 include("terminal_http.jl")
 include("terminal_history.jl")
+include("session_catalog.jl")
+include("session_cli.jl")
 
 include("provider.jl")
 include("provider_stream.jl")

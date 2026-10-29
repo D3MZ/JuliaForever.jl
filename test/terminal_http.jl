@@ -2,7 +2,7 @@ using Test, JuliaForever, HTTP, JSON3
 
 function terminal_http(base, prompt; provider="openai")
     project = dirname(@__DIR__)
-    cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever $prompt`, "JF_PROVIDER" => provider, "OPENAI_BASE_URL" => base, "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic-secret")
+    cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever --no-session $prompt`, "JF_PROVIDER" => provider, "OPENAI_BASE_URL" => base, "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic-secret")
     mktempdir() do dir
         output, diagnostics = joinpath.((dir,), ("output", "diagnostics"))
         process = run(pipeline(ignorestatus(cmd); stdout=output, stderr=diagnostics))

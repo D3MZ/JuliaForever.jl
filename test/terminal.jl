@@ -72,7 +72,7 @@ end
 function terminal_process(mode, args; input="", key="synthetic-secret")
     project = dirname(@__DIR__)
     script = joinpath(@__DIR__, "terminal_process.jl")
-    cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project $script $args`, "JF_FIXTURE" => mode, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => key)
+    cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project $script --no-session $args`, "JF_FIXTURE" => mode, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => key)
     mktempdir() do dir
         stdinpath, stdoutpath, stderrpath = joinpath.((dir,), ("stdin", "stdout", "stderr"))
         write(stdinpath, input)

@@ -18,6 +18,7 @@ include("agent.jl")
 include("agent_history.jl")
 include("responses.jl")
 include("sessions.jl")
+include("session_catalog.jl")
 include("execution.jl")
 include("execution_kernel.jl")
 include("agent_execution.jl")
@@ -41,6 +42,8 @@ function (@main)(args)
     path = nothing
     reason = nothing
     inspect = false
+    session = SessionCatalog.New()
+    sessiondir = SessionCatalog.directory(ENV)
     while !isempty(args)
         if first(args) == "--codemode"
             codemode = true
@@ -51,7 +54,28 @@ function (@main)(args)
                 return 2
             end
             path = args[2]
+            session = SessionCatalog.assign(session, SessionCatalog.Explicit(path))
             args = args[3:end]
+        elseif first(args) in ("--session", "--session-dir")
+            if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
+                println(stderr, first(args), " requires a value.")
+                return 2
+            end
+            if first(args) == "--session"
+                session = SessionCatalog.assign(session, SessionCatalog.Target(args[2]))
+            else
+                sessiondir = abspath(expanduser(args[2]))
+            end
+            args = args[3:end]
+        elseif first(args) in ("--continue", "-c")
+            session = SessionCatalog.assign(session, SessionCatalog.Recent())
+            args = args[2:end]
+        elseif first(args) in ("--resume", "-r")
+            session = SessionCatalog.assign(session, SessionCatalog.Picker())
+            args = args[2:end]
+        elseif first(args) == "--no-session"
+            session = SessionCatalog.assign(session, SessionCatalog.Ephemeral())
+            args = args[2:end]
         elseif first(args) == "--abandon"
             if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
                 println(stderr, "--abandon requires a reason.")
@@ -68,17 +92,18 @@ function (@main)(args)
     end
     if args == ["--help"] || args == ["-h"]
         println("jf [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [--codemode] [--history PATH] --login-openrouter [prompt] | jf [--codemode] [--history PATH] --login-openrouter-callback [prompt]\nSet OPENAI_API_KEY and OPENAI_MODEL. Set JF_PROVIDER=openai-responses for Responses or JF_PROVIDER=openrouter and OPENROUTER_API_KEY and OPENROUTER_MODEL for OpenRouter. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
+        println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --session-dir DIR, --no-session. Set JF_SESSION_DIR to choose the default directory.")
         return 0
     end
     if inspect
-        if isnothing(path) || !isnothing(reason) || !isempty(args)
+        if isnothing(path) || !isnothing(reason) || !isempty(args) || !SessionCatalog.recovery(session)
             println(stderr, "--inspect-history requires --history PATH and no prompt or --abandon.")
             return 2
         end
         return inspecthistory!(Terminal(stdout, stderr, String[]), path)
     end
     if !isnothing(reason)
-        if isnothing(path) || !isempty(args)
+        if isnothing(path) || !isempty(args) || !SessionCatalog.recovery(session)
             println(stderr, "--abandon requires --history PATH and no prompt.")
             return 2
         end
@@ -133,7 +158,25 @@ function (@main)(args)
     Sys.iswindows() && push!(tools, PowerShell(pwd()))
     codemode && push!(tools, CodeMode(tools))
     terminal = Terminal(stdout, stderr, [model.key])
-    history = isnothing(path) ? nothing : open(History.SQLite, path)
+    history = SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr)
+    runsession!(history, terminal, model, tools, args)
+end
+
+runsession!(::SessionCatalog.Cancelled, terminal, model, tools, args) = 0
+
+function runsession!(invalid::SessionCatalog.Invalid, terminal, model, tools, args)
+    println(terminal.diagnostics, invalid.message)
+    2
+end
+
+function sessionfault!(terminal, fault, history)
+    status = result!(terminal, fault)
+    println(terminal.diagnostics, "History file: ", SessionCatalog.path(history))
+    flush(terminal.diagnostics)
+    status
+end
+
+function runsession!(history, terminal, model, tools, args)
     history isa History.Rejected && return result!(terminal, history)
     try
         snapshot = isnothing(history) ? nothing : History.snapshot(history)
@@ -145,7 +188,7 @@ function (@main)(args)
         end
         agent = Agent(model, Dict{String, Tool}(name(tool) => tool for tool in tools), messages; history)
         agent isa History.Rejected && return result!(terminal, agent)
-        isnothing(agent.fault) || return result!(terminal, agent.fault)
+        isnothing(agent.fault) || return sessionfault!(terminal, agent.fault, history)
         if isempty(args)
             interactive = stdin isa Base.TTY
             interactive && println(stderr, "Julia Forever — enter a message, or /exit to quit")
