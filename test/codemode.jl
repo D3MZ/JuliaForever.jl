@@ -1,8 +1,5 @@
-using Test, JuliaForever, JSON3, TOML
+using Test, JuliaForever, HTTP, JSON3, TOML
 
-if !isdefined(JuliaForever, :CodeMode)
-    Base.include(JuliaForever, joinpath(@__DIR__, "..", "src", "codemode.jl"))
-end
 using JuliaForever: CodeMode, CodeCancellation, cancel!, codeexecute
 
 struct DelayedWrite <: JuliaForever.Tool
@@ -191,5 +188,29 @@ end
         script = "using JuliaForever; if !isdefined(JuliaForever, :CodeMode); Base.include(JuliaForever, joinpath(dirname(pathof(JuliaForever)), \"codemode.jl\")); end; result = JuliaForever.codeexecute(JuliaForever.CodeMode(JuliaForever.Tool[]; timeout=30), \"1 + 1\"); println(result.ok && result.value == 2)"
         cmd = `$(Base.julia_cmd()) --startup-file=no --project=$dir -e $script`
         @test strip(read(cmd, String)) == "true"
+    end
+end
+
+@testset "terminal code mode" begin
+    requests = []
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        body = JSON3.read(String(request.body))
+        push!(requests, body)
+        message = if length(requests) == 1
+            call = Dict("id" => "code-cli", "type" => "function", "function" => Dict("name" => "codemode", "arguments" => JSON3.write((; code="1 + 1"))))
+            Dict("role" => "assistant", "content" => nothing, "tool_calls" => [call])
+        else
+            Dict("role" => "assistant", "content" => "done")
+        end
+        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write((; choices=[(; message)])))
+    end
+    try
+        withenv("JF_PROVIDER" => "openai", "OPENAI_BASE_URL" => "http://$(HTTP.server_addr(server))/v1", "OPENAI_MODEL" => "test", "OPENAI_API_KEY" => "synthetic") do
+            @test JuliaForever.main(["--codemode", "run Julia"]) == 0
+        end
+        @test any(tool -> tool.function.name == "codemode", requests[1].tools)
+        @test requests[2].messages[end].content == "2"
+    finally
+        close(server)
     end
 end
