@@ -2,10 +2,11 @@ module JuliaForever
 
 using HTTP, JSON3, Unicode
 
-export Read, Write, Edit, ToolResult, execute, Agent, OpenAI, respond!
+export Read, Write, Edit, Bash, PowerShell, Ls, ToolResult, execute, Agent, OpenAI, respond!
 
 include("tools.jl")
 include("agent.jl")
+include("system.jl")
 
 function (@main)(args)
     if args == ["--help"] || args == ["-h"]
@@ -13,7 +14,7 @@ function (@main)(args)
         return 0
     end
     provider = OpenAI(get(ENV, "OPENAI_BASE_URL", "https://api.openai.com/v1"), ENV["OPENAI_MODEL"], ENV["OPENAI_API_KEY"])
-    agent = Agent(provider, [Read(pwd()), Write(pwd()), Edit(pwd())])
+    agent = Agent(provider, [Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), (Sys.iswindows() ? [PowerShell(pwd())] : Tool[])...])
     if isempty(args)
         println("Julia Forever — enter a message, or /exit to quit")
         for line in eachline(stdin)

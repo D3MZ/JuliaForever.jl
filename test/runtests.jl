@@ -53,3 +53,8 @@ include("provider.jl")
 if haskey(ENV, "PI_SOURCE")
     include("differential.jl")
 end
+
+include("system.jl")
+if haskey(ENV, "PI_SOURCE")
+    include("system_differential.jl")
+end
