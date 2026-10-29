@@ -13,6 +13,7 @@ include("kernel.jl")
 include("conversation.jl")
 include("durable.jl")
 include("history.jl")
+include("sqlite_history.jl")
 include("agent.jl")
 include("agent_history.jl")
 include("responses.jl")
@@ -36,11 +37,52 @@ function configured(env, login)
 end
 
 function (@main)(args)
-    codemode = !isempty(args) && first(args) == "--codemode"
-    codemode && (args = args[2:end])
+    codemode = false
+    path = nothing
+    reason = nothing
+    inspect = false
+    while !isempty(args)
+        if first(args) == "--codemode"
+            codemode = true
+            args = args[2:end]
+        elseif first(args) == "--history"
+            if length(args) < 2 || startswith(args[2], "--")
+                println(stderr, "--history requires a path.")
+                return 2
+            end
+            path = args[2]
+            args = args[3:end]
+        elseif first(args) == "--abandon"
+            if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
+                println(stderr, "--abandon requires a reason.")
+                return 2
+            end
+            reason = args[2]
+            args = args[3:end]
+        elseif first(args) == "--inspect-history"
+            inspect = true
+            args = args[2:end]
+        else
+            break
+        end
+    end
     if args == ["--help"] || args == ["-h"]
-        println("jf [--codemode] [prompt] | jf [--codemode] --login-openrouter [prompt] | jf [--codemode] --login-openrouter-callback [prompt]\nSet OPENAI_API_KEY and OPENAI_MODEL. Set JF_PROVIDER=openai-responses for Responses or JF_PROVIDER=openrouter and OPENROUTER_API_KEY and OPENROUTER_MODEL for OpenRouter. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
+        println("jf [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [--codemode] [--history PATH] --login-openrouter [prompt] | jf [--codemode] [--history PATH] --login-openrouter-callback [prompt]\nSet OPENAI_API_KEY and OPENAI_MODEL. Set JF_PROVIDER=openai-responses for Responses or JF_PROVIDER=openrouter and OPENROUTER_API_KEY and OPENROUTER_MODEL for OpenRouter. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
         return 0
+    end
+    if inspect
+        if isnothing(path) || !isnothing(reason) || !isempty(args)
+            println(stderr, "--inspect-history requires --history PATH and no prompt or --abandon.")
+            return 2
+        end
+        return inspecthistory!(Terminal(stdout, stderr, String[]), path)
+    end
+    if !isnothing(reason)
+        if isnothing(path) || !isempty(args)
+            println(stderr, "--abandon requires --history PATH and no prompt.")
+            return 2
+        end
+        return abandonhistory!(Terminal(stdout, stderr, String[]), path, reason)
     end
     callback_requested = !isempty(args) && first(args) == "--login-openrouter-callback"
     login_requested = callback_requested || (!isempty(args) && first(args) == "--login-openrouter")
@@ -90,28 +132,40 @@ function (@main)(args)
     tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
     Sys.iswindows() && push!(tools, PowerShell(pwd()))
     codemode && push!(tools, CodeMode(tools))
-    context = Instructions.render(Instructions.load(pwd(); agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing)))
-    messages = Dict{String, Any}[]
-    isnothing(context) || push!(messages, Dict("role" => "system", "content" => context))
-    agent = Agent(model, Dict{String, Tool}(name(tool) => tool for tool in tools), messages)
     terminal = Terminal(stdout, stderr, [model.key])
-    if isempty(args)
-        interactive = stdin isa Base.TTY
-        interactive && println(stderr, "Julia Forever — enter a message, or /exit to quit")
-        status = 0
-        while true
-            if interactive
-                print(stderr, "> ")
-                flush(stderr)
-            end
-            eof(stdin) && break
-            line = readline(stdin)
-            line == "/exit" && break
-            status = max(status, run!(terminal, agent, line))
+    history = isnothing(path) ? nothing : open(History.SQLite, path)
+    history isa History.Rejected && return result!(terminal, history)
+    try
+        snapshot = isnothing(history) ? nothing : History.snapshot(history)
+        snapshot isa History.Rejected && return result!(terminal, snapshot)
+        messages = Dict{String, Any}[]
+        if isnothing(snapshot) || snapshot.revision == 0
+            context = Instructions.render(Instructions.load(pwd(); agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing)))
+            isnothing(context) || push!(messages, Dict("role" => "system", "content" => context))
         end
-        return status
-    else
-        return run!(terminal, agent, join(args, " "))
+        agent = Agent(model, Dict{String, Tool}(name(tool) => tool for tool in tools), messages; history)
+        agent isa History.Rejected && return result!(terminal, agent)
+        isnothing(agent.fault) || return result!(terminal, agent.fault)
+        if isempty(args)
+            interactive = stdin isa Base.TTY
+            interactive && println(stderr, "Julia Forever — enter a message, or /exit to quit")
+            status = 0
+            while true
+                if interactive
+                    print(stderr, "> ")
+                    flush(stderr)
+                end
+                eof(stdin) && break
+                line = readline(stdin)
+                line == "/exit" && break
+                status = max(status, run!(terminal, agent, line))
+            end
+            return status
+        else
+            return run!(terminal, agent, join(args, " "))
+        end
+    finally
+        isnothing(history) || close(history)
     end
 end
 

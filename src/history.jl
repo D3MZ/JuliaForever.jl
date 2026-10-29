@@ -11,7 +11,7 @@ end
 
 abstract type Store end
 
-"A SQLite-backed history; load SQLite.jl before opening one."
+"A SQLite-backed history."
 mutable struct SQLite{T} <: Store
     db::T
     lock::ReentrantLock

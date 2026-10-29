@@ -1,6 +1,6 @@
 # Replaceable histories
 
-`JuliaForever.History` offers an in-memory store, an adapter over `Durable.Store`, and an optional SQLite store with the same append and snapshot operations.
+`JuliaForever.History` offers an in-memory store, an adapter over `Durable.Store`, and a SQLite store with the same append and snapshot operations.
 
 ```julia
 using JuliaForever
@@ -26,7 +26,7 @@ collect(H.snapshot(history))
 close(store)
 ```
 
-With SQLite.jl installed in the application environment, load it and open one history per database file:
+Open one SQLite history per database file:
 
 ```julia
 using SQLite, JuliaForever
@@ -47,7 +47,7 @@ Supported records consist recursively of `nothing`, `Bool`, `Int`, finite `Float
 
 The journal stores each history in a durable document under a private format marker; do not modify that document outside this adapter. It retains the ID across close and reopen. It inherits the [durable store](durable.md)'s exclusive single-process file ownership, `fsync` and recovery behavior, failed-store handling, platform support, and limitations. Opening on unsupported platforms, including Windows, returns `D.Rejected(:unsupported_platform)`. History operations on a closed or failed store return `H.Rejected` with the corresponding reason. Each append currently replaces the complete document, so time, memory, and log size grow with history; there is no compaction or performance claim.
 
-SQLite is a weak dependency: install SQLite.jl separately and load it before calling `open(H.SQLite, path)`. A file is one history, and independent connections and processes can open it at the same time. Each compare-and-append uses a SQLite write transaction, and each snapshot reads a consistent set of complete batches. The connection waits up to five seconds for a database lock; SQLite errors, including lock timeouts, propagate. The adapter requests SQLite's `synchronous=EXTRA` and accepts its persistent rollback-journal and WAL modes. An unrelated database returns `H.Rejected(:history_format)`; the private tables and database settings should not be modified directly. Keep SQLite's sidecar files with the database and use SQLite's backup API for a live database. SQLite's durability depends on the filesystem and storage honoring its locking and sync operations. The implementation was tested on macOS; Windows and Linux have not been validated.
+SQLite.jl is a JuliaForever dependency; using a SQLite history remains opt-in. A file is one history, and independent connections and processes can open it at the same time. Each compare-and-append uses a SQLite write transaction, and each snapshot reads a consistent set of complete batches. The connection waits up to five seconds for a database lock; SQLite errors, including lock timeouts, propagate. The adapter requests SQLite's `synchronous=EXTRA` and accepts its persistent rollback-journal and WAL modes. An unrelated database returns `H.Rejected(:history_format)`; `open(H.SQLite, path; create=false)` also rejects a missing or uninitialized file instead of creating a history. The private tables and database settings should not be modified directly. Keep SQLite's sidecar files with the database and use SQLite's backup API for a live database. SQLite's durability depends on the filesystem and storage honoring its locking and sync operations. The implementation was tested on macOS; Windows and Linux have not been validated.
 
 If a SQLite append encounters an exception during its transaction, the exception propagates and that connection rejects later operations with `H.Rejected(:uncertain)`. Close it, reopen the database, and inspect the revision and batches before deciding what to do. SQLite recovers its journal as needed on reopening; a committed transaction may be present even when the caller did not receive its result. Other writers may have continued, so application-level identity and reconciliation can still be necessary. History operations on a closed SQLite connection return `H.Rejected(:closed)`.
 

@@ -1,8 +1,8 @@
-module SQLiteExt
+module SQLiteHistory
 
 using SQLite, JSON3
 import SQLite.DBInterface as DBI
-import JuliaForever.History as H
+import ..History as H
 import Base: append!
 
 const format = "JuliaForever.History.SQLite/1"
@@ -13,10 +13,14 @@ function schema(db)
     end
 end
 
-function initialize(db)
-    SQLite.execute(db, "BEGIN IMMEDIATE")
+function initialize(db; create=true)
+    SQLite.execute(db, create ? "BEGIN IMMEDIATE" : "BEGIN")
     names = schema(db)
     if isempty(names)
+        if !create
+            SQLite.execute(db, "ROLLBACK")
+            return H.Rejected(:history_format)
+        end
         SQLite.execute(db, "CREATE TABLE jf_meta (format TEXT NOT NULL)")
         SQLite.execute(db, "INSERT INTO jf_meta VALUES (?)", (format,))
         SQLite.execute(db, "CREATE TABLE jf_history (revision INTEGER PRIMARY KEY, data TEXT NOT NULL)")
@@ -36,7 +40,15 @@ function initialize(db)
     nothing
 end
 
-function Base.open(::Type{H.SQLite}, path::AbstractString)
+function Base.open(::Type{H.SQLite}, path::AbstractString; create=true)
+    path = expanduser(path)
+    if !create
+        isfile(path) || return H.Rejected(:history_missing)
+        header = open(path, "r") do file
+            read(file, 16)
+        end
+        header == codeunits("SQLite format 3\0") || return H.Rejected(:history_format)
+    end
     db = SQLite.DB(path)
     opened = false
     try
@@ -46,7 +58,7 @@ function Base.open(::Type{H.SQLite}, path::AbstractString)
         end
         mode in ("delete", "truncate", "persist", "wal") || return H.Rejected(:history_format)
         SQLite.execute(db, "PRAGMA synchronous = EXTRA")
-        result = initialize(db)
+        result = initialize(db; create)
         result isa H.Rejected && return result
         opened = true
         H.SQLite(db, ReentrantLock(), :open)

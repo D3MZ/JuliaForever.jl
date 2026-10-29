@@ -63,6 +63,69 @@ end
 
 result!(::Terminal, ::Union{AbstractString, Nothing}) = 0
 
+function result!(terminal::Terminal, result::History.Rejected)
+    if result.reason == :uncertain_effect
+        println(terminal.diagnostics, "History has an uncertain pending effect. It was not retried. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.")
+    elseif result.reason == :incomplete_turn
+        println(terminal.diagnostics, "History has an incomplete turn. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.")
+    elseif result.reason == :not_interrupted
+        println(terminal.diagnostics, "History has no interrupted turn to abandon.")
+    else
+        println(terminal.diagnostics, "History rejected: ", result.reason, ".")
+    end
+    flush(terminal.diagnostics)
+    1
+end
+
+function historyagent(f, terminal::Terminal, path)
+    path = expanduser(path)
+    if !isfile(path)
+        println(terminal.diagnostics, "Recovery requires an existing history file.")
+        return 2
+    end
+    history = open(History.SQLite, path; create=false)
+    history isa History.Rejected && return result!(terminal, history)
+    try
+        snapshot = History.snapshot(history)
+        snapshot isa History.Rejected && return result!(terminal, snapshot)
+        snapshot.revision == 0 && return result!(terminal, History.Rejected(:not_interrupted))
+        agent = Agent(nothing, []; history)
+        agent isa History.Rejected && return result!(terminal, agent)
+        f(agent)
+    finally
+        close(history)
+    end
+end
+
+function abandonhistory!(terminal::Terminal, path, reason)
+    historyagent(terminal, path) do agent
+        result = abandon!(agent, reason)
+        result isa History.Rejected && return result!(terminal, result)
+        println(terminal.output, "Interrupted turn abandoned. No effect was retried or undone.")
+        flush(terminal.output)
+        0
+    end
+end
+
+function inspect!(terminal::Terminal, effect::Union{Conversation.ToolRequest, Conversation.SkipRequest})
+    println(terminal.output, "Pending tool: ", repr(effect.call.name))
+    println(terminal.output, "Arguments: ", repr(effect.call.arguments))
+end
+
+inspect!(terminal::Terminal, ::Conversation.ModelRequest) = println(terminal.output, "Pending model request")
+
+function inspecthistory!(terminal::Terminal, path)
+    historyagent(terminal, path) do agent
+        println(terminal.output, "History status: ", isnothing(agent.fault) ? "ready" : string(agent.fault.reason))
+        for pending in agent.state.kernel.pending
+            println(terminal.output, "Effect ID: ", repr(pending.id))
+            inspect!(terminal, pending.effect)
+        end
+        flush(terminal.output)
+        0
+    end
+end
+
 function failure!(terminal::Terminal, exception::HTTP.StatusError)
     println(terminal.diagnostics, "Request failed (HTTP ", exception.status, ").")
     flush(terminal.diagnostics)
