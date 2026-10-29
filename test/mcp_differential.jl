@@ -4,7 +4,7 @@ using Test, JSON3, JuliaForever
     mktempdir() do dir
         marker = joinpath(dir, "marker")
         env = Dict("PI_SOURCE" => ENV["PI_SOURCE"], "JF_JULIA" => first(Base.julia_cmd().exec), "JF_JULIA_PROJECT" => dirname(Base.active_project()), "JF_PROJECT" => dirname(@__DIR__), "JF_MARKER" => marker)
-        oracle = JSON3.read(read(addenv(`bun $(joinpath(@__DIR__, "mcp_oracle.ts"))`, env), String), Dict{String, Any})
+        oracle = JSON3.read(read(addenv(`node $(joinpath(@__DIR__, "mcp_oracle.ts"))`, env), String), Dict{String, Any})
         client = JuliaForever.MCP.connect(mcpserver("normal", marker); timeout=10, grace=0.2)
         @test client isa JuliaForever.MCP.Client
         if client isa JuliaForever.MCP.Client
