@@ -77,7 +77,7 @@ end
     try
         project = dirname(@__DIR__)
         base = "http://$(HTTP.server_addr(server))/api/v1"
-        cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever --login-openrouter-callback hello`, "OPENROUTER_BASE_URL" => base, "OPENROUTER_MODEL" => "fixture/model")
+        cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever --provider openrouter --login-openrouter-callback --model cli/model hello`, "OPENROUTER_BASE_URL" => base, "OPENROUTER_MODEL" => "fixture/model")
         output = open(cmd, "r") do io
             line = readline(io)
             url = match(r"https://openrouter\.ai/auth\?\S+", line).match
@@ -91,7 +91,7 @@ end
         @test first.target == "/api/v1/auth/keys"
         @test first.body.code == "synthetic-code"
         @test second.authorization == "Bearer synthetic-key"
-        @test second.body.model == "fixture/model"
+        @test second.body.model == "cli/model"
         @test occursin("done", output)
         @test !occursin("synthetic-key", output)
         @test !occursin(first.body.code_verifier, output)

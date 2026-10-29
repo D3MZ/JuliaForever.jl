@@ -28,14 +28,22 @@ include("codemode.jl")
 include("terminal.jl")
 include("mcp.jl")
 
-function configured(env, login)
-    selected = get(env, "JF_PROVIDER", "openai")
-    required = login ? ("OPENROUTER_MODEL",) : selected in ("openai", "openai-responses") ? ("OPENAI_MODEL", "OPENAI_API_KEY") : selected == "openrouter" ? ("OPENROUTER_MODEL", "OPENROUTER_API_KEY") : ()
-    missing = filter(name -> !haskey(env, name), required)
+missingmodel(env, info, ::Nothing) = isempty(strip(get(env, info.model, ""))) ? [info.model] : String[]
+missingmodel(env, info, model::AbstractString) = isempty(strip(model)) ? [info.model] : String[]
+
+function reportmissing(missing)
     isempty(missing) && return true
     println(stderr, "Set ", join(missing, " and "), ".")
     false
 end
+
+function configured(env, info, model)
+    missing = missingmodel(env, info, model)
+    isempty(get(env, info.key, "")) && push!(missing, info.key)
+    reportmissing(missing)
+end
+
+configuredlogin(env, info, model) = reportmissing(missingmodel(env, info, model))
 
 function pluginfailure!(terminal::Terminal, name, exception)
     exception isa InterruptException && return failure!(terminal, exception)
@@ -84,9 +92,33 @@ function (@main)(args)
     path = nothing
     reason = nothing
     inspect = false
+    selected = nothing
+    requested_model = nothing
+    login_requested = false
+    callback_requested = false
     while !isempty(args)
         if first(args) == "--codemode"
             codemode = true
+            args = args[2:end]
+        elseif first(args) in ("--provider", "--model")
+            option = first(args)
+            if length(args) < 2 || isempty(strip(args[2])) || startswith(args[2], "--")
+                println(stderr, option, " requires a value.")
+                return 2
+            end
+            if option == "--provider"
+                selected = args[2]
+            else
+                requested_model = args[2]
+            end
+            args = args[3:end]
+        elseif first(args) in ("--login-openrouter", "--login-openrouter-callback")
+            if login_requested
+                println(stderr, "Select only one OpenRouter login mode.")
+                return 2
+            end
+            login_requested = true
+            callback_requested = first(args) == "--login-openrouter-callback"
             args = args[2:end]
         elseif first(args) in ("--plugin", "--plugin-env")
             option = first(args)
@@ -118,27 +150,39 @@ function (@main)(args)
         end
     end
     if args == ["--help"] || args == ["-h"]
-        println("jf [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [--codemode] [--history PATH] --login-openrouter [prompt] | jf [--codemode] [--history PATH] --login-openrouter-callback [prompt]\nUse --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Set OPENAI_API_KEY and OPENAI_MODEL. Set JF_PROVIDER=openai-responses for Responses or JF_PROVIDER=openrouter and OPENROUTER_API_KEY and OPENROUTER_MODEL for OpenRouter. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
+        println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter. --provider overrides JF_PROVIDER; --model overrides OPENAI_MODEL or OPENROUTER_MODEL. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
         return 0
     end
+    if !isnothing(selected) && isnothing(providerinfo(selected))
+        println(stderr, "Unknown provider; choose openai, openai-responses, or openrouter.")
+        return 2
+    end
     if inspect
-        if isnothing(path) || !isnothing(reason) || !isempty(args)
+        if isnothing(path) || !isnothing(reason) || login_requested || !isempty(args)
             println(stderr, "--inspect-history requires --history PATH and no prompt or --abandon.")
             return 2
         end
         return inspecthistory!(Terminal(stdout, stderr, String[]), path)
     end
     if !isnothing(reason)
-        if isnothing(path) || !isempty(args)
+        if isnothing(path) || login_requested || !isempty(args)
             println(stderr, "--abandon requires --history PATH and no prompt.")
             return 2
         end
         return abandonhistory!(Terminal(stdout, stderr, String[]), path, reason)
     end
-    callback_requested = !isempty(args) && first(args) == "--login-openrouter-callback"
-    login_requested = callback_requested || (!isempty(args) && first(args) == "--login-openrouter")
-    configured(ENV, login_requested) || return 2
+    if login_requested && !isnothing(selected) && selected != "openrouter"
+        println(stderr, "OpenRouter login requires --provider openrouter.")
+        return 2
+    end
+    selected = login_requested ? "openrouter" : something(selected, get(ENV, "JF_PROVIDER", "openai"))
+    info = providerinfo(selected)
+    if isnothing(info)
+        println(stderr, "Unknown provider; choose openai, openai-responses, or openrouter.")
+        return 2
+    end
     if login_requested
+        configuredlogin(ENV, info, requested_model) || return 2
         if callback_requested
             callback = OpenRouterCallback()
             try
@@ -171,14 +215,10 @@ function (@main)(args)
             println(stderr, "OpenRouter did not return an API key.")
             return 2
         end
-        model = OpenAI(base, ENV["OPENROUTER_MODEL"], key)
-        args = args[2:end]
+        model = OpenAI(base, modelvalue(ENV, info.model, requested_model), key)
     else
-        model = provider()
-    end
-    if isnothing(model)
-        println(stderr, "Unknown JF_PROVIDER; choose openai, openai-responses, or openrouter.")
-        return 2
+        configured(ENV, info, requested_model) || return 2
+        model = provider(info, ENV, requested_model)
     end
     tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
     Sys.iswindows() && push!(tools, PowerShell(pwd()))

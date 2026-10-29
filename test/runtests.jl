@@ -62,6 +62,7 @@ include("terminal.jl")
 include("terminal_plugins.jl")
 include("terminal_http.jl")
 include("terminal_history.jl")
+include("terminal_models.jl")
 
 include("provider.jl")
 include("provider_stream.jl")

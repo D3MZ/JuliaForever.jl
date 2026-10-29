@@ -22,13 +22,19 @@ end
 
 Base.show(io::IO, provider::OpenAI) = print(io, "OpenAI(", repr(provider.base), ", ", repr(provider.model), ", [redacted])")
 
-function provider(env=ENV)
-    selected = get(env, "JF_PROVIDER", "openai")
-    selected == "openai" && return OpenAI(get(env, "OPENAI_BASE_URL", "https://api.openai.com/v1"), env["OPENAI_MODEL"], env["OPENAI_API_KEY"])
-    selected == "openai-responses" && return OpenAIResponses(get(env, "OPENAI_BASE_URL", "https://api.openai.com/v1"), env["OPENAI_MODEL"], env["OPENAI_API_KEY"])
-    selected == "openrouter" && return OpenAI(get(env, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"), env["OPENROUTER_MODEL"], env["OPENROUTER_API_KEY"])
+function providerinfo(selected)
+    selected == "openai" && return (; factory=OpenAI, base="OPENAI_BASE_URL", url="https://api.openai.com/v1", model="OPENAI_MODEL", key="OPENAI_API_KEY")
+    selected == "openai-responses" && return (; factory=OpenAIResponses, base="OPENAI_BASE_URL", url="https://api.openai.com/v1", model="OPENAI_MODEL", key="OPENAI_API_KEY")
+    selected == "openrouter" && return (; factory=OpenAI, base="OPENROUTER_BASE_URL", url="https://openrouter.ai/api/v1", model="OPENROUTER_MODEL", key="OPENROUTER_API_KEY")
     nothing
 end
+
+modelvalue(env, name, ::Nothing) = env[name]
+modelvalue(env, name, model::AbstractString) = model
+
+provider(::Nothing, env, model) = nothing
+provider(info::NamedTuple, env, model) = info.factory(get(env, info.base, info.url), modelvalue(env, info.model, model), env[info.key])
+provider(env=ENV) = provider(providerinfo(get(env, "JF_PROVIDER", "openai")), env, nothing)
 
 struct OpenRouterLogin
     url::String
