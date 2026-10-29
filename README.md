@@ -1,6 +1,6 @@
 # Julia Forever
 
-An experimental native Julia agent harness, working toward compatibility with [Pi](https://github.com/earendil-works/pi). The current target is Pi revision `e7a0df27c09d11bf4161d3605246cbf57a129cb2`.
+An experimental native Julia agent harness. B1 surface-parity tests use [Pi](https://github.com/earendil-works/pi) revision `e7a0df27c09d11bf4161d3605246cbf57a129cb2` as a reference.
 
 The [architecture](docs/architecture.md) describes the native state-machine design and Pi's temporary role as a B1 differential reference.
 
