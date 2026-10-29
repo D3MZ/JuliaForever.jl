@@ -3,7 +3,7 @@ module JuliaForever
 using HTTP, JSON3, Unicode, Base64, Random, SHA
 
 export Execution
-export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, cancel!, codeexecute, ToolResult, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, InvalidResponse, OpenRouterLogin, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
+export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, cancel!, codeexecute, ToolResult, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, InvalidResponse, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
 
 include("tools.jl")
 include("provider.jl")
@@ -36,17 +36,34 @@ function (@main)(args)
     codemode = !isempty(args) && first(args) == "--codemode"
     codemode && (args = args[2:end])
     if args == ["--help"] || args == ["-h"]
-        println("jf [--codemode] [prompt] | jf [--codemode] --login-openrouter [prompt]\nSet OPENAI_API_KEY and OPENAI_MODEL. Set JF_PROVIDER=openai-responses for Responses or JF_PROVIDER=openrouter and OPENROUTER_API_KEY and OPENROUTER_MODEL for OpenRouter. Code mode runs Julia with your permissions.")
+        println("jf [--codemode] [prompt] | jf [--codemode] --login-openrouter [prompt] | jf [--codemode] --login-openrouter-callback [prompt]\nSet OPENAI_API_KEY and OPENAI_MODEL. Set JF_PROVIDER=openai-responses for Responses or JF_PROVIDER=openrouter and OPENROUTER_API_KEY and OPENROUTER_MODEL for OpenRouter. Code mode runs Julia with your permissions.")
         return 0
     end
-    login_requested = !isempty(args) && first(args) == "--login-openrouter"
+    callback_requested = !isempty(args) && first(args) == "--login-openrouter-callback"
+    login_requested = callback_requested || (!isempty(args) && first(args) == "--login-openrouter")
     configured(ENV, login_requested) || return 2
     if login_requested
-        login = authorize()
-        println("Open this URL and authorize Julia Forever: ", login.url)
-        print("Authorization code: ")
-        flush(stdout)
-        code = strip(readline(stdin))
+        if callback_requested
+            callback = OpenRouterCallback()
+            try
+                login = authorize(callback)
+                println("Open this URL and authorize Julia Forever: ", login.url)
+                flush(stdout)
+                code = wait(callback)
+            finally
+                close(callback)
+            end
+            if isnothing(code)
+                println(stderr, "OpenRouter authorization was denied or timed out.")
+                return 2
+            end
+        else
+            login = authorize()
+            println("Open this URL and authorize Julia Forever: ", login.url)
+            print("Authorization code: ")
+            flush(stdout)
+            code = strip(readline(stdin))
+        end
         base = get(ENV, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         result = request!(Terminal(stdout, stderr, String[])) do
             exchange(login, code; base)

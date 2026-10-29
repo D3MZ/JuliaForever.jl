@@ -45,6 +45,50 @@ function authorize()
     OpenRouterLogin("https://openrouter.ai/auth?code_challenge=$challenge&code_challenge_method=S256&key_label=Julia%20Forever", verifier)
 end
 
+struct OpenRouterCallback{S}
+    server::S
+    url::String
+    state::String
+    result::Channel{Union{Nothing, String}}
+end
+
+Base.show(io::IO, ::OpenRouterCallback) = print(io, "OpenRouterCallback([redacted])")
+
+function OpenRouterCallback()
+    path = "/oauth/callback/" * base64url(rand(RandomDevice(), UInt8, 24))
+    state = String(base64url(rand(RandomDevice(), UInt8, 32)))
+    result = Channel{Union{Nothing, String}}(1)
+    pending = Ref(true)
+    gate = ReentrantLock()
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        request.method == "GET" || return HTTP.Response(405)
+        uri = HTTP.URI(request.target)
+        uri.path == path || return HTTP.Response(404)
+        params = HTTP.queryparampairs(uri)
+        codes = [value for (key, value) in params if key == "code"]
+        states = [value for (key, value) in params if key == "state"]
+        failures = [value for (key, value) in params if key == "error"]
+        success = length(codes) == 1 && !isempty(only(codes)) && isempty(failures) && states == [state]
+        denied = isempty(codes) && failures == ["access_denied"] && (isempty(states) || states == [state])
+        (success || denied) || return HTTP.Response(400)
+        lock(gate) do
+            pending[] || return HTTP.Response(409)
+            pending[] = false
+            put!(result, success ? only(codes) : nothing)
+            HTTP.Response(200, ["Content-Type" => "text/plain; charset=utf-8", "Cache-Control" => "no-store", "Referrer-Policy" => "no-referrer"], "You may close this window.")
+        end
+    end
+    OpenRouterCallback(server, "http://127.0.0.1:$(HTTP.port(server))$path", state, result)
+end
+
+function authorize(callback::OpenRouterCallback)
+    login = authorize()
+    OpenRouterLogin("$(login.url)&callback_url=$(HTTP.escapeuri(callback.url))&state=$(HTTP.escapeuri(callback.state))", login.verifier)
+end
+
+Base.wait(callback::OpenRouterCallback; timeout=300) = timedwait(() -> isready(callback.result), timeout; pollint=0.01) == :ok ? take!(callback.result) : nothing
+Base.close(callback::OpenRouterCallback) = (close(callback.server); wait(callback.server); nothing)
+
 function exchange(login::OpenRouterLogin, code; base="https://openrouter.ai/api/v1")
     body = JSON3.write((; code, code_verifier=login.verifier, code_challenge_method="S256"))
     response = HTTP.post("$(rstrip(base, '/'))/auth/keys", ["Content-Type" => "application/json"], body; redirect=false, retry=false, cookies=false)
