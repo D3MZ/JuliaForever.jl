@@ -52,25 +52,17 @@ function validate(token::AbstractString, client::AbstractString, nonce::Abstract
     direct in split(scope) || return nothing
     source = url -> signingkeys(fetcher(url))
     verifier = JWTs.Verifier(; jwks_uri=jwks, algorithms=["RS256"], issuer, audience=client, nonce, required_claims=["iss", "aud", "sub", "iat", "exp", "nonce"], leeway=5, fetcher=source, now)
-    complete = false
-    try
-        claims = JWTs.claims(JWTs.verify(verifier, String(token)))
-        complete = true
-        id = get(claims, "sub", nothing)
-        id isa AbstractString && !isempty(strip(id)) || return nothing
-        matches(subject, id) || return nothing
-        audience = get(claims, "aud", nothing)
-        authorized = get(claims, "azp", nothing)
-        (!isnothing(authorized) && authorized != client) && return nothing
-        audience isa AbstractVector && length(audience) > 1 && authorized != client && return nothing
-        all(name -> get(claims, name, nothing) isa Real && isfinite(claims[name]), ("iat", "exp")) || return nothing
-        email = get(claims, "email", nothing)
-        Identity(String(id), email isa AbstractString ? String(email) : nothing)
-    finally
-        if !complete && last(current_exceptions()).exception isa JWTs.JWTError
-            return nothing
-        end
-    end
+    claims = JWTs.claims(JWTs.verify(verifier, String(token)))
+    id = get(claims, "sub", nothing)
+    id isa AbstractString && !isempty(strip(id)) || return nothing
+    matches(subject, id) || return nothing
+    audience = get(claims, "aud", nothing)
+    authorized = get(claims, "azp", nothing)
+    (!isnothing(authorized) && authorized != client) && return nothing
+    audience isa AbstractVector && length(audience) > 1 && authorized != client && return nothing
+    all(name -> get(claims, name, nothing) isa Real && isfinite(claims[name]), ("iat", "exp")) || return nothing
+    email = get(claims, "email", nothing)
+    Identity(String(id), email isa AbstractString ? String(email) : nothing)
 end
 
 end
