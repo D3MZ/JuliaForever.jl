@@ -179,15 +179,18 @@ function failures!(terminal::Terminal, listener::Extensions.Listener)
     flush(terminal.diagnostics)
 end
 
+failures!(::Terminal, ::Function) = nothing
+observer(terminal::Terminal, ::Nothing) = event -> render!(terminal, event)
+observer(terminal::Terminal, snapshot::Extensions.Snapshot) = Extensions.listen(snapshot; on_event=event -> render!(terminal, event))
+
 function run!(terminal::Terminal, agent::Agent, prompt, snapshot=nothing)
-    listener = isnothing(snapshot) ? nothing : Extensions.listen(snapshot; on_event=event -> render!(terminal, event))
-    callback = isnothing(listener) ? event -> render!(terminal, event) : listener
+    callback = observer(terminal, snapshot)
     result = try
         request!(terminal) do
             respond!(agent, prompt; on_event=event -> event.type == :text && text!(terminal, event.text), on_agent_event=callback)
         end
     finally
-        isnothing(listener) || failures!(terminal, listener)
+        failures!(terminal, callback)
     end
     result.status == 0 || return result.status
     result!(terminal, result.value)

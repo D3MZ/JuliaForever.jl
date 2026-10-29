@@ -58,11 +58,15 @@ end
 "Remove an ID from future snapshots. Existing snapshots remain unchanged."
 function remove!(registry::Registry, id::Symbol)
     lock(registry.lock) do
-        index = findfirst(entry -> entry.id == id, registry.entries)
-        isnothing(index) && return false
-        deleteat!(registry.entries, index)
-        true
+        remove!(registry.entries, findfirst(entry -> entry.id == id, registry.entries))
     end
+end
+
+remove!(entries::Vector{Entry}, ::Nothing) = false
+
+function remove!(entries::Vector{Entry}, index::Int)
+    deleteat!(entries, index)
+    true
 end
 
 struct Snapshot
@@ -101,6 +105,9 @@ end
 "Create a synchronous lifecycle observer and optional host callback."
 listen(snapshot::Snapshot; on_event=nothing) = Listener(ReentrantLock(), snapshot.hooks, Failure[], on_event)
 
+deliver(::Nothing, event) = nothing
+deliver(callback, event) = callback(event)
+
 function (listener::Listener)(event)
     lock(listener.lock) do
         for hook in listener.hooks
@@ -111,7 +118,7 @@ function (listener::Listener)(event)
                 push!(listener.errors, Failure(hook.plugin, event.type, exception))
             end
         end
-        isnothing(listener.on_event) || listener.on_event(event)
+        deliver(listener.on_event, event)
     end
     nothing
 end
