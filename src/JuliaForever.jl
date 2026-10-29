@@ -15,6 +15,7 @@ include("sessions.jl")
 include("kernel.jl")
 include("execution.jl")
 include("execution_kernel.jl")
+include("logs.jl")
 include("search.jl")
 include("codemode.jl")
 
