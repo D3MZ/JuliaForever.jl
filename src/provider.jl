@@ -137,6 +137,19 @@ function usage(data)
     Usage(input, output, cache_read, cache_write, reasoning, input + output + cache_read + cache_write, isnothing(cost) ? nothing : Float64(cost))
 end
 
+chatmessage!(result, images, message, ::Nothing) = push!(result, message)
+
+function chatmessage!(result, images, message, image)
+    if message["role"] == "tool"
+        value = copy(message)
+        delete!(value, "image")
+        push!(result, value)
+        push!(images, Dict("type" => "image_url", "image_url" => Dict("url" => "data:$(image["mime"]);base64,$(image["data"])")))
+    else
+        push!(result, message)
+    end
+end
+
 function chat(messages)
     result = Any[]
     images = Any[]
@@ -145,15 +158,7 @@ function chat(messages)
             push!(result, Dict("role" => "user", "content" => [Dict("type" => "text", "text" => "Attached image(s) from tool result:"), images...]))
             empty!(images)
         end
-        image = get(message, "image", nothing)
-        if message["role"] == "tool" && !isnothing(image)
-            value = copy(message)
-            delete!(value, "image")
-            push!(result, value)
-            push!(images, Dict("type" => "image_url", "image_url" => Dict("url" => "data:$(image["mime"]);base64,$(image["data"])")))
-        else
-            push!(result, message)
-        end
+        chatmessage!(result, images, message, get(message, "image", nothing))
     end
     isempty(images) || push!(result, Dict("role" => "user", "content" => [Dict("type" => "text", "text" => "Attached image(s) from tool result:"), images...]))
     result

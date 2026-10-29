@@ -9,13 +9,16 @@ Base.show(io::IO, provider::OpenAIResponses) = print(io, "OpenAIResponses(", rep
 headers(provider::OpenAIResponses) = ["Authorization" => "Bearer $(provider.key)", "Content-Type" => "application/json"]
 endpoint(provider::OpenAIResponses) = "$(rstrip(provider.base, '/'))/responses"
 
+tooloutput(content, ::Nothing) = content
+tooloutput(content, image) = [Dict("type" => "input_text", "text" => content), Dict("type" => "input_image", "detail" => "auto", "image_url" => "data:$(image["mime"]);base64,$(image["data"])")]
+
 function input(messages)
     items = Any[]
     for message in messages
         role = message["role"]
         if role == "tool"
             image = get(message, "image", nothing)
-            output = isnothing(image) ? message["content"] : [Dict("type" => "input_text", "text" => message["content"]), Dict("type" => "input_image", "detail" => "auto", "image_url" => "data:$(image["mime"]);base64,$(image["data"])")]
+            output = tooloutput(message["content"], image)
             push!(items, Dict("type" => "function_call_output", "call_id" => message["tool_call_id"], "output" => output))
         elseif role == "assistant" && haskey(message, "response_output")
             append!(items, message["response_output"])
