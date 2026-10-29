@@ -235,21 +235,33 @@ name(tool::RemoteTool) = tool.alias
 description(tool::RemoteTool) = tool.doc
 schema(tool::RemoteTool) = tool.parameters
 
-function imagecontent(block)
-    block isa AbstractDict || return nothing
+imagecontent(block) = nothing
+
+function imagecontent(block::AbstractDict)
     kind = get(block, "type", nothing)
     kind == "image" && return (; mime=get(block, "mimeType", nothing), data=get(block, "data", nothing))
     kind == "resource" || return nothing
-    resource = get(block, "resource", nothing)
-    resource isa AbstractDict && !haskey(resource, "text") || return nothing
-    mime = get(resource, "mimeType", nothing)
-    mime isa AbstractString && startswith(mime, "image/") || return nothing
+    resourceimage(get(block, "resource", nothing))
+end
+
+resourceimage(resource) = nothing
+
+function resourceimage(resource::AbstractDict)
+    haskey(resource, "text") && return nothing
+    resourceimage(get(resource, "mimeType", nothing), resource)
+end
+
+resourceimage(mime, resource::AbstractDict) = nothing
+
+function resourceimage(mime::AbstractString, resource::AbstractDict)
+    startswith(mime, "image/") || return nothing
     (; mime, data=get(resource, "blob", nothing))
 end
 
-function image(content)
-    mime, data = content.mime, content.data
-    mime isa AbstractString && data isa AbstractString || return Failure(:protocol, "Malformed image content")
+image(content) = image(content.mime, content.data)
+image(mime, data) = Failure(:protocol, "Malformed image content")
+
+function image(mime::AbstractString, data::AbstractString)
     mime in ("image/png", "image/jpeg") || return Failure(:capability, "Image MIME type $mime is not supported")
     ncodeunits(data) <= 4 * cld(imagelimit, 3) || return Failure(:capability, "Image exceeds the 10 MiB limit")
     bytes = try
@@ -272,30 +284,50 @@ end
 image(mime, data, ::Nothing) = Image(mime, data)
 image(mime, data, problem::String) = Failure(:capability, problem)
 
+imagecount(::Nothing) = 0
+imagecount(::NamedTuple) = 1
+imagefailed(::Nothing) = false
+imagefailed(::Image) = false
+imagefailed(::Failure) = true
+imageattachment(previous, ::Union{Nothing, Failure}) = previous
+imageattachment(previous, value::Image) = value
+imagemarker(::Image) = "[MCP image attached]"
+imagemarker(value::Failure) = "[MCP image omitted: $(value.message)]"
+
+function textblock!(content, block, kind, text::AbstractString)
+    push!(content, kind == "text" ? text : JSON3.write(block))
+end
+
+textblock!(content, block, kind, text) = push!(content, JSON3.write(block))
+
+function contentblock!(content, block::AbstractDict, ::Nothing, count)
+    textblock!(content, block, get(block, "type", nothing), get(block, "text", nothing))
+    nothing
+end
+
+function contentblock!(content, block, ::Nothing, count)
+    push!(content, JSON3.write(block))
+    nothing
+end
+
+function contentblock!(content, block, candidate::NamedTuple, count)
+    value = count > 1 ? Failure(:capability, "Multiple images are not supported") : image(candidate)
+    push!(content, imagemarker(value))
+    value
+end
+
 function execute(tool::RemoteTool, args)
     result = call(tool.client, tool.remote, args)
     result isa Failure && return ToolResult("MCP $(result.kind): $(result.message)", true)
     content = String[]
     blocks = get(result, "content", [])
-    countimages = count(block -> !isnothing(imagecontent(block)), blocks)
+    countimages = sum(block -> imagecount(imagecontent(block)), blocks; init=0)
     attachment = nothing
     failed = get(result, "isError", false)
     for block in blocks
-        candidate = imagecontent(block)
-        if !isnothing(candidate)
-            value = countimages > 1 ? Failure(:capability, "Multiple images are not supported") : image(candidate)
-            if value isa Failure
-                push!(content, "[MCP image omitted: $(value.message)]")
-                failed = true
-            else
-                attachment = value
-                push!(content, "[MCP image attached]")
-            end
-        elseif block isa AbstractDict && get(block, "type", nothing) == "text" && get(block, "text", nothing) isa AbstractString
-            push!(content, block["text"])
-        else
-            push!(content, JSON3.write(block))
-        end
+        value = contentblock!(content, block, imagecontent(block), countimages)
+        failed |= imagefailed(value)
+        attachment = imageattachment(attachment, value)
     end
     haskey(result, "structuredContent") && push!(content, JSON3.write(result["structuredContent"]))
     ToolResult(join(content, "\n"), failed, attachment)
