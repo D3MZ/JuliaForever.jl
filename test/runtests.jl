@@ -49,6 +49,7 @@ end
 end
 
 include("provider.jl")
+include("provider_stream.jl")
 
 if haskey(ENV, "PI_SOURCE")
     include("differential.jl")

@@ -1,9 +1,3 @@
-struct OpenAI
-    base::String
-    model::String
-    key::String
-end
-
 mutable struct Agent{P}
     provider::P
     tools::Dict{String, Tool}
@@ -26,13 +20,6 @@ description(::Edit) = "Replace unique, non-overlapping text in a file."
 
 definition(tool) = Dict("type" => "function", "function" => Dict("name" => name(tool), "description" => description(tool), "parameters" => schema(tool)))
 
-function complete(provider::OpenAI, messages, tools)
-    body = JSON3.write((; model=provider.model, messages, tools=definition.(collect(values(tools)))))
-    headers = ["Authorization" => "Bearer $(provider.key)", "Content-Type" => "application/json"]
-    response = HTTP.post("$(rstrip(provider.base, '/'))/chat/completions", headers, body)
-    JSON3.read(String(response.body), Dict{String, Any})["choices"][1]["message"]
-end
-
 function invoke(agent, call)
     try
         tool = call["function"]
@@ -42,10 +29,16 @@ function invoke(agent, call)
     end
 end
 
-function respond!(agent::Agent, prompt)
+function respond!(agent::Agent, prompt; on_event=nothing, parameters=Dict())
     push!(agent.messages, Dict("role" => "user", "content" => prompt))
     while true
-        message = complete(agent.provider, agent.messages, agent.tools)
+        if isnothing(on_event)
+            message = isempty(parameters) ? complete(agent.provider, agent.messages, agent.tools) : complete(agent.provider, agent.messages, agent.tools; parameters)
+        else
+            result = stream(agent.provider, agent.messages, agent.tools; parameters, on_event)
+            result.done || return result
+            message = result.message
+        end
         push!(agent.messages, message)
         calls = get(message, "tool_calls", [])
         isempty(calls) && return message["content"]
