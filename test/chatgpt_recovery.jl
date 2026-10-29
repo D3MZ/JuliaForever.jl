@@ -38,6 +38,7 @@ using HTTP, JSON3
                 failure = CG.refresh(store, session.client, session.identity.subject; post, now=() -> identitytime + 3590)
                 @test failure isa CG.OAuthError && failure.status == 503 && isnothing(failure.code)
                 @test !occursin("synthetic-secret", sprint(show, failure))
+                @test !occursin("synthetic-secret", JSON3.write(Dict("failure" => CG.OAuthError(400, "synthetic-secret"))))
                 take!(seen)
                 @test CG.load(store, session.client, session.identity.subject).refresh == "synthetic-refresh"
                 put!(replies, HTTP.Response(400, ["Content-Type" => "application/json"], "{\"error\":\"invalid_grant\"}"))

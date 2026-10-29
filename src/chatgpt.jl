@@ -1,6 +1,6 @@
 module ChatGPT
 
-using HTTP, JSON3, JWTs
+using HTTP, JSON3, JWTs, StructTypes
 using ..JuliaForever: decode, InvalidResponse
 
 const issuer = "https://auth.openai.com"
@@ -70,5 +70,9 @@ include("chatgpt_callback.jl")
 include("chatgpt_exchange.jl")
 include("chatgpt_plan_type.jl")
 include("chatgpt_store.jl")
+
+const Sensitive = Union{Authorization, Returning, Reconsent, Pending, Code, TokenReply, OAuthError, Session, Grant, Plan}
+StructTypes.StructType(::Type{<:Sensitive}) = StructTypes.CustomStruct()
+StructTypes.lower(::Sensitive) = "[redacted]"
 
 end

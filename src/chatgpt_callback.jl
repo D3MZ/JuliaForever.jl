@@ -129,7 +129,18 @@ struct Authorization
 end
 
 Base.show(io::IO, ::Authorization) = print(io, "Authorization([redacted])")
-launch(open::Function, authorization::Authorization) = open(authorization.uri) ? nothing : Rejected(:browser)
+
+launchfailure(::InterruptException) = Rejected(:cancelled)
+launchfailure(::Any) = Rejected(:browser)
+
+function launch(open::Function, authorization::Authorization)
+    # An opener exception can include the complete authorization URI.
+    try
+        open(authorization.uri) ? nothing : Rejected(:browser)
+    catch failure
+        launchfailure(failure)
+    end
+end
 
 function authorize(pending::Pending)
     values = ["client_id" => client(pending.registration), "ext_agent_host_id" => pending.host, "response_type" => "code", "redirect_uri" => pending.redirect, "scope" => "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct", "resource" => "https://api.openai.com/v1", "state" => pending.state, "nonce" => pending.nonce, "code_challenge_method" => "S256", "code_challenge" => base64url(sha256(pending.verifier))]

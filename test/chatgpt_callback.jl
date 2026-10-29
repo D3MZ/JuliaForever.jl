@@ -1,4 +1,4 @@
-using HTTP, SHA, Base64
+using HTTP, SHA, Base64, JSON3
 
 const CB = JuliaForever.ChatGPT
 
@@ -52,6 +52,7 @@ end
         @test result.code == "synthetic+code"
         @test result.client == "oaiapp_fixture"
         @test !occursin(result.code, sprint(show, result))
+        @test !occursin(result.code, JSON3.write(Dict("code" => result)))
         @test callbackget(first, "state=$(first.state)&code=second&client_id=oaiapp_fixture").status == 409
     finally
         close(first)
@@ -72,9 +73,28 @@ end
         address = CB.authorize(pending)
         @test !occursin("synthetic-id-token", sprint(show, address))
         @test !occursin("synthetic-id-token", sprint(show, MIME("text/plain"), address))
+        for value in (address, Dict("authorization" => address), [address], (; authorization=address), registration, Dict("registration" => registration), CB.Reconsent(registration), pending, Dict("pending" => pending))
+            serialized = JSON3.write(value)
+            @test !occursin("synthetic-id-token", serialized)
+            @test !occursin(pending.state, serialized) && !occursin(pending.nonce, serialized) && !occursin(pending.verifier, serialized)
+            @test occursin("[redacted]", serialized)
+        end
         failed = CB.launch(_ -> false, address)
         @test failed isa CB.Rejected && failed.reason == :browser
         @test !occursin("synthetic-id-token", sprint(show, failed))
+        thrown = CB.launch(address) do value
+            error("launcher failed for " * value)
+        end
+        @test thrown isa CB.Rejected && thrown.reason == :browser
+        @test !occursin("synthetic-id-token", sprint(show, thrown))
+        processfailure = CB.launch(address) do value
+            run(`$(Base.julia_cmd()) --startup-file=no -e 'exit(1)' -- $value`)
+            true
+        end
+        @test processfailure isa CB.Rejected && processfailure.reason == :browser
+        @test !occursin("synthetic-id-token", sprint(show, processfailure))
+        cancelled = CB.launch(_ -> throw(InterruptException()), address)
+        @test cancelled isa CB.Rejected && cancelled.reason == :cancelled
         @test !haskey(params, "prompt")
         @test callbackget(pending, "state=$(pending.state)&code=a&client_id=oaiapp_other").status == 400
         @test callbackget(pending, "state=$(pending.state)&code=a&client_id=oaiapp_saved&client_id=oaiapp_saved").status == 400

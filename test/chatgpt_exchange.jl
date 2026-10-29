@@ -30,6 +30,11 @@ end
         @test result.session.expires == identitytime + 3600
         @test !occursin("synthetic-access", sprint(show, result.session))
         @test !occursin("synthetic-refresh", sprint(show, result.session))
+        for value in (result.session, Dict("session" => result.session), [result.session], CG.TokenReply(200, "synthetic-access synthetic-refresh"))
+            serialized = JSON3.write(value)
+            @test !occursin("synthetic-access", serialized) && !occursin("synthetic-refresh", serialized)
+            @test occursin("[redacted]", serialized)
+        end
         @test isnothing(fixtureexchange(pending, code).session)
         identityonly = fixtureexchange(pending, CG.Code("synthetic-code", "oaiapp_fixture"); changes=Dict("scope" => "openid profile email")).session
         @test identityonly.identity.subject == "account-fixture"
@@ -83,6 +88,7 @@ end
         @test grant isa CG.Grant
         @test grant.client == "oaiapp_fixture" && grant.identity.subject == "account-fixture"
         @test !occursin("synthetic-access", sprint(show, grant)) && !occursin(grant.id_token, sprint(show, grant))
+        @test !occursin("synthetic-access", JSON3.write([grant])) && !occursin(grant.id_token, JSON3.write(Dict("grant" => grant)))
         @test !JuliaForever.stream(CG.Plan("fixture-model", grant; now=() -> identitytime), [], Dict()).done
         mktempdir() do root
             store = CG.Store(root)

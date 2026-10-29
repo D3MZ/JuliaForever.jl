@@ -23,6 +23,7 @@ plancall = Dict("type" => "function_call", "id" => "fc-1", "call_id" => "call-1"
             end
             model = CG.Plan("fixture-model", session; post, now=() -> identitytime)
             @test !occursin("synthetic-access", sprint(show, model))
+            @test !occursin("synthetic-access", JSON3.write(Dict("provider" => model)))
             mktempdir() do dir
                 agent = Agent(model, Dict{String, JuliaForever.Tool}("write" => Write(dir)), Dict{String, Any}[Dict("role" => "system", "content" => "fixture instructions")])
                 answer = respond!(agent, "create file")
