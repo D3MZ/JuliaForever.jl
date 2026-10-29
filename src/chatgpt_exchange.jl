@@ -12,8 +12,10 @@ Base.show(io::IO, ::Session) = print(io, "Session([redacted])")
 
 subject(::Register) = nothing
 subject(registration::Returning) = registration.subject
+subject(registration::Reconsent) = subject(registration.registration)
 validclient(::Register, client) = !isempty(client) && client != "dynamic_agent_client"
 validclient(registration::Returning, client) = client == registration.client
+validclient(registration::Reconsent, client) = validclient(registration.registration, client)
 
 function posttoken(body)
     response = HTTP.post("https://auth.openai.com/api/accounts/oauth/token", ["Content-Type" => "application/x-www-form-urlencoded"], body; redirect=false, retry=false, cookies=false, request_timeout=10, read_idle_timeout=5, max_decompressed_size=1_048_576)
@@ -30,12 +32,14 @@ exchange(pending::Pending, code::Code, ::Nothing; post, fetcher, now) = nothing
 function exchange(pending::Pending, code::Code, value::AbstractString; post, fetcher, now)
     fields = ["grant_type" => "authorization_code", "client_id" => code.client, "code" => value, "code_verifier" => pending.verifier, "redirect_uri" => pending.redirect, "resource" => "https://api.openai.com/v1"]
     body = join(("$(HTTP.escapeuri(key))=$(HTTP.escapeuri(value))" for (key, value) in fields), "&")
-    exchange(pending, code, decode(post(body)); fetcher, now)
+    raw = post(body)
+    received = now()
+    exchange(pending, code, decode(raw); fetcher, now, received)
 end
 
-exchange(pending::Pending, code::Code, ::InvalidResponse; fetcher, now) = nothing
+exchange(pending::Pending, code::Code, ::InvalidResponse; fetcher, now, received) = nothing
 
-function exchange(pending::Pending, code::Code, data::AbstractDict; fetcher, now)
+function exchange(pending::Pending, code::Code, data::AbstractDict; fetcher, now, received)
     access = get(data, "access_token", nothing)
     refresh = get(data, "refresh_token", nothing)
     token = get(data, "id_token", nothing)
@@ -45,8 +49,8 @@ function exchange(pending::Pending, code::Code, data::AbstractDict; fetcher, now
     all(value -> value isa AbstractString && !isempty(value), (access, refresh, token, scope)) || return nothing
     kind isa AbstractString && lowercase(kind) == "bearer" || return nothing
     expires isa Real && !(expires isa Bool) && isfinite(expires) && expires > 0 || return nothing
-    identity = validate(token, code.client, pending.nonce, scope; subject=subject(pending.registration), fetcher, now)
-    session(identity, code.client, access, refresh, token, scope, now() + expires)
+    identity = validate(token, code.client, pending.nonce; subject=subject(pending.registration), fetcher, now)
+    session(identity, code.client, access, refresh, token, scope, received + expires)
 end
 
 session(::Nothing, client, access, refresh, token, scope, expires) = nothing

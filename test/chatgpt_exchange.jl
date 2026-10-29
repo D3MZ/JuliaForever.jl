@@ -31,12 +31,25 @@ end
         @test !occursin("synthetic-access", sprint(show, result.session))
         @test !occursin("synthetic-refresh", sprint(show, result.session))
         @test isnothing(fixtureexchange(pending, code).session)
+        identityonly = fixtureexchange(pending, CG.Code("synthetic-code", "oaiapp_fixture"); changes=Dict("scope" => "openid profile email")).session
+        @test identityonly.identity.subject == "account-fixture"
+        @test identityonly.scope == "openid profile email"
+        @test !JuliaForever.stream(CG.Plan("fixture-model", identityonly; now=() -> identitytime), [], Dict()).done
+        clock = Ref(identitytime)
+        delayed = url -> begin
+            clock[] += 90
+            JSON3.write(Dict("keys" => identitykeys))
+        end
+        timedtoken = signedidentity(identityclaims(; changes=Dict("nonce" => pending.nonce, "exp" => identitytime + 3600)))
+        post = body -> JSON3.write(fixturetokens(pending; changes=Dict("id_token" => timedtoken)))
+        timed = CG.exchange(pending, CG.Code("synthetic-code", "oaiapp_fixture"); post, fetcher=delayed, now=() -> clock[])
+        @test timed.expires == identitytime + 3600
         duplicate = CG.Code("synthetic-code", "oaiapp_fixture")
         a = Threads.@spawn fixtureexchange(pending, duplicate).session
         b = Threads.@spawn fixtureexchange(pending, duplicate).session
         @test count(isnothing, [fetch(a), fetch(b)]) == 1
         @test isnothing(fixtureexchange(pending, CG.Code("synthetic-code", "dynamic_agent_client")).session)
-        for changes in (Dict("scope" => "openid profile"), Dict("token_type" => "Basic"), Dict("access_token" => ""), Dict("refresh_token" => ""), Dict("expires_in" => 0), Dict("expires_in" => true), Dict("id_token" => ""))
+        for changes in (Dict("token_type" => "Basic"), Dict("access_token" => ""), Dict("refresh_token" => ""), Dict("expires_in" => 0), Dict("expires_in" => true), Dict("id_token" => ""))
             @test isnothing(fixtureexchange(pending, CG.Code("synthetic-code", "oaiapp_fixture"); changes).session)
         end
         badnonce = signedidentity(identityclaims(; changes=Dict("nonce" => "other-nonce")))

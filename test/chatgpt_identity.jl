@@ -17,12 +17,12 @@ function identityclaims(; changes=Dict{String, Any}())
     merge(Dict{String, Any}("iss" => "https://auth.openai.com", "aud" => "oaiapp_fixture", "sub" => "account-fixture", "nonce" => "nonce-fixture", "iat" => identitytime - 10, "exp" => identitytime + 60, "email" => "fixture@example.test"), changes)
 end
 
-function fixturevalidation(token; client="oaiapp_fixture", nonce="nonce-fixture", scope=identityscope, subject=nothing, keys=identitykeys)
+function fixturevalidation(token; client="oaiapp_fixture", nonce="nonce-fixture", subject=nothing, keys=identitykeys)
     fetcher = url -> begin
         @test url == "https://auth.openai.com/.well-known/jwks.json"
         JSON3.write(Dict("keys" => keys))
     end
-    CG.validate(token, client, nonce, scope; subject, fetcher, now=() -> identitytime)
+    CG.validate(token, client, nonce; subject, fetcher, now=() -> identitytime)
 end
 
 @testset "ChatGPT ID token verification" begin
@@ -34,7 +34,6 @@ end
     @test_throws JWTs.JWTClaimError fixturevalidation(good; client="other-client")
     @test isnothing(fixturevalidation(good; client="dynamic_agent_client"))
     @test_throws JWTs.JWTClaimError fixturevalidation(good; nonce="wrong-nonce")
-    @test isnothing(fixturevalidation(good; scope="openid chatgpt.tokens.use.direct.extra"))
     @test isnothing(fixturevalidation(good; subject="different-account"))
     @test isnothing(fixturevalidation(good; nonce=""))
     @test isnothing(fixturevalidation(good; client=""))
@@ -70,11 +69,11 @@ end
         fetches[] += 1
         JSON3.write(Dict("keys" => fetches[] == 1 ? identitykeys[1:1] : identitykeys[2:2]))
     end
-    rotated = CG.validate(signedidentity(identityclaims(); key=2), "oaiapp_fixture", "nonce-fixture", identityscope; fetcher=rotating, now=() -> identitytime)
+    rotated = CG.validate(signedidentity(identityclaims(); key=2), "oaiapp_fixture", "nonce-fixture"; fetcher=rotating, now=() -> identitytime)
     @test rotated.subject == "account-fixture"
     @test fetches[] == 2
-    @test_throws JWTs.JWKSError CG.validate(good, "oaiapp_fixture", "nonce-fixture", identityscope; fetcher=url -> "not-json", now=() -> identitytime)
-    @test_throws JWTs.JWKSError CG.validate(good, "oaiapp_fixture", "nonce-fixture", identityscope; fetcher=url -> error("fixture network failure"), now=() -> identitytime)
+    @test_throws JWTs.JWKSError CG.validate(good, "oaiapp_fixture", "nonce-fixture"; fetcher=url -> "not-json", now=() -> identitytime)
+    @test_throws JWTs.JWKSError CG.validate(good, "oaiapp_fixture", "nonce-fixture"; fetcher=url -> error("fixture network failure"), now=() -> identitytime)
     @test_throws JWTs.JWKSError fixturevalidation(good; keys=[merge(identitykeys[1], Dict("use" => "enc"))])
     @test_throws JWTs.JWKSError fixturevalidation(good; keys=[merge(identitykeys[1], Dict("key_ops" => ["encrypt"]))])
     @test_throws JWTs.JWKSError fixturevalidation(good; keys=[identitykeys[1], identitykeys[1]])

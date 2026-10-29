@@ -46,11 +46,10 @@ end
 matches(::Nothing, id) = true
 matches(subject::AbstractString, id) = subject == id
 
-function validate(token::AbstractString, client::AbstractString, nonce::AbstractString, scope::AbstractString; subject=nothing, fetcher=fetch, now=time)
+function validate(token::AbstractString, client::AbstractString, nonce::AbstractString; subject=nothing, fetcher=fetch, now=time)
     isempty(client) && return nothing
     client == "dynamic_agent_client" && return nothing
     isempty(nonce) && return nothing
-    direct in split(scope) || return nothing
     source = url -> signingkeys(fetcher(url))
     verifier = JWTs.Verifier(; jwks_uri=jwks, algorithms=["RS256"], issuer, audience=client, nonce, required_claims=["iss", "aud", "sub", "iat", "exp", "nonce"], leeway=5, fetcher=source, now)
     claims = JWTs.claims(JWTs.verify(verifier, String(token)))

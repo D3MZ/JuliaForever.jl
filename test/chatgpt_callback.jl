@@ -50,11 +50,16 @@ end
 end
 
 @testset "ChatGPT reauthorization and denial" begin
-    pending = CB.Pending(CB.Returning("oaiapp_saved", "account-fixture"), "urn:uuid:host-fixture")
+    registration = CB.Returning("oaiapp_saved", "account-fixture"; id_token="synthetic-id-token", email="fixture@example.test")
+    pending = CB.Pending(registration, "urn:uuid:host-fixture")
     try
         params = HTTP.queryparams(HTTP.URI(CB.authorize(pending)))
         @test params["client_id"] == "oaiapp_saved"
         @test !haskey(params, "agent_name_hint")
+        @test params["id_token_hint"] == "synthetic-id-token"
+        @test params["login_hint"] == "fixture@example.test"
+        @test !occursin("synthetic-id-token", sprint(show, registration))
+        @test !haskey(params, "prompt")
         @test callbackget(pending, "state=$(pending.state)&code=a&client_id=oaiapp_other").status == 400
         @test callbackget(pending, "state=$(pending.state)&code=a&client_id=oaiapp_saved&client_id=oaiapp_saved").status == 400
         @test callbackget(pending, "state=$(pending.state)&code=a").status == 200
@@ -87,6 +92,19 @@ end
         b = Threads.@spawn callbackget(pending, query).status
         @test sort([fetch(a), fetch(b)]) == [200, 409]
         @test wait(pending; timeout=1).code == "a"
+    finally
+        close(pending)
+    end
+end
+
+@testset "ChatGPT explicit reconsent" begin
+    pending = CB.Pending(CB.Reconsent(CB.Returning("oaiapp_saved", "account-fixture")), "urn:uuid:host-fixture")
+    try
+        params = HTTP.queryparams(HTTP.URI(CB.authorize(pending)))
+        @test params["client_id"] == "oaiapp_saved"
+        @test params["prompt"] == "consent"
+        @test !haskey(params, "force_reconsent")
+        @test !haskey(params, "agent_name_hint")
     finally
         close(pending)
     end

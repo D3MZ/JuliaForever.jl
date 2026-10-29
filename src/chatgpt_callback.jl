@@ -6,7 +6,18 @@ struct Register end
 struct Returning
     client::String
     subject::String
+    id_token::Union{Nothing, String}
+    email::Union{Nothing, String}
 end
+
+Returning(client::AbstractString, subject::AbstractString; id_token=nothing, email=nothing) = Returning(String(client), String(subject), id_token, email)
+Base.show(io::IO, ::Returning) = print(io, "Returning([redacted])")
+
+struct Reconsent
+    registration::Returning
+end
+
+Base.show(io::IO, ::Reconsent) = print(io, "Reconsent([redacted])")
 
 struct Denied end
 
@@ -43,6 +54,8 @@ function callbackclient(registration::Returning, clients)
     isempty(clients) && return registration.client
     clients == [registration.client] ? registration.client : nothing
 end
+
+callbackclient(registration::Reconsent, clients) = callbackclient(registration.registration, clients)
 
 function callback(registration, state, params)
     states = [value for (key, value) in params if key == "state"]
@@ -84,7 +97,7 @@ end
 
 Base.show(io::IO, ::Pending) = print(io, "Pending([redacted])")
 
-function Pending(registration::Union{Register, Returning}, host::AbstractString)
+function Pending(registration::Union{Register, Returning, Reconsent}, host::AbstractString)
     state = String(base64url(rand(RandomDevice(), UInt8, 32)))
     nonce = String(base64url(rand(RandomDevice(), UInt8, 32)))
     verifier = String(base64url(rand(RandomDevice(), UInt8, 32)))
@@ -104,8 +117,12 @@ end
 
 client(::Register) = "dynamic_agent_client"
 client(registration::Returning) = registration.client
+client(registration::Reconsent) = client(registration.registration)
 hint(::Register) = ["agent_name_hint" => "Julia Forever"]
-hint(::Returning) = Pair{String, String}[]
+hint(::Nothing, key) = Pair{String, String}[]
+hint(value::AbstractString, key) = [key => String(value)]
+hint(registration::Returning) = [hint(registration.id_token, "id_token_hint"); hint(registration.email, "login_hint")]
+hint(registration::Reconsent) = [hint(registration.registration); "prompt" => "consent"]
 
 function authorize(pending::Pending)
     values = ["client_id" => client(pending.registration), "ext_agent_host_id" => pending.host, "response_type" => "code", "redirect_uri" => pending.redirect, "scope" => "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct", "resource" => "https://api.openai.com/v1", "state" => pending.state, "nonce" => pending.nonce, "code_challenge_method" => "S256", "code_challenge" => base64url(sha256(pending.verifier))]

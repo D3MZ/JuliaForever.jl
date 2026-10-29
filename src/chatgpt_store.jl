@@ -122,12 +122,14 @@ function renew(store::Store, session::Session; post, now)
     session.expires > now() + 60 && return session
     fields = ["grant_type" => "refresh_token", "client_id" => session.client, "refresh_token" => session.refresh, "resource" => "https://api.openai.com/v1"]
     body = join(("$(HTTP.escapeuri(key))=$(HTTP.escapeuri(value))" for (key, value) in fields), "&")
-    renew(store, session, decode(post(body)); now)
+    raw = post(body)
+    received = now()
+    renew(store, session, decode(raw); received)
 end
 
-renew(store::Store, session::Session, ::InvalidResponse; now) = Rejected(:response)
+renew(store::Store, session::Session, ::InvalidResponse; received) = Rejected(:response)
 
-function renew(store::Store, session::Session, data::AbstractDict; now)
+function renew(store::Store, session::Session, data::AbstractDict; received)
     access = get(data, "access_token", nothing)
     renewed = get(data, "refresh_token", nothing)
     scope = get(data, "scope", session.scope)
@@ -136,6 +138,6 @@ function renew(store::Store, session::Session, data::AbstractDict; now)
     all(value -> value isa AbstractString && !isempty(value), (access, renewed, scope)) || return Rejected(:response)
     kind isa AbstractString && lowercase(kind) == "bearer" || return Rejected(:response)
     expires isa Real && !(expires isa Bool) && isfinite(expires) && expires > 0 || return Rejected(:response)
-    replacement = Session(session.client, session.identity, String(access), String(renewed), session.id_token, String(scope), Float64(now() + expires))
+    replacement = Session(session.client, session.identity, String(access), String(renewed), session.id_token, String(scope), Float64(received + expires))
     saveunlocked(store, replacement)
 end
