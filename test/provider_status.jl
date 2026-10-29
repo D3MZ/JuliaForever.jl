@@ -39,8 +39,7 @@ using Test, JuliaForever, HTTP, JSON3
             result = JuliaForever.stream(model, [], Dict(); on_event=event -> push!(events, event))
             @test length(events) == 1 && only(events).type == :incomplete
             @test only(events).result == result
-            observed = JuliaForever.conversation_reply((; message=result.message, result, started=false))
-            @test JuliaForever.Execution.ModelResult(observed, result.usage, result.error).error == ProviderStatus(401)
+            @test JuliaForever.Execution.result(result, true).error == ProviderStatus(401)
         end
         login = JuliaForever.authorize()
         @test !occursin(login.verifier, JSON3.write((; login)))
