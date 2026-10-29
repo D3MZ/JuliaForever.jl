@@ -105,6 +105,7 @@ detach(record::Record) = decode(JSON3.read(JSON3.write(encode(record)), Dict{Str
 
 pushparent!(pending, ::Nothing, upper) = nothing
 pushparent!(pending, parent::Tuple{Int, Int}, upper) = push!(pending, (parent[1], min(upper, parent[2])))
+pushparent!(pending, record::Conversation, upper) = pushparent!(pending, record.parent, upper)
 
 visible(state::State, conversation::Int, id::Int) = visible(state, conversation, id, get(state.records, id, nothing))
 visible(::State, ::Int, ::Int, entry) = false
@@ -113,7 +114,7 @@ function visible(state::State, conversation::Int, id::Int, entry::Entry)
     while !isempty(pending)
         conversation, upper = pop!(pending)
         entry.conversation == conversation && id <= upper && return true
-        pushparent!(pending, state.records[conversation].parent, upper)
+        pushparent!(pending, state.records[conversation], upper)
     end
     false
 end
@@ -126,7 +127,7 @@ function hasdocuments(state::State, conversation::Int)
     while !isempty(pending)
         conversation, upper = pop!(pending)
         any(document(record, conversation) for record in values(state.records)) && return true
-        pushparent!(pending, state.records[conversation].parent, upper)
+        pushparent!(pending, state.records[conversation], upper)
     end
     false
 end
@@ -363,7 +364,7 @@ function entries(state::State, conversation::Integer, ::Conversation)
         segment = Entry[record for record in values(state.records) if entry(record, conversation, upper)]
         sort!(segment; by=record -> record.id)
         push!(segments, segment)
-        pushparent!(pending, state.records[conversation].parent, upper)
+        pushparent!(pending, state.records[conversation], upper)
     end
     Entry[entry for segment in reverse(segments) for entry in segment]
 end
