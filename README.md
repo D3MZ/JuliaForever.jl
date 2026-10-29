@@ -22,9 +22,9 @@ Pass `--history session.sqlite` to record and resume the same conversation in la
 ## Test
 
 ```sh
-julia --project=. -e 'using Pkg; Pkg.test()'
+PI_SOURCE=/path/to/pi julia --startup-file=no --threads=4 --project=. scripts/ci.jl
 ```
 
-Set `PI_SOURCE` to a checkout of the pinned Pi revision with its Node dependencies available to also run differential agent, tool and provider cases. The CI workflow prepares that reference on macOS, Linux, and Windows. Until a particular run passes, a configured CI job is not evidence of platform compatibility. Test results cover selected cases, not full Pi compatibility.
+This runs the native quality and behavior tests plus selected Pi comparisons locally. `PI_SOURCE` must point to the pinned Pi checkout with its Node dependencies available. Pass `--native-only` instead to run without Pi; that mode explicitly skips differential tests. The CI workflow also prepares the reference on macOS, Linux, and Windows. Until a particular run passes, a configured CI job is not evidence of platform compatibility. Test results cover selected cases, not full Pi compatibility.
 
 Pi is MIT-licensed; its copyright and license notice is included in `third_party/pi-LICENSE`.
