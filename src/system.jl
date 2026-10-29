@@ -190,15 +190,15 @@ end
 
 function execute(tool::Union{Bash, PowerShell}, args; cancel=nothing)
     timeout = get(args, :timeout, nothing)
-    !isnothing(timeout) && (!isfinite(timeout) || timeout <= 0) && return ToolResult("Invalid timeout: must be a finite number of seconds", true)
-    !isnothing(timeout) && timeout * 1000 > 2147483647 && return ToolResult("Invalid timeout: maximum is 2147483.647 seconds", true)
-    Sys.iswindows() && !isnothing(timeout) && return ToolResult("Timeout is not supported on Windows", true)
-    Sys.iswindows() && !isnothing(cancel) && return ToolResult("Cancellation is not supported on Windows", true)
-    !isdir(tool.cwd) && return ToolResult("Working directory does not exist: $(tool.cwd)\nCannot execute $(shellname(tool)) commands.", true)
+    !isnothing(timeout) && (!isfinite(timeout) || timeout <= 0) && return ToolFailure("Invalid timeout: must be a finite number of seconds")
+    !isnothing(timeout) && timeout * 1000 > 2147483647 && return ToolFailure("Invalid timeout: maximum is 2147483.647 seconds")
+    Sys.iswindows() && !isnothing(timeout) && return ToolFailure("Timeout is not supported on Windows")
+    Sys.iswindows() && !isnothing(cancel) && return ToolFailure("Cancellation is not supported on Windows")
+    !isdir(tool.cwd) && return ToolFailure("Working directory does not exist: $(tool.cwd)\nCannot execute $(shellname(tool)) commands.")
     settings = config(tool)
     if isnothing(settings)
         message = tool isa PowerShell && !Sys.iswindows() ? "The powershell tool is only available on Windows." : "No $(shellname(tool)) executable found."
-        return ToolResult(message, true)
+        return ToolFailure(message)
     end
     executable, arguments = settings
     env = copy(ENV)
@@ -220,7 +220,7 @@ function execute(tool::Union{Bash, PowerShell}, args; cancel=nothing)
             push!(token.runs, shellrun)
             shellrun
         end
-        isnothing(shellrun) && return ToolResult("Command aborted", true)
+        isnothing(shellrun) && return ToolFailure("Command aborted")
         process = shellrun.process
         watcher = @async begin
             wait(process)
@@ -233,11 +233,11 @@ function execute(tool::Union{Bash, PowerShell}, args; cancel=nothing)
         output, keep = tail(io, file)
         if outcome in (:timeout, :cancelled, :stop_failed)
             status = outcome == :timeout ? "Command timed out after $timeout seconds" : outcome == :cancelled ? "Command aborted" : "Could not stop shell process group; the command may still be running"
-            return ToolResult(isempty(output) ? status : "$output\n\n$status", true)
+            return ToolFailure(isempty(output) ? status : "$output\n\n$status")
         end
         isempty(output) && (output = "(no output)")
         code = process.termsignal == 0 ? process.exitcode : 128 + process.termsignal
-        code != 0 && return ToolResult("$output\n\nCommand exited with code $code", true)
+        code != 0 && return ToolFailure("$output\n\nCommand exited with code $code")
         ToolResult(output)
     finally
         !isnothing(timer) && close(timer)
@@ -267,8 +267,8 @@ end
 
 function execute(tool::Ls, args)
     directory = path(tool, get(args, :path, "."))
-    !ispath(directory) && return ToolResult("Path not found: $directory", true)
-    !isdir(directory) && return ToolResult("Not a directory: $directory", true)
+    !ispath(directory) && return ToolFailure("Path not found: $directory")
+    !isdir(directory) && return ToolFailure("Not a directory: $directory")
     entries = sort!(readdir(directory); by=lowercase)
     limit = get(args, :limit, 500)
     results = String[]

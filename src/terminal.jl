@@ -30,6 +30,9 @@ function line!(terminal::Terminal)
     terminal.lineopen = false
 end
 
+status(::Terminal, ::ToolSuccess) = "ok"
+status(terminal::Terminal, result::ToolFailure) = "error: " * redact(terminal, result.text)
+
 function render!(terminal::Terminal, event)
     if event.type == :message_end && get(event.message, "role", nothing) == "assistant"
         content = get(event.message, "content", nothing)
@@ -41,7 +44,7 @@ function render!(terminal::Terminal, event)
         flush(terminal.diagnostics)
     elseif event.type == :tool_execution_end
         name = redact(terminal, something(event.tool_name, "unknown"))
-        result = event.iserror ? "error: " * redact(terminal, event.result.text) : "ok"
+        result = status(terminal, event.result)
         println(terminal.diagnostics, "[tool] ", name, ": ", result)
         flush(terminal.diagnostics)
     end

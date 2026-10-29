@@ -1,7 +1,7 @@
 module MCP
 
 using JSON3
-import ..JuliaForever: Tool, ToolResult, name, description, schema, execute
+import ..JuliaForever: Tool, ToolResult, ToolFailure, name, description, schema, execute
 
 struct Failure
     kind::Symbol
@@ -235,9 +235,10 @@ name(tool::RemoteTool) = tool.alias
 description(tool::RemoteTool) = tool.doc
 schema(tool::RemoteTool) = tool.parameters
 
-function execute(tool::RemoteTool, args)
-    result = call(tool.client, tool.remote, args)
-    result isa Failure && return ToolResult("MCP $(result.kind): $(result.message)", true)
+execute(tool::RemoteTool, args) = toolresult(call(tool.client, tool.remote, args))
+toolresult(result::Failure) = ToolFailure("MCP $(result.kind): $(result.message)")
+
+function toolresult(result::AbstractDict)
     content = String[]
     for block in get(result, "content", [])
         if block isa AbstractDict && get(block, "type", nothing) == "text" && get(block, "text", nothing) isa AbstractString

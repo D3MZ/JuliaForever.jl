@@ -39,14 +39,14 @@ function execution_tools!(agent, executor, context, effects, messages, callback)
         isnothing(rejected) || return rejected
         outcome = cancelled(agent) ? nothing : submitted(agent, executor, effect, context)
         reply = if isnothing(outcome) || outcome isa Execution.Cancelled && cancelled(agent)
-            Conversation.ToolReply("Operation cancelled", true)
+            Conversation.ToolReply(ToolFailure("Operation cancelled"))
         elseif outcome isa Execution.Completed
             outcome.value isa Conversation.ToolReply || return Execution.Rejected(:unexpected_result)
             outcome.value
         else
             return outcome
         end
-        result = ToolResult(reply.text, reply.iserror)
+        result = reply.result
         ended = (; type=:tool_execution_end, tool_call_id=call["id"], tool_name=callinfo(call).name, result, iserror=result.iserror)
         isnothing(agent.history) && emit(callback, ended)
         transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, reply), agent)
@@ -58,9 +58,10 @@ function execution_tools!(agent, executor, context, effects, messages, callback)
     results
 end
 
-function respond_execution!(agent::Agent, prompt, executor, context; on_event, on_agent_event, parameters, tool_execution)
-    executor isa Execution.Executor || return Execution.Rejected(:executor)
-    context isa AbstractString || return Execution.Rejected(:context)
+respond_execution!(::Agent, prompt, executor, context; kwargs...) = Execution.Rejected(:executor)
+respond_execution!(::Agent, prompt, ::Execution.Executor, context; kwargs...) = Execution.Rejected(:context)
+
+function respond_execution!(agent::Agent, prompt, executor::Execution.Executor, context::AbstractString; on_event, on_agent_event, parameters, tool_execution)
     rejected = fault(agent)
     isnothing(rejected) || return rejected
     isnothing(on_event) || return Execution.Rejected(:streaming)

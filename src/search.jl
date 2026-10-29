@@ -188,14 +188,14 @@ end
 
 function execute(tool::Find, args)
     root = searchpath(tool, get(args, :path, "."))
-    isdir(root) || return ToolResult("[fd error]: Search path '$root' is not a directory.\n[fd error]: No valid search paths given.", true)
+    isdir(root) || return ToolFailure("[fd error]: Search path '$root' is not a directory.\n[fd error]: No valid search paths given.")
     limit = Int(get(args, :limit, 1000))
-    limit >= 0 || return ToolResult("Invalid result limit: $limit", true)
+    limit >= 0 || return ToolFailure("Invalid result limit: $limit")
     pattern = args.pattern
     regex = try
         glob(pattern; smartcase=true, anywhere=occursin('/', pattern) && !startswith(pattern, '/'))
     catch exception
-        return ToolResult(sprint(showerror, exception), true)
+        return ToolFailure(sprint(showerror, exception))
     end
     found = String[]
     walksearch(root, true) do target, directory
@@ -221,7 +221,7 @@ end
 
 function execute(tool::Grep, args)
     root = searchpath(tool, get(args, :path, "."))
-    ispath(root) || return ToolResult("Path not found: $root", true)
+    ispath(root) || return ToolFailure("Path not found: $root")
     limit = max(1, Int(get(args, :limit, 100)))
     context = max(0, Int(get(args, :context, 0)))
     pattern = args.pattern
@@ -230,7 +230,7 @@ function execute(tool::Grep, args)
     regex = try
         literal ? nothing : Regex(pattern, ignorecase ? "i" : "")
     catch exception
-        return ToolResult(sprint(showerror, exception), true)
+        return ToolFailure(sprint(showerror, exception))
     end
     filterpattern = get(args, :glob, "")
     exclude = startswith(filterpattern, "!")
@@ -238,7 +238,7 @@ function execute(tool::Grep, args)
     filterregex = try
         isempty(filterpattern) ? nothing : glob(filterpattern)
     catch exception
-        return ToolResult(sprint(showerror, exception), true)
+        return ToolFailure(sprint(showerror, exception))
     end
     output = String[]
     count = 0

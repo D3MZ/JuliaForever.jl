@@ -1,6 +1,8 @@
 using Test, JuliaForever
 
 include("quality.jl")
+include("dispatch_lint.jl")
+include("dispatch.jl")
 include("instructions.jl")
 include("instructions_cli.jl")
 

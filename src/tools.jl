@@ -12,12 +12,28 @@ struct Edit <: Tool
     cwd::String
 end
 
-struct ToolResult
+abstract type ToolResult end
+
+struct ToolSuccess <: ToolResult
     text::String
-    iserror::Bool
 end
 
-ToolResult(text) = ToolResult(text, false)
+struct ToolFailure <: ToolResult
+    text::String
+end
+
+ToolResult(text) = ToolSuccess(text)
+ToolResult(text, iserror::Bool) = iserror ? ToolFailure(text) : ToolSuccess(text)
+
+iserror(::ToolSuccess) = false
+iserror(::ToolFailure) = true
+Base.getproperty(result::ToolResult, name::Symbol) = name === :iserror ? iserror(result) : getfield(result, name)
+Base.propertynames(::ToolResult, private::Bool=false) = (:text, :iserror)
+
+content(result::ToolSuccess) = result.text
+content(result::ToolFailure) = "Error: " * result.text
+status(::ToolSuccess) = :ok
+status(::ToolFailure) = :error
 
 path(tool::Tool, name) = normpath(joinpath(tool.cwd, expanduser(name)))
 
@@ -116,7 +132,7 @@ function execute(tool::Read, args)
     end
     lines = split(content, '\n'; keepempty=true)
     offset = max(1, get(args, :offset, 1))
-    offset > length(lines) && return ToolResult("Offset $offset is beyond end of file ($(length(lines)) lines total)", true)
+    offset > length(lines) && return ToolFailure("Offset $offset is beyond end of file ($(length(lines)) lines total)")
     limit = get(args, :limit, length(lines))
     stop = min(length(lines), offset + limit - 1)
     content = join(lines[offset:stop], '\n')
@@ -211,16 +227,16 @@ function edit(destination, args)
     bom = startswith(original, '\ufeff') ? "\ufeff" : ""
     originalcontent = normalize(chopprefix(original, bom))
     ending = occursin(r"^[^\n]*\r\n", original) ? "\r\n" : "\n"
-    isempty(args.edits) && return ToolResult("No edits provided", true)
+    isempty(args.edits) && return ToolFailure("No edits provided")
     requested = [(old=normalize(edit.oldText), text=normalize(edit.newText), fuzzy=fuzzy(edit.oldText)) for edit in args.edits]
-    any(edit -> isempty(edit.old), requested) && return ToolResult("Edit text must not be empty", true)
+    any(edit -> isempty(edit.old), requested) && return ToolFailure("Edit text must not be empty")
     comparable = fuzzy(originalcontent)
     for edit in requested
-        duplicate(edit.old, originalcontent) && return ToolResult("Edit text must match exactly once", true)
+        duplicate(edit.old, originalcontent) && return ToolFailure("Edit text must match exactly once")
         if isempty(edit.fuzzy)
-            (isempty(comparable) && !isnothing(findfirst(edit.old, originalcontent))) || return ToolResult("Edit text must match exactly once", true)
+            (isempty(comparable) && !isnothing(findfirst(edit.old, originalcontent))) || return ToolFailure("Edit text must match exactly once")
         else
-            duplicate(edit.fuzzy, comparable) && return ToolResult("Edit text must match exactly once", true)
+            duplicate(edit.fuzzy, comparable) && return ToolFailure("Edit text must match exactly once")
         end
     end
     usedfuzzy = any(edit -> isnothing(findfirst(edit.old, originalcontent)), requested)
@@ -229,14 +245,14 @@ function edit(destination, args)
     for edit in requested
         match = findfirst(edit.old, base)
         isnothing(match) && !isempty(edit.fuzzy) && (match = findfirst(edit.fuzzy, base))
-        isnothing(match) && return ToolResult("Edit text must match exactly once", true)
+        isnothing(match) && return ToolFailure("Edit text must match exactly once")
         push!(edits, (; range=match, text=edit.text))
     end
     sort!(edits; by=x -> first(x.range))
-    all(i -> last(edits[i-1].range) < first(edits[i].range), 2:length(edits)) || return ToolResult("Edit ranges overlap", true)
+    all(i -> last(edits[i-1].range) < first(edits[i].range), 2:length(edits)) || return ToolFailure("Edit ranges overlap")
     content = usedfuzzy ? overlay(originalcontent, base, edits) : apply(base, edits)
-    isnothing(content) && return ToolResult("Edit lines could not be preserved", true)
-    content == originalcontent && return ToolResult("No changes made", true)
+    isnothing(content) && return ToolFailure("Edit lines could not be preserved")
+    content == originalcontent && return ToolFailure("No changes made")
     write(destination, bom * replace(content, "\n" => ending))
     ToolResult("Successfully replaced $(length(edits)) block(s) in $(args.path).")
 end
