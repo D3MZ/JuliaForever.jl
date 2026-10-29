@@ -1,6 +1,6 @@
 module JuliaForever
 
-using HTTP, JSON3, Unicode, Base64, Random, SHA
+using HTTP, JSON3, Unicode, Base64, Random, SHA, REPL
 
 export Execution
 export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, cancel!, codeexecute, ToolResult, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, InvalidResponse, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
@@ -149,6 +149,10 @@ function (@main)(args)
         isnothing(agent.fault) || return result!(terminal, agent.fault)
         if isempty(args)
             interactive = stdin isa Base.TTY
+            if interactive && stderr isa Base.TTY && get(ENV, "TERM", "") ∉ ("", "dumb")
+                println(stderr, "Julia Forever — Enter sends; Ctrl+J adds a line; /exit quits")
+                return edit!(terminal, agent)
+            end
             interactive && println(stderr, "Julia Forever — enter a message, or /exit to quit")
             status = 0
             while true

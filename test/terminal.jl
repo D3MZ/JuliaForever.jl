@@ -120,3 +120,14 @@ end
     terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), String[])
     @test JuliaForever.request!(() -> current_task().sticky, terminal).value === false
 end
+
+@testset "terminal pseudo-terminal input" begin
+    python = Sys.which("python3")
+    if Sys.isunix() && !isnothing(python)
+        script = joinpath(@__DIR__, "terminal_pty.py")
+        julia = joinpath(Sys.BINDIR, Base.julia_exename())
+        @test success(`$python $script $julia $(dirname(@__DIR__))`)
+    else
+        @test_skip "PTY test requires Unix and python3"
+    end
+end

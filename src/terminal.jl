@@ -179,3 +179,115 @@ function run!(terminal::Terminal, agent::Agent, prompt)
     result.status == 0 || return result.status
     result!(terminal, result.value)
 end
+
+mutable struct InputHistory <: REPL.LineEdit.HistoryProvider
+    entries::Vector{String}
+    drafts::Dict{Int, String}
+    index::Int
+end
+
+InputHistory() = InputHistory(String[], Dict{Int, String}(), 1)
+
+function reset!(history::InputHistory)
+    empty!(history.drafts)
+    history.index = length(history.entries) + 1
+    nothing
+end
+
+function REPL.LineEdit.add_history(history::InputHistory, state::REPL.LineEdit.PromptState)
+    text = REPL.LineEdit.input_string(state)
+    isempty(text) || text == "/exit" || push!(history.entries, text)
+    reset!(history)
+end
+
+function history!(state::REPL.LineEdit.MIState, history::InputHistory, step)
+    target = history.index + step
+    if target < 1 || target > length(history.entries) + 1
+        REPL.LineEdit.beep(state)
+        return
+    end
+    history.drafts[history.index] = REPL.LineEdit.input_string(state)
+    history.index = target
+    text = get(history.drafts, target, target <= length(history.entries) ? history.entries[target] : "")
+    REPL.LineEdit.replace_line(state, text)
+    if step < 0
+        REPL.LineEdit.move_input_start(state)
+        REPL.LineEdit.move_line_end(state)
+    else
+        REPL.LineEdit.move_input_end(state)
+    end
+    REPL.LineEdit.refresh_line(state)
+end
+
+REPL.LineEdit.history_prev(state::REPL.LineEdit.MIState, history::InputHistory) = history!(state, history, -1)
+REPL.LineEdit.history_next(state::REPL.LineEdit.MIState, history::InputHistory) = history!(state, history, 1)
+REPL.LineEdit.history_first(state::REPL.LineEdit.MIState, history::InputHistory) = history!(state, history, 1 - history.index)
+REPL.LineEdit.history_last(state::REPL.LineEdit.MIState, history::InputHistory) = history!(state, history, length(history.entries) + 1 - history.index)
+
+function unsupported!(state::REPL.LineEdit.MIState, action)
+    edit = REPL.LineEdit
+    edit.move_input_end(state)
+    edit.refresh_line(state)
+    println(edit.terminal(state))
+    println(edit.terminal(state), action, " is not supported.")
+    edit.state(state).ias = edit.InputAreaState(0, 0)
+    edit.refresh_line(state)
+end
+
+function edit!(terminal::Terminal, agent::Agent)
+    edit = REPL.LineEdit
+    history = InputHistory()
+    newline = (state, args...) -> edit.edit_insert_newline(state, 0)
+    keymap = Dict{Any, Any}(
+        '\n' => newline,
+        "\e[13;2u" => newline,
+        "\e[27;2;13~" => newline,
+        "\e\r" => (state, args...) -> unsupported!(state, "Alt+Enter follow-up"),
+        "\e\n" => (state, args...) -> unsupported!(state, "Alt+Enter follow-up"),
+        "^G" => (state, args...) -> unsupported!(state, "External editor"),
+        "\ee" => (state, args...) -> unsupported!(state, "External editor"),
+        "\em" => nothing,
+        "\e." => nothing,
+        "\e[200~" => (state, args...) -> begin
+            text = readuntil(edit.terminal(state), "\e[201~")
+            edit.edit_insert(state, replace(text, "\r\n" => "\n", '\r' => '\n'))
+        end,
+        "^D" => (state, args...) -> begin
+            if isempty(edit.input_string(state))
+                println(edit.terminal(state))
+                :abort
+            else
+                edit.edit_delete(state)
+            end
+        end,
+        "^C" => (state, args...) -> begin
+            edit.cancel_beep(state)
+            edit.move_input_end(state)
+            edit.refresh_line(state)
+            print(edit.terminal(state), "^C\n")
+            edit.transition(state, :reset)
+            reset!(history)
+            edit.refresh_line(state)
+        end,
+    )
+    prompt = edit.Prompt("> "; hist=history, keymap_dict=edit.keymap(Dict{Any, Any}[keymap, edit.history_keymap, edit.default_keymap, edit.escape_defaults]))
+    interface = edit.ModalInterface(edit.TextInterface[prompt])
+    tty = REPL.Terminals.TTYTerminal(get(ENV, "TERM", ""), stdin, stderr, stderr)
+    state = edit.init_state(tty, interface)
+    status = 0
+    while true
+        buffer, ok, suspend = edit.prompt!(tty, interface, state)
+        if suspend
+            @static if Sys.isunix()
+                ccall(:jl_repl_raise_sigtstp, Cint, ())
+            end
+            continue
+        end
+        ok || break
+        text = String(take!(buffer))
+        edit.reset_state(state)
+        text == "/exit" && break
+        status = max(status, run!(terminal, agent, text))
+    end
+    status
+end

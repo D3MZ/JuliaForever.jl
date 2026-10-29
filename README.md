@@ -15,7 +15,7 @@ julia --project=. -e 'using Pkg; Pkg.instantiate()'
 julia --project=. -m JuliaForever 'Create a hello.txt file'
 ```
 
-To install the `jf` command from the checkout, run `julia -e 'using Pkg; Pkg.Apps.add(path=pwd())'` and put the Julia depot's `bin` directory on your `PATH`. Julia's app support is experimental. Run `jf` without a prompt for a simple line-oriented session; `/exit` ends it.
+To install the `jf` command from the checkout, run `julia -e 'using Pkg; Pkg.Apps.add(path=pwd())'` and put the Julia depot's `bin` directory on your `PATH`. Julia's app support is experimental. Run `jf` without a prompt for a session; `/exit` ends it. On a supported terminal, Enter sends and Ctrl+J inserts a line. See [terminal](docs/terminal.md) for input and platform limitations.
 
 Pass `--history session.sqlite` to record and resume the same conversation in later invocations. Persistence is opt-in; SQLite.jl is installed as a package dependency. See [terminal recovery](docs/terminal.md) before continuing an interrupted turn.
 

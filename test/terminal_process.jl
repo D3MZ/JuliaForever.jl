@@ -2,6 +2,11 @@ using JuliaForever, JSON3, HTTP
 
 function JuliaForever.stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=identity)
     mode = ENV["JF_FIXTURE"]
+    if haskey(ENV, "JF_CAPTURE")
+        open(ENV["JF_CAPTURE"], "a") do io
+            println(io, JSON3.write(messages[end]["content"]))
+        end
+    end
     mode == "http" && throw(HTTP.StatusError(HTTP.Response(401)))
     mode == "json" && JSON3.read("{bad fixture}")
     mode == "bug" && throw(ArgumentError("ordinary failure"))
