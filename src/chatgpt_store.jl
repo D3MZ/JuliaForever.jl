@@ -72,11 +72,12 @@ function host(store::Store)
             writeprivate(file, value)
             return value
         end
-        value = readprivate(file)
-        value isa Rejected && return value
-        occursin(r"^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", value) ? value : Rejected(:invalid_host)
+        hostvalue(readprivate(file))
     end
 end
+
+hostvalue(value::Rejected) = value
+hostvalue(value::AbstractString) = occursin(r"^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", value) ? value : Rejected(:invalid_host)
 
 path(store::Store, client::AbstractString, subject::AbstractString) = joinpath(store.root, bytes2hex(sha256(JSON3.write([client, subject]))) * ".json")
 
@@ -91,11 +92,12 @@ end
 
 save(store::Store, session::Session) = guarded(() -> saveunlocked(store, session), store)
 
-function loadunlocked(store::Store, client::AbstractString, subject::AbstractString)
-    raw = readprivate(path(store, client, subject))
-    raw isa Rejected && return raw
-    data = decode(raw)
-    data isa InvalidResponse && return Rejected(:invalid)
+loadunlocked(store::Store, client::AbstractString, subject::AbstractString) = loadrecord(readprivate(path(store, client, subject)), client, subject)
+loadrecord(value::Rejected, client, subject) = value
+loadrecord(raw::AbstractString, client, subject) = loadrecord(decode(raw), client, subject)
+loadrecord(::InvalidResponse, client, subject) = Rejected(:invalid)
+
+function loadrecord(data::AbstractDict, client, subject)
     get(data, "issuer", nothing) == issuer && get(data, "client_id", nothing) == client && get(data, "subject", nothing) == subject || return Rejected(:identity)
     access, refresh, token, scope = (get(data, key, nothing) for key in ("access_token", "refresh_token", "id_token", "scope"))
     all(value -> value isa AbstractString && !isempty(value), (access, refresh, token, scope)) || return Rejected(:invalid)
@@ -110,22 +112,30 @@ load(store::Store, client::AbstractString, subject::AbstractString) = guarded(()
 
 function refresh(store::Store, client::AbstractString, identity::AbstractString; post=posttoken, now=time)
     guarded(store) do
-        session = loadunlocked(store, client, identity)
-        session isa Rejected && return session
-        session.expires > now() + 60 && return session
-        fields = ["grant_type" => "refresh_token", "client_id" => session.client, "refresh_token" => session.refresh, "resource" => "https://api.openai.com/v1"]
-        body = join(("$(HTTP.escapeuri(key))=$(HTTP.escapeuri(value))" for (key, value) in fields), "&")
-        data = decode(post(body))
-        data isa InvalidResponse && return Rejected(:response)
-        access = get(data, "access_token", nothing)
-        renewed = get(data, "refresh_token", nothing)
-        scope = get(data, "scope", session.scope)
-        kind = get(data, "token_type", nothing)
-        expires = get(data, "expires_in", nothing)
-        all(value -> value isa AbstractString && !isempty(value), (access, renewed, scope)) || return Rejected(:response)
-        kind isa AbstractString && lowercase(kind) == "bearer" || return Rejected(:response)
-        expires isa Real && !(expires isa Bool) && isfinite(expires) && expires > 0 || return Rejected(:response)
-        replacement = Session(session.client, session.identity, String(access), String(renewed), session.id_token, String(scope), Float64(now() + expires))
-        saveunlocked(store, replacement)
+        renew(store, loadunlocked(store, client, identity); post, now)
     end
+end
+
+renew(store::Store, rejected::Rejected; post, now) = rejected
+
+function renew(store::Store, session::Session; post, now)
+    session.expires > now() + 60 && return session
+    fields = ["grant_type" => "refresh_token", "client_id" => session.client, "refresh_token" => session.refresh, "resource" => "https://api.openai.com/v1"]
+    body = join(("$(HTTP.escapeuri(key))=$(HTTP.escapeuri(value))" for (key, value) in fields), "&")
+    renew(store, session, decode(post(body)); now)
+end
+
+renew(store::Store, session::Session, ::InvalidResponse; now) = Rejected(:response)
+
+function renew(store::Store, session::Session, data::AbstractDict; now)
+    access = get(data, "access_token", nothing)
+    renewed = get(data, "refresh_token", nothing)
+    scope = get(data, "scope", session.scope)
+    kind = get(data, "token_type", nothing)
+    expires = get(data, "expires_in", nothing)
+    all(value -> value isa AbstractString && !isempty(value), (access, renewed, scope)) || return Rejected(:response)
+    kind isa AbstractString && lowercase(kind) == "bearer" || return Rejected(:response)
+    expires isa Real && !(expires isa Bool) && isfinite(expires) && expires > 0 || return Rejected(:response)
+    replacement = Session(session.client, session.identity, String(access), String(renewed), session.id_token, String(scope), Float64(now() + expires))
+    saveunlocked(store, replacement)
 end

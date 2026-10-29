@@ -22,12 +22,20 @@ end
 
 function exchange(pending::Pending, code::Code; post=posttoken, fetcher=fetch, now=time)
     validclient(pending.registration, code.client) || return nothing
-    value = consume(code)
-    isnothing(value) && return nothing
+    exchange(pending, code, consume(code); post, fetcher, now)
+end
+
+exchange(pending::Pending, code::Code, ::Nothing; post, fetcher, now) = nothing
+
+function exchange(pending::Pending, code::Code, value::AbstractString; post, fetcher, now)
     fields = ["grant_type" => "authorization_code", "client_id" => code.client, "code" => value, "code_verifier" => pending.verifier, "redirect_uri" => pending.redirect, "resource" => "https://api.openai.com/v1"]
     body = join(("$(HTTP.escapeuri(key))=$(HTTP.escapeuri(value))" for (key, value) in fields), "&")
-    data = decode(post(body))
-    data isa InvalidResponse && return nothing
+    exchange(pending, code, decode(post(body)); fetcher, now)
+end
+
+exchange(pending::Pending, code::Code, ::InvalidResponse; fetcher, now) = nothing
+
+function exchange(pending::Pending, code::Code, data::AbstractDict; fetcher, now)
     access = get(data, "access_token", nothing)
     refresh = get(data, "refresh_token", nothing)
     token = get(data, "id_token", nothing)
@@ -38,6 +46,8 @@ function exchange(pending::Pending, code::Code; post=posttoken, fetcher=fetch, n
     kind isa AbstractString && lowercase(kind) == "bearer" || return nothing
     expires isa Real && !(expires isa Bool) && isfinite(expires) && expires > 0 || return nothing
     identity = validate(token, code.client, pending.nonce, scope; subject=subject(pending.registration), fetcher, now)
-    isnothing(identity) && return nothing
-    Session(code.client, identity, String(access), String(refresh), String(token), String(scope), Float64(now() + expires))
+    session(identity, code.client, access, refresh, token, scope, now() + expires)
 end
+
+session(::Nothing, client, access, refresh, token, scope, expires) = nothing
+session(identity::Identity, client, access, refresh, token, scope, expires) = Session(String(client), identity, String(access), String(refresh), String(token), String(scope), Float64(expires))

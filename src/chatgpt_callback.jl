@@ -54,9 +54,20 @@ function callback(registration, state, params)
     end
     isempty(failures) && length(codes) == 1 && !isempty(only(codes)) || return nothing
     clients = [value for (key, value) in params if key == "client_id"]
-    client = callbackclient(registration, clients)
-    isnothing(client) && return nothing
-    Code(only(codes), client)
+    callbackcode(callbackclient(registration, clients), only(codes))
+end
+
+callbackcode(::Nothing, code) = nothing
+callbackcode(client::AbstractString, code) = Code(code, client)
+
+reply(::Nothing, result, gate) = HTTP.Response(400)
+function reply(value::Union{Code, Denied}, result, gate)
+    lock(gate) do
+        isopen(result) || return HTTP.Response(409)
+        put!(result, value)
+        close(result)
+        HTTP.Response(200, ["Content-Type" => "text/plain; charset=utf-8", "Cache-Control" => "no-store", "Referrer-Policy" => "no-referrer"], "You may close this window.")
+    end
 end
 
 struct Pending{S, R}
@@ -85,14 +96,7 @@ function Pending(registration::Union{Register, Returning}, host::AbstractString)
         uri = HTTP.URI(request.target)
         uri.path == "/auth/callback" || return HTTP.Response(404)
         isempty(uri.host) && isempty(uri.scheme) && HTTP.header(request, "Host", "") == address[] || return HTTP.Response(400)
-        value = callback(registration, state, HTTP.queryparampairs(uri))
-        isnothing(value) && return HTTP.Response(400)
-        lock(gate) do
-            isopen(result) || return HTTP.Response(409)
-            put!(result, value)
-            close(result)
-            HTTP.Response(200, ["Content-Type" => "text/plain; charset=utf-8", "Cache-Control" => "no-store", "Referrer-Policy" => "no-referrer"], "You may close this window.")
-        end
+        reply(callback(registration, state, HTTP.queryparampairs(uri)), result, gate)
     end
     address[] = "127.0.0.1:$(HTTP.port(server))"
     Pending(server, registration, String(host), "http://$(address[])/auth/callback", state, nonce, verifier, result, gate)

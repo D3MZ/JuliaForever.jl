@@ -30,10 +30,11 @@ function signing(key)
     all(name -> !haskey(key, name), ("d", "p", "q", "dp", "dq", "qi", "oth"))
 end
 
-function signingkeys(raw)
-    raw isa AbstractString || return "{}"
-    data = decode(raw)
-    data isa InvalidResponse && return "{}"
+signingkeys(raw::AbstractString) = signingkeys(decode(raw))
+signingkeys(::InvalidResponse) = "{}"
+signingkeys(raw) = "{}"
+
+function signingkeys(data::AbstractDict)
     keys = get(data, "keys", nothing)
     keys isa AbstractVector || return "{}"
     selected = filter(signing, keys)
