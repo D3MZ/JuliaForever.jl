@@ -6,7 +6,7 @@ The current prototype supports a nonstreaming OpenAI-compatible chat completions
 
 ## Run from a checkout
 
-Julia 1.12 or newer and Node.js are needed for the full test suite; the runtime itself uses Julia. Set `OPENAI_API_KEY` and `OPENAI_MODEL`, and optionally `OPENAI_BASE_URL` (default `https://api.openai.com/v1`).
+Julia 1.12 or newer runs the package and its native tests. Node.js is needed only for differential tests that run the original Pi implementation. Set `OPENAI_API_KEY` and `OPENAI_MODEL`, and optionally `OPENAI_BASE_URL` (default `https://api.openai.com/v1`).
 
 ```sh
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
