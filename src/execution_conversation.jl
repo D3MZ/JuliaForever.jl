@@ -1,4 +1,4 @@
-import ..JuliaForever: Tool, ToolResult, Completion, Usage, InvalidResponse, name, execute, complete, conversation_reply
+import ..JuliaForever: Tool, ToolResult, ToolFailure, Completion, Usage, InvalidResponse, name, execute, complete, conversation_reply
 import ..Conversation
 import ..Kernel
 using JSON3
@@ -88,13 +88,13 @@ function perform(work::Work{Conversation.ToolRequest}, cancellation::Cancellatio
     result = try
         execute(capabilities.tools[call.name], JSON3.read(call.arguments))
     catch exception
-        ToolResult(sprint(showerror, exception), true)
+        ToolFailure(sprint(showerror, exception))
     end
-    Conversation.ToolReply(result.text, result.iserror, result.image)
+    Conversation.ToolReply(result)
 end
 
 function perform(work::Work{Conversation.SkipRequest}, cancellation::Cancellation)
     context(work.context)
     name = work.effect.call.name
-    Conversation.ToolReply("Tool call \"$name\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.", true)
+    Conversation.ToolReply(ToolFailure("Tool call \"$name\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments."))
 end

@@ -1,5 +1,5 @@
 function openagent(provider, tools, messages, initial, ::Nothing)
-    Agent(provider, tools, messages, initial, initial, Kernel.Event[], ReentrantLock(), false, false, ShellCancellation(), nothing, nothing, 0, nothing)
+    Agent(provider, tools, messages, initial, initial, Kernel.Event[], ReentrantLock(), false, nothing, ShellCancellation(), nothing, nothing, 0, nothing)
 end
 
 function openagent(provider, tools, messages, initial, history::History.Store)
@@ -10,7 +10,7 @@ function openagent(provider, tools, messages, initial, history::History.Store)
         record isa History.Rejected && return record
         revision = History.append!(history, 0, Any[record])
         revision isa History.Rejected && return revision
-        return Agent(provider, tools, messages, initial, initial, Kernel.Event[], ReentrantLock(), false, false, ShellCancellation(), nothing, history, revision, nothing)
+        return Agent(provider, tools, messages, initial, initial, Kernel.Event[], ReentrantLock(), false, nothing, ShellCancellation(), nothing, history, revision, nothing)
     end
     isempty(messages) || return History.Rejected(:history_exists)
     batches = snapshot.batches
@@ -37,7 +37,7 @@ function openagent(provider, tools, messages, initial, history::History.Store)
     else
         nothing
     end
-    Agent(provider, tools, messages, initial, state, events, ReentrantLock(), false, false, ShellCancellation(), nothing, history, snapshot.revision, fault)
+    Agent(provider, tools, messages, initial, state, events, ReentrantLock(), false, nothing, ShellCancellation(), nothing, history, snapshot.revision, fault)
 end
 
 persist!(agent::Agent, event) = persist!(agent, agent.history, event)
@@ -104,9 +104,9 @@ function recorded_tools!(agent, effects, messages, callback)
         call = convert(Dict{String, Any}, effect.effect.call)
         toolstart(call, callback)
         !isnothing(agent.fault) && return agent.fault
-        result = toolresult(agent, call, callback; truncated=effect.effect isa Conversation.SkipRequest)
+        result = toolresult(agent, call, effect.effect, callback)
         !isnothing(agent.fault) && return agent.fault
-        transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ToolReply(result.text, result.iserror, result.image)), agent)
+        transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ToolReply(result)), agent)
         transition isa Kernel.Applied || return transition
         present!(agent, added, messages, callback)
         !isnothing(agent.fault) && return agent.fault

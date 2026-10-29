@@ -1,7 +1,7 @@
 module Conversation
 
 import ..Kernel as K
-import ..JuliaForever: Image
+import ..JuliaForever: Image, ToolResult, content
 
 abstract type Message end
 
@@ -66,12 +66,22 @@ struct ModelReply <: K.Observation
 end
 
 struct ToolReply <: K.Observation
-    text::String
-    iserror::Bool
-    image::Union{Nothing, Image}
+    result::ToolResult
 end
 
-ToolReply(text, iserror) = ToolReply(text, iserror, nothing)
+ToolReply(text, iserror::Bool) = ToolReply(ToolResult(text, iserror))
+ToolReply(text, iserror::Bool, image) = ToolReply(ToolResult(text, iserror, image))
+
+function Base.getproperty(reply::ToolReply, name::Symbol)
+    name in (:text, :iserror, :image) && return getproperty(getfield(reply, :result), name)
+    getfield(reply, name)
+end
+
+Base.propertynames(::ToolReply, private::Bool=false) = (:text, :iserror, :image, :result)
+
+ToolMessage(call::ToolCall, reply::ToolReply) = ToolMessage(call.id, content(reply.result), reply.iserror, reply.image)
+ToolMessage(call::ToolCall, reply::ToolReply, reason::AbstractString) = ToolMessage(call, reply)
+ToolMessage(call::ToolCall, observation, reason::AbstractString) = ToolMessage(call.id, "Error: Tool outcome unknown; abandoned: " * reason, true)
 
 struct ModelFailure <: K.Observation
     reason::String
@@ -233,12 +243,7 @@ function K.step(state::State, event::Abandon)
         observations = kernel.observations
         for index in state.flushed+1:length(order)
             observation = only(item.observation for item in observations if item.id == order[index])
-            if observation isa ToolReply
-                content = observation.iserror ? "Error: " * observation.text : observation.text
-                push!(messages, ToolMessage(calls[index].id, content, observation.iserror, observation.image))
-            else
-                push!(messages, ToolMessage(calls[index].id, "Error: Tool outcome unknown; abandoned: " * event.reason, true))
-            end
+            push!(messages, ToolMessage(calls[index], observation, event.reason))
         end
     end
     K.Applied(update(state; kernel, messages, phase=Incomplete, order=String[], calls=ToolCall[], flushed=0), ())
@@ -329,8 +334,7 @@ function K.step(state::State, event::K.Observe{ToolReply})
         index === nothing && break
         observation = observations[index].observation
         call = calls[flushed + 1]
-        content = observation.iserror ? "Error: " * observation.text : observation.text
-        push!(messages, ToolMessage(call.id, content, observation.iserror, observation.image))
+        push!(messages, ToolMessage(call, observation))
         flushed += 1
     end
     if !isempty(kernel.pending)

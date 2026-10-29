@@ -112,7 +112,7 @@ end
 
     help = terminal_process("echo", ["--help"]; key=nothing)
     @test help.status == 0
-    @test startswith(help.output, "jf [--codemode] [--history PATH] [prompt]")
+    @test startswith(help.output, "jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt]")
     @test isempty(help.diagnostics)
 end
 

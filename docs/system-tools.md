@@ -1,5 +1,7 @@
 # Shell and directory tools
 
+Tool execution returns `ToolSuccess` or `ToolFailure`, both subtypes of `ToolResult`. Each has `text`; the `iserror` property and `ToolResult(text, iserror)` constructor remain available for protocol compatibility.
+
 `Bash`, `PowerShell`, and `Ls` use Julia and the host shell; Pi and Node are used only by optional differential tests. The command runner captures combined stdout and stderr, returns nonzero exit status as an error, stores truncated output in a temporary file, and exposes the last 2,000 lines or 50 KiB. `PowerShell` is available only on Windows, matching Pi's platform boundary.
 
 On Unix, a shell can be cancelled from another Julia task:

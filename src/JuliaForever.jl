@@ -3,7 +3,7 @@ module JuliaForever
 using HTTP, JSON3, Unicode, Base64, Random, SHA, REPL
 
 export Execution
-export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, cancel!, codeexecute, Image, ToolResult, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, InvalidResponse, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
+export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, cancel!, codeexecute, Image, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, InvalidResponse, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
 
 include("instructions.jl")
 include("tools.jl")
@@ -132,8 +132,9 @@ function launch(model::Union{OpenAI, OpenAIResponses}, packages, environments, c
     Base.invokelatest(terminal!, terminal, model, registry, codemode, path, args)
 end
 
+pluginfailure!(terminal::Terminal, name, exception::InterruptException) = failure!(terminal, exception)
+
 function pluginfailure!(terminal::Terminal, name, exception)
-    exception isa InterruptException && return failure!(terminal, exception)
     println(terminal.diagnostics, "[plugin] ", redact(terminal, name), ": ", redact(terminal, sprint(showerror, exception)))
     flush(terminal.diagnostics)
     2
@@ -155,22 +156,32 @@ function plugins(terminal::Terminal, tools, packages, environments)
         isempty(environments) || (ENV["JULIA_LOAD_PATH"] = join(Base.load_path(), Sys.iswindows() ? ';' : ':'))
     end
     seen = Set{Symbol}()
+    result = registry
     for name in packages
-        id = Symbol(name)
-        id in seen && return pluginfailure!(terminal, name, Extensions.Rejected(:duplicate_plugin, name))
-        push!(seen, id)
-        result = try
-            package = Base.require(Main, id)
-            factory = Base.invokelatest(getproperty, package, :plugin)
-            plugin = Base.invokelatest(factory)
-            Base.invokelatest(Extensions.register!, registry, id, plugin)
-        catch exception
-            return pluginfailure!(terminal, name, exception)
-        end
-        result isa Extensions.Rejected && return pluginfailure!(terminal, name, result)
+        result = plugin!(terminal, result, name, seen)
     end
-    registry
+    result
 end
+
+plugin!(terminal, status::Integer, name, seen) = status
+
+function plugin!(terminal, registry::Extensions.Registry, name, seen)
+    id = Symbol(name)
+    id in seen && return pluginfailure!(terminal, name, Extensions.Rejected(:duplicate_plugin, name))
+    push!(seen, id)
+    result = try
+        package = Base.require(Main, id)
+        factory = Base.invokelatest(getproperty, package, :plugin)
+        plugin = Base.invokelatest(factory)
+        Base.invokelatest(Extensions.register!, registry, id, plugin)
+    catch exception
+        return pluginfailure!(terminal, name, exception)
+    end
+    registered(terminal, registry, name, result)
+end
+
+registered(terminal, registry, name, ::Bool) = registry
+registered(terminal, registry, name, result::Extensions.Rejected) = pluginfailure!(terminal, name, result)
 
 function (@main)(args)
     codemode = false
@@ -271,7 +282,7 @@ function terminal!(terminal::Terminal, model, registry::Extensions.Registry, cod
     if codemode
         mode = CodeMode(Extensions.tools(Extensions.snapshot(registry)))
         result = Extensions.register!(registry, gensym(:codemode), Extensions.Plugin(; tools=(mode,)))
-        result isa Extensions.Rejected && return pluginfailure!(terminal, "codemode", result)
+        return terminal!(terminal, model, registered(terminal, registry, "codemode", result), false, path, args)
     end
     extensions = Extensions.snapshot(registry)
     history = isnothing(path) ? nothing : open(History.SQLite, path)
@@ -288,30 +299,43 @@ function terminal!(terminal::Terminal, model, registry::Extensions.Registry, cod
         agent isa History.Rejected && return result!(terminal, agent)
         isnothing(agent.fault) || return result!(terminal, agent.fault)
         if isempty(args)
-            interactive = stdin isa Base.TTY
-            if interactive && stderr isa Base.TTY && get(ENV, "TERM", "") ∉ ("", "dumb")
-                println(stderr, "Julia Forever — Enter sends; Ctrl+J adds a line; /exit quits")
-                return edit!(terminal, agent, extensions)
-            end
-            interactive && println(stderr, "Julia Forever — enter a message, or /exit to quit")
-            status = 0
-            while true
-                if interactive
-                    print(stderr, "> ")
-                    flush(stderr)
-                end
-                eof(stdin) && break
-                line = readline(stdin)
-                line == "/exit" && break
-                status = max(status, run!(terminal, agent, line, extensions))
-            end
-            return status
+            return interact!(terminal, agent, extensions, stdin, stderr)
         else
             return run!(terminal, agent, join(args, " "), extensions)
         end
     finally
         isnothing(history) || close(history)
     end
+end
+
+intro!(output, input) = nothing
+intro!(output, input::Base.TTY) = println(output, "Julia Forever — enter a message, or /exit to quit")
+prompt!(output, input) = nothing
+
+function prompt!(output, input::Base.TTY)
+    print(output, "> ")
+    flush(output)
+end
+
+interact!(terminal, agent, extensions, input, output) = readloop!(terminal, agent, extensions, input, output)
+
+function interact!(terminal, agent, extensions, input::Base.TTY, output::Base.TTY)
+    get(ENV, "TERM", "") in ("", "dumb") && return readloop!(terminal, agent, extensions, input, output)
+    println(output, "Julia Forever — Enter sends; Ctrl+J adds a line; /exit quits")
+    edit!(terminal, agent, extensions)
+end
+
+function readloop!(terminal, agent, extensions, input, output)
+    intro!(output, input)
+    status = 0
+    while true
+        prompt!(output, input)
+        eof(input) && break
+        line = readline(input)
+        line == "/exit" && break
+        status = max(status, run!(terminal, agent, line, extensions))
+    end
+    status
 end
 
 end

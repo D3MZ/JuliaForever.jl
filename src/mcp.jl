@@ -1,7 +1,7 @@
 module MCP
 
 using JSON3, Base64
-import ..JuliaForever: Tool, ToolResult, Image, imagelimit, imageformat, imageproblem, name, description, schema, execute
+import ..JuliaForever: Tool, ToolResult, ToolFailure, Image, imagelimit, imageformat, imageproblem, name, description, schema, execute
 
 struct Failure
     kind::Symbol
@@ -316,9 +316,10 @@ function contentblock!(content, block, candidate::NamedTuple, count)
     value
 end
 
-function execute(tool::RemoteTool, args)
-    result = call(tool.client, tool.remote, args)
-    result isa Failure && return ToolResult("MCP $(result.kind): $(result.message)", true)
+execute(tool::RemoteTool, args) = toolresult(call(tool.client, tool.remote, args))
+toolresult(result::Failure) = ToolFailure("MCP $(result.kind): $(result.message)")
+
+function toolresult(result::AbstractDict)
     content = String[]
     blocks = get(result, "content", [])
     countimages = sum(block -> imagecount(imagecontent(block)), blocks; init=0)

@@ -50,6 +50,16 @@ function enqueue(events, event)
     end
 end
 
+invoke(::Nothing, args, name::AbstractString) = ToolFailure("Unknown tool: $name")
+
+function invoke(tool::Tool, args, ::AbstractString)
+    try
+        execute(tool, args)
+    catch exception
+        ToolFailure(sprint(showerror, exception))
+    end
+end
+
 function codefailure(cancel, timedout, started, timeout)
     cancel.cancelled[] && return (:cancelled, "Execution cancelled")
     (timedout[] || (time_ns() - started) / 1e9 >= timeout) && return (:timeout, "Execution timed out")
@@ -142,18 +152,10 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
                         Threads.@spawn let event=event, index=index
                             callstart = time_ns()
                             tool = get(mode.tools, String(event.name), nothing)
-                            answer = if isnothing(tool)
-                                ToolResult("Unknown tool: $(event.name)", true)
-                            else
-                                try
-                                    execute(tool, event.args)
-                                catch exception
-                                    ToolResult(sprint(showerror, exception), true)
-                                end
-                            end
+                            answer = invoke(tool, event.args, String(event.name))
                             answer = codeimage(answer, answer.image)
                             duration = (time_ns() - callstart) / 1e9
-                            enqueue(events, (; type="call_done", index, status=answer.iserror ? :error : :ok, duration))
+                            enqueue(events, (; type="call_done", index, status=status(answer), duration))
                             lock(lockwrite) do
                                 if !done[]
                                     try
