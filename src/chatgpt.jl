@@ -68,5 +68,6 @@ end
 
 include("chatgpt_callback.jl")
 include("chatgpt_exchange.jl")
+include("chatgpt_plan_type.jl")
 
 end

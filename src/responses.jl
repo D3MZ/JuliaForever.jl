@@ -50,7 +50,7 @@ function payload(provider::OpenAIResponses, messages, tools, parameters; streami
     JSON3.write(data)
 end
 
-function usage(::OpenAIResponses, data)
+function usage(::Union{OpenAIResponses, ChatGPT.Plan}, data)
     raw_input = get(data, "input_tokens", 0)
     output = get(data, "output_tokens", 0)
     input_details = something(get(data, "input_tokens_details", nothing), Dict())
@@ -85,7 +85,13 @@ function valid(call)
     all(key -> get(call, key, nothing) isa AbstractString && !isempty(call[key]), ("id", "call_id", "name", "arguments")) && get(call, "status", "completed") == "completed"
 end
 
-function completion(provider::OpenAIResponses, data; failure=nothing)
+valid(::OpenAIResponses, call) = valid(call)
+valid(::ChatGPT.Plan, call) = valid(call) && isnothing(get(call, "namespace", nothing))
+samecall(item, done) = all(key -> get(item, key, nothing) == get(done, key, nothing), ("id", "call_id", "name", "arguments"))
+samecall(::OpenAIResponses, item, done) = samecall(item, done)
+samecall(::ChatGPT.Plan, item, done) = samecall(item, done) && get(item, "namespace", nothing) == get(done, "namespace", nothing)
+
+function completion(provider::Union{OpenAIResponses, ChatGPT.Plan}, data; failure=nothing)
     output = get(data, "output", [])
     msg = message(output)
     status = get(data, "status", nothing)
@@ -94,7 +100,7 @@ function completion(provider::OpenAIResponses, data; failure=nothing)
         failure = "Responses $(status): $(detail isa AbstractString ? detail : JSON3.write(detail))"
     end
     calls = [item for item in output if get(item, "type", nothing) == "function_call"]
-    if isnothing(failure) && any(call -> !valid(call), calls)
+    if isnothing(failure) && any(call -> !valid(provider, call), calls)
         failure = "Responses contained an unfinished function call"
     elseif isnothing(failure) && (length(unique(call["id"] for call in calls)) != length(calls) || length(unique(call["call_id"] for call in calls)) != length(calls))
         failure = "Responses contained duplicate function call identifiers"
@@ -111,13 +117,13 @@ function complete(provider::OpenAIResponses, messages, tools; parameters=Dict())
     data isa InvalidResponse ? incomplete(data) : completion(provider, data)
 end
 
-function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), on_event=identity)
+function streamresponse(provider::Union{OpenAIResponses, ChatGPT.Plan}, messages, tools; parameters=Dict(), on_event=identity)
     partial = Dict{String, Any}("role" => "assistant", "content" => nothing)
     active = Dict{Any, Any}()
     finished = Dict{Any, Any}()
     terminal = Ref{Any}(nothing)
     failure = Ref{Union{Nothing, String, InvalidResponse}}(nothing)
-    HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, sse_callback=event -> begin
+    requeststream(provider, payload(provider, messages, tools, parameters; streaming=true), event -> begin
         failure[] isa InvalidResponse && return
         event.data == "[DONE]" && return
         data = decode(event.data)
@@ -171,7 +177,14 @@ function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), o
                 finished[index] = item
             end
         elseif kind in ("response.completed", "response.incomplete", "response.failed")
-            terminal[] = data["response"]
+            if isnothing(terminal[])
+                terminal[] = data["response"]
+                if kind != "response.completed" && get(terminal[], "status", nothing) == "completed"
+                    failure[] = something(failure[], "Responses stream had an inconsistent terminal event")
+                end
+            else
+                failure[] = something(failure[], "Responses stream contained multiple terminal events")
+            end
         elseif kind == "error"
             failure[] = JSON3.write(data)
         end
@@ -196,7 +209,7 @@ function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), o
             for (index, item) in enumerate(data["output"])
                 if get(item, "type", nothing) == "function_call"
                     done = get(finished, index - 1, nothing)
-                    if isnothing(done) || any(key -> get(item, key, nothing) != get(done, key, nothing), ("id", "call_id", "name", "arguments"))
+                    if isnothing(done) || !samecall(provider, item, done)
                         failure[] = "Responses stream contained an unfinished or mismatched function call"
                     end
                 end
@@ -214,3 +227,6 @@ function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), o
     on_event((; type=result.done ? :done : :incomplete, result))
     result
 end
+
+requeststream(provider::OpenAIResponses, body, callback) = HTTP.post(endpoint(provider), headers(provider), body; redirect=false, retry=false, cookies=false, sse_callback=callback)
+stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), on_event=identity) = streamresponse(provider, messages, tools; parameters, on_event)
