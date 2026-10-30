@@ -215,6 +215,30 @@ D.name(::ThrowingHandler) = "throwing"
 D.decode(::ThrowingHandler, checkpoint::D.Checkpoint) = TestPhase(checkpoint.value)
 Base.run(::ThrowingHandler, ::TestPhase, input, context::D.Invocation) = error("unexpected handler failure")
 
+struct SleepHandler <: D.Handler
+    until::UInt64
+end
+D.name(::SleepHandler) = "sleep"
+D.decode(::SleepHandler, checkpoint::D.Checkpoint) = TestPhase(checkpoint.value)
+Base.run(handler::SleepHandler, phase::TestPhase, input, context::D.Invocation) = phase.value == 1 ? D.Sleep(TestPhase(2), handler.until) : D.Complete(input)
+
+struct SameSleepHandler <: D.Handler end
+D.name(::SameSleepHandler) = "same-sleep"
+D.decode(::SameSleepHandler, checkpoint::D.Checkpoint) = TestPhase(checkpoint.value)
+Base.run(::SameSleepHandler, phase::TestPhase, input, context::D.Invocation) = context.phase == 1 ? D.Sleep(phase, 0) : D.Complete(input)
+
+struct HeldSleepHandler <: D.Handler
+    entered::Channel{Nothing}
+    resume::Channel{Nothing}
+end
+D.name(::HeldSleepHandler) = "held-sleep"
+D.decode(::HeldSleepHandler, checkpoint::D.Checkpoint) = TestPhase(checkpoint.value)
+function Base.run(handler::HeldSleepHandler, phase::TestPhase, input, context::D.Invocation)
+    put!(handler.entered, nothing)
+    take!(handler.resume)
+    D.Sleep(TestPhase(2), input)
+end
+
 if Sys.isunix()
 @testset "concurrent requests and recovery limits" begin
     mktempdir() do dir
@@ -301,4 +325,170 @@ end
     @test cancelling isa D.Running && cancelling.cancelled
     @test typeof(active) !== typeof(cancelling)
     @test hasproperty(active, :cancelled) && hasproperty(cancelling, :cancelled)
+end
+
+if Sys.isunix()
+@testset "durable sleep and native wake" begin
+    mktempdir() do dir
+        path = joinpath(dir, "tasks.jsonl")
+        scheduler = open(D.Scheduler, path)
+        convo = conversation(scheduler)
+        deadline = floor(Int, time() * 1000) + 250
+        handler = SleepHandler(deadline)
+        id = D.enqueue!(scheduler, convo, handler, TestPhase(1), "done"; maxattempts=1)
+        @test D.step!(scheduler, id, handler).status isa D.Sleeping
+        ready = wait(scheduler, id)
+        @test ready.status.until == deadline
+        @test floor(Int, time() * 1000) >= deadline
+        @test D.step!(scheduler, id, handler).status.value == "done"
+
+        same = SameSleepHandler()
+        id = D.enqueue!(scheduler, convo, same, TestPhase(1), "same checkpoint"; maxattempts=1)
+        parked = D.step!(scheduler, id, same)
+        @test parked.status isa D.Sleeping
+        @test (parked.checkpoint.value, parked.phase, parked.attempts) == (1, 2, 0)
+        @test D.step!(scheduler, id, same).status.value == "same checkpoint"
+        @test_throws InexactError D.Sleep(TestPhase(2), -1)
+
+        later = SleepHandler(floor(Int, time() * 1000) + 60_000)
+        id = D.enqueue!(scheduler, convo, later, TestPhase(1), nothing)
+        D.step!(scheduler, id, later)
+        started = Channel{Nothing}(2)
+        waiters = [Threads.@spawn begin
+            put!(started, nothing)
+            wait(scheduler, id)
+        end for _ in 1:2]
+        take!(started)
+        take!(started)
+        sleep(0.05)
+        @test all(!istaskdone, waiters)
+        unrelated = D.enqueue!(scheduler, convo, later, TestPhase(1), nothing)
+        D.cancel!(scheduler, unrelated)
+        sleep(0.05)
+        @test all(!istaskdone, waiters)
+        @test D.cancel!(scheduler, id).status isa D.Cancelled
+        @test timedwait(() -> all(istaskdone, waiters), 3) == :ok
+        @test all(task -> fetch(task).status isa D.Cancelled, waiters)
+        @test D.step!(scheduler, id, later).reason == :not_pending
+
+        id = D.enqueue!(scheduler, convo, later, TestPhase(1), nothing)
+        D.step!(scheduler, id, later)
+        waiter = Threads.@spawn wait(scheduler, id)
+        close(scheduler)
+        @test timedwait(() -> istaskdone(waiter), 3) == :ok
+        @test fetch(waiter).reason == :closed
+        scheduler = open(D.Scheduler, path)
+        @test get(scheduler, id).status isa D.Sleeping
+        @test D.cancel!(scheduler, id).status isa D.Cancelled
+
+        held = HeldSleepHandler(Channel{Nothing}(1), Channel{Nothing}(1))
+        id = D.enqueue!(scheduler, convo, held, TestPhase(1), later.until)
+        worker = Threads.@spawn D.step!(scheduler, id, held)
+        take!(held.entered)
+        D.cancel!(scheduler, id)
+        put!(held.resume, nothing)
+        @test fetch(worker).status isa D.Cancelled
+        close(scheduler)
+    end
+end
+
+@testset "sleep survives process exit" begin
+    mktempdir() do dir
+        path = joinpath(dir, "tasks.jsonl")
+        scheduler = open(D.Scheduler, path; now=() -> 1000)
+        convo = conversation(scheduler)
+        id = D.enqueue!(scheduler, convo, SleepHandler(2000), TestPhase(1), "done"; maxattempts=1)
+        close(scheduler)
+        code = """
+            using JuliaForever
+            import JuliaForever.Durable as D
+            struct Handler <: D.Handler end
+            struct Work <: D.Phase
+                value::Int
+            end
+            D.name(::Handler) = "sleep"
+            D.decode(::Handler, checkpoint::D.Checkpoint) = Work(checkpoint.value)
+            D.encode(phase::Work) = D.Checkpoint("test", phase.value)
+            Base.run(::Handler, ::Work, input, context::D.Invocation) = D.Sleep(Work(2), 2000)
+            scheduler = open(D.Scheduler, ARGS[1]; now=() -> 1000)
+            D.step!(scheduler, parse(Int, ARGS[2]), Handler())
+            ccall(:_exit, Cvoid, (Cint,), 0)
+        """
+        run(`$(Base.julia_cmd()) --startup-file=no --project=$(dirname(@__DIR__)) -e $code $path $id`)
+        scheduler = open(D.Scheduler, path; now=() -> 1000)
+        parked = get(scheduler, id)
+        @test parked.status isa D.Sleeping
+        @test (parked.status.until, parked.checkpoint.value, parked.attempts, parked.restarts) == (2000, 2, 0, 0)
+        @test D.step!(scheduler, id, SleepHandler(2000)).reason == :sleeping
+        close(scheduler)
+        scheduler = open(D.Scheduler, path; now=() -> 2000)
+        @test D.step!(scheduler, id, SleepHandler(2000)).status.value == "done"
+        close(scheduler)
+    end
+end
+
+@testset "sleep deadline survives JSON storage exactly" begin
+    mktempdir() do dir
+        path = joinpath(dir, "tasks.jsonl")
+        clock = Ref(typemax(UInt64) - 1)
+        scheduler = open(D.Scheduler, path; now=() -> clock[])
+        convo = conversation(scheduler)
+        handler = SleepHandler(typemax(UInt64))
+        id = D.enqueue!(scheduler, convo, handler, TestPhase(1), "done")
+        @test D.step!(scheduler, id, handler).status.until == typemax(UInt64)
+        close(scheduler)
+        scheduler = open(D.Scheduler, path; now=() -> clock[])
+        @test get(scheduler, id).status.until == typemax(UInt64)
+        @test D.step!(scheduler, id, handler).reason == :sleeping
+        clock[] += 1
+        @test D.step!(scheduler, id, handler).status.value == "done"
+        close(scheduler)
+    end
+end
+end
+
+if Sys.isunix() && haskey(ENV, "PI_SOURCE")
+    include("scheduler_differential.jl")
+end
+
+struct JoinHandler <: D.Handler end
+D.name(::JoinHandler) = "join"
+D.decode(::JoinHandler, checkpoint::D.Checkpoint) = TestPhase(checkpoint.value)
+Base.run(::JoinHandler, phase::TestPhase, input, ::D.Invocation) = phase.value == 1 ? D.Join(TestPhase(2), input) : D.Complete("joined")
+
+@testset "durable all-settled joins" begin
+    mktempdir() do dir
+        path = joinpath(dir, "join.jsonl")
+        scheduler = open(D.Scheduler, path)
+        convo = conversation(scheduler)
+        child = D.enqueue!(scheduler, convo, TestHandler(), TestPhase(2), 42)
+        parent = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [child])
+        @test D.step!(scheduler, parent, JoinHandler()).status isa D.Waiting
+        @test D.step!(scheduler, parent, JoinHandler()).reason == :waiting
+        close(scheduler)
+        scheduler = open(D.Scheduler, path)
+        @test get(scheduler, parent).status.on == [child]
+        D.step!(scheduler, child, TestHandler())
+        @test D.step!(scheduler, parent, JoinHandler()).status.value == "joined"
+        cancelled = D.enqueue!(scheduler, convo, TestHandler(), TestPhase(2), 0)
+        waiter = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [cancelled])
+        D.step!(scheduler, waiter, JoinHandler())
+        D.cancel!(scheduler, cancelled)
+        @test D.step!(scheduler, waiter, JoinHandler()).status isa D.Completed
+        cycle = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), Int[])
+        # The persisted input is immutable, so use the next minted task ID as a self-edge.
+        self = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [cycle + 1])
+        @test self == cycle + 1
+        @test D.step!(scheduler, self, JoinHandler()).reason == :wait_cycle
+        invalid = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [99999])
+        @test D.step!(scheduler, invalid, JoinHandler()).reason == :task_missing
+        @test get(scheduler, invalid).status isa D.Running
+        missingfirst = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [99999, invalid + 1])
+        @test missingfirst == invalid + 1
+        @test D.step!(scheduler, missingfirst, JoinHandler()).reason == :task_missing
+        cyclefirst = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [missingfirst + 1, 99999])
+        @test cyclefirst == missingfirst + 1
+        @test D.step!(scheduler, cyclefirst, JoinHandler()).reason == :wait_cycle
+        close(scheduler)
+    end
 end
