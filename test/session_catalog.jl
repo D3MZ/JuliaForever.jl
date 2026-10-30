@@ -50,23 +50,24 @@ end
 end
 
 @testset "session target redacts only the diagnostic" begin
-    mktempdir() do root
-        key = "synthetic" * Char(0x80)
-        terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), [key])
-        redact = text -> JuliaForever.redact(terminal, text)
-        missing = joinpath(root, "missing-" * key * "a.sqlite")
-        request = Catalog.Target(missing)
-        result = Catalog.choose(request, root, root, IOBuffer(), IOBuffer(), redact)
-        @test result isa Catalog.Invalid
-        @test occursin("missing-[redacted]a.sqlite", result.message)
-        @test !occursin(chop(repr(key * "a"); head=1, tail=1), result.message)
-        raw = Catalog.choose(request, root, root, IOBuffer(), IOBuffer())
-        @test occursin(repr(missing), raw.message)
+    for key in ("synthetic" * Char(0x80), "synthetic" * repeat("\\", 20))
+        mktempdir() do root
+            terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), [key])
+            redact = text -> JuliaForever.redact(terminal, text)
+            missing = joinpath(root, "missing-" * key * "a.sqlite")
+            request = Catalog.Target(missing)
+            result = Catalog.choose(request, root, root, IOBuffer(), IOBuffer(), redact)
+            @test result isa Catalog.Invalid
+            @test occursin("missing-[redacted]a.sqlite", result.message)
+            @test !occursin(chop(repr(key * "a"); head=1, tail=1), result.message)
+            raw = Catalog.choose(request, root, root, IOBuffer(), IOBuffer())
+            @test occursin(repr(missing), raw.message)
 
-        path = joinpath(root, "exists-" * key * "a.sqlite")
-        close(open(H.SQLite, path))
-        selected = Catalog.choose(Catalog.Target(path), root, root, IOBuffer(), IOBuffer(), redact)
-        @test selected isa H.SQLite
-        close(selected)
+            path = joinpath(root, "exists-" * key * "a.sqlite")
+            close(open(H.SQLite, path))
+            selected = Catalog.choose(Catalog.Target(path), root, root, IOBuffer(), IOBuffer(), redact)
+            @test selected isa H.SQLite
+            close(selected)
+        end
     end
 end

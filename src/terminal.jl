@@ -9,7 +9,7 @@ end
 Terminal(output, diagnostics, secrets) = Terminal(output, diagnostics, secrets, false, false)
 
 # A following hexadecimal or octal digit can change the last escape.
-forms(secret) = (secret, chop(repr(secret); head=1, tail=1), chop(repr(secret * "0"); head=1, tail=2))
+forms(secret) = (chop(repr(secret * "0"); head=1, tail=2), chop(repr(secret); head=1, tail=1), secret)
 
 function redact(terminal::Terminal, text)
     result = string(text)
