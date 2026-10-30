@@ -993,10 +993,12 @@ end
 resources(client::Client; timeout=client.timeout) = listall(client, Resources(); timeout)
 templates(client::Client; timeout=client.timeout) = listall(client, Templates(); timeout)
 
-stringvalue(value) = false
-stringvalue(::AbstractString) = true
 validcontent(value) = false
-validcontent(value::AbstractDict) = stringvalue(get(value, "uri", nothing)) && (stringvalue(get(value, "text", nothing)) || stringvalue(get(value, "blob", nothing)))
+validcontent(value::AbstractDict) = validcontent(get(value, "uri", nothing), get(value, "text", nothing), get(value, "blob", nothing))
+validcontent(uri, text, blob) = false
+validcontent(uri::AbstractString, text::AbstractString, blob) = true
+validcontent(uri::AbstractString, text, blob::AbstractString) = true
+validcontent(uri::AbstractString, text::AbstractString, blob::AbstractString) = true
 readresponse(failure::Failure) = failure
 readresponse(value) = Failure(:protocol, "Invalid MCP resources/read result")
 readresponse(value::AbstractDict) = readcontents(value, get(value, "contents", nothing))
