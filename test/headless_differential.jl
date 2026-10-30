@@ -192,6 +192,61 @@ function exchangequeued(cmd, env, arrivals)
     end
 end
 
+function exchangeallqueued(cmd, env, arrivals)
+    mktempdir() do dir
+        process = open(pipeline(addenv(cmd, env...); stderr=joinpath(dir, "error")), "r+")
+        channel = Channel{Any}(Inf)
+        reader = @async for line in eachline(process)
+            put!(channel, JSON3.read(line, Dict{String, Any}))
+        end
+        observed = Any[]
+        held = Channel{Nothing}[]
+        try
+            send(value) = (println(process, JSON3.write(value)); flush(process))
+            for (id, type) in (("steer-mode", "set_steering_mode"), ("follow-mode", "set_follow_up_mode"))
+                send((; id, type, mode="all"))
+                receive!(channel, observed, value -> get(value, "id", "") == id)
+            end
+            send((; id="prompt", type="prompt", message="hello"))
+            receive!(channel, observed, value -> get(value, "id", "") == "prompt")
+            timedwait(() -> isready(arrivals), 45) == :ok || error("Provider request did not start")
+            gate = take!(arrivals)
+            push!(held, gate)
+            for (id, type, message) in (("s1", "steer", "steer one"), ("s2", "steer", "steer two"), ("f1", "follow_up", "follow one"), ("f2", "follow_up", "follow two"))
+                send((; id, type, message))
+                receive!(channel, observed, value -> get(value, "id", "") == id)
+            end
+            put!(gate, nothing)
+            calls = 1
+            while true
+                timedwait(() -> isready(arrivals) || isready(channel), 45) == :ok || error("RPC run did not settle")
+                if isready(arrivals)
+                    put!(take!(arrivals), nothing)
+                    calls += 1
+                end
+                isready(channel) || continue
+                event = take!(channel)
+                push!(observed, event)
+                event["type"] == "agent_settled" && break
+            end
+            send((; id="messages", type="get_messages"))
+            messages = receive!(channel, observed, value -> get(value, "id", "") == "messages")
+            (; calls, messages, observed)
+        finally
+            for gate in held
+                isready(gate) || put!(gate, nothing)
+            end
+            while isready(arrivals)
+                put!(take!(arrivals), nothing)
+            end
+            close(process.in)
+            timedwait(() -> process_exited(process), 5) == :ok || kill(process)
+            wait(process)
+            wait(reader)
+        end
+    end
+end
+
 function exchangeaborted(cmd, env, arrivals)
     mktempdir() do dir
         process = open(pipeline(addenv(cmd, env...); stderr=joinpath(dir, "error")), "r+")
@@ -420,6 +475,15 @@ end
             [item["parentId"] for item in entries] == parents && exchange.entries["data"]["leafId"] == last(entries)["id"] && exchange.since["data"]["entries"] == entries[2:end]
         end
         @test entrychain(actual_entries) && entrychain(expected_entries)
+
+        modes = [(; id="steer-all", type="set_steering_mode", mode="all"), (; id="follow-all", type="set_follow_up_mode", mode="all"), (; id="all-state", type="get_state"), (; id="new", type="new_session"), (; id="new-state", type="get_state"), (; id="steer-one", type="set_steering_mode", mode="one-at-a-time"), (; id="follow-one", type="set_follow_up_mode", mode="one-at-a-time"), (; id="one-state", type="get_state")]
+        modeinput = join(JSON3.write.(modes), "\n") * "\n"
+        modeenv(directory) = vcat([pair for pair in env if first(pair) != "PI_CODING_AGENT_DIR"], ["PI_CODING_AGENT_DIR" => directory])
+        pi_modes = responses(runprocess(pi, modeinput, modeenv(joinpath(workspace, "pi-modes"))).output)
+        jf_modes = responses(runprocess(jf, modeinput, modeenv(joinpath(workspace, "jf-modes"))).output)
+        @test [get(get(jf_modes, id, Dict()), "success", nothing) for id in ("steer-all", "follow-all", "steer-one", "follow-one")] == [pi_modes[id]["success"] for id in ("steer-all", "follow-all", "steer-one", "follow-one")]
+        modeview(response) = (get(get(response, "data", Dict()), "steeringMode", nothing), get(get(response, "data", Dict()), "followUpMode", nothing))
+        @test [modeview(get(jf_modes, id, Dict())) for id in ("all-state", "new-state", "one-state")] == [modeview(pi_modes[id]) for id in ("all-state", "new-state", "one-state")]
     end
 end
 
@@ -658,6 +722,16 @@ toolview(value) = (; role=value["role"], id=value["toolCallId"], name=value["too
                 @test jf_abort.settled == pi_abort.settled == Dict("type" => "agent_settled", "aborted" => true)
                 reasons(run) = [event["message"]["stopReason"] for event in run.observed if event["type"] == "message_end" && get(event["message"], "role", "") == "assistant"]
                 @test reasons(jf_abort) == reasons(pi_abort) == ["aborted"]
+                pi_all_dir, jf_all_dir = joinpath(workspace, "pi-all"), joinpath(workspace, "jf-all")
+                for directory in (pi_all_dir, jf_all_dir)
+                    mkpath(directory)
+                    cp(joinpath(agentdir, "models.json"), joinpath(directory, "models.json"))
+                end
+                allenv(directory) = vcat([pair for pair in gatedenv if first(pair) != "PI_CODING_AGENT_DIR"], ["PI_CODING_AGENT_DIR" => directory])
+                pi_all = exchangeallqueued(pi_rpc, allenv(pi_all_dir), arrivals)
+                jf_all = exchangeallqueued(jf_rpc, allenv(jf_all_dir), arrivals)
+                @test usertexts(jf_all) == usertexts(pi_all) == ["hello", "steer one", "steer two", "follow one", "follow two"]
+                @test jf_all.calls == pi_all.calls == 3
             finally
                 close(gated)
                 wait(gated)

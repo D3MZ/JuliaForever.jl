@@ -230,10 +230,10 @@ function state(session)
     active, count, name = lock(session.lock) do
         (streaming(session.task), length(session.messages), session.name)
     end
-    pending = lock(agent.lock) do
-        length(agent.state.steering) + length(agent.state.followups)
+    pending, steering, followup = lock(agent.lock) do
+        (length(agent.state.steering) + length(agent.state.followups), J.Conversation.queuecode(agent.state.steeringmode), J.Conversation.queuecode(agent.state.followupmode))
     end
-    data = Dict{String, Any}("model" => modelinfo(session), "thinkingLevel" => "off", "isStreaming" => active, "isCompacting" => false, "steeringMode" => "one-at-a-time", "followUpMode" => "one-at-a-time", "sessionId" => session.id, "autoCompactionEnabled" => false, "messageCount" => count, "pendingMessageCount" => pending)
+    data = Dict{String, Any}("model" => modelinfo(session), "thinkingLevel" => "off", "isStreaming" => active, "isCompacting" => false, "steeringMode" => steering, "followUpMode" => followup, "sessionId" => session.id, "autoCompactionEnabled" => false, "messageCount" => count, "pendingMessageCount" => pending)
     optional!(data, "sessionName", name)
     optional!(data, "sessionFile", sessionfile(session.store[]))
 end
@@ -263,13 +263,18 @@ handle!(session, ::GetThinkingLevels) = Success((; data=(; levels=["off"])))
 handle!(session, ::CycleThinking) = Success((; data=nothing))
 handle!(session, ::AbortRetry) = Success()
 handle!(session, command::SetThinking) = get(thinkingoptions, command.level, Failure("Thinking levels are not available"))
-handle!(session, command::Union{SetSteeringMode, SetFollowUpMode}) = get(queueoptions, command.mode, Failure("Only one-at-a-time queue mode is available"))
+handle!(session, command::SetSteeringMode) = setqueuemode!(session, J.steeringmode!, get(deliverymodes, command.mode, nothing))
+handle!(session, command::SetFollowUpMode) = setqueuemode!(session, J.followupmode!, get(deliverymodes, command.mode, nothing))
 handle!(session, command::SetAutoCompaction) = get(compactionoptions, command.enabled, Failure("Automatic compaction is not available in headless mode"))
 handle!(session, command::SetAutoRetry) = get(retryoptions, command.enabled, Failure("Automatic retry is not available"))
 const thinkingoptions = Dict("off" => Success())
-const queueoptions = Dict("one-at-a-time" => Success())
+const deliverymodes = Dict("one-at-a-time" => :one_at_a_time, "all" => :all)
 const compactionoptions = Dict(false => Success())
 const retryoptions = Dict(false => Success())
+setqueuemode!(session, setter, ::Nothing) = Failure("Unknown queue mode")
+setqueuemode!(session, setter, mode::Symbol) = queuemoderesult(setter(session.agent, mode))
+queuemoderesult(::Nothing) = Success()
+queuemoderesult(rejected::J.History.Rejected) = Failure(string(rejected.reason))
 handle!(session, ::ClearQueue) = cleared(session, J.dequeue!(session.agent))
 function cleared(session, queue::NamedTuple)
     queues!(session)
@@ -309,6 +314,7 @@ end
 
 function rebind!(session, agent, history)
     lock(session.lock) do
+        copyqueuemodes!(session.agent, agent)
         session.agent = agent
         session.store[] = history
         session.id = J.LiveJSON.id(history)
@@ -325,6 +331,15 @@ function rebind!(session, agent, history)
     end
     nothing
 end
+
+function copyqueuemodes!(source, target)
+    steering, followup = lock(() -> (source.state.steeringmode, source.state.followupmode), source.lock)
+    copyqueuemode!(target, J.steeringmode!, steering, target.state.steeringmode)
+    copyqueuemode!(target, J.followupmode!, followup, target.state.followupmode)
+    nothing
+end
+copyqueuemode!(agent, setter, mode::T, current::T) where {T<:J.Conversation.QueueMode} = nothing
+copyqueuemode!(agent, setter, mode::J.Conversation.QueueMode, current::J.Conversation.QueueMode) = setter(agent, deliverymodes[J.Conversation.queuecode(mode)])
 
 function handle!(session, command::SwitchSession)
     request = J.SessionCatalog.Target(command.path)

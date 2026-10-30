@@ -185,3 +185,5 @@ SQLite transaction cleanup dispatches on whether a commit or rollback returned, 
 SQLite open mode is selected at the keyword boundary; existing-only and create paths use separate initialization and retain file safety checks.
 
 Integrating queue modes with RPC session records yields 1,573 branch entries. The combined inventory adds two repeated revision checks beyond the parents' multiset union and retires 17 entries.
+
+RPC queue-mode commands dispatch to the shared queue policies and add no branch or dispatch entries.
