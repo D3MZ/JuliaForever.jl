@@ -115,6 +115,7 @@ end
 include("scheduler.jl")
 if haskey(ENV, "PI_SOURCE")
     include("session_differential.jl")
+    include("session_migration.jl")
     include("system_differential.jl")
     mktempdir() do oracle
         withenv("PI_CODING_AGENT_DIR" => oracle) do
