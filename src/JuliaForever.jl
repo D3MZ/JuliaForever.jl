@@ -162,20 +162,23 @@ function (@main)(args)
     Sys.iswindows() && push!(tools, PowerShell(pwd()))
     codemode && push!(tools, CodeMode(tools))
     terminal = Terminal(stdout, stderr, [model.key])
-    history = SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr)
+    history = selection(attempt(() -> SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr, text -> redact(terminal, text))))
     runsession!(history, terminal, model, tools, args, sessiondir)
 end
+
+selection(result::ToolFailure) = SessionCatalog.Invalid(result.text)
+selection(result) = result
 
 runsession!(::SessionCatalog.Cancelled, terminal, model, tools, args, sessiondir) = 0
 
 function runsession!(invalid::SessionCatalog.Invalid, terminal, model, tools, args, sessiondir)
-    println(terminal.diagnostics, invalid.message)
+    println(terminal.diagnostics, redact(terminal, invalid.message))
     2
 end
 
 function sessionfault!(terminal, fault, history)
     status = result!(terminal, fault)
-    println(terminal.diagnostics, "History file: ", SessionCatalog.path(history))
+    println(terminal.diagnostics, "History file: ", redact(terminal, SessionCatalog.path(history)))
     flush(terminal.diagnostics)
     status
 end

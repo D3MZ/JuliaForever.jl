@@ -167,9 +167,18 @@ function collectinfo!(items, dir, file, found::RegexMatch)
 end
 
 wrap(rejected::H.Rejected) = rejected
-wrap(store::H.SQLite) = wrap(store, H.Tree(store))
-wrap(store::H.SQLite, tree::H.Tree) = tree
-wrap(store::H.SQLite, rejected::H.Rejected) = (close(store); rejected)
+function wrap(store::H.SQLite)
+    result = nothing
+    try
+        result = H.Tree(store)
+    finally
+        release!(store, result)
+    end
+    result
+end
+
+release!(store::H.SQLite, ::H.Tree) = nothing
+release!(store::H.SQLite, result) = close(store)
 
 istree(record) = false
 istree(record::Dict) = get(record, "format", "") == H.treeformat
@@ -181,6 +190,7 @@ adapt(store::H.SQLite, rejected::H.Rejected) = (close(store); rejected)
 adapt(store::H.SQLite, snapshot::H.Snapshot) = any(istree, snapshot.batches) ? wrap(store) : store
 
 openinfo(info::Info) = wrap(open(H.SQLite, info.path; create=false))
+choose(request::Request, dir, cwd, input, output, redact) = choose(request, dir, cwd, input, output)
 choose(::New, dir, cwd, input, output) = new(dir, cwd)
 choose(::Ephemeral, dir, cwd, input, output) = H.Tree(H.Memory())
 choose(request::Explicit, dir, cwd, input, output) = adapt(open(H.SQLite, request.path))
@@ -189,27 +199,27 @@ choose(::Conflict, dir, cwd, input, output) = Invalid("Choose only one session o
 choose(::Recent, dir, cwd, input, output) = recent(list(dir, cwd), dir, cwd)
 recent(items, dir, cwd) = isempty(items) ? new(dir, cwd) : openinfo(first(items))
 
-function choose(request::Target, dir, cwd, input, output)
+function choose(request::Target, dir, cwd, input, output, redact=identity)
     path = expanduser(request.value)
     isfile(path) && return wrap(open(H.SQLite, path; create=false))
     matches = filter(item -> occursin(lowercase(request.value), item.id), list(dir, cwd))
-    named(matches, request.value)
+    named(matches, request.value, redact)
 end
 
-function named(items, value)
-    length(items) == 1 || return Invalid("No unique session found matching " * repr(value) * ".")
+function named(items, value, redact=identity)
+    length(items) == 1 || return Invalid("No unique session found matching " * repr(redact(value)) * ".")
     openinfo(only(items))
 end
 
-function choose(::Picker, dir, cwd, input, output)
+function choose(::Picker, dir, cwd, input, output, redact=identity)
     items = list(dir, cwd)
     if isempty(items)
         println(output, "No sessions for this project.")
         return Cancelled()
     end
     for (index, item) in enumerate(items)
-        title = strip(replace(item.title, r"[\x00-\x1f\x7f]" => " "))
-        println(output, "[", index, "] ", item.id, "  ", first(title, min(length(title), 100)))
+        title = strip(replace(redact(item.title), r"[\x00-\x1f\x7f]" => " "))
+        println(output, "[", index, "] ", redact(item.id), "  ", first(title, min(length(title), 100)))
     end
     pick(items, input, output)
 end

@@ -150,3 +150,29 @@ end
         @test [m.content for m in last(requests()) if m.role in ("user", "assistant")] == ["alternate", "reply:alternate", "followup"]
     end
 end
+
+@testset "resume picker preserves diagnostics and current session" begin
+    mktempdir() do root
+        workspace, sessions = joinpath.((root,), ("project", "sessions"))
+        mkpath(workspace)
+        workspace = realpath(workspace)
+        requests = joinpath(root, "requests.jsonl")
+        run(args; input="") = session_process(requests, workspace, sessions, args; input)
+        key = "session-test-secret"
+        @test run(["first " * key]).status == 0
+        first = only(readdir(sessions; join=true))
+        @test run(["second"]).status == 0
+        second = only(filter(!=(first), readdir(sessions; join=true)))
+        choices = JuliaForever.SessionCatalog.list(sessions, workspace)
+        first_index = findfirst(item -> item.path == first, choices)
+        second_index = findfirst(item -> item.path == second, choices)
+        input = "/resume\nq\n/resume\n$second_index\n/resume\n$first_index\nlast\n/exit\n"
+        result = run(["--session", first]; input)
+        @test result.status == 0
+        @test result.output == "reply:last\n"
+        @test occursin("first [redacted]", result.diagnostics)
+        @test !occursin(key, result.diagnostics)
+        last_request = JSON3.read(last(readlines(requests)))
+        @test [message.content for message in last_request if message.role in ("user", "assistant")] == ["first " * key, "reply:first " * key, "last"]
+    end
+end

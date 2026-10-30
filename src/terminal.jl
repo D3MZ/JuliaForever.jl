@@ -8,10 +8,14 @@ end
 
 Terminal(output, diagnostics, secrets) = Terminal(output, diagnostics, secrets, false, false)
 
+# A following hexadecimal or octal digit can change the last escape.
+forms(secret) = (chop(repr(secret * "0"); head=1, tail=2), chop(repr(secret); head=1, tail=1), secret)
+redacted(text, form) = replace(text, form => "[redacted]")
+
 function redact(terminal::Terminal, text)
     result = string(text)
     for secret in terminal.secrets
-        isempty(secret) || (result = replace(result, secret => "[redacted]"))
+        isempty(secret) || (result = foldl(redacted, forms(secret); init=result))
     end
     result
 end
