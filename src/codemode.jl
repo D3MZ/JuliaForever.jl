@@ -195,6 +195,26 @@ end
 codeimage(result::ToolResult, ::Nothing) = result
 codeimage(::ToolResult, ::Image) = ToolFailure("Image output is not supported by CodeMode")
 
+waitcode!(::Nothing) = nothing
+waitcode!(task::Task) = wait(task)
+stopcode!(::Nothing) = nothing
+function stopcode!(process)
+    if process_running(process)
+        try
+            kill(process, Base.SIGKILL)
+        catch
+        end
+    end
+    try
+        wait(process)
+    catch
+    end
+    try
+        close(process)
+    catch
+    end
+end
+
 function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, Any}(), cancel=CodeCancellation())
     cancel.cancelled[] && return CodeFailure(nothing, String[], NamedTuple[], Dict{String, Any}(), :cancelled, "Execution cancelled", "", "", 0)
     mktempdir() do dir
@@ -280,27 +300,12 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
             lock(cancel.lock) do
                 delete!(cancel.events, events)
             end
-            !isnothing(timer) && close(timer)
-            !isnothing(alarm) && wait(alarm)
+            cleanup!(timer)
+            waitcode!(alarm)
             close(events)
-            if !isnothing(process)
-                if process_running(process)
-                    try
-                        kill(process, Base.SIGKILL)
-                    catch
-                    end
-                end
-                try
-                    wait(process)
-                catch
-                end
-                try
-                    close(process)
-                catch
-                end
-            end
-            !isnothing(writer) && wait(writer)
-            !isnothing(reader) && wait(reader)
+            stopcode!(process)
+            waitcode!(writer)
+            waitcode!(reader)
         end
         for (index, call) in enumerate(calls)
             call.status == :running && (calls[index] = (; call.name, status=:unresolved, call.duration))

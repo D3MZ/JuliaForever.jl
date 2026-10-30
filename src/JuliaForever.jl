@@ -46,6 +46,9 @@ include("session_terminal.jl")
 include("terminal_live.jl")
 include("mcp.jl")
 
+const tuimode = Base.ScopedValues.ScopedValue{LiveTerminal.Mode}(LiveTerminal.FullscreenMode())
+const tuimodes = Dict("fullscreen" => LiveTerminal.FullscreenMode(), "regular" => LiveTerminal.RegularMode())
+
 missingmodel(env, info, ::Nothing) = isempty(strip(get(env, info.model, ""))) ? [info.model] : String[]
 missingmodel(env, info, model::AbstractString) = isempty(strip(model)) ? [info.model] : String[]
 
@@ -87,8 +90,6 @@ historyabandon(::Union{Nothing, HistoryAbandonment}, reason) = HistoryAbandonmen
 historyabandon(::Union{HistoryInspection, HistoryConflict}, reason) = HistoryConflict()
 historyabandon(action::ModelListing, reason) = action
 
-haslogin(::APIKeyAuth) = false
-haslogin(::OpenRouterAuth) = true
 const loginproviders = Dict("openrouter" => providerinfos["openrouter"])
 providername(::APIKeyAuth, ::Nothing) = get(ENV, "JF_PROVIDER", "openai")
 providername(::APIKeyAuth, selected::AbstractString) = selected
@@ -217,151 +218,17 @@ function help!()
     println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
     println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --fork PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
     println("Tools: --tools (-t) LIST, --exclude-tools (-xt) LIST, --no-builtin-tools (-nbt), --no-tools (-nt).")
+    println("Terminal: --tui-mode fullscreen|regular (default: fullscreen).")
     println("Output: --mode text|json.")
     println("Use @PATH to include a text file or image in the initial prompt.")
     println("Models: --list-models [search] lists models for configured providers; --model accepts provider/model or a model name.")
     0
 end
 
+include("cli_options.jl")
+
 function (@main)(args)
-    codemode = false
-    packages = String[]
-    environments = String[]
-    action = nothing
-    selected = nothing
-    requested_model = nothing
-    auth = APIKeyAuth()
-    session = SessionCatalog.New()
-    sessiondir = SessionCatalog.directory(ENV)
-    sessionname = nothing
-    positional = String[]
-    baseline = ToolSelection.Defaults()
-    rules = ToolSelection.Inherit()
-    excluded = Regex[]
-    outputmode = TextMode()
-    while !isempty(args)
-        if first(args) == "--"
-            append!(positional, args)
-            break
-        elseif first(args) in ("--help", "-h")
-            return help!()
-        elseif first(args) == "--codemode"
-            codemode = true
-            args = args[2:end]
-        elseif first(args) == "--mode"
-            if length(args) < 2 || startswith(args[2], "-")
-                println(stderr, "--mode requires text or json.")
-                return 2
-            end
-            outputmode = assignmode(outputmode, terminalmode(args[2]))
-            args = args[3:end]
-        elseif first(args) in ("--no-tools", "-nt")
-            baseline = ToolSelection.baseline(baseline, ToolSelection.NoTools())
-            args = args[2:end]
-        elseif first(args) in ("--no-builtin-tools", "-nbt")
-            baseline = ToolSelection.baseline(baseline, ToolSelection.NoBuiltin())
-            args = args[2:end]
-        elseif first(args) in ("--tools", "-t", "--exclude-tools", "-xt")
-            option = first(args)
-            if length(args) < 2
-                println(stderr, option, " requires a value.")
-                return 2
-            end
-            if option in ("--tools", "-t")
-                rules = ToolSelection.assign(rules, ToolSelection.entries(args[2]))
-            else
-                excluded = ToolSelection.patterns(args[2])
-            end
-            args = args[3:end]
-        elseif first(args) == "--list-models"
-            if length(args) > 1 && !startswith(args[2], "-") && !startswith(args[2], "@")
-                action = ModelListing(args[2])
-                args = args[3:end]
-            else
-                action = ModelListing("")
-                args = args[2:end]
-            end
-        elseif first(args) in ("--provider", "--model")
-            option = first(args)
-            if length(args) < 2 || isempty(strip(args[2])) || startswith(args[2], "--")
-                println(stderr, option, " requires a value.")
-                return 2
-            end
-            if option == "--provider"
-                selected = lowercase(args[2])
-            else
-                requested_model = args[2]
-            end
-            args = args[3:end]
-        elseif first(args) in ("--login-openrouter", "--login-openrouter-callback")
-            if haslogin(auth)
-                println(stderr, "Select only one OpenRouter login mode.")
-                return 2
-            end
-            auth = first(args) == "--login-openrouter" ? CodeAuth() : CallbackAuth()
-            args = args[2:end]
-        elseif first(args) in ("--plugin", "--plugin-env")
-            option = first(args)
-            if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
-                println(stderr, option, " requires a ", option == "--plugin" ? "package name" : "path", ".")
-                return 2
-            end
-            push!(option == "--plugin" ? packages : environments, args[2])
-            args = args[3:end]
-        elseif first(args) == "--history"
-            if length(args) < 2 || startswith(args[2], "--")
-                println(stderr, "--history requires a path.")
-                return 2
-            end
-            session = SessionCatalog.assign(session, SessionCatalog.Explicit(args[2]))
-            args = args[3:end]
-        elseif first(args) in ("--session", "--session-dir", "--fork")
-            if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
-                println(stderr, first(args), " requires a value.")
-                return 2
-            end
-            if first(args) == "--session"
-                session = SessionCatalog.assign(session, SessionCatalog.Target(args[2]))
-            elseif first(args) == "--fork"
-                session = SessionCatalog.assign(session, SessionCatalog.Fork(args[2]))
-            else
-                sessiondir = abspath(expanduser(args[2]))
-            end
-            args = args[3:end]
-        elseif first(args) in ("--continue", "-c")
-            session = SessionCatalog.assign(session, SessionCatalog.Recent())
-            args = args[2:end]
-        elseif first(args) in ("--resume", "-r")
-            session = SessionCatalog.assign(session, SessionCatalog.Picker())
-            args = args[2:end]
-        elseif first(args) == "--no-session"
-            session = SessionCatalog.assign(session, SessionCatalog.Ephemeral())
-            args = args[2:end]
-        elseif first(args) in ("--name", "-n")
-            if length(args) < 2 || isempty(Conversation.sessionname(args[2]))
-                println(stderr, "--name requires a non-empty value.")
-                return 2
-            end
-            sessionname = Conversation.sessionname(args[2])
-            args = args[3:end]
-        elseif first(args) == "--abandon"
-            if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
-                println(stderr, "--abandon requires a reason.")
-                return 2
-            end
-            action = historyabandon(action, args[2])
-            args = args[3:end]
-        elseif first(args) == "--inspect-history"
-            action = historyinspect(action)
-            args = args[2:end]
-        else
-            push!(positional, first(args))
-            args = args[2:end]
-        end
-    end
-    args = positional
-    options = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, outputmode, output=stdout)
-    selectedmode(action, options, outputmode)
+    clifinal(foldl(cliargument, args; init=CLIReady(CLIOptions())))
 end
 
 selectedmode(action, options, ::TerminalMode) = selectedtools(action, options, options.rules)
@@ -407,7 +274,9 @@ function launchprovider(options)
     name = providername(auth, selected)
     info = providerinfo(name)
     model = acquire(auth, info, requested_model)
-    launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, provider(outputmode, name))
+    Base.ScopedValues.with(tuimode => LiveTerminal.withprovider(options.tui, name)) do
+        launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, provider(outputmode, name))
+    end
 end
 
 historyaction(::HistoryInspection, options) = inspectrequest!(options.session, options.auth, options.sessionname, options.args)
@@ -447,12 +316,12 @@ end
 selection(result::ToolFailure) = SessionCatalog.Invalid(result.text)
 selection(result) = result
 
-function terminal!(terminal::Terminal, model, registry::Extensions.Registry, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
-    if codemode
-        mode = CodeMode(Extensions.tools(Extensions.snapshot(registry)))
-        result = Extensions.register!(registry, gensym(:codemode), Extensions.Plugin(; tools=(mode,)))
-        return terminal!(terminal, model, registered(terminal, registry, "codemode", result), false, session, sessiondir, args, sessionname, baseline, rules, excluded)
-    end
+function terminal!(terminal::Terminal, model, registry::Extensions.Registry, ::Type{CodeMode}, session, sessiondir, args, sessionname, baseline, rules, excluded)
+    mode = CodeMode(Extensions.tools(Extensions.snapshot(registry)))
+    result = Extensions.register!(registry, gensym(:codemode), Extensions.Plugin(; tools=(mode,)))
+    terminal!(terminal, model, registered(terminal, registry, "codemode", result), nothing, session, sessiondir, args, sessionname, baseline, rules, excluded)
+end
+function terminal!(terminal::Terminal, model, registry::Extensions.Registry, ::Nothing, session, sessiondir, args, sessionname, baseline, rules, excluded)
     extensions = ToolSelection.select(Extensions.snapshot(registry), baseline, rules, excluded)
     history = selection(attempt(() -> SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr, text -> redact(terminal, text))))
     runsession!(history, terminal, model, extensions, args, sessiondir, sessionname)
@@ -594,7 +463,7 @@ interact!(terminal, agent, extensions, input, output, store, sessiondir, templat
 
 function interact!(terminal, agent, extensions, input::Base.TTY, output::Base.TTY, store, sessiondir, templates)
     get(ENV, "TERM", "") in ("", "dumb") && return readloop!(terminal, agent, extensions, input, output, store, sessiondir, templates)
-    LiveTerminal.loop!(terminal, agent, extensions, store, input, sessiondir, templates)
+    LiveTerminal.loop!(terminal, agent, extensions, store, input, sessiondir, templates, tuimode[])
 end
 
 function readloop!(terminal, agent, extensions, input, output, store, sessiondir, templates)

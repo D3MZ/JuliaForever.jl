@@ -12,10 +12,12 @@ end
 
 Base.occursin(pattern::FoldedPattern, line::AbstractString) = occursin(pattern.text, lowercase(line))
 
-function searchpattern(pattern, literal::Bool, ignorecase::Bool)
-    literal && return ignorecase ? FoldedPattern(lowercase(pattern)) : pattern
-    Regex(pattern, ignorecase ? "i" : "")
-end
+literalpattern(pattern) = pattern
+foldedpattern(pattern) = FoldedPattern(lowercase(pattern))
+regexpattern(pattern) = Regex(pattern, "")
+caselesspattern(pattern) = Regex(pattern, "i")
+const searchpatterns = Dict((true, false) => literalpattern, (true, true) => foldedpattern, (false, false) => regexpattern, (false, true) => caselesspattern)
+searchpattern(pattern, literal::Bool, ignorecase::Bool) = searchpatterns[(literal, ignorecase)](pattern)
 
 name(::Find) = "find"
 name(::Grep) = "grep"
@@ -255,6 +257,29 @@ function shortline(line)
     String(transcode(UInt8, units)) * "... [truncated]", true
 end
 
+struct GlobFilter
+    pattern::String
+    regex::Regex
+end
+
+struct ExcludedGlob
+    filter::GlobFilter
+end
+
+function globfilter(raw::AbstractString)
+    pattern = chopprefix(raw, "!")
+    isempty(pattern) && return nothing
+    filter = GlobFilter(pattern, glob(pattern))
+    (identity, ExcludedGlob)[Int(startswith(raw, "!")) + 1](filter)
+end
+
+globtarget(filter::GlobFilter, target) = occursin('/', filter.pattern) ? posix(target) : basename(target)
+selectglob(::Nothing, target) = true
+selectglob(filter::GlobFilter, target) = occursin(filter.regex, globtarget(filter, target))
+selectglob(filter::ExcludedGlob, target) = !selectglob(filter.filter, target)
+whitelistglob(::Union{Nothing, ExcludedGlob}, target) = false
+whitelistglob(filter::GlobFilter, target) = selectglob(filter, target)
+
 function execute(tool::Grep, args)
     root = searchpath(tool, get(args, :path, "."))
     ispath(root) || return ToolFailure("Path not found: $root")
@@ -265,11 +290,8 @@ function execute(tool::Grep, args)
     catch exception
         return ToolFailure(sprint(showerror, exception))
     end
-    filterpattern = get(args, :glob, "")
-    exclude = startswith(filterpattern, "!")
-    exclude && (filterpattern = chopprefix(filterpattern, "!"))
-    filterregex = try
-        isempty(filterpattern) ? nothing : glob(filterpattern)
+    filter = try
+        globfilter(get(args, :glob, ""))
     catch exception
         return ToolFailure(sprint(showerror, exception))
     end
@@ -277,16 +299,11 @@ function execute(tool::Grep, args)
     count = 0
     truncatedlines = false
     directory = isdir(root)
-    function selected(target)
-        isnothing(filterregex) && return true
-        candidate = occursin('/', filterpattern) ? posix(target) : basename(target)
-        occursin(filterregex, candidate) != exclude
-    end
     function visit(target, isdirectory)
         isdirectory && return true
         isfile(target) || return true
         relative = directory ? posix(relpath(target, root)) : basename(target)
-        selected(target) || return true
+        selectglob(filter, target) || return true
         bytes = read(target)
         0x00 in bytes && return true
         text = String(bytes)
@@ -308,7 +325,7 @@ function execute(tool::Grep, args)
         end
         true
     end
-    whitelist = target -> !isnothing(filterregex) && !exclude && selected(target)
+    whitelist = target -> whitelistglob(filter, target)
     directory ? walksearch(visit, root, tool; whitelist) : visit(root, false)
     isempty(output) && return ToolResult("No matches found")
     # Match limits count matches, not context rows.

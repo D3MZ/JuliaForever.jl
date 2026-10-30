@@ -25,6 +25,7 @@ struct Failed <: Outcome
     status::Int
 end
 const outcomes = Dict(0 => Completed(), 130 => Interrupted())
+include("terminal_screen.jl")
 
 struct Deferred{M<:Submission}
     text::String
@@ -77,7 +78,7 @@ function Base.empty!(queue::DeferredQueue)
     queue
 end
 
-mutable struct Session{T}
+mutable struct Session{V<:View, T}
     editor::TerminalEditor.Editor
     physical::IO
     agent::JuliaForever.Agent
@@ -92,6 +93,7 @@ mutable struct Session{T}
     deferred::DeferredQueue
     draft::String
     status::Int
+    view::V
 end
 
 struct Output <: IO
@@ -106,11 +108,13 @@ function Base.unsafe_write(output::Output, pointer::Ptr{UInt8}, count::UInt)
     count
 end
 
-function Session(editor, terminal, agent, templates, extensions)
-    session = Session(editor, terminal.diagnostics, agent, terminal, templates, extensions, Available(), Visible(), nothing, "", nothing, DeferredQueue(), "", 0)
-    session.terminal = JuliaForever.Terminal(output(session, terminal.output), Output(session), terminal.secrets)
+function Session(editor, terminal, agent, templates, extensions, view::View)
+    session = Session(editor, terminal.diagnostics, agent, terminal, templates, extensions, Available(), Visible(), nothing, "", nothing, DeferredQueue(), "", 0, view)
+    session.terminal = maketerminal(session, terminal, view)
     session
 end
+maketerminal(session, terminal, ::Regular) = JuliaForever.Terminal(output(session, terminal.output), Output(session), terminal.secrets)
+maketerminal(session, terminal, ::Fullscreen) = JuliaForever.Terminal(ScreenOutput(session, AssistantText()), ScreenOutput(session, DiagnosticText()), terminal.secrets)
 output(session, stream::IO) = stream
 output(session, stream::Base.TTY) = output(session.physical, session, stream)
 output(physical::IO, session, stream::Base.TTY) = stream
@@ -122,6 +126,13 @@ function queues(session)
     end
 end
 
+function queuelines(session)
+    queued = queues(session)
+    [ ["Steering: " * replace(text, '\n' => ' ') for text in queued.steering];
+      ["Follow-up: " * replace(text, '\n' => ' ') for text in queued.followups];
+      [label(item) for item in session.deferred.display] ]
+end
+
 cleararea!(session, ::Nothing) = nothing
 function cleararea!(session, area::LineEdit.InputAreaState)
     Terminals.cmove_up(session.editor.terminal, 1)
@@ -130,9 +141,12 @@ end
 
 function redraw!(session, prefix="")
     lock(session.editor.state.line_modify_lock) do
-        redraw!(session, session.visibility, prefix)
+        redraw!(session, session.view, session.visibility, prefix)
     end
 end
+redraw!(session, ::Regular, visibility, prefix) = redraw!(session, visibility, prefix)
+redraw!(session, screen::Fullscreen, ::Visible, prefix) = (record!(screen, DiagnosticText(), prefix); paint!(session))
+redraw!(session, screen::Fullscreen, ::Hidden, prefix) = (record!(screen, DiagnosticText(), prefix); nothing)
 redraw!(session, ::Hidden, prefix) = (print(session.physical, prefix); flush(session.physical))
 
 function redraw!(session, ::Visible, prefix)
@@ -141,12 +155,9 @@ function redraw!(session, ::Visible, prefix)
     LineEdit.clear_input_area(LineEdit.state(state))
     cleararea!(session, session.area)
     print(terminal, prefix)
-    queued = queues(session)
     lines = String[]
     isempty(session.partial) || push!(lines, session.partial)
-    append!(lines, ["Steering: " * replace(text, '\n' => ' ') for text in queued.steering])
-    append!(lines, ["Follow-up: " * replace(text, '\n' => ' ') for text in queued.followups])
-    append!(lines, [label(item) for item in session.deferred.display])
+    append!(lines, queuelines(session))
     area = join(lines, "\n")
     if isempty(area)
         session.area = nothing
@@ -203,7 +214,7 @@ function launch!(session, text)
     session.task = Threads.@spawn begin
         result = Ref{Union{Nothing, Int}}(nothing)
         try
-            result[] = JuliaForever.run!(session.terminal, session.agent, text, session.extensions; on_agent_event=event -> redraw!(session))
+            result[] = JuliaForever.run!(session.terminal, session.agent, text, session.extensions; on_agent_event=event -> event!(session, event))
         finally
             lock(session.editor.state.line_modify_lock) do
                 completed!(session, result[])
@@ -301,6 +312,7 @@ function inline!(session, state, command)
     terminal = JuliaForever.Terminal(session.terminal.output, diagnostics, session.terminal.secrets)
     _, _, result = JuliaForever.command!(command, terminal, session.agent, session.agent.history, session.editor.terminal.in_stream, "", session.extensions)
     session.status = max(session.status, result)
+    sessionname!(session)
     redraw!(session, String(take!(diagnostics)))
     :ok
 end
@@ -381,7 +393,7 @@ end
 escape!(session, state, data, escapes, keymap, ::EscapeSequence) = LineEdit.match_input(escapes, state, LineEdit.terminal(state), Char['\e'], keymap)(state, data)
 escape!(session, state, data, escapes, keymap, ::EscapeAlone) = abort!(session, state, session.activity)
 
-function createeditor(input, terminal, reference)
+function createeditor(input, terminal, reference, view::View)
     extra = Dict{Any, Any}(
         '\r' => (state, args...) -> send!(reference[], state, Send()),
         "\e\r" => (state, args...) -> send!(reference[], state, Follow()),
@@ -391,7 +403,8 @@ function createeditor(input, terminal, reference)
         "^C" => (state, args...) -> clear!(reference[], state),
         "\e[1;3A" => (state, args...) -> dequeue!(reference[], state),
     )
-    editor = TerminalEditor.Editor(input, terminal.diagnostics; extra)
+    merge!(extra, viewkeys(view, reference))
+    editor = TerminalEditor.Editor(input, editoroutput(view, reference, terminal.diagnostics); extra)
     keymap = LineEdit.mode(editor.state).keymap_dict
     original = copy(keymap)
     escapes = original['\e']
@@ -399,35 +412,48 @@ function createeditor(input, terminal, reference)
     editor
 end
 
+include("terminal_menus.jl")
+
 stop!(session, ::Available) = nothing
 stop!(session, ::Busy) = JuliaForever.cancel!(session.agent)
 
-function loop!(terminal, agent, extensions, history, input::Base.TTY, directory, templates)
-    println(terminal.diagnostics, "Julia Forever — Enter sends, Alt+Enter follows up, Esc interrupts, /exit quits")
+function loop!(terminal, agent, extensions, history, input::Base.TTY, directory, templates, mode::Mode=FullscreenMode())
     reference = Ref{Any}()
-    editor = createeditor(input, terminal, reference)
-    session = Session(editor, terminal, agent, templates, extensions)
+    view = createview(mode, terminal.output)
+    intro!(view, terminal.diagnostics)
+    editor = createeditor(input, terminal, reference, view)
+    session = Session(editor, terminal, agent, templates, extensions, view)
     reference[] = session
     try
+        start!(session)
         for line in editor
             waittask(session.task)
             line == "/exit" && break
             draft = Ref(session.draft)
-            agent, selected, result = JuliaForever.command!(JuliaForever.terminalcommand(line), terminal, session.agent, history[], input, directory, extensions, draft, session.templates)
+            previous = session.agent
+            mark = mark!(session.view)
+            agent, selected, result = uicommand!(session, session.view, JuliaForever.terminalcommand(line), terminal, history[], input, directory, extensions, draft)
             history[] = selected
             session.agent = agent
+            aftercommand!(session.view, previous, agent, mark, session.terminal)
             session.status = max(session.status, result)
+            sessionname!(session)
             LineEdit.replace_line(editor.state, draft[])
             session.draft = ""
             session.visibility = Visible()
+            redraw!(session)
         end
     finally
-        lock(editor.state.line_modify_lock) do
-            session.visibility = Hidden()
-            empty!(session.deferred)
+        try
+            lock(editor.state.line_modify_lock) do
+                session.visibility = Hidden()
+                empty!(session.deferred)
+            end
+            stop!(session, session.activity)
+            waittask(session.task)
+        finally
+            finish!(session)
         end
-        stop!(session, session.activity)
-        waittask(session.task)
     end
     session.status
 end

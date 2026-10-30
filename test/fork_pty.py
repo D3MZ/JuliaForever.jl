@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix="jf-fork-pty-") as temporary:
     env.update(JF_SESSION_REQUESTS=str(requests), JF_SESSION_DIR=str(sessions), JF_PROVIDER="openai", OPENAI_MODEL="fixture", OPENAI_API_KEY="synthetic", TERM="xterm", PI_CODING_AGENT_DIR=str(workspace / "agent"))
     env.pop("JF_SESSION_FAIL", None)
     env.pop("JF_INSTRUCTIONS_DIR", None)
-    cmd = [julia, "--startup-file=no", "--compiled-modules=existing", f"--project={root}", str(root / "test/session_cli_process.jl")]
+    cmd = [julia, "--startup-file=no", "--compiled-modules=existing", f"--project={root}", str(root / "test/session_cli_process.jl"), "--tui-mode", "regular"]
     subprocess.run(cmd, cwd=workspace, env=env, input="first\nsecond\n/exit\n", check=True, capture_output=True, text=True, timeout=90)
     source = next(sessions.glob("*.sqlite"))
     before = source.read_bytes()
