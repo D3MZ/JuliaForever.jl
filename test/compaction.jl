@@ -37,6 +37,22 @@ end
     @test [message["content"] for message in agent.messages if message["role"] == "system"] == ["instructions", "<skills>metadata</skills>"]
 end
 
+@testset "compaction retains the latest image turn" begin
+    history = CompactHistory.Memory()
+    provider = CompactProvider(Dict{String, Any}("role" => "assistant", "content" => "image answer"), Any[])
+    agent = compactagent(provider; history)
+    original = deepcopy(agent.messages)
+    image = Image("image/png", "aW1hZ2U=")
+    prompt = CompactConversation.ImagePrompt("describe", [image])
+    @test respond!(agent, prompt) == "image answer"
+    seen = Ref{Any}()
+    @test compact!(agent, messages -> (seen[] = [convert(Dict{String, Any}, message) for message in messages]; "checkpoint")) == "checkpoint"
+    @test seen[] == original[2:end]
+    @test agent.messages[end-1]["images"] == [Dict("mime" => image.mime, "data" => image.data)]
+    @test agent.messages[end]["content"] == "image answer"
+    @test Agent(provider, []; history).messages == agent.messages
+end
+
 @testset "compaction preserves turns, branches, and previous summaries" begin
     history = CompactHistory.Tree(CompactHistory.Memory())
     provider = CompactProvider(Dict{String, Any}("role" => "assistant", "content" => "third answer"), Any[])

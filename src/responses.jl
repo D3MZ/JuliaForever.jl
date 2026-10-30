@@ -11,7 +11,7 @@ StructTypes.lower(provider::OpenAIResponses) = (; model=provider.model, credenti
 headers(provider::OpenAIResponses) = ["Authorization" => "Bearer $(provider.key)", "Content-Type" => "application/json"]
 endpoint(provider::OpenAIResponses) = "$(rstrip(provider.base, '/'))/responses"
 
-const inputtypes = Dict("tool" => Conversation.ToolMessage, "assistant" => Conversation.Assistant)
+const inputtypes = Dict("tool" => Conversation.ToolMessage, "assistant" => Conversation.Assistant, "user" => Conversation.User)
 tooloutput(content, ::Nothing) = content
 tooloutput(content, image) = [Dict("type" => "input_text", "text" => content), Dict("type" => "input_image", "detail" => "auto", "image_url" => "data:$(image["mime"]);base64,$(image["data"])")]
 
@@ -22,6 +22,12 @@ function input(messages)
 end
 
 input!(items, ::Nothing, message) = inputcontent!(items, message["role"], get(message, "content", nothing))
+input!(items, ::Type{Conversation.User}, message) = inputuser!(items, message, get(message, "images", nothing))
+inputuser!(items, message, ::Nothing) = inputcontent!(items, "user", get(message, "content", nothing))
+function inputuser!(items, message, attachments::AbstractVector)
+    parts = [Dict("type" => "input_text", "text" => message["content"]), (Dict("type" => "input_image", "detail" => "auto", "image_url" => "data:$(image["mime"]);base64,$(image["data"])") for image in attachments)...]
+    push!(items, Dict("role" => "user", "content" => parts))
+end
 input!(items, ::Type{Conversation.ToolMessage}, message) = push!(items, Dict("type" => "function_call_output", "call_id" => message["tool_call_id"], "output" => tooloutput(message["content"], get(message, "image", nothing))))
 
 function input!(items, ::Type{Conversation.Assistant}, message)

@@ -11,6 +11,7 @@ const userroles = Dict("user" => true)
 const systemroles = Dict("system" => true)
 isuser(::Conversation.Message) = false
 isuser(::Conversation.User) = true
+isuser(::Conversation.ImageUser) = true
 isuser(message::Conversation.RawMessage) = get(userroles, get(message.value, "role", nothing), false)
 issystem(::Conversation.Message) = false
 issystem(message::Conversation.RawMessage) = get(systemroles, get(message.value, "role", nothing), false)

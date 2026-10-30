@@ -114,7 +114,7 @@ function Base.close(history::Deferred)
 end
 
 firstprompt(text, event) = text
-firstprompt(::Nothing, event::C.Input) = event.text
+firstprompt(::Nothing, event::Union{C.Input, C.ImageInput}) = event.text
 firstprompt(::Nothing, event) = nothing
 
 function firstprompt(snapshot::H.Snapshot)

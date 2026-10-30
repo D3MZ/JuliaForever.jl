@@ -110,6 +110,7 @@ packed(items::Vector, item) = push!(items, item)
 pack(x) = Rejected(:unsupported_value)
 pack(x::C.User) = node("user", x.content)
 pack(x::C.Summary) = node("summary", x.content)
+pack(x::C.ImageUser) = node("user_images", x.content, packall(x.images))
 pack(x::C.RawMessage) = node("raw", packvalue(x.value))
 pack(x::C.ToolCall) = node("tool_call", x.id, x.name, x.arguments, packvalue(x.metadata))
 pack(x::C.Assistant) = node("assistant", x.content, packall(x.calls), x.finish, x.done, packvalue(x.metadata))
@@ -130,6 +131,7 @@ pack(x::C.Image) = node("image", x.mime, x.data)
 pack(x::C.ModelFailure) = node("model_failure", x.reason)
 pack(x::C.Abandoned) = node("abandoned", x.reason)
 pack(x::C.Input) = node("input", x.revision, x.text)
+pack(x::C.ImageInput) = node("input_images", x.revision, x.text, packall(x.images))
 pack(x::C.Steer) = node("steer", x.revision, x.text)
 pack(x::C.Followup) = node("followup", x.revision, x.text)
 pack(x::C.Dequeue) = node("dequeue", x.revision)
@@ -154,11 +156,11 @@ unpacked(items::Vector, item) = Rejected(:invalid_record)
 unpacked(items::Vector{T}, item::T) where T = push!(items, item)
 
 const nodetypes = Dict(
-    "user" => C.User, "summary" => C.Summary, "raw" => C.RawMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant,
+    "user" => C.User, "user_images" => C.ImageUser, "summary" => C.Summary, "raw" => C.RawMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant,
     "tool_message" => C.ToolMessage, "model_request" => C.ModelRequest, "tool_request" => C.ToolRequest,
     "skip_request" => C.SkipRequest, "model_reply" => C.ModelReply, "tool_reply" => C.ToolReply,
     "tool_search_reply" => ToolLoaded, "tool_discovery_reply" => ToolDiscovery,
-    "model_failure" => C.ModelFailure, "abandoned" => C.Abandoned, "input" => C.Input, "steer" => C.Steer,
+    "model_failure" => C.ModelFailure, "abandoned" => C.Abandoned, "input" => C.Input, "input_images" => C.ImageInput, "steer" => C.Steer,
     "followup" => C.Followup, "dequeue" => C.Dequeue, "session_name" => C.SessionName, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History,
     "interrupt" => C.Interrupt, "abandon" => C.Abandon, "call" => K.Call, "return" => K.Return,
     "fail" => K.Fail, "plan" => K.Plan, "observe" => K.Observe, "finish" => K.Finish, "image" => C.Image,
@@ -169,6 +171,7 @@ unpack(x::Dict) = unpack(get(nodetypes, x["kind"], nothing), x["fields"])
 unpack(type, fields) = Rejected(:invalid_record)
 unpack(::Type{C.User}, f::Vector) = C.User(f[1])
 unpack(::Type{C.Summary}, f::Vector) = C.Summary(f[1])
+unpack(::Type{C.ImageUser}, f::Vector) = C.ImageUser(f[1], unpackall(f[2], C.Image))
 unpack(::Type{C.RawMessage}, f::Vector) = C.RawMessage(unvalue(f[1]))
 unpack(::Type{C.ToolCall}, f::Vector) = C.ToolCall(f[1], f[2], f[3], unvalue(f[4]))
 unpack(::Type{C.Assistant}, f::Vector) = C.Assistant(f[1], unpackall(f[2], C.ToolCall), f[3], f[4], unvalue(f[5]))
@@ -186,6 +189,7 @@ unpack(::Type{ToolLoaded}, f::Vector) = C.ToolReply(ToolLoaded(f[1], String[f[2]
 unpack(::Type{C.ModelFailure}, f::Vector) = C.ModelFailure(f[1])
 unpack(::Type{C.Abandoned}, f::Vector) = C.Abandoned(f[1])
 unpack(::Type{C.Input}, f::Vector) = C.Input(f[1], f[2])
+unpack(::Type{C.ImageInput}, f::Vector) = C.ImageInput(f[1], f[2], unpackall(f[3], C.Image))
 unpack(::Type{C.Steer}, f::Vector) = C.Steer(f[1], f[2])
 unpack(::Type{C.Followup}, f::Vector) = C.Followup(f[1], f[2])
 unpack(::Type{C.Dequeue}, f::Vector) = C.Dequeue(f[1])

@@ -35,6 +35,7 @@ end
 
 include("image.jl")
 include("image_stream.jl")
+include("file_images.jl")
 
 include("edit.jl")
 include("file_mutations.jl")
@@ -75,6 +76,8 @@ include("editor.jl")
 include("terminal_http.jl")
 include("terminal_history.jl")
 include("terminal_models.jl")
+include("file_arguments.jl")
+include("file_cli_loopback.jl")
 include("session_catalog.jl")
 include("session_cli.jl")
 include("skill_refresh.jl")

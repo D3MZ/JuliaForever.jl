@@ -13,6 +13,15 @@ struct Summary <: Message
     content::String
 end
 
+struct ImageUser <: Message
+    content::String
+    images::Vector{Image}
+    ImageUser(content, images) = new(content, copy(images))
+end
+
+Base.isequal(a::ImageUser, b::ImageUser) = isequal((a.content, a.images), (b.content, b.images))
+Base.hash(message::ImageUser, h::UInt) = hash((message.content, message.images), hash(ImageUser, h))
+
 struct RawMessage <: Message
     value::Dict{String, Any}
 end
@@ -222,6 +231,21 @@ struct Input <: K.Event
     text::String
 end
 
+struct ImagePrompt
+    text::String
+    images::Vector{Image}
+    ImagePrompt(text, images) = new(text, copy(images))
+end
+
+struct ImageInput <: K.Event
+    revision::Int
+    text::String
+    images::Vector{Image}
+    ImageInput(revision, text, images) = new(revision, text, copy(images))
+end
+
+Input(revision, prompt::ImagePrompt) = ImageInput(revision, prompt.text, prompt.images)
+
 struct Steer <: K.Event
     revision::Int
     text::String
@@ -285,18 +309,21 @@ function model(kernel::K.State, messages::Vector{Message}, steering::Vector{Stri
     kernel, effect, steering
 end
 
-function K.step(state::State, event::Input)
+function K.step(state::State, event::Union{Input, ImageInput})
     event.revision == state.revision || return K.Rejected(state, :revision)
     K.step(state, event, state.phase)
 end
 
-K.step(state::State, event::Input, ::Phase) = K.Rejected(state, :phase)
+K.step(state::State, event::Union{Input, ImageInput}, ::Phase) = K.Rejected(state, :phase)
 
-function K.step(state::State, event::Input, ::Union{ReadyPhase, CompletePhase, IncompletePhase, CancelledPhase})
+function K.step(state::State, event::Union{Input, ImageInput}, ::Union{ReadyPhase, CompletePhase, IncompletePhase, CancelledPhase})
     messages = copy(getfield(state, :messages))
-    push!(messages, User(event.text))
+    push!(messages, user(event))
     input(state, messages, getfield(state, :mode))
 end
+
+user(event::Input) = User(event.text)
+user(event::ImageInput) = ImageUser(event.text, event.images)
 
 input(state, messages, ::Manual) = K.Applied(update(state; messages, phase=ReadyModel, cancelled=false), ())
 function input(state, messages, ::Automatic)

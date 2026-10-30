@@ -321,7 +321,19 @@ function chat(messages)
     result
 end
 
-const chathandlers = Dict("tool" => chattool!)
+function chatuser!(result, images, message)
+    chatimages!(result, images)
+    chatuser!(result, message, get(message, "images", nothing))
+end
+chatuser!(result, message, ::Nothing) = push!(result, message)
+function chatuser!(result, message, attachments::AbstractVector)
+    value = copy(message)
+    delete!(value, "images")
+    value["content"] = [Dict("type" => "text", "text" => message["content"]), (Dict("type" => "image_url", "image_url" => Dict("url" => "data:$(image["mime"]);base64,$(image["data"])")) for image in attachments)...]
+    push!(result, value)
+end
+
+const chathandlers = Dict("tool" => chattool!, "user" => chatuser!)
 
 function chatmessage(message)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(message))
