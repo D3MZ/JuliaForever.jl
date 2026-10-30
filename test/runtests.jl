@@ -132,6 +132,7 @@ include("provider_error_common.jl")
 include("provider_error_extra.jl")
 include("estimates.jl")
 include("model_overlays_cli.jl")
+include("model_alias_cli.jl")
 
 if haskey(ENV, "PI_SOURCE")
     include("estimates_differential.jl")

@@ -22,7 +22,7 @@ function usableproviders(env, registry::Models.Registry)
     providers = usableproviders(env)
     for (name, settings) in registry.providers
         delete!(providers, name)
-        addusable!(providers, name, configuredkey(name, settings, providerinfo(name), env))
+        addusable!(providers, name, configuredkey(name, settings, catalogbuiltin(name), env))
     end
     providers
 end
@@ -36,22 +36,26 @@ function listmodels!(io, query, env, registry::Models.Registry)
     0
 end
 
-modelconstraint(::APIKeyAuth, selected) = modelconstraint(selected)
-modelconstraint(::OpenRouterAuth, selected) = "openrouter"
 modelconstraint(::Nothing) = nothing
 modelconstraint(selected::AbstractString) = get(modelconstraints, selected, selected)
+modelconstraint(::APIKeyAuth, selected, registry) = modelconstraint(selected, registry)
+modelconstraint(::OpenRouterAuth, selected, registry) = "openrouter"
+modelconstraint(::Nothing, registry) = nothing
+modelconstraint(selected::AbstractString, registry) = configuredconstraint(selected, get(registry.providers, selected, nothing))
+configuredconstraint(selected, ::Nothing) = modelconstraint(selected)
+configuredconstraint(selected, ::AbstractDict) = selected
 resolveprovider(options, text::Union{Nothing, AbstractString}) = resolveprovider(options, text, modelconfig(ENV))
 resolveprovider(options, text, ::Models.InvalidConfig) = invalidmodelconfig()
 resolveprovider(options, ::Nothing, registry::Models.Registry) = launchprovider(merge(options, (; modelconfig=registry)))
 function resolveprovider(options, text::AbstractString, registry::Models.Registry)
     usable = usableproviders(ENV, registry)
-    result = Models.resolve(text, registry.models, usable; provider=modelconstraint(options.auth, options.selected))
+    result = Models.resolve(text, registry.models, usable; provider=modelconstraint(options.auth, options.selected, registry))
     resolveprovider(merge(options, (; modelconfig=registry)), result)
 end
 
 adapter(model::Models.Model) = get(modeladapters, (model.provider, model.api), model.provider)
 resolveprovider(options, result::Models.Resolved) = resolveprovider(options, result.model, result.thinking)
-resolveprovider(options, model::Models.Model, ::Nothing) = launchprovider(merge(options, (; selected=adapter(model), requested_model=model.id)))
+resolveprovider(options, model::Models.Model, ::Nothing) = launchprovider(merge(options, (; selected=adapter(model), requested_model=model.id, catalog_provider=model.provider)))
 resolveprovider(options, model::Models.Model, thinking::AbstractString) = unsupportedthinking()
 
 function resolveprovider(options, result::Models.Ambiguous)
@@ -63,7 +67,7 @@ resolveprovider(options, result::Models.Unmatched) = resolveprovider(options, re
 resolveprovider(options, target::Models.Target) = resolveprovider(options, target, target.thinking)
 function resolveprovider(options, target::Models.Target, ::Nothing)
     selected = something(options.selected, target.provider)
-    launchprovider(merge(options, (; selected, requested_model=target.id)))
+    launchprovider(merge(options, (; selected, requested_model=target.id, catalog_provider=target.provider)))
 end
 resolveprovider(options, target::Models.Target, thinking::AbstractString) = unsupportedthinking()
 function unsupportedthinking()
