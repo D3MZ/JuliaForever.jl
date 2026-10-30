@@ -1,0 +1,26 @@
+diff --git a/test/terminal.jl b/test/terminal.jl
+index da294e7..e6534e7 100644
+--- a/test/terminal.jl
++++ b/test/terminal.jl
+@@ -262,7 +262,7 @@ end
+     if Sys.isunix() && !isnothing(python)
+         script = joinpath(@__DIR__, "terminal_pty.py")
+         julia = joinpath(Sys.BINDIR, Base.julia_exename())
+-        @test success(`$python $script $julia $(dirname(@__DIR__))`)
++        @test success(run(ignorestatus(`$python $script $julia $(dirname(@__DIR__))`)))
+     else
+         @test_skip "PTY test requires Unix and python3"
+     end
+diff --git a/test/terminal_pty.py b/test/terminal_pty.py
+index 4d8f762..e2c6174 100644
+--- a/test/terminal_pty.py
++++ b/test/terminal_pty.py
+@@ -53,7 +53,7 @@ class Session:
+         return [json.loads(line) for line in self.capture.read_bytes().split(b"\n")[:-1]]
+ 
+     def ready(self):
+-        self.until(lambda: b"> " in self.output, "initial prompt")
++        self.until(lambda: b"> " in self.output, "initial prompt", timeout=120)
+ 
+     def send(self, text, expected):
+         offset, count = len(self.output), len(self.records())
