@@ -175,10 +175,7 @@ sqlite_history.jl	:complete
 sqlite_history.jl	:create
 sqlite_history.jl	:create
 sqlite_history.jl	:create
-system.jl	:(isnothing(shellrun))
-system.jl	:(token.cancelled)
 system.jl	:bybytes
-system.jl	:keep
 system.jl	:partial
 system.jl	:partial
 system.jl	:reached

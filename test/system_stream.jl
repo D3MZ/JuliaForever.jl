@@ -41,7 +41,8 @@
             @test [update.text for update in updates] == ["", "before"]
             @test result == ToolFailure("before\n\nCommand aborted")
             @test !isfile(joinpath(dir, "late"))
-            @test isempty(token.runs)
+            @test execute(shell, (; command="touch unexpected"); cancel=token) == ToolFailure("Command aborted")
+            @test !isfile(joinpath(dir, "unexpected"))
 
             empty!(updates)
             result = execute(shell, (; command="printf before; sleep 30", timeout=0.25); on_update=update -> push!(updates, update))
@@ -90,7 +91,7 @@
             end)
             pid = parse(Int, read(joinpath(dir, "pid"), String))
             @test timedwait(() -> ccall(:kill, Cint, (Cint, Cint), pid, 0) == -1 && Base.Libc.errno() == Base.Libc.ESRCH, 5) == :ok
-            @test isempty(token.runs)
+            @test execute(shell, (; command="printf after"); cancel=token) == ToolSuccess("after")
             @test !isfile(joinpath(dir, "late"))
 
             file = Ref{Union{Nothing, String}}(nothing)
