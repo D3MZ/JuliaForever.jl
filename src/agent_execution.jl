@@ -285,3 +285,4 @@ function finishauto!(agent, result::Execution.Turn, usage, settings::AutoCompact
     latest = isempty(result.models) ? nothing : last(result.models).usage
     finishauto!(agent, result.value, latest, settings, summarize, callback)
 end
+finishauto!(agent, result::Execution.Turn, usage, settings::ChangingCompaction, summarize, callback) = finishauto!(agent, result, usage, settings.select(), summarize, callback)

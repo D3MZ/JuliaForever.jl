@@ -19,6 +19,7 @@ class Fixture:
         self.gated_user = None
         self.fail_summary = False
         self.overflow = False
+        self.counts = {}
         fixture = self
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -28,7 +29,7 @@ class Fixture:
                 content = str(body['messages'][-1].get('content', ''))
                 summary = '<conversation>' in content or 'Summarize this conversation' in content or '# Conversation' in content and '# Instructions' in content
                 user = next((name for name in ('first', 'second', 'third', 'fourth', 'overflow') if name in content), '')
-                fixture.requests.append({'summary': summary, 'messages': body['messages'], 'user': user})
+                fixture.requests.append({'summary': summary, 'messages': body['messages'], 'user': user, 'model': body['model']})
                 if summary or user == fixture.gated_user:
                     fixture.arrived.set()
                     fixture.release.wait(timeout=60)
@@ -42,9 +43,9 @@ class Fixture:
                     return
                 answer = 'checkpoint' if summary else 'reply:' + user
                 finish = 'length' if summary and fixture.fail_summary else 'stop'
-                count = 10 if summary else {'first': 100, 'second': 101}.get(user, 50)
+                count = 10 if summary else fixture.counts.get(user, {'first': 100, 'second': 101}.get(user, 50))
                 usage = {'prompt_tokens': count, 'completion_tokens': 0, 'total_tokens': count}
-                base = {'id': 'chatcmpl-fixture', 'created': 1, 'model': 'small'}
+                base = {'id': 'chatcmpl-fixture', 'created': 1, 'model': body['model']}
                 if body.get('stream'):
                     base['object'] = 'chat.completion.chunk'
                     chunks = [dict(base, choices=[{'index': 0, 'delta': {'role': 'assistant', 'content': answer}, 'finish_reason': None}]), dict(base, choices=[{'index': 0, 'delta': {}, 'finish_reason': finish}]), dict(base, choices=[], usage=usage)]
@@ -228,6 +229,8 @@ def run_rpc(kind, root, fixture, env):
         assert any(entry['id'] == compaction[0]['firstKeptEntryId'] for entry in entries)
         assert [request['summary'] for request in fixture.requests] == [False, False, True, False, False]
         assert 'checkpoint' in json.dumps(fixture.requests[-1]['messages'])
+        stats = rpc.ask('stats', 'get_session_stats')['data']
+        assert stats['userMessages'] == stats['assistantMessages'] == 4 and stats['tokens']['input'] == 311, (kind, stats)
         saved = rpc.ask('saved', 'get_state')['data']['sessionFile']
         assert rpc.ask('new-reopen', 'new_session')['success']
         assert rpc.ask('reopen', 'switch_session', sessionPath=saved)['success']
@@ -360,9 +363,37 @@ def run_cross_mode(kind, root, fixture, env, json_first=False):
     finally:
         rpc.close()
 
+def run_model_switch(kind, root, fixture, env):
+    models = root / 'agent/models.json'
+    config = json.loads(models.read_text())
+    config['providers']['other'] = {'api': 'openai-completions', 'apiKey': 'synthetic', 'baseUrl': fixture.base, 'models': [{'id': 'large', 'name': 'Large', 'contextWindow': 5000, 'maxTokens': 64}]}
+    models.write_text(json.dumps(config))
+    path = root / 'agent/settings.json'
+    settings = json.loads(path.read_text())
+    settings['compaction']['enabled'] = False
+    path.write_text(json.dumps(settings))
+    fixture.counts['third'] = 101
+    rpc = RPC(kind, root, fixture, env)
+    try:
+        rpc.prompt('first')
+        rpc.prompt('second')
+        assert rpc.ask('large', 'set_model', provider='other', modelId='large')['success']
+        assert rpc.ask('enable-large', 'set_auto_compaction', enabled=True)['success']
+        before = len(rpc.events)
+        rpc.prompt('third')
+        assert not any(event['type'] == 'compaction_start' for event in rpc.events[before:])
+        assert rpc.ask('small', 'set_model', provider='fixture', modelId='small')['success']
+        before = len(rpc.events)
+        rpc.prompt('fourth')
+        ends = [event for event in rpc.events[before:] if event['type'] == 'compaction_end']
+        assert len(ends) == 1 and ends[0]['reason'] == 'threshold' and 'checkpoint' in ends[0]['result']['summary'], (kind, ends)
+        assert [request['model'] for request in fixture.requests[-2:]] == ['small', 'small']
+    finally:
+        rpc.close()
+
 with tempfile.TemporaryDirectory(prefix='jf-headless-auto-') as tmp:
     base = Path(tmp)
-    for mode in ('json', 'overflow', 'rpc', 'cross', 'cross-json'):
+    for mode in ('json', 'overflow', 'rpc', 'cross', 'cross-json', 'switch'):
         if os.environ.get('JF_HEADLESS_CASE', mode) != mode:
             continue
         for kind in ('pi', 'julia'):
@@ -381,6 +412,8 @@ with tempfile.TemporaryDirectory(prefix='jf-headless-auto-') as tmp:
                     run_cross_mode(kind, root, fixture, env)
                 elif mode == 'cross-json':
                     run_cross_mode(kind, root, fixture, env, json_first=True)
+                elif mode == 'switch':
+                    run_model_switch(kind, root, fixture, env)
                 else:
                     run_rpc(kind, root, fixture, env)
             finally:
