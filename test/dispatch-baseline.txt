@@ -16,15 +16,12 @@ JuliaForever.jl	:(validprovider(selected))
 JuliaForever.jl	:codemode
 JuliaForever.jl	:inspect
 agent.jl	:(Kernel.same(recorded, agent.messages))
-agent.jl	:(begin!(agent))
 agent.jl	:(name === :cancelled)
 agent.jl	:(name === :events)
 agent.jl	:(name === :running)
 agent.jl	:(requestcancelled((last(exceptions)).exception, turnstate(agent)))
 agent.jl	:(result.finish == "length")
 agent.jl	:returned
-agent_execution.jl	:(begin!(agent))
-agent_history.jl	:(begin!(agent))
 agent_history.jl	:complete
 codemode.jl	:(call.status == :running)
 codemode.jl	:(cancel.cancelled[])

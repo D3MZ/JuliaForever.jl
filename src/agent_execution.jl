@@ -121,8 +121,9 @@ function respond_execution!(agent::Agent, prompt, executor::Execution.Executor, 
 end
 execution_mode!(agent, prompt, executor, context, mode; kwargs...) = Execution.Rejected(:parallel_tools)
 
-function execution_mode!(agent, prompt, executor, context, ::Sequential; on_agent_event)
-    begin!(agent) || return :busy
+execution_mode!(agent, prompt, executor, context, ::Sequential; on_agent_event) = execution_start!(agent, prompt, executor, context, startturn!(agent); on_agent_event)
+execution_start!(agent, prompt, executor, context, ::Nothing; kwargs...) = :busy
+function execution_start!(agent, prompt, executor, context, ::Running; on_agent_event)
     messages = Dict{String, Any}[]
     models = Execution.ModelResult[]
     event_lock = ReentrantLock()
