@@ -304,12 +304,21 @@ anthropiclevel(provider, model, level, ::Models.InvalidConfig) = unsupportedthin
 function anthropiclevel(provider, model, level, ::Models.ValidConfig)
     budget = anthropicbudgets[level]
     mode = anthropicmode(level, Models.check(iszero(budget)), budget)
-    Anthropic(provider.base, String(model), provider.key, provider.extra, provider.route, mode)
+    Anthropic(provider.base, String(model), provider.key, provider.extra, provider.route, mode, provider.toolstreaming)
 end
 anthropicmode(level, ::Models.ValidConfig, budget) = AnthropicAPI.OffThinking()
 anthropicmode(level, ::Models.InvalidConfig, budget) = AnthropicAPI.BudgetThinking(String(level), budget)
 modelchange(provider::Anthropic, model, ::DirectRoute) = anthropicchange(provider, model, provider.thinking, Models.suffix(model))
-anthropicchange(provider, model, ::AnthropicAPI.DefaultThinking, ::Nothing) = Anthropic(provider.base, String(model), provider.key, provider.extra, provider.route)
+anthropicchange(provider, model, mode::AnthropicAPI.DefaultThinking, ::Nothing) = Anthropic(provider.base, String(model), provider.key, provider.extra, provider.route, mode, provider.toolstreaming)
 anthropicchange(provider, model, mode, ::Models.Suffix) = unsupportedthinking()
 anthropicchange(provider, model, mode::AnthropicAPI.BudgetThinking, ::Nothing) = anthropiclevel(provider, model, mode.level)
 anthropicchange(provider, model, ::AnthropicAPI.OffThinking, ::Nothing) = anthropiclevel(provider, model, "off")
+
+modelchange(provider::Anthropic, model, route::CatalogRoute) = anthropiccatalogchange(provider, model, route, Models.suffix(model))
+anthropiccatalogchange(provider, model, route, suffix::Models.Suffix) = unsupportedthinking()
+function anthropiccatalogchange(provider, model, route, ::Nothing)
+    configured = configuredinfo(route.registry, route.name, model, ENV)
+    anthropiccatalogchange(provider, modelchange(configured, model, configured.model))
+end
+anthropiccatalogchange(provider, selected::Anthropic) = Anthropic(selected.base, selected.model, selected.key, selected.extra, selected.route, selected.thinking, provider.toolstreaming)
+anthropiccatalogchange(provider, selected) = selected
