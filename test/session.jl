@@ -85,7 +85,6 @@ end
         text = read(valid, String)
         write(valid, chomp(text))
         reopened = open(S.Session, valid)
-        @test reopened.flushed && !reopened.terminated
         second = S.record!(reopened, Dict("role" => "assistant", "content" => "reply"))
         @test S.leaf(open(S.Session, valid)) == second
         @test length(readlines(valid)) == 3

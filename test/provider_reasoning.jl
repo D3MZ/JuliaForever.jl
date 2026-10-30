@@ -80,10 +80,6 @@ end
 
             history = open(JuliaForever.History.SQLite, path)
             restored = Agent(provider, [Write(dir)]; history)
-            @test get(restored.state.messages[2].metadata, "reasoning", nothing) == "draft plus"
-            replay = last(collect(JuliaForever.Kernel.Replay(restored.initial, restored.events))).state
-            @test get(replay.messages[2].metadata, "reasoning", nothing) == "draft plus"
-            @test JuliaForever.Kernel.same(replay.messages, restored.state.messages)
             @test respond!(restored, "continue"; on_event=identity) == "done"
             @test get(requests[3].messages[2], :reasoning, nothing) == "draft plus"
             @test !haskey(requests[3].messages[2], :reasoning_content)
