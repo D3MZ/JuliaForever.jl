@@ -114,11 +114,6 @@ end
         end
         @test MCP.connect(mcpserver("badversion", marker); timeout=10, grace=0.2) isa MCP.Failure
         @test MCP.connect(mcpserver("badcap", marker); timeout=10, grace=0.2) isa MCP.Failure
-        for (mode, version) in (("oldversion", "2025-06-18"), ("oldversion2", "2025-03-26"), ("oldversion3", "2024-11-05"))
-            older = MCP.connect(mcpserver(mode, marker); timeout=10, grace=0.2)
-            @test older isa MCP.Client && older.server["protocolVersion"] == version
-            older isa MCP.Client && close(older)
-        end
         unavailable = MCP.connect(mcpserver("no_tools", marker); timeout=10, grace=0.2)
         @test unavailable isa MCP.Client
         if unavailable isa MCP.Client

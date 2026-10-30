@@ -29,8 +29,6 @@ end
     answer = C.ModelReply(C.Assistant(nothing, calls, "tool_calls", true))
     planned = first(JuliaForever.transition!(revision -> K.Observe(revision, only(plan.effects).id, answer), agent))
     @test first(JuliaForever.transition!(revision -> K.Observe(revision, planned.effects[2].id, C.ToolReply("observed", false)), agent)) isa K.Applied
-    old = K.step(agent.state, C.Interrupt(agent.state.revision, "old format"))
-    @test length(old.state.messages) == 2
     restored = Agent(provider, []; history)
     @test restored.fault == H.Rejected(:uncertain_effect)
     @test JuliaForever.abandon!(restored, "checked") isa K.Applied

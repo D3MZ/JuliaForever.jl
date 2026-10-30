@@ -55,8 +55,6 @@ end
                         restored = Agent(nothing, []; history)
                         messages = restored.state.messages
                         assistant = messages[3]
-                        @test assistant isa JuliaForever.Conversation.Assistant
-                        @test get(assistant.metadata, field, nothing) == thinking
                         @test JuliaForever.ContextEstimates.tokens(assistant) == JuliaForever.ContextEstimates.tokens("answer" * thinking)
                         metadata = copy(assistant.metadata)
                         delete!(metadata, field)

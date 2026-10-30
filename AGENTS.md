@@ -13,3 +13,4 @@
 - Prefer end-to-end, observable feature behavior over granular unit tests and assertions about implementation details. Aim for one to three broad tests per feature, covering meaningful success, failure, safety, and compatibility scenarios; use additional focused tests only when necessary to protect a distinct behavior or deterministic race, recovery, or boundary case.
 - Preserve source coverage when consolidating tests, but do not treat line coverage as proof of behavioral coverage. Keep independent expected outcomes and differential cases against pinned Pi where applicable.
 - Run focused tests for the features changed locally; rely on GitHub Actions for the full suite and coverage run. Report any coverage or behavior that remains unverified.
+- Do not add or retain tests for compatibility with historical formats, versions, or legacy APIs; test the current behavior and pinned Pi parity instead.

@@ -86,18 +86,18 @@ end
         @test texts() == ["one", "reply:one", "three"]
         @test length(readdir(sessions)) == 1
 
-        legacy = joinpath(sessions, JuliaForever.SessionCatalog.filename(workspace, repeat("a", 32)))
-        @test run(["--history", legacy, "legacy"]).output == "reply:legacy\n"
-        @test run(["--history", legacy, "second"]).output == "reply:second\n"
-        before = read(legacy)
-        @test run(["--history", legacy]; input="/tree\nq\n/exit\n").status == 0
-        @test read(legacy) == before
-        @test run(["--history", legacy]; input="/tree\n3\nchanged\n/exit\n").output == "reply:changed\n"
-        @test texts() == ["legacy", "reply:legacy", "changed"]
-        inspected = run(["--history", legacy, "--inspect-history"])
+        history = joinpath(sessions, JuliaForever.SessionCatalog.filename(workspace, repeat("a", 32)))
+        @test run(["--history", history, "history"]).output == "reply:history\n"
+        @test run(["--history", history, "second"]).output == "reply:second\n"
+        before = read(history)
+        @test run(["--history", history]; input="/tree\nq\n/exit\n").status == 0
+        @test read(history) == before
+        @test run(["--history", history]; input="/tree\n3\nchanged\n/exit\n").output == "reply:changed\n"
+        @test texts() == ["history", "reply:history", "changed"]
+        inspected = run(["--history", history, "--inspect-history"])
         @test inspected.status == 0
         @test occursin("History status: ready", inspected.output)
-        @test run(["--history", legacy, "continued"]).output == "reply:continued\n"
-        @test texts() == ["legacy", "reply:legacy", "changed", "reply:changed", "continued"]
+        @test run(["--history", history, "continued"]).output == "reply:continued\n"
+        @test texts() == ["history", "reply:history", "changed", "reply:changed", "continued"]
     end
 end
