@@ -1,6 +1,7 @@
 using Test, JuliaForever
 
 ENV["PI_CODING_AGENT_DIR"] = mktempdir()
+ENV["JF_OPENROUTER_DIR"] = joinpath(mktempdir(), "openrouter")
 
 include("credential_storage.jl")
 include("quality.jl")
@@ -108,6 +109,7 @@ include("provider_stream.jl")
 include("provider_reasoning.jl")
 include("provider_cancel.jl")
 include("openrouter_callback.jl")
+include("openrouter_persistence.jl")
 include("provider_responses.jl")
 include("provider_anthropic.jl")
 include("provider_google.jl")

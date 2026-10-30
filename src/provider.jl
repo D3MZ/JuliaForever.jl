@@ -112,7 +112,8 @@ credentialkey(::Val{:api_key}, value, env, info) = literalkey(get(value, "key", 
 literalkey(::Nothing, env, info) = get(env, info.key, "")
 literalkey(value, env, info) = nothing
 literalkey(value::AbstractString, env, info) = isempty(value) ? get(env, info.key, "") : (occursin(r"[\$]", value) || startswith(value, "!") ? nothing : value)
-keyvalue(env, info) = credentialkey(get(storedcredentials(env), credentialproviders[info.key], nothing), env, info)
+readpicredential(pi, env, info) = get(pi, credentialproviders[info.key], nothing)
+keyvalue(env, info) = credentialkey(get(credentialreaders, info.key, readpicredential)(storedcredentials(env), env, info), env, info)
 
 provider(::Nothing, env, model) = nothing
 provider(info::NamedTuple, env, model) = provider(info, env, model, keyvalue(env, info))
