@@ -2,7 +2,7 @@
 
 The audit covers Julia source in `src/`. `test/branch_scan.jl` uses JuliaSyntax to list source locations for conditionals, short-circuit expressions, loops, exception handlers, comprehension filters, `ifelse`, and calls that may take predicates. The predicate list can include calls whose first argument is a search value rather than a function. The inventory is a static review aid; it cannot see branches produced by arbitrary macro expansion or dynamic code.
 
-At revision `b1a598e`, the inventory contained 1,268 points, including 73 `for` loops, 36 exception handlers, and 29 possible predicate calls. The integrated tree has 1,503 points. Counts include nested expressions, so they are not counts of independent decisions. `test/branch-baseline.txt` ratchets the normalized inventory, so added, removed, or changed entries require review and an explicit baseline update. It does not detect changes confined to branch bodies or moves of identical entries.
+At revision `b1a598e`, the inventory contained 1,268 points, including 73 `for` loops, 36 exception handlers, and 29 possible predicate calls. The integrated tree has 1,573 points. Counts include nested expressions, so they are not counts of independent decisions. `test/branch-baseline.txt` ratchets the normalized inventory, so added, removed, or changed entries require review and an explicit baseline update. It does not detect changes confined to branch bodies or moves of identical entries.
 
 The dispatch check is a separate heuristic. Applied to both versions with the expanded rules, it reports 750 candidates at `b1a598e` and 118 now: 699 previous occurrences were removed and 67 appeared under new expressions. The integrated tree includes modules and features added since the initial revision. The previous, narrower checks had recorded 542 and 715 candidates at the initial revision. The exact multiset is in `test/dispatch-baseline.txt`; tests fail if it grows or changes without updating the baseline. Compatibility properties for terminal state and MCP shutdown account for some matches.
 
@@ -13,6 +13,8 @@ Another pass identifies names of typed methods that directly return a Boolean li
 The same scan now recognizes typed methods returning literal protocol labels and flags comparisons of their results. It identified a Responses route converted to a string and compared; authentication now dispatches on the route. Two remaining matches test membership in user-selected tool names.
 
 The keyword-value pass also checks typed Boolean predicates passed to calls. It found request and execution result types converted to Booleans and then reconstructed; both now pass the types directly. The remaining new matches include protocol serialization and unrelated functions sharing predicate names.
+
+The constructor pass now checks cancellation and truncation flags in shell messages. RPC shell results retain the selected output and pass its extent and outcome as types; the conversion to protocol Booleans happens when messages are serialized.
 
 The remaining candidates are not all equivalent. Input validation, file-edit safety, numerical and collection checks, and compatibility accessors still require decisions at their boundaries. The agent loops still check cancellation, completion, and configuration status at a few points. Some provider and worker protocol decoders still branch on tags; these can be refactored further. The baseline records these candidates; it is not an assertion that every one is an acceptable exception.
 
@@ -197,6 +199,8 @@ Directory entry limits now return a limited entry collection when there are furt
 MCP call response validation dispatches on field presence and decoded field types, preserving the distinction between absent and invalid values.
 
 The RPC and current main integration has 1,519 branch entries, with none added beyond the parents' multiset union and 33 retired.
+
+The later RPC integration adds 70 net inventory entries. The review retained protocol validation, content and collection checks, file overwrite protection, shell sanitization, and queue coordination.
 
 MCP initialization maps supported protocol versions once and validates capabilities and server identity through typed methods.
 

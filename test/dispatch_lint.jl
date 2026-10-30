@@ -64,6 +64,9 @@ include("dispatch_checks.jl")
     @test length(dispatchchecks(Meta.parse("f(fields...) = CodeResult(true, fields...)"))) == 1
     @test length(dispatchchecks(Meta.parse("f(reply) = Completion(Dict(), nothing, nothing, reply.done, nothing)"))) == 1
     @test length(dispatchchecks(Meta.parse("f(reply) = CodeResult(reply.ok, reply)"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(report) = BashMessage(\"cmd\", \"\", nothing, report.cancelled, report.truncated, nothing, 0, context)"))) == 1
+    @test length(dispatchchecks(Meta.parse("f() = BashMessage(\"cmd\", \"\", nothing, false, true, nothing, 0, context)"))) == 1
+    @test isempty(dispatchchecks(Meta.parse("f(status, extent) = BashMessage(\"cmd\", \"\", nothing, status, extent, nothing, 0, context)")))
     @test length(dispatchchecks(Meta.parse("f(text, failed) = ToolResult(text, failed)"))) == 1
     @test length(dispatchchecks(Meta.parse("f(text, iserror) = ToolReply(text, iserror)"))) == 1
     @test length(dispatchchecks(Meta.parse("f(done) = Completion(Dict(), nothing, nothing, done, nothing)"))) == 1

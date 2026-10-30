@@ -29,10 +29,15 @@ struct ShellCancelled <: ShellOutcome end
 struct ShellStopFailed <: ShellOutcome end
 struct Signalled end
 
-struct ShellReport
-    output::String
+struct ShellTail
+    text::String
+    notice::String
     file::Union{Nothing, String}
-    truncated::Bool
+end
+
+struct ShellReport
+    tail::ShellTail
+    file::Union{Nothing, String}
     outcome::Union{ShellComplete, ShellTimeout, ShellCancelled, ShellStopFailed}
     exitcode::Union{Nothing, Int}
 end
@@ -249,12 +254,6 @@ function sizeformat(bytes)
     bytes < 1024 && return "$(bytes)B"
     bytes < 1024 * 1024 && return "$(round(bytes / 1024; digits=1))KB"
     "$(round(bytes / (1024 * 1024); digits=1))MB"
-end
-
-struct ShellTail
-    text::String
-    notice::String
-    file::Union{Nothing, String}
 end
 
 struct ShellLines
@@ -475,13 +474,11 @@ function finishreport!(chunks::ShellChunks, outcome, io, file, process)
     snapshot = tail(chunks.io, chunks.file, measure(chunks.io)...)
     snapshot = bound(snapshot, chunks.file, shelltext(snapshot.text))
     retained = retainedfile(snapshot.file, chunks)
-    chunks.report = ShellReport(snapshot.text, retained, truncatedfile(snapshot.file), outcome, shellexit(outcome, process))
+    chunks.report = ShellReport(snapshot, retained, outcome, shellexit(outcome, process))
     nothing
 end
 retainedfile(file::String, chunks) = file
 retainedfile(::Nothing, chunks) = chunks.offset > 51200 && filesize(chunks.io) > 0 ? chunks.file : nothing
-truncatedfile(::Nothing) = false
-truncatedfile(::String) = true
 shellexit(::ShellOutcome, process) = nothing
 shellexit(::ShellComplete, process) = process.termsignal == 0 ? process.exitcode : 128 + process.termsignal
 

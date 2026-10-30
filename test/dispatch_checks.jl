@@ -4,7 +4,7 @@ function dispatchcallee(expression)
 end
 
 const dispatchfields = (:type, :kind, :status, :phase, :reason, :role, :finish, :mode, :state, :outcome, :selected, :label, :code, :effort)
-const dispatchresultflags = Dict(:Completion => 5, :ToolResult => 3, :ToolReply => 3, :CodeResult => 2)
+const dispatchresultflags = Dict(:Completion => 5, :ToolResult => 3, :ToolReply => 3, :CodeResult => 2, :BashMessage => 5)
 const dispatchresultproperties = Dict(:Completion => :done, :CodeResult => :ok)
 const dispatchresultvariables = Set([:iserror, :failed, :failure, :ok, :done, :success, :cancelled, :truncated, :flag])
 const dispatchflagvariables = union(dispatchresultvariables, Set([:exclude, :negate, :enabled]))
@@ -214,7 +214,10 @@ function dispatchchecks!(checks, expression, condition=false, direct=true, predi
         callee = dispatchcallee(first(expression.args))
         index = dispatchresultflags[callee]
         property = get(dispatchresultproperties, callee, nothing)
-        if length(expression.args) >= index && (expression.args[index] isa Bool || expression.args[index] in dispatchresultvariables || (!isnothing(property) && dispatchfield(expression.args[index]) === property))
+        fields = callee === :BashMessage ? ((5, :cancelled), (6, :truncated)) : ((index, property),)
+        if any(fields) do (index, property)
+            length(expression.args) >= index && (expression.args[index] isa Bool || expression.args[index] in dispatchresultvariables || (!isnothing(property) && dispatchfield(expression.args[index]) === property))
+        end
             value = Base.remove_linenums!(deepcopy(expression))
             push!(checks, replace(sprint(show, value), '\n' => ' '))
         end
