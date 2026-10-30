@@ -234,6 +234,65 @@ gatedeadline(job, timeout::Real) = duration(job, timeout) > 0 ? nothing : ToolFa
 gateoutcome(job, gate, ::Nothing, ::ShellTimeout) = ToolFailure("Could not isolate Windows shell; command was not started")
 gateoutcome(job, gate, timeout::Real, ::ShellTimeout) = duration(job, timeout) <= 0 ? ToolFailure("Command timed out after $timeout seconds") : ToolFailure("Could not isolate Windows shell; command was not started")
 
+function startshell!(token::ShellCancellation, command, io, ::Nothing, ::Nothing, gate)
+    lock(token.lock) do
+        startshell!(token.runs, command, io)
+    end
+end
+
+function startshell!(token::ShellCancellation, command, io, cancel, timeout, shellgate)
+    startjob!(token, command, io, windowsjob(), shellgate, timeout)
+end
+startjob!(token::ShellCancellation, command, io, failure::ToolFailure, gate, timeout) = failure
+
+function startjob!(token::ShellCancellation, command, io, job::WindowsJob, shellgate, timeout)
+    gate = Pipe()
+    process = Ref{Union{Nothing, Base.Process}}(nothing)
+    registered = Ref{Union{Nothing, ShellRun}}(nothing)
+    transferred = Ref(false)
+    try
+        process[] = run(pipeline(ignorestatus(command); stdin=gate, stdout=io, stderr=io); wait=false)
+        close(gate.out)
+        assign(job, process[]) || return ToolFailure("Could not isolate Windows shell; command was not started")
+        shellrun = ShellRun(process[], job)
+        lock(token.lock) do
+            register!(token.runs, shellrun)
+        end || return nothing
+        registered[] = shellrun
+        result = checkgate(job, process[], shellgate, timeout)
+        released = lock(shellrun.lock) do
+            releasegate!(shellrun, gate, result, shellrun.outcome)
+        end
+        result = finishstart!(token, registered, released)
+        transfer!(transferred, result)
+        result
+    finally
+        close(gate)
+        transferred[] || cleanupregistered!(token, registered[])
+        transferred[] || cleanupstart(nothing, process[], job)
+    end
+end
+
+register!(::Nothing, run::ShellRun) = false
+register!(runs::Set{ShellRun}, run::ShellRun) = (push!(runs, run); true)
+releasegate!(run, gate, result, previous::ShellOutcome) = run
+releasegate!(run, gate, failure::ToolFailure, ::Nothing) = failure
+function releasegate!(run, gate, ::Nothing, ::Nothing)
+    write(gate, "ready\n")
+    run
+end
+transfer!(transferred, ::ShellRun) = (transferred[] = true)
+transfer!(transferred, ::ToolFailure) = nothing
+finishstart!(token, registered, run::ShellRun) = run
+function finishstart!(token, registered, failure::ToolFailure)
+    run = registered[]
+    cleanup!(token, run, nothing)
+    registered[] = nothing
+    failure
+end
+cleanupregistered!(token, ::Nothing) = nothing
+cleanupregistered!(token, run::ShellRun) = cleanup!(token, run, nothing)
+
 startshell!(::Nothing, command, io, cancel, timeout, gate) = nothing
 startshell!(runs::Set{ShellRun}, command, io, ::Nothing, ::Nothing, gate) = startshell!(runs, command, io)
 startshell!(runs::Set{ShellRun}, command, io, cancel, timeout, gate) = startjob!(runs, command, io, windowsjob(), gate, timeout)

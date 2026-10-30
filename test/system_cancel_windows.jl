@@ -138,6 +138,47 @@ end
             for command in ("[Console]::Write('a ''quoted'' value 🌱')", "cmd.exe /c exit 7")
                 @test execute(shell, (; command, timeout=30)) == execute(shell, (; command))
             end
+            for stalled in (PowerShell(dir), Bash(dir))
+                settings = JuliaForever.config(stalled)
+                isnothing(settings) && continue
+                token = ShellCancellation()
+                active = fixture(dir, "active-" * JuliaForever.name(stalled))
+                running = Threads.@spawn execute(shell, (; command=active.command, timeout=30); cancel=token)
+                @test timedwait(() -> isfile(active.ready), 20; pollint=0.05) == :ok
+                env = copy(ENV)
+                marker = joinpath(dir, "stalled-" * JuliaForever.name(stalled))
+                command = stalled isa Bash ? "printf bad > " * bashquote(marker) : "[IO.File]::WriteAllText(" * psquote(marker) * ", 'bad')"
+                actual = JuliaForever.shellgate(stalled, env, token, 30, command)
+                fakepath, fakeio = mktemp()
+                close(fakeio)
+                fake = JuliaForever.PowerShellGate(fakepath, "unused")
+                exe, arguments = settings
+                cmd = Cmd(Cmd([exe; arguments; JuliaForever.shellcommand(stalled, command, token, 30, actual)]); dir=dir, env)
+                output, io = mktemp()
+                starting = Threads.@spawn JuliaForever.startshell!(token, cmd, io, token, 30, fake)
+                try
+                    @test timedwait(() -> lock(token.lock) do
+                        length(token.runs) == 2
+                    end, 20; pollint=0.05) == :ok
+                    cancelled = Threads.@spawn cancel!(token)
+                    @test timedwait(() -> istaskdone(cancelled), 3; pollint=0.01) == :ok
+                    @test timedwait(() -> istaskdone(running) && istaskdone(starting), 10; pollint=0.05) == :ok
+                    @test fetch(running) == ToolFailure("before\n\nCommand aborted")
+                    run = fetch(starting)
+                    result = JuliaForever.shellrun!(run, token, 30, nothing, output, io, Ref{Union{Nothing, String}}(nothing), Ref{Union{Nothing, String}}(nothing))
+                    @test result == ToolFailure("Command aborted")
+                    @test !isfile(marker)
+                finally
+                    cancel!(token)
+                    write(active.release, "release")
+                    wait(running)
+                    wait(starting)
+                    close(io)
+                    rm(output; force=true)
+                    rm(fakepath; force=true)
+                    JuliaForever.cleanupgate(actual)
+                end
+            end
             modulepath = joinpath(dir, "JFGateFixture")
             mkdir(modulepath)
             modulemarker = joinpath(dir, "module-ran")

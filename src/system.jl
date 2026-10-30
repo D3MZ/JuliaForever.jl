@@ -530,7 +530,9 @@ cleanupgate(file::String) = rm(file; force=true)
     include("system_windows.jl")
 else
     shellcommand(tool::Union{Bash, PowerShell}, command, cancel, timeout, gate) = shellcommand(tool, command)
-    startshell!(runs, command, io, cancel, timeout, gate) = startshell!(runs, command, io)
+    startshell!(token::ShellCancellation, command, io, cancel, timeout, gate) = lock(token.lock) do
+        startshell!(token.runs, command, io)
+    end
 end
 
 closejob(::Nothing) = nothing
@@ -581,9 +583,7 @@ function shell(tool, args, cancel, timeout, settings, on_update, env, gate)
         saved = Ref{Union{Nothing, String}}(nothing)
         token = cancellation(cancel)
         try
-            shellrun = lock(token.lock) do
-                startshell!(token.runs, command, io, cancel, timeout, gate)
-            end
+            shellrun = startshell!(token, command, io, cancel, timeout, gate)
             shellrun!(shellrun, token, timeout, on_update, file, io, saved, keep)
         finally
             close(io)
