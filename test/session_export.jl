@@ -61,3 +61,18 @@ end
     @test occursin("&lt;script&gt;x&lt;/script&gt;", html)
     @test occursin("data:image/png;base64,aGVsbG8=", html)
 end
+
+@testset "conversation export browser controls" begin
+    browser = get(ENV, "JF_EXPORT_UI_BROWSER", "")
+    if !isempty(browser)
+        mktempdir() do root
+            messages = [Dict("role" => "user", "content" => "violet harbor"), Dict("role" => "assistant", "content" => "violet answer", "tool_calls" => [Dict("function" => Dict("name" => "read", "arguments" => "notes"))]), Dict("role" => "tool", "content" => "amber result"), Dict("role" => "user", "content" => "<script>globalThis.injected = true</script>")]
+            page = joinpath(root, "conversation.html")
+            open(page, "w") do io
+                JuliaForever.Logs.conversationhtml(io, messages)
+            end
+            command = `node $(joinpath(@__DIR__, "session_export_ui.cjs")) $page $browser`
+            @test run(pipeline(ignorestatus(command); stdout=stdout, stderr=stderr)).exitcode == 0
+        end
+    end
+end

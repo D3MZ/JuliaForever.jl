@@ -1,18 +1,22 @@
 module AnthropicAPI
 
 using HTTP, JSON3, SHA
-import ..JuliaForever: requestcontext, complete, stream, payload, headers, endpoint, provider, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Finished, Unfinished, Usage
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, provider, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute
 
 struct Anthropic
     base::String
     model::String
     key::String
+    extra::Vector{Pair{String, String}}
+    route::Union{DirectRoute, CatalogRoute}
 end
+Anthropic(base, model, key) = Anthropic(base, model, key, Pair{String, String}[], DirectRoute())
+Anthropic(base, model, key, extra) = Anthropic(base, model, key, extra, DirectRoute())
 
 Base.show(io::IO, provider::Anthropic) = print(io, "Anthropic(", repr(provider.model), ", [redacted])")
 JSON3.StructTypes.StructType(::Type{Anthropic}) = JSON3.StructTypes.CustomStruct()
 JSON3.StructTypes.lower(provider::Anthropic) = (; model=provider.model, credentials="[redacted]")
-headers(provider::Anthropic) = ["x-api-key" => provider.key, "anthropic-version" => "2023-06-01", "content-type" => "application/json"]
+headers(provider::Anthropic) = mergeheaders(["x-api-key" => provider.key, "anthropic-version" => "2023-06-01", "content-type" => "application/json"], provider.extra)
 endpoint(provider::Anthropic) = "$(rstrip(provider.base, '/'))/v1/messages"
 origin(provider::Anthropic) = bytes2hex(sha256(provider.base)) * ":" * provider.model
 

@@ -44,6 +44,10 @@ using Test, JuliaForever, HTTP, JSON3
                 second = cli(["--no-session", "--provider", "openrouter", "--model", "fixture/model", "again"])
                 @test second.status == 0
                 @test request().authorization == "Bearer fixture-router-key"
+                write(joinpath(pi, "models.json"), JSON3.write(Dict("providers" => Dict("openrouter" => Dict("baseUrl" => "http://$(HTTP.server_addr(server))/api/v1")))))
+                configured = cli(["--no-session", "--provider", "openrouter", "--model", "fixture/model", "configured"])
+                @test configured.status == 0
+                @test request().authorization == "Bearer fixture-router-key"
                 if isfile(keyfile)
                     chmod(keyfile, 0o644)
                     rejected = cli(["--no-session", "--provider", "openrouter", "--model", "fixture/model", "unsafe"])
