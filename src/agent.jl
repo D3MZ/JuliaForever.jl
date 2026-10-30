@@ -1,4 +1,4 @@
-export steer!, followup!, dequeue!, name!, cancel!, abandon!
+export steer!, followup!, dequeue!, name!, cancel!, abandon!, continue!
 
 struct Truncated
     completion::Completion
@@ -635,3 +635,77 @@ function direct_next!(run, message, completion, next, added, ::Union{Idle, Runni
     present!(run.agent, added, run.messages, run.callback)
     only(next.effects)
 end
+
+"Continue a transcript ending in a user or tool message. Returns :empty or :assistant_tail for unsupported tails."
+function continue!(agent::Agent; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential)
+    selected = lock(agent.lock) do
+        continue_start!(agent, agent.turn, agent.fault, toolmode(tool_execution))
+    end
+    continue_selected!(agent, selected; on_event, on_agent_event, parameters, tool_execution)
+end
+continue_start!(agent, ::Union{Running, Cancelled}, fault, mode) = :busy
+continue_start!(agent, ::Idle, fault::History.Rejected, mode) = fault
+continue_start!(agent, ::Idle, ::Nothing, mode) = continue_tail!(agent, agent.history, mode)
+continue_tail!(agent, history::History.Store, mode) = History.Rejected(:unsupported_execution)
+continue_tail!(agent, history::History.Store, ::Sequential) = continue_tail!(agent)
+continue_tail!(agent, ::Nothing, mode) = continue_tail!(agent)
+function continue_tail!(agent)
+    isempty(agent.messages) && return :empty
+    all(message -> get(message, "role", "") == "system", agent.messages) && return :empty
+    continue_tail!(agent, get(last(agent.messages), "role", ""))
+end
+function continue_tail!(agent, role)
+    constructor = get(Dict("assistant" => Conversation.ContinueQueued), role, Conversation.Continue)
+    continue_tail!(agent, constructor)
+end
+function continue_tail!(agent, ::Type{Conversation.ContinueQueued})
+    isempty(agent.state.steering) && isempty(agent.state.followups) && return :assistant_tail
+    startturn!(agent)
+    Conversation.ContinueQueued
+end
+function continue_tail!(agent, ::Type{Conversation.Continue})
+    startturn!(agent)
+    Conversation.Continue
+end
+continue_selected!(agent, result; kwargs...) = result
+continue_selected!(agent, constructor::Type{<:Union{Conversation.Continue, Conversation.ContinueQueued}}; kwargs...) = continue_run!(agent, agent.history, constructor; kwargs...)
+function continue_run!(agent, history, constructor; on_event, on_agent_event, parameters, tool_execution)
+    messages = Dict{String, Any}[]
+    event_lock = ReentrantLock()
+    callback = event -> lock(() -> emit(on_agent_event, event), event_lock)
+    run = (; agent, on_event, callback, parameters, tool_execution, messages, constructor)
+    try
+        syncresult = sync!(agent)
+        continue_synced!(run, history, syncresult)
+    finally
+        try
+            continue_finish!(agent, history)
+            emit(callback, (; type=:agent_end, messages=deepcopy(messages)))
+        finally
+            finish!(agent)
+        end
+    end
+end
+continue_synced!(run, history, rejected::History.Rejected) = rejected
+function continue_synced!(run, history, ::Nothing)
+    result, _ = transition!(revision -> run.constructor(revision), run.agent)
+    continue_prepared!(run, history, result)
+end
+continue_prepared!(run, history, result) = result
+function continue_prepared!(run, history, result::Kernel.Applied)
+    emit(run.callback, (; type=:agent_start))
+    emit(run.callback, (; type=:turn_start))
+    continue_advance!(run, history)
+end
+function continue_advance!(run, ::Nothing)
+    direct_cancel!(run, turnstate(run.agent))
+    next, added = transition!(revision -> Conversation.Advance(revision), run.agent)
+    present!(run.agent, added, run.messages, run.callback)
+    direct_ready!(run, next, turnstate(run.agent))
+end
+continue_advance!(run, ::History.Store) = recorded_cancel!(run, run.agent.fault)
+function continue_finish!(agent, ::Nothing)
+    interrupt!(agent, agent.state.phase)
+    sync!(agent)
+end
+continue_finish!(agent, ::History.Store) = interrupted!(agent)

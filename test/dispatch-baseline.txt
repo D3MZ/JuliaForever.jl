@@ -16,6 +16,7 @@ JuliaForever.jl	:(validprovider(selected))
 JuliaForever.jl	:codemode
 JuliaForever.jl	:inspect
 agent.jl	:(Kernel.same(recorded, agent.messages))
+agent.jl	:(get(message, "role", "") == "system")
 agent.jl	:(name === :cancelled)
 agent.jl	:(name === :events)
 agent.jl	:(name === :running)
