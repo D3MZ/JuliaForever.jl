@@ -136,6 +136,7 @@ include("recorded_execution.jl")
 include("recorded_journal.jl")
 include("logs.jl")
 include("search.jl")
+include("tool_search.jl")
 include("codemode.jl")
 include("codemode_store.jl")
 include("codemode_compat.jl")
@@ -149,6 +150,7 @@ module MCPHTTPSSETests
 include("mcp_http_sse.jl")
 end
 if haskey(ENV, "PI_SOURCE")
+    include("tool_search_differential.jl")
     include("mcp_differential.jl")
     include("mcp_resources_differential.jl")
 end
