@@ -121,6 +121,7 @@ end
 
 include("system.jl")
 include("durable.jl")
+include("durable_replay_dispatch.jl")
 include("durable_forks.jl")
 include("durable_dispatch.jl")
 include("history.jl")

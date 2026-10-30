@@ -46,6 +46,8 @@ One process owns the file through an advisory exclusive `flock`; nested commits,
 
 Each committed batch is one newline-terminated JSON record. The store flushes and calls `fsync` before adopting it in memory; when creating a file it also syncs its parent directory. Reopening replays complete records in order, removes an incomplete trailing line, and rejects a malformed complete line without truncating it. If a storage operation fails, the open store is failed and must be closed and reopened: a complete batch may or may not have reached disk. A retry with the same request key resolves an admission whose outcome was uncertain. These checks cover abrupt process exit and controlled torn tails, not hardware power-loss qualification. OS and filesystem errors propagate normally.
 
+The internal `Durable.replay!` now returns `nothing` on success or `Rejected(:corrupt_log)` on failure; earlier versions returned a Boolean.
+
 The implementation reads the log into memory at open and copies its in-memory state for a transaction; it has no compaction or performance claims. The independent [task scheduler foundation](scheduler.md) uses this store for explicit checkpointed phase execution and reopen recovery. `History.Journal` also adapts the store for recorded agent transitions; the transcript fork API is not integrated into the agent loop. The store has no document deltas or history, submission transition rules, timers, observers, or deferred commits. External effects must occur outside a transaction and need their own idempotency; durable admission alone does not make effects exactly once.
 
 Run its synthetic tests with Julia 1.12 or newer:
