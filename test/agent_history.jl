@@ -86,7 +86,7 @@ end
         call = Dict{String, Any}("id" => "one", "type" => "function", "function" => Dict("name" => "write", "arguments" => "{\"path\":\"a.txt\",\"content\":\"unsafe\"}"))
         provider = Scripted([Dict{String, Any}("role" => "assistant", "content" => nothing, "tool_calls" => [call])], [])
         store = H.Memory()
-        history = FailHistory(store, 5)
+        history = FailHistory(store, 4)
         agent = Agent(provider, [Write(dir)]; history)
         @test respond!(agent, "start") == H.Rejected(:failed)
         @test agent.state.phase == C.WaitingModel
@@ -98,6 +98,19 @@ end
         @test length(provider.requests) == 1
         @test JuliaForever.abandon!(restored, "inspected") isa K.Applied
         @test restored.state.phase == C.Incomplete
+    end
+
+    mktempdir() do dir
+        call = Dict{String, Any}("id" => "one", "type" => "function", "function" => Dict("name" => "write", "arguments" => "{\"path\":\"a.txt\",\"content\":\"written\"}"))
+        provider = Scripted([Dict{String, Any}("role" => "assistant", "content" => nothing, "tool_calls" => [call])], [])
+        store = H.Memory()
+        agent = Agent(provider, [Write(dir)]; history=FailHistory(store, 5))
+        @test respond!(agent, "start") == H.Rejected(:failed)
+        @test read(joinpath(dir, "a.txt"), String) == "written"
+        restored = Agent(provider, [Write(dir)]; history=store)
+        @test respond!(restored, "again") == H.Rejected(:uncertain_effect)
+        @test length(provider.requests) == 1
+        @test read(joinpath(dir, "a.txt"), String) == "written"
     end
 end
 
