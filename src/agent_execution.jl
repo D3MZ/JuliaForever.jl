@@ -4,6 +4,7 @@ struct ContextModel <: Kernel.Effect
     messages::Vector{Conversation.Message}
     tools::ToolChanges
     catalog::Vector{ToolDeclaration}
+    anchors::Vector{Union{Nothing, Some{Dict{String, Any}}}}
 end
 
 resulttype(::Conversation.ModelRequest) = Execution.ModelResult
@@ -338,8 +339,14 @@ function requesteffect(listener::Extensions.Listener, effect::Kernel.Pending{Con
     request = requestview(listener, effect.effect.messages, tools, nothing)
     messages = Conversation.Message[Conversation.RawMessage(message) for message in request.messages]
     baseline = toolbaseline(contexthead(original), contexthead(request.messages))
-    Kernel.Pending(effect.id, ContextModel(messages, toolchanges(tools, request.tools, request.messages, baseline), catalog))
+    anchors = Union{Nothing, Some{Dict{String, Any}}}[contextanchor(message) for message in effect.effect.messages]
+    Kernel.Pending(effect.id, ContextModel(messages, toolchanges(tools, request.tools, request.messages, baseline), catalog, anchors))
 end
+
+contextanchor(message::Conversation.Message) = nothing
+contextanchor(message::Conversation.Assistant) = contextanchor(get(message.metadata, "anthropic_usage_anchor", nothing))
+contextanchor(value) = nothing
+contextanchor(value::AbstractDict) = Some(Dict{String, Any}(string(key) => deepcopy(item) for (key, item) in pairs(value)))
 
 workcatalog(tools) = ToolDeclaration[declaration(tool) for tool in values(tools)]
 catalogentries(catalog) = Dict(name(tool) => tool.data for tool in catalog)
@@ -371,7 +378,7 @@ end
 performcontext(work, capabilities, ::UnsupportedContextRequest) = Execution.result(contextfailure(), work.result)
 function performcontext(work, capabilities, request::RequestView)
     parameters = deepcopy(capabilities.parameters)
-    answer = withcontext(work.effect.messages) do
+    answer = withcontext(work.effect.anchors) do
         isempty(parameters) ? complete(capabilities.provider, request.messages, request.tools) : complete(capabilities.provider, request.messages, request.tools; parameters)
     end
     Execution.result(price(capabilities.provider, answer), work.result)

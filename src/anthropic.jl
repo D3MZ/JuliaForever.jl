@@ -279,6 +279,8 @@ end
 # Only native assistant messages can supply a recorded measurement.
 messageanchor(message::Conversation.Message) = nothing
 messageanchor(message::Conversation.Assistant) = get(message.metadata, "anthropic_usage_anchor", nothing)
+messageanchor(::Nothing) = nothing
+messageanchor(anchor::Some{<:AbstractDict}) = something(anchor)
 lastanchor(previous, index, value) = previous
 lastanchor(previous, index, value::AbstractDict) = index
 contextanchor(input, ::Nothing) = nothing
