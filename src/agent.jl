@@ -182,6 +182,11 @@ function Base.convert(::Type{Dict{String, Any}}, message::Conversation.User)
     Dict{String, Any}("role" => "user", "content" => message.content)
 end
 
+function Base.convert(::Type{Dict{String, Any}}, message::Conversation.ImageUser)
+    images = [Dict("mime" => image.mime, "data" => image.data) for image in message.images]
+    Dict{String, Any}("role" => "user", "content" => message.content, "images" => images)
+end
+
 function Base.convert(::Type{Dict{String, Any}}, message::Conversation.Assistant)
     value = deepcopy(message.metadata)
     value["role"] = "assistant"

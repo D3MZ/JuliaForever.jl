@@ -35,10 +35,10 @@ struct Edit
 end
 
 depth(event) = 0
-depth(::C.Input) = 1
+depth(::Union{C.Input, C.ImageInput}) = 1
 add!(choices, item, level, event) = nothing
 
-function add!(choices, item, level, event::C.Input)
+function add!(choices, item, level, event::Union{C.Input, C.ImageInput})
     push!(choices, UserChoice(item.parent, event.text, level))
 end
 
@@ -108,7 +108,7 @@ function fork(branches::Vector, input, output, redact=identity)
     pick(items, input, output, redact)
 end
 forkitem!(items, item, event, branches) = nothing
-forkitem!(items, item, event::C.Input, branches) = forkitem!(items, InputFork(item.parent, event.text))
+forkitem!(items, item, event::Union{C.Input, C.ImageInput}, branches) = forkitem!(items, InputFork(item.parent, event.text))
 forkitem!(items, item, event::C.Advance, branches) = forkadded!(items, item.parent, branches[item.parent].state, item.state)
 forkitem!(items, item::ForkChoice) = isempty(strip(item.text)) ? nothing : push!(items, item)
 forkadded!(items, node, before, after) = nothing

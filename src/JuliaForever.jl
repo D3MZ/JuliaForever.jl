@@ -8,6 +8,7 @@ export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancel
 include("instructions.jl")
 include("prompts.jl")
 include("tools.jl")
+include("file_arguments.jl")
 include("system.jl")
 include("provider.jl")
 include("kernel.jl")
@@ -200,6 +201,13 @@ end
 registered(terminal, registry, name, ::Bool) = registry
 registered(terminal, registry, name, result::Extensions.Rejected) = pluginfailure!(terminal, name, result)
 
+function help!()
+    println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
+    println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --fork PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
+    println("Use @PATH to include a text file or image in the initial prompt.")
+    0
+end
+
 function (@main)(args)
     codemode = false
     packages = String[]
@@ -211,8 +219,14 @@ function (@main)(args)
     session = SessionCatalog.New()
     sessiondir = SessionCatalog.directory(ENV)
     sessionname = nothing
+    positional = String[]
     while !isempty(args)
-        if first(args) == "--codemode"
+        if first(args) == "--"
+            append!(positional, args)
+            break
+        elseif first(args) in ("--help", "-h")
+            return help!()
+        elseif first(args) == "--codemode"
             codemode = true
             args = args[2:end]
         elseif first(args) in ("--provider", "--model")
@@ -289,14 +303,11 @@ function (@main)(args)
             action = historyinspect(action)
             args = args[2:end]
         else
-            break
+            push!(positional, first(args))
+            args = args[2:end]
         end
     end
-    if args == ["--help"] || args == ["-h"]
-        println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
-        println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --fork PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
-        return 0
-    end
+    args = positional
     options = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname)
     selectedprovider(action, options, selected)
 end
@@ -442,10 +453,42 @@ function starttemplates!(terminal, agent, extensions, store, args, sessiondir, f
 end
 
 function starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates::AbstractDict)
-    if isempty(args)
+    parsed = FileArguments.parse(args)
+    startfiles!(terminal, agent, extensions, store, sessiondir, templates, parsed.messages, parsed.files)
+end
+
+function startfiles!(terminal, agent, extensions, store, sessiondir, templates, messages, files)
+    isempty(files) && return startplain!(terminal, agent, extensions, store, sessiondir, templates, messages)
+    loaded = attempt(() -> FileArguments.load(files, pwd()))
+    startfiles!(terminal, agent, extensions, store, sessiondir, templates, messages, loaded)
+end
+
+function startfiles!(terminal, agent, extensions, store, sessiondir, templates, messages, failure::ToolFailure)
+    println(terminal.diagnostics, "Could not read file argument: ", redact(terminal, failure.text))
+    flush(terminal.diagnostics)
+    1
+end
+
+function startfiles!(terminal, agent, extensions, store, sessiondir, templates, messages, files::NamedTuple)
+    piped = fileinput(stdin)
+    initial = piped * files.text * get(messages, 1, "")
+    isempty(initial) && length(messages) <= 1 && return interact!(terminal, agent, extensions, stdin, stderr, store, sessiondir, templates)
+    status = isempty(initial) ? 0 : run!(terminal, agent, fileprompt(Prompts.expand(initial, templates), files.images), extensions)
+    for text in Iterators.drop(messages, 1)
+        status = max(status, run!(terminal, agent, Prompts.expand(text, templates), extensions))
+    end
+    status
+end
+
+fileinput(::Base.TTY) = ""
+fileinput(input::IO) = strip(read(input, String))
+fileprompt(text, images) = isempty(images) ? text : Conversation.ImagePrompt(text, images)
+
+function startplain!(terminal, agent, extensions, store, sessiondir, templates, messages)
+    if isempty(messages)
         return interact!(terminal, agent, extensions, stdin, stderr, store, sessiondir, templates)
     else
-        return run!(terminal, agent, Prompts.expand(join(args, " "), templates), extensions)
+        return run!(terminal, agent, Prompts.expand(join(messages, " "), templates), extensions)
     end
 end
 

@@ -1,0 +1,11 @@
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+const source = process.argv[2];
+const args = JSON.parse(process.argv[3]);
+const { parseArgs } = await import(pathToFileURL(join(source, "packages/coding-agent/src/cli/args.ts")));
+const { processFileArguments } = await import(pathToFileURL(join(source, "packages/coding-agent/src/cli/file-processor.ts")));
+const { buildInitialMessage } = await import(pathToFileURL(join(source, "packages/coding-agent/src/cli/initial-message.ts")));
+const parsed = parseArgs(args);
+const files = await processFileArguments(parsed.fileArgs, { autoResizeImages: false });
+const initial = buildInitialMessage({ parsed, fileText: files.text, fileImages: files.images });
+process.stdout.write(JSON.stringify({ initial, remaining: parsed.messages }));

@@ -52,7 +52,12 @@ end
 
 function add!(transcript::Transcript, message::User)
     flush!(transcript)
-    push!(transcript.messages, Dict("role" => "user", "content" => message.data["content"]))
+    push!(transcript.messages, Dict("role" => "user", "content" => usercontent(message.data, get(message.data, "images", nothing))))
+end
+
+usercontent(data, ::Nothing) = data["content"]
+function usercontent(data, attachments::AbstractVector)
+    [Dict("type" => "text", "text" => data["content"]), (Dict("type" => "image", "source" => Dict("type" => "base64", "media_type" => image["mime"], "data" => image["data"])) for image in attachments)...]
 end
 
 function add!(transcript::Transcript, message::Assistant)
