@@ -230,10 +230,12 @@ decoded_event(record, event) = Rejected(:invalid_record)
 decoded_event(record, event::K.Event) = isequal(pack(event), record["event"]) ? event : Rejected(:invalid_record)
 
 function encode_initial(state::C.State)
-    state.revision == 0 && state.kernel.revision == 0 && state.phase == C.Ready || return Rejected(:unsupported_value)
-    encode_initial(state, packall(state.messages))
+    state.revision == 0 && state.kernel.revision == 0 || return Rejected(:unsupported_value)
+    encode_initial(state, state.phase)
 end
 
+encode_initial(state::C.State, phase::C.Phase) = Rejected(:unsupported_value)
+encode_initial(state::C.State, ::C.ReadyPhase) = encode_initial(state, packall(state.messages))
 encode_initial(state::C.State, rejected::Rejected) = rejected
 encode_initial(state::C.State, messages::Vector) = Dict("format" => "JuliaForever.Agent/1", "id" => state.kernel.id, "automatic" => state.automatic, "messages" => messages)
 

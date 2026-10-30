@@ -84,6 +84,13 @@ resource_server(mode, marker) = `$(Base.julia_cmd()) --startup-file=no --project
             @test ResourceMCP.resources(badcap).kind == :capability
             close(badcap)
         end
+        failed = ResourceMCP.connect(resource_server("failed_templates", marker); timeout=10, grace=0.2)
+        @test failed isa ResourceMCP.Client
+        if failed isa ResourceMCP.Client
+            resource_tools = ResourceMCP.resourcetools(Dict("docs" => failed))
+            @test execute(resource_tools[2], (; server="docs")) isa ToolFailure
+            close(failed)
+        end
         missing = ResourceMCP.connect(resource_server("no_templates", marker); timeout=10, grace=0.2)
         @test missing isa ResourceMCP.Client
         if missing isa ResourceMCP.Client
