@@ -211,17 +211,13 @@ function send!(session, state, mode::Submission)
     continuation!(state, mode) && return :ok
     text = String(strip(LineEdit.input_string(state)))
     isempty(text) && return :ok
-    send!(session, state, mode, text, session.activity)
+    send!(session, state, mode, text, session.activity, JuliaForever.terminalcommand(text))
 end
 
-function send!(session, state, mode, text, ::Available)
+function send!(session, state, mode, text, ::Available, ::Nothing)
     waittask(session.task)
     LineEdit.replace_line(state, text)
     LineEdit.commit_line(state)
-    if text == "/exit" || haskey(JuliaForever.terminalcommands, text)
-        session.visibility = Hidden()
-        return :done
-    end
     LineEdit.reset_state(state)
     TerminalEditor.remember!(session.editor)
     LineEdit.refresh_line(state)
@@ -229,18 +225,40 @@ function send!(session, state, mode, text, ::Available)
     :ok
 end
 
-function send!(session, state, mode, text, ::Busy)
-    if text == "/exit"
-        empty!(session.deferred)
-        JuliaForever.cancel!(session.agent)
-        LineEdit.commit_line(state)
-        session.area = nothing
-        session.partial = ""
-        session.visibility = Hidden()
-        return :done
-    end
-    haskey(JuliaForever.terminalcommands, text) && return command!(session, state)
+function send!(session, state, mode, text, ::Available, command::JuliaForever.TerminalCommand)
+    waittask(session.task)
+    LineEdit.replace_line(state, text)
+    LineEdit.commit_line(state)
+    session.visibility = Hidden()
+    :done
+end
+
+function send!(session, state, mode, text, ::Busy, ::Nothing)
     queued!(session, state, queue!(session, JuliaForever.Prompts.expand(text, session.templates), mode))
+end
+
+function send!(session, state, mode, text, ::Busy, ::JuliaForever.ExitCommand)
+    empty!(session.deferred)
+    JuliaForever.cancel!(session.agent)
+    LineEdit.commit_line(state)
+    session.area = nothing
+    session.partial = ""
+    session.visibility = Hidden()
+    :done
+end
+send!(session, state, mode, text, ::Busy, command::JuliaForever.TerminalCommand) = command!(session, state)
+send!(session, state, mode, text, ::Available, command::Union{JuliaForever.ShowName, JuliaForever.SetName}) = (waittask(session.task); inline!(session, state, command))
+send!(session, state, mode, text, ::Busy, command::Union{JuliaForever.ShowName, JuliaForever.SetName}) = inline!(session, state, command)
+
+function inline!(session, state, command)
+    remember!(session, state)
+    LineEdit.replace_line(state, "")
+    diagnostics = IOBuffer()
+    terminal = JuliaForever.Terminal(session.terminal.output, diagnostics, session.terminal.secrets)
+    _, _, result = JuliaForever.command!(command, terminal, session.agent, session.agent.history, session.editor.terminal.in_stream, "")
+    session.status = max(session.status, result)
+    redraw!(session, String(take!(diagnostics)))
+    :ok
 end
 
 function command!(session, state)
@@ -354,7 +372,7 @@ function loop!(terminal, agent, history, input::Base.TTY, directory, templates)
         for line in editor
             waittask(session.task)
             line == "/exit" && break
-            agent, selected, result = JuliaForever.command!(JuliaForever.terminalcommands[line], terminal, session.agent, history[], input, directory)
+            agent, selected, result = JuliaForever.command!(JuliaForever.terminalcommand(line), terminal, session.agent, history[], input, directory)
             history[] = selected
             session.agent = agent
             session.status = max(session.status, result)

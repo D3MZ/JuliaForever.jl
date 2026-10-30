@@ -53,6 +53,7 @@ function (@main)(args)
     inspect = false
     session = SessionCatalog.New()
     sessiondir = SessionCatalog.directory(ENV)
+    sessionname = nothing
     while !isempty(args)
         if first(args) == "--codemode"
             codemode = true
@@ -85,6 +86,13 @@ function (@main)(args)
         elseif first(args) == "--no-session"
             session = SessionCatalog.assign(session, SessionCatalog.Ephemeral())
             args = args[2:end]
+        elseif first(args) in ("--name", "-n")
+            if length(args) < 2 || isempty(Conversation.sessionname(args[2]))
+                println(stderr, "--name requires a non-empty value.")
+                return 2
+            end
+            sessionname = Conversation.sessionname(args[2])
+            args = args[3:end]
         elseif first(args) == "--abandon"
             if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
                 println(stderr, "--abandon requires a reason.")
@@ -101,18 +109,18 @@ function (@main)(args)
     end
     if args == ["--help"] || args == ["-h"]
         println("jf [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [--codemode] [--history PATH] --login-openrouter [prompt] | jf [--codemode] [--history PATH] --login-openrouter-callback [prompt]\nSet OPENAI_API_KEY and OPENAI_MODEL. Set JF_PROVIDER=openai-responses for Responses or JF_PROVIDER=openrouter and OPENROUTER_API_KEY and OPENROUTER_MODEL for OpenRouter; or JF_PROVIDER=anthropic and ANTHROPIC_API_KEY and ANTHROPIC_MODEL for Anthropic; or JF_PROVIDER=google and GEMINI_API_KEY and GEMINI_MODEL for Google. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
-        println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --session-dir DIR, --no-session. Set JF_SESSION_DIR to choose the default directory.")
+        println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
         return 0
     end
     if inspect
-        if isnothing(path) || !isnothing(reason) || !isempty(args) || !SessionCatalog.recovery(session)
+        if isnothing(path) || !isnothing(reason) || !isempty(args) || !SessionCatalog.recovery(session) || !recoveryname(sessionname)
             println(stderr, "--inspect-history requires --history PATH and no prompt or --abandon.")
             return 2
         end
         return inspecthistory!(Terminal(stdout, stderr, String[]), path)
     end
     if !isnothing(reason)
-        if isnothing(path) || !isempty(args) || !SessionCatalog.recovery(session)
+        if isnothing(path) || !isempty(args) || !SessionCatalog.recovery(session) || !recoveryname(sessionname)
             println(stderr, "--abandon requires --history PATH and no prompt.")
             return 2
         end
@@ -168,12 +176,14 @@ function (@main)(args)
     codemode && push!(tools, CodeMode(tools))
     terminal = Terminal(stdout, stderr, [model.key])
     history = SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr)
-    runsession!(history, terminal, model, tools, args, sessiondir)
+    runsession!(history, terminal, model, tools, args, sessiondir, sessionname)
 end
 
-runsession!(::SessionCatalog.Cancelled, terminal, model, tools, args, sessiondir) = 0
+recoveryname(::Nothing) = true
+recoveryname(::String) = false
+runsession!(::SessionCatalog.Cancelled, terminal, model, tools, args, sessiondir, sessionname) = 0
 
-function runsession!(invalid::SessionCatalog.Invalid, terminal, model, tools, args, sessiondir)
+function runsession!(invalid::SessionCatalog.Invalid, terminal, model, tools, args, sessiondir, sessionname)
     println(terminal.diagnostics, invalid.message)
     2
 end
@@ -189,26 +199,25 @@ function interactive!(terminal, agent, history, input::IO, sessiondir, templates
     status = 0
     for line in terminalinput(input, terminal.diagnostics)
         line == "/exit" && break
-        if haskey(terminalcommands, line)
-            agent, selected, result = command!(terminalcommands[line], terminal, agent, history[], input, sessiondir)
-            history[] = selected
-            status = max(status, result)
-            continue
-        end
-        status = max(status, run!(terminal, agent, Prompts.expand(line, templates)))
+        agent, selected, result = interactive!(terminal, agent, history[], terminalcommand(line), line, input, sessiondir, templates)
+        history[] = selected
+        status = max(status, result)
     end
     status
 end
+interactive!(terminal, agent, history, ::Nothing, line, input, sessiondir, templates) = (agent, history, run!(terminal, agent, Prompts.expand(line, templates)))
+interactive!(terminal, agent, history, command::TerminalCommand, line, input, sessiondir, templates) = command!(command, terminal, agent, history, input, sessiondir)
 interactive!(terminal, agent, history, input::Base.TTY, sessiondir, templates) = LiveTerminal.loop!(terminal, agent, history, input, sessiondir, templates)
 finishhistory(::Nothing) = nothing
 finishhistory(history::History.Store) = close(history)
 
-runsession!(rejected::History.Rejected, terminal, model, tools, args, sessiondir) = result!(terminal, rejected)
+runsession!(history, terminal, model, tools, args, sessiondir) = runsession!(history, terminal, model, tools, args, sessiondir, nothing)
+runsession!(rejected::History.Rejected, terminal, model, tools, args, sessiondir, sessionname) = result!(terminal, rejected)
 
-function runsession!(history, terminal, model, tools, args, sessiondir)
+function runsession!(history, terminal, model, tools, args, sessiondir, sessionname)
     selected = Ref{Union{Nothing, History.Store}}(history)
     try
-        runsession!(sessionsnapshot(history), history, terminal, model, tools, args, sessiondir, selected)
+        runsession!(sessionsnapshot(history), history, terminal, model, tools, args, sessiondir, selected, sessionname)
     finally
         finishhistory(selected[])
     end
@@ -217,11 +226,11 @@ end
 sessionsnapshot(::Nothing) = nothing
 sessionsnapshot(history::History.Store) = History.snapshot(history)
 
-runsession!(rejected::History.Rejected, history, terminal, model, tools, args, sessiondir, selected) = result!(terminal, rejected)
-function runsession!(snapshot, history, terminal, model, tools, args, sessiondir, selected)
+runsession!(rejected::History.Rejected, history, terminal, model, tools, args, sessiondir, selected, sessionname) = result!(terminal, rejected)
+function runsession!(snapshot, history, terminal, model, tools, args, sessiondir, selected, sessionname)
     messages = sessionmessages(snapshot)
     agent = Agent(model, Dict{String, Tool}(name(tool) => tool for tool in tools), messages; history)
-    sessionagent!(agent, history, terminal, args, sessiondir, selected)
+    sessionagent!(agent, history, terminal, args, sessiondir, selected, sessionname)
 end
 
 sessionmessages(::Nothing) = sessionmessages(0)
@@ -236,12 +245,16 @@ end
 sessioncontext!(messages, ::Nothing) = nothing
 sessioncontext!(messages, context::AbstractString) = push!(messages, Dict("role" => "system", "content" => context))
 
-sessionagent!(rejected::History.Rejected, history, terminal, args, sessiondir, selected) = result!(terminal, rejected)
-sessionagent!(agent::Agent, history, terminal, args, sessiondir, selected) = sessionagent!(agent.fault, agent, history, terminal, args, sessiondir, selected)
-sessionagent!(fault::History.Rejected, agent, history, terminal, args, sessiondir, selected) = sessionfault!(terminal, fault, history)
-function sessionagent!(::Nothing, agent, history, terminal, args, sessiondir, selected)
+sessionagent!(rejected::History.Rejected, history, terminal, args, sessiondir, selected, sessionname) = result!(terminal, rejected)
+sessionagent!(agent::Agent, history, terminal, args, sessiondir, selected, sessionname) = sessionagent!(agent.fault, agent, history, terminal, args, sessiondir, selected, sessionname)
+sessionagent!(fault::History.Rejected, agent, history, terminal, args, sessiondir, selected, sessionname) = sessionfault!(terminal, fault, history)
+sessionagent!(::Nothing, agent, history, terminal, args, sessiondir, selected, sessionname) = runselected!(terminal, agent, selected, args, sessiondir, startname!(agent, sessionname))
+startname!(agent, ::Nothing) = nothing
+startname!(agent, name::String) = name!(agent, name)
+runselected!(terminal, agent, history, args, sessiondir, rejected::History.Rejected) = result!(terminal, rejected)
+function runselected!(terminal, agent, history, args, sessiondir, ::Nothing)
     templates = Prompts.load(pwd())
-    isempty(args) && return interactive!(terminal, agent, selected, stdin, sessiondir, templates)
+    isempty(args) && return interactive!(terminal, agent, history, stdin, sessiondir, templates)
     run!(terminal, agent, Prompts.expand(join(args, " "), templates))
 end
 
