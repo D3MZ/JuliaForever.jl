@@ -64,9 +64,17 @@ requestedid(model::AbstractString, builtin, env) = String(model)
 requestedid(::Nothing, ::Nothing, env) = nothing
 requestedid(::Nothing, builtin::NamedTuple, env) = envvalue(get(env, builtin.model, nothing))
 
-function configuredinfo(registry::Models.Registry, name, model, env)
-    builtin = providerinfo(name)
-    provider = get(modelconstraints, name, name)
+catalogbuiltin(name) = catalogbuiltin(name, name)
+catalogbuiltin(name, provider) = catalogbuiltinfrom(name, get(modelconstraints, provider, nothing))
+catalogbuiltinfrom(name, ::Nothing) = providerinfo(name)
+catalogbuiltinfrom(name, ::AbstractString) = nothing
+catalogprovider(registry::Models.Registry, name::AbstractString) = catalogprovider(name, get(registry.providers, name, nothing))
+catalogprovider(name, ::Nothing) = get(modelconstraints, name, name)
+catalogprovider(name, ::AbstractDict) = name
+
+configuredinfo(registry::Models.Registry, name, model, env) = configuredinfo(registry, name, model, env, catalogprovider(registry, name))
+function configuredinfo(registry::Models.Registry, name, model, env, provider)
+    builtin = catalogbuiltin(name, provider)
     settings = get(registry.providers, provider, nothing)
     configuredinfo(registry, provider, model, env, builtin, settings)
 end
@@ -197,6 +205,9 @@ modelcatalog(provider) = Models.catalog()
 modelcatalog(provider::Union{OpenAI, OpenAIResponses, Anthropic, Google}) = modelcatalog(provider.route)
 modelcatalog(::DirectRoute) = Models.catalog()
 modelcatalog(route::CatalogRoute) = route.registry.models
+modelcatalogname(provider, fallback) = modelconstraint(fallback)
+modelcatalogname(provider::Union{OpenAI, OpenAIResponses, Anthropic, Google}, fallback) = modelcatalogname(provider.route, fallback)
+modelcatalogname(route::CatalogRoute, fallback) = route.name
 
 modelchange(provider, model, ::DirectRoute) = typeof(provider)(provider.base, String(model), provider.key, provider.extra, provider.route)
 function modelchange(provider, model, route::CatalogRoute)
