@@ -302,23 +302,6 @@ def run_rpc(kind, root, fixture, env):
         assert len(failed) == 1 and not failed[0]['aborted'] and 'errorMessage' in failed[0] and 'result' not in failed[0], (kind, failed)
         assert 'checkpoint' not in json.dumps(fixture.requests[-1]['messages'])
 
-        fixture.fail_summary = False
-        assert rpc.ask('tool-toggle-new', 'new_session')['success']
-        assert rpc.ask('tool-toggle-off', 'set_auto_compaction', enabled=False)['success']
-        rpc.prompt('first')
-        rpc.prompt('second')
-        fixture.gated_user = 'third'
-        fixture.release.clear()
-        fixture.arrived.clear()
-        before = len(rpc.events)
-        rpc.send({'id': 'tool-toggle-prompt', 'type': 'prompt', 'message': 'third'})
-        assert rpc.reply('tool-toggle-prompt')['success']
-        assert fixture.arrived.wait(60), (kind, 'model request did not start')
-        assert rpc.ask('tool-toggle-on', 'set_auto_compaction', enabled=True)['success']
-        fixture.gated_user = None
-        fixture.release.set()
-        rpc.until(lambda event: event['type'] == 'agent_settled')
-        assert any(event['type'] == 'compaction_end' and event['reason'] == 'threshold' and not event['aborted'] for event in rpc.events[before:])
         entries = rpc.ask('failure-entries', 'get_entries')['data']['entries']
         assert not any(entry['type'] == 'compaction' for entry in entries)
 
@@ -510,6 +493,24 @@ def run_tool_controls(kind, root, fixture, env):
         failed = [event for event in rpc.events[before:] if event['type'] == 'compaction_end']
         assert len(failed) == 1 and not failed[0]['aborted'] and 'errorMessage' in failed[0] and 'result' not in failed[0], (kind, failed)
         assert 'checkpoint' not in json.dumps(fixture.requests[-1]['messages'])
+
+        fixture.fail_summary = False
+        assert rpc.ask('tool-toggle-new', 'new_session')['success']
+        assert rpc.ask('tool-toggle-off', 'set_auto_compaction', enabled=False)['success']
+        rpc.prompt('first')
+        rpc.prompt('second')
+        fixture.gated_user = 'third'
+        fixture.release.clear()
+        fixture.arrived.clear()
+        before = len(rpc.events)
+        rpc.send({'id': 'tool-toggle-prompt', 'type': 'prompt', 'message': 'third'})
+        assert rpc.reply('tool-toggle-prompt')['success']
+        assert fixture.arrived.wait(60), (kind, 'model request did not start')
+        assert rpc.ask('tool-toggle-on', 'set_auto_compaction', enabled=True)['success']
+        fixture.gated_user = None
+        fixture.release.set()
+        rpc.until(lambda event: event['type'] == 'agent_settled')
+        assert any(event['type'] == 'compaction_end' and event['reason'] == 'threshold' and not event['aborted'] for event in rpc.events[before:])
     finally:
         fixture.release.set()
         rpc.close()
