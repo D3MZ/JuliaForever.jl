@@ -25,8 +25,6 @@ struct CompactionPlan
     retained::Vector{Conversation.Message}
 end
 
-checkpoint(messages, ::Nothing) = Conversation.Message[]
-checkpoint(messages, index::Int) = Conversation.Message[messages[index]]
 compactionplan(agent, rejected::History.Rejected) = rejected
 compactionplan(agent, ::Nothing) = compactionplan(agent, nothing, fault(agent.state))
 
@@ -42,7 +40,7 @@ function compactionplan(agent, messages, cut::Int)
     summarized = filter(!issystem, messages[1:cut-1])
     any(summarizable, summarized) || return History.Rejected(:nothing_to_compact)
     retained = filter(!issystem, messages[cut:end])
-    system = checkpoint(messages, findlast(issystem, messages))
+    system = filter(issystem, messages)
     CompactionPlan(agent.state.revision, deepcopy(agent.messages), system, summarized, retained)
 end
 

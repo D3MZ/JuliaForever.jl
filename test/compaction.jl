@@ -28,6 +28,15 @@ function compactagent(provider; history=nothing)
     Agent(provider, Dict{String, JuliaForever.Tool}(), compactmessages(); history)
 end
 
+@testset "compaction retains all system context" begin
+    messages = compactmessages()
+    insert!(messages, 2, Dict{String, Any}("role" => "system", "content" => "<skills>metadata</skills>"))
+    provider = CompactProvider(Dict{String, Any}("role" => "assistant", "content" => "done"), Any[])
+    agent = Agent(provider, Dict{String, JuliaForever.Tool}(), messages; history=CompactHistory.Memory())
+    @test compact!(agent, _ -> "checkpoint") == "checkpoint"
+    @test [message["content"] for message in agent.messages if message["role"] == "system"] == ["instructions", "<skills>metadata</skills>"]
+end
+
 @testset "compaction preserves turns, branches, and previous summaries" begin
     history = CompactHistory.Tree(CompactHistory.Memory())
     provider = CompactProvider(Dict{String, Any}("role" => "assistant", "content" => "third answer"), Any[])
