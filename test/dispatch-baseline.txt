@@ -129,8 +129,6 @@ search.jl	:limited
 search.jl	:matched
 search.jl	:negate
 search.jl	:smartcase
-search.jl	:truncated
-search.jl	:truncated
 search.jl	:truncatedlines
 search.jl	:windows
 search.jl	:windows
@@ -163,7 +161,6 @@ system.jl	:bybytes
 system.jl	:partial
 system.jl	:partial
 system.jl	:reached
-system.jl	:truncated
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :streamed)

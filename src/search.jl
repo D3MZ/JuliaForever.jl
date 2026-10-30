@@ -215,10 +215,11 @@ end
 
 function findresult(lines, limit)
     isempty(lines) && return ToolResult("No files found matching pattern")
-    output, truncated = head(lines)
+    bounded = head(lines)
     notices = String[]
     length(lines) >= limit && push!(notices, "$limit results limit reached. Use limit=$(limit * 2) for more, or refine pattern")
-    truncated && push!(notices, "50.0KB limit reached")
+    headnotice!(notices, bounded)
+    output = headtext(bounded)
     !isempty(notices) && (output *= "\n\n[$(join(notices, ". "))]")
     ToolResult(output)
 end
@@ -329,10 +330,11 @@ function execute(tool::Grep, args)
     isempty(output) && return ToolResult("No matches found")
     # Match limits count matches, not context rows.
     limited = count >= limit
-    text, truncated = head(output)
+    bounded = head(output)
     notices = String[]
     limited && push!(notices, "$limit matches limit reached. Use limit=$(limit * 2) for more, or refine pattern")
-    truncated && push!(notices, "50.0KB limit reached")
+    headnotice!(notices, bounded)
+    text = headtext(bounded)
     truncatedlines && push!(notices, "Some lines truncated to 500 chars. Use read tool to see full lines")
     !isempty(notices) && (text *= "\n\n[$(join(notices, ". "))]")
     ToolResult(text)

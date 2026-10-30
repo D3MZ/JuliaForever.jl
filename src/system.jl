@@ -436,16 +436,25 @@ function shell(tool::Union{Bash, PowerShell}, args, cancel, timeout, settings::T
     end
 end
 
+struct LimitedOutput
+    text::String
+end
+
+headtext(text::String) = text
+headtext(output::LimitedOutput) = output.text
+headnotice!(notices, ::String) = nothing
+headnotice!(notices, ::LimitedOutput) = push!(notices, "50.0KB limit reached")
+
 function head(lines)
     output = String[]
     bytes = 0
     for line in lines
         nextbytes = bytes + ncodeunits(line) + !isempty(output)
-        nextbytes > 51200 && return (join(output, '\n'), true)
+        nextbytes > 51200 && return LimitedOutput(join(output, '\n'))
         push!(output, line)
         bytes = nextbytes
     end
-    (join(output, '\n'), false)
+    join(output, '\n')
 end
 
 function execute(tool::Ls, args)
@@ -466,10 +475,11 @@ function execute(tool::Ls, args)
         push!(results, entry * (isdir(target) ? "/" : ""))
     end
     isempty(results) && return ToolResult("(empty directory)")
-    output, truncated = head(results)
+    bounded = head(results)
     notices = String[]
     reached && push!(notices, "$limit entries limit reached. Use limit=$(limit * 2) for more")
-    truncated && push!(notices, "50.0KB limit reached")
+    headnotice!(notices, bounded)
+    output = headtext(bounded)
     !isempty(notices) && (output *= "\n\n[$(join(notices, ". "))]")
     ToolResult(output)
 end
