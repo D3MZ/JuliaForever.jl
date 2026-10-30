@@ -72,6 +72,8 @@ Interactive file completion adds 69 branch entries for token parsing, directory 
 
 Model argument completion adds four branch entries for menu state and matching, and no dispatch candidates.
 
+Restoring prompt history adds five branch entries for deduplication, session replacement, and replay, and no dispatch candidates.
+
 Markdown rendering in conversation exports adds six branch entries and no dispatch candidates.
 
 JSON and HTML history exports dispatch on the first iterator result while retaining single-pass streaming and empty-history output.

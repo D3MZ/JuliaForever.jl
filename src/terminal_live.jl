@@ -116,6 +116,32 @@ function Session(editor, terminal, agent, templates, extensions, view::View)
     session.terminal = maketerminal(session, terminal, view)
     session
 end
+
+prompt!(history, message) = nothing
+prompt!(history, message::Union{JuliaForever.Conversation.User, JuliaForever.Conversation.ImageUser}) = TerminalEditor.remember!(history, message.content)
+prompt!(history, message::JuliaForever.Conversation.RawMessage) = get(promptroles, get(message.value, "role", ""), promptignore!)(history, message.value)
+promptignore!(history, value) = nothing
+promptuser!(history, value) = TerminalEditor.remember!(history, prompttext(get(value, "content", nothing)))
+const promptroles = Dict("user" => promptuser!)
+prompttext(value) = ""
+prompttext(value::AbstractString) = String(value)
+prompttext(value::AbstractVector) = join(promptblock(block) for block in value)
+promptblock(value) = ""
+promptblock(value::AbstractDict) = get(promptblocks, get(value, "type", ""), promptignore)(value)
+promptignore(value) = ""
+promptpart(value) = prompttext(get(value, "text", nothing))
+const promptblocks = Dict("text" => promptpart)
+
+function restoreprompts!(session, agent)
+    lock(agent.lock) do
+        for message in getfield(agent.state, :messages)
+            prompt!(session.editor.history, message)
+        end
+    end
+    nothing
+end
+restoreprompts!(session, previous, agent) = previous === agent ? nothing : restoreprompts!(session, agent)
+
 maketerminal(session, terminal, ::Regular) = JuliaForever.Terminal(output(session, terminal.output), Output(session), terminal.secrets)
 maketerminal(session, terminal, ::Fullscreen) = JuliaForever.Terminal(ScreenOutput(session, AssistantText()), ScreenOutput(session, DiagnosticText()), terminal.secrets)
 include("terminal_completion_ui.jl")
@@ -290,7 +316,7 @@ end
 
 function send!(session, state, mode, text, ::Available, command::JuliaForever.TerminalCommand)
     waittask(session.task)
-    LineEdit.commit_line(state)
+    TerminalEditor.commitcommand!(state)
     session.visibility = Hidden()
     :done
 end
@@ -302,14 +328,14 @@ end
 function send!(session, state, mode, text, ::Busy, ::JuliaForever.ExitCommand)
     empty!(session.deferred)
     JuliaForever.cancel!(session.agent)
-    LineEdit.commit_line(state)
+    TerminalEditor.commitcommand!(state)
     session.area = nothing
     session.partial = ""
     session.visibility = Hidden()
     :done
 end
 function send!(session, state, mode, text, ::Busy, ::JuliaForever.ReloadCommand)
-    remember!(session, state)
+    TerminalEditor.remember!(session.editor)
     LineEdit.replace_line(state, "")
     redraw!(session, "Wait for the current response to finish before reloading.\n")
     :ok
@@ -319,7 +345,7 @@ send!(session, state, mode, text, ::Available, command::Union{JuliaForever.ShowN
 send!(session, state, mode, text, ::Busy, command::Union{JuliaForever.ShowName, JuliaForever.SetName}) = inline!(session, state, command)
 
 function inline!(session, state, command)
-    remember!(session, state)
+    TerminalEditor.remember!(session.editor)
     LineEdit.replace_line(state, "")
     diagnostics = IOBuffer()
     terminal = JuliaForever.Terminal(session.terminal.output, diagnostics, session.terminal.secrets)
@@ -337,7 +363,7 @@ function command!(session, state)
         queued
     end
     draft!(session, queued)
-    LineEdit.commit_line(state)
+    TerminalEditor.commitcommand!(state)
     session.area = nothing
     session.partial = ""
     session.visibility = Hidden()
@@ -452,6 +478,7 @@ function loop!(terminal, agent, extensions, history, input::Base.TTY, directory,
     session = Session(editor, terminal, agent, templates, extensions, view)
     reference[] = session
     try
+        restoreprompts!(session, agent)
         start!(session)
         for line in editor
             waittask(session.task)
@@ -463,6 +490,7 @@ function loop!(terminal, agent, extensions, history, input::Base.TTY, directory,
             history[] = selected
             session.agent = agent
             aftercommand!(session.view, previous, agent, mark, session.terminal)
+            restoreprompts!(session, previous, agent)
             session.status = max(session.status, result)
             sessionname!(session)
             LineEdit.replace_line(editor.state, draft[])
