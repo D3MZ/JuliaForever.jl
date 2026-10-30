@@ -83,9 +83,7 @@ scheduler.jl	:(typeof(a))
 scheduler.jl	:(typeof(b))
 scheduler.jl	:(view.kind == name(handler))
 scheduler.jl	:cancelled
-search.jl	:(rule.directory)
 search.jl	:(selectglob(filter, target))
-search.jl	:anchored
 search.jl	:anchored
 search.jl	:anywhere
 search.jl	:directory
@@ -94,10 +92,8 @@ search.jl	:directory
 search.jl	:directory
 search.jl	:directory
 search.jl	:directory
-search.jl	:directory
 search.jl	:isdirectory
 search.jl	:matched
-search.jl	:negate
 search.jl	:smartcase
 search.jl	:windows
 search.jl	:windows
