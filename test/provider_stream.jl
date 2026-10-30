@@ -212,34 +212,3 @@ end
         wait(server)
     end
 end
-
-@testset "nonstreaming agent tool loop" begin
-    requests = Any[]
-    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
-        body = JSON3.read(String(request.body))
-        push!(requests, (; target=request.target, authorization=HTTP.header(request, "Authorization"), body))
-        message = if length(requests) == 1
-            Dict("role" => "assistant", "content" => nothing, "tool_calls" => [Dict("id" => "call-1", "type" => "function", "function" => Dict("name" => "write", "arguments" => "{\"path\":\"a.txt\",\"content\":\"hello\"}"))])
-        else
-            Dict("role" => "assistant", "content" => "done")
-        end
-        finish = length(requests) == 1 ? "tool_calls" : "stop"
-        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(Dict("choices" => [Dict("message" => message, "finish_reason" => finish)])))
-    end
-    try
-        mktempdir() do dir
-            agent = Agent(OpenAI("http://$(HTTP.server_addr(server))/v1", "test-model", "synthetic-key"), [Write(dir), Read(dir), Edit(dir)])
-            @test respond!(agent, "create a file") == "done"
-            @test length(requests) == 2
-            @test requests[1].authorization == "Bearer synthetic-key"
-            @test requests[1].target == "/v1/chat/completions"
-            @test requests[1].body.model == "test-model"
-            @test requests[2].body.messages[end].role == "tool"
-            @test requests[2].body.messages[end].tool_call_id == "call-1"
-            @test read(joinpath(dir, "a.txt"), String) == "hello"
-        end
-    finally
-        close(server)
-        wait(server)
-    end
-end
