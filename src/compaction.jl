@@ -167,11 +167,146 @@ function autocompact!(agent::Agent, usage::Usage, settings::UsageCompaction, sum
     compact!(agent, summarize)
 end
 
-rememberusage!(result) = nothing
+abstract type RecoveryAttempt end
+struct AvailableRecovery <: RecoveryAttempt end
+struct AttemptedRecovery <: RecoveryAttempt end
+
+mutable struct OverflowRecovery{F, P}
+    summarize::F
+    provider::P
+    attempt::RecoveryAttempt
+end
+
+recovery(settings, summarize, provider) = nothing
+recovery(::UsageCompaction, summarize, provider) = OverflowRecovery(summarize, provider, AvailableRecovery())
+
+abstract type OverflowSignal end
+struct NoOverflow <: OverflowSignal end
+struct Overflow <: OverflowSignal end
+
+const overflowstatuses = Dict(413 => Overflow())
+const overflowkinds = Dict(:request_too_large => Overflow())
+const overflowexclusions = Dict(429 => NoOverflow())
+overflowsignal(error) = NoOverflow()
+overflowsignal(error::ProviderStatus) = get(overflowstatuses, error.status, NoOverflow())
+overflowsignal(error::ProviderError) = overflowsignal(get(overflowkinds, error.kind, NoOverflow()), error.status)
+overflowsignal(::NoOverflow, status) = NoOverflow()
+overflowsignal(::Overflow, status) = get(overflowexclusions, status, Overflow())
+
+recoverycomplete!(::Nothing, result) = nothing
+recoverycomplete!(recovery::OverflowRecovery, result) = nothing
+recoverycomplete!(recovery::OverflowRecovery, ::Nothing) = (recovery.attempt = AvailableRecovery(); nothing)
+recoverycomplete!(recovery::OverflowRecovery, result::Completion) = recoverycomplete!(recovery, result.finish, result.error, getfield(result, :status))
+recoverycomplete!(recovery, finish, failure, status) = nothing
+recoverycomplete!(recovery, finish, ::Nothing, ::Finished) = get(recoveryfinishes, finish, resetrecovery!)(recovery)
+resetrecovery!(recovery) = (recovery.attempt = AvailableRecovery(); nothing)
+keeprecovery!(recovery) = nothing
+const recoveryfinishes = Dict("length" => keeprecovery!)
+
+recoveryinput!(recovery, message) = nothing
+recoveryinput!(recovery::OverflowRecovery, ::Union{Conversation.User, Conversation.ImageUser}) = resetrecovery!(recovery)
+
+function rememberusage!(result)
+    recoverycomplete!(get(task_local_storage(), :jf_overflow_recovery, nothing), result)
+    nothing
+end
 function rememberusage!(result::Completion)
     storage = task_local_storage()
     haskey(storage, :jf_compaction_usage) && (storage[:jf_compaction_usage][] = result.usage)
+    recoverycomplete!(get(storage, :jf_overflow_recovery, nothing), result)
     nothing
+end
+
+recover!(run, result, ::Cancelled) = :cancelled
+recover!(run, result, ::Union{Idle, Running}) = recover!(run, result, get(task_local_storage(), :jf_overflow_recovery, nothing))
+recover!(run, result, recovery) = result
+recover!(run, result::Completion, recovery::OverflowRecovery) = recover!(run, result, recovery, overflowsignal(result.error), recovery.attempt)
+recover!(run, result, recovery, ::NoOverflow, attempt) = result
+function recover!(run, result, recovery, ::Overflow, ::AttemptedRecovery)
+    emit(run.callback, (; type=:auto_compaction_end, reason=:overflow, result=History.Rejected(:overflow_retry_exhausted)))
+    recoverycancel!(run, result, turnstate(run.agent))
+end
+
+function recover!(run, result, recovery, ::Overflow, ::AvailableRecovery)
+    run.agent.provider === recovery.provider || return result
+    recovery.attempt = AttemptedRecovery()
+    plan = lock(run.agent.lock) do
+        recoveryplan(run.agent, sync!(run.agent))
+    end
+    recover!(run, result, recovery, plan)
+end
+
+recoveryplan(agent, rejected::History.Rejected) = rejected
+recoveryplan(agent, ::Nothing) = compactionplan(agent, agent.fault)
+recover!(run, result, recovery, rejected::History.Rejected) = recoverycancel!(run, result, turnstate(run.agent))
+
+function recover!(run, result, recovery, plan::CompactionPlan)
+    emit(run.callback, (; type=:auto_compaction_start, reason=:overflow))
+    compacted = recoverysummary!(run.agent, recovery, plan, turnstate(run.agent))
+    compacted = recoveryoutcome(compacted, turnstate(run.agent))
+    emit(run.callback, (; type=:auto_compaction_end, reason=:overflow, result=compacted))
+    recoveryresult!(run, result, compacted, recovery, turnstate(run.agent))
+end
+
+recoveryoutcome(compacted, ::Cancelled) = :cancelled
+recoveryoutcome(compacted, ::Union{Idle, Running}) = compacted
+recoverysummary!(agent, recovery, plan, ::Cancelled) = :cancelled
+function recoverysummary!(agent, recovery, plan, ::Union{Idle, Running})
+    agent.provider === recovery.provider || return History.Rejected(:provider_changed)
+    summary = try
+        recoverycall!(agent, recovery.summarize, deepcopy(plan.summarized))
+    catch
+        History.Rejected(:summary_failed)
+    end
+    agent.provider === recovery.provider || return History.Rejected(:provider_changed)
+    compactsummary!(agent, plan, recoverytext(summary))
+end
+recoverycall!(agent, summarize, messages) = summarize(messages)
+function recoverycall!(agent, summarize::Summarizer, messages)
+    context = requestcontext(summarize.provider)
+    register!(agent, context)
+    try
+        task_local_storage(() -> summarize(messages), requestkey, context)
+    finally
+        unregister!(agent, context)
+    end
+end
+recoverytext(summary) = History.Rejected(:summary_failed)
+recoverytext(summary::Union{AbstractString, History.Rejected}) = summary
+
+recoveryresult!(run, result, compacted, recovery, ::Cancelled) = outcome(fault(run.agent), :cancelled)
+recoveryresult!(run, result, compacted, recovery, ::Union{Idle, Running}) = outcome(fault(run.agent), result)
+recoverycancel!(run, result, ::Cancelled) = outcome(fault(run.agent), :cancelled)
+recoverycancel!(run, result, ::Union{Idle, Running}) = outcome(fault(run.agent), result)
+function recoveryresult!(run, result, compacted::AbstractString, recovery, ::Union{Idle, Running})
+    next = lock(run.agent.lock) do
+        recoveryadvance!(run, recovery, result, run.agent.turn, run.agent.fault)
+    end
+    recoveryplanned!(run, next)
+end
+
+recoveryadvance!(run, recovery, original, turn, rejected::History.Rejected) = rejected
+recoveryadvance!(run, recovery, original, ::Cancelled, ::Nothing) = :cancelled
+function recoveryadvance!(run, recovery, original, ::Union{Idle, Running}, ::Nothing)
+    run.agent.provider === recovery.provider || return original
+    result, _ = transition!(revision -> Conversation.Continue(revision), run.agent)
+    recoveryadvance!(run, result)
+end
+recoveryadvance!(run, result) = result
+function recoveryadvance!(run, ::Kernel.Applied)
+    result, added = transition!(revision -> Conversation.Advance(revision), run.agent)
+    recoveryadvanced!(result, added)
+end
+recoveryadvanced!(result, added) = result
+recoveryadvanced!(result::Kernel.Applied, added) = (result, added)
+recoveryplanned!(run, result) = result
+function recoveryplanned!(run, planned::Tuple)
+    result, added = planned
+    emit(run.callback, (; type=:turn_start))
+    recovery = get(task_local_storage(), :jf_overflow_recovery, nothing)
+    foreach(message -> recoveryinput!(recovery, message), added)
+    present!(run.agent, added, run.messages, run.callback)
+    only(result.effects)
 end
 
 finishauto!(agent, result, usage, ::Nothing, summarize, callback) = nothing
