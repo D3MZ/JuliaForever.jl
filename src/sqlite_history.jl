@@ -153,7 +153,7 @@ end
 
 function append!(history::H.SQLite{SQLite.DB}, revision::Integer, batch::Vector, ::H.Open)
     db = history.db
-    complete = false
+    committed = nothing
     try
         SQLite.execute(db, "BEGIN IMMEDIATE")
         current = DBI.execute(db, "SELECT COALESCE(MAX(revision), 0) AS revision FROM jf_history") do rows
@@ -167,11 +167,14 @@ function append!(history::H.SQLite{SQLite.DB}, revision::Integer, batch::Vector,
             write!(db, current, H.value(batch, IdDict()))
         end
         SQLite.execute(db, transaction(result))
-        complete = true
+        committed = Some(result)
         result
     finally
-        complete || setfield!(history, :status, H.Uncertain())
+        uncertain!(history, committed)
     end
 end
+
+uncertain!(history, ::Some) = nothing
+uncertain!(history, ::Nothing) = setfield!(history, :status, H.Uncertain())
 
 end
