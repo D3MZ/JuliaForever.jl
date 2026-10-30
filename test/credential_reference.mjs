@@ -1,0 +1,11 @@
+import { pathToFileURL } from 'node:url';
+import { join } from 'node:path';
+const source = process.argv[2];
+const { AuthStorage, readStoredCredential } = await import(pathToFileURL(join(source, 'packages/coding-agent/src/core/auth-storage.ts')));
+const { envApiKeyAuth } = await import(pathToFileURL(join(source, 'packages/ai/src/auth/helpers.ts')));
+const path = process.argv[3];
+const stored = readStoredCredential('openai', path);
+const store = AuthStorage.inMemory(stored ? { openai: stored } : {});
+const credential = await store.read('openai');
+const result = await envApiKeyAuth('OpenAI', ['OPENAI_API_KEY']).resolve({ctx: {env: async () => 'fixture-env'}, credential, signal: new AbortController().signal});
+process.stdout.write(JSON.stringify(result?.auth.apiKey ?? null));

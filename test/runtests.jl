@@ -1,5 +1,6 @@
 using Test, JuliaForever
 
+include("credential_storage.jl")
 include("quality.jl")
 include("branch_audit.jl")
 include("dispatch_lint.jl")
