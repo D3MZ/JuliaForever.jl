@@ -29,8 +29,9 @@ while !eof(stdin)
             continue
         end
         version = get(Dict("badversion" => "2099-01-01", "oldversion" => "2025-06-18", "oldversion2" => "2025-03-26", "oldversion3" => "2024-11-05"), mode, "2025-11-25")
-        capabilities = mode == "no_tools" ? Dict() : mode == "badcap" ? Dict("tools" => nothing) : Dict("tools" => Dict("listChanged" => true))
-        reply(message["id"], Dict("protocolVersion" => version, "capabilities" => capabilities, "serverInfo" => Dict("name" => "mock", "version" => "1")))
+        capabilities = mode == "no_tools" ? Dict() : mode == "badcap" ? Dict("tools" => nothing) : mode == "badcaps" ? [] : Dict("tools" => Dict("listChanged" => true))
+        info = mode == "badinfo" ? [] : Dict("name" => mode == "badname" ? 1 : "mock", "version" => mode == "badserverversion" ? nothing : "1")
+        reply(message["id"], Dict("protocolVersion" => version, "capabilities" => capabilities, "serverInfo" => info))
     elseif method == "notifications/initialized"
         initialized[] = true
         send(Dict("jsonrpc" => "2.0", "id" => "server-ping", "method" => "ping"))
