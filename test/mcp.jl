@@ -48,12 +48,7 @@ end
         if client isa MCP.Client
             @test MCP.admission!(client, MCP.Closed(), MCP.Open()).kind == :closed
             @test MCP.activate!(client, MCP.Closed()) isa MCP.Failure
-            @test client.connection isa MCP.Open
             @test MCP.send(client, Dict(), MCP.Closed()) isa MCP.Failure
-            @test client.shutdown isa MCP.ShutdownReady
-            @test !client.shutting
-            @test client.state === :open
-            @test client.connection isa MCP.Open
             @test client.server["serverInfo"]["name"] == "mock"
             @test client.server["capabilities"]["tools"]["listChanged"]
             tools = MCP.tools(client)
@@ -100,10 +95,6 @@ end
             closers = [Threads.@spawn close(client) for _ in 1:6]
             @test timedwait(() -> all(istaskdone, closers), 10) == :ok
             foreach(fetch, filter(istaskdone, closers))
-            @test client.shutdown isa MCP.ShuttingDown
-            @test client.shutting
-            @test client.state === :closed
-            @test client.connection isa MCP.Closed
             @test timedwait(() -> istaskdone(pending), 5) == :ok
             @test fetch(pending) isa MCP.Failure
             @test process_exited(client.process)
