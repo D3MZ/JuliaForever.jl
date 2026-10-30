@@ -72,7 +72,7 @@ function collect!(queue::DeferredQueue, queued::NamedTuple)
     drain!(queue.steering, queued.steering)
     drain!(queue.followups, queued.followups)
     empty!(queue.display)
-    [queued.steering; queued.followups]
+    JuliaForever.Conversation.queuetext.([queued.steering; queued.followups])
 end
 
 function Base.empty!(queue::DeferredQueue)
@@ -182,8 +182,8 @@ end
 
 function queuelines(session)
     queued = queues(session)
-    [ ["Steering: " * replace(text, '\n' => ' ') for text in queued.steering];
-      ["Follow-up: " * replace(text, '\n' => ' ') for text in queued.followups];
+    [ ["Steering: " * replace(JuliaForever.Conversation.queuetext(text), '\n' => ' ') for text in queued.steering];
+      ["Follow-up: " * replace(JuliaForever.Conversation.queuetext(text), '\n' => ' ') for text in queued.followups];
       [label(item) for item in session.deferred.display] ]
 end
 
@@ -307,11 +307,15 @@ end
 function completed!(session, failed::Failed)
     session.status = max(session.status, failed.status)
     session.activity = Available()
-    restore!(session, session.editor.state, JuliaForever.dequeue!(session.agent))
+    restore!(session, session.editor.state, takequeued!(session.agent))
 end
 
 function continue!(session)
     isempty(session.deferred) && return nothing
+    continue!(session, lock(() -> JuliaForever.Conversation.queuecontent(session.agent.state), session.agent.lock))
+end
+continue!(session, ::JuliaForever.Conversation.ContainsImages) = JuliaForever.result!(session.terminal, JuliaForever.History.Rejected(:queued_images))
+function continue!(session, ::JuliaForever.Conversation.TextOnly)
     launch!(session, next!(session.deferred))
 end
 
@@ -399,10 +403,16 @@ end
 
 function command!(session, state)
     queued = lock(session.agent.lock) do
-        queued = JuliaForever.dequeue!(session.agent)
-        JuliaForever.cancel!(session.agent)
+        queued = takequeued!(session.agent)
+        cancelcommand!(session.agent, queued)
         queued
     end
+    command!(session, state, queued)
+end
+cancelcommand!(agent, ::JuliaForever.History.Rejected) = nothing
+cancelcommand!(agent, ::NamedTuple) = JuliaForever.cancel!(agent)
+command!(session, state, rejected::JuliaForever.History.Rejected) = (JuliaForever.result!(session.terminal, rejected); :ok)
+function command!(session, state, queued::NamedTuple)
     draft!(session, queued)
     TerminalEditor.commitcommand!(state)
     session.area = nothing
@@ -439,11 +449,19 @@ function restore!(session, state, rejected::JuliaForever.History.Rejected)
     :ok
 end
 
-dequeue!(session, state) = restore!(session, state, JuliaForever.dequeue!(session.agent))
+function takequeued!(agent::JuliaForever.Agent)
+    lock(agent.lock) do
+        takequeued!(agent, JuliaForever.Conversation.queuecontent(agent.state))
+    end
+end
+takequeued!(agent, ::JuliaForever.Conversation.TextOnly) = JuliaForever.dequeue!(agent)
+takequeued!(agent, ::JuliaForever.Conversation.ContainsImages) = JuliaForever.History.Rejected(:queued_images)
+
+dequeue!(session, state) = restore!(session, state, takequeued!(session.agent))
 abort!(session, state, ::Available) = :ok
 function abort!(session, state, ::Busy)
     queued = lock(session.agent.lock) do
-        queued = JuliaForever.dequeue!(session.agent)
+        queued = takequeued!(session.agent)
         JuliaForever.cancel!(session.agent)
         queued
     end
@@ -550,9 +568,13 @@ function loop!(terminal, agent, extensions, history, input::Base.TTY, directory,
             waittask(session.task)
         finally
             finish!(session)
+            reportimages!(terminal, session.agent, JuliaForever.Conversation.queuecontent(session.agent.state))
         end
     end
     session.status
 end
+
+reportimages!(terminal, agent, ::JuliaForever.Conversation.TextOnly) = nothing
+reportimages!(terminal, agent, ::JuliaForever.Conversation.ContainsImages) = JuliaForever.checkqueues!(terminal, agent.state, agent.history)
 
 end

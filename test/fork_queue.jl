@@ -145,6 +145,57 @@ end
     end
 end
 
+@testset "fork refuses to discard another queued image" begin
+    history = QueueForkHistory.Tree(QueueForkHistory.Memory())
+    provider = QueueForkProvider([])
+    agent = Agent(provider, []; history)
+    image = Image("image/png", "c3ludGhldGljLWltYWdl")
+    queued = Ref(false)
+    callback = event -> begin
+        if event.type == :message_start && event.message["role"] == "assistant" && !queued[]
+            queued[] = true
+            steer!(agent, "queued text")
+            followup!(agent, JuliaForever.Conversation.ImagePrompt("", [image]))
+        end
+    end
+    @test respond!(agent, "first"; on_event=identity, on_agent_event=callback) == "reply:"
+    before = QueueForkHistory.snapshot(history).batches
+    calls = length(provider.requests)
+    diagnostics = IOBuffer()
+    terminal = JuliaForever.Terminal(IOBuffer(), diagnostics, String[])
+    result, selected, status = JuliaForever.command!(JuliaForever.ForkCommand(), terminal, agent, history, IOBuffer("2\nreplacement\n"), "", nothing)
+    @test status == 1 && result === agent && selected === history
+    @test length(provider.requests) == calls
+    @test QueueForkHistory.snapshot(history).batches == before
+    @test occursin("Queued images cannot be restored", String(take!(diagnostics)))
+    result, selected, status = JuliaForever.command!(JuliaForever.ForkCommand(), terminal, agent, history, IOBuffer("3\n"), "", nothing)
+    @test status == 1 && result === agent && selected === history
+    @test length(provider.requests) == calls && QueueForkHistory.snapshot(history).batches == before
+    @test occursin("Image messages cannot be edited", String(take!(diagnostics)))
+    close(history)
+end
+
+@testset "tree and fork refuse to edit an image message as text" begin
+    for command in (JuliaForever.TreeCommand(), JuliaForever.ForkCommand())
+        store = QueueForkHistory.Memory()
+        history = QueueForkHistory.Tree(store)
+        provider = QueueForkProvider([])
+        agent = Agent(provider, []; history)
+        image = Image("image/png", "c3ludGhldGljLWltYWdl")
+        prompt = JuliaForever.Conversation.ImagePrompt("image input", [image])
+        @test respond!(agent, prompt; on_event=identity) == "reply:image input"
+        before = QueueForkHistory.snapshot(store).batches
+        diagnostics = IOBuffer()
+        terminal = JuliaForever.Terminal(IOBuffer(), diagnostics, String[])
+        result, selected, status = JuliaForever.command!(command, terminal, agent, history, IOBuffer("1\nreplacement\n"), "", nothing)
+        @test status == 1 && result === agent && selected === history
+        @test length(provider.requests) == 1
+        @test QueueForkHistory.snapshot(store).batches == before
+        @test occursin("Image messages cannot be edited", String(take!(diagnostics)))
+        close(selected)
+    end
+end
+
 @testset "fork and clone preserve queued input and faults" begin
     for command in (JuliaForever.CloneCommand(), JuliaForever.ForkCommand())
         history = QueueForkHistory.Tree(QueueForkHistory.Memory())

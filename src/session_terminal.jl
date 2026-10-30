@@ -398,6 +398,7 @@ function fork!(terminal, agent, history, directory, draft, tree::History.Tree, c
     selected = attempt(() -> SessionCatalog.duplicate(fresh(history, directory), SessionCatalog.branchpath(tree, choice.node), SessionCatalog.Path()))
     forked!(terminal, agent, history, draft, selected, choice)
 end
+fork!(terminal, agent, history, directory, draft, tree::History.Tree, ::TreeTerminal.ImageFork) = (agent, history, result!(terminal, History.Rejected(:image_edit)))
 fork!(terminal, agent, history, directory, draft, tree::History.Tree, choice::TreeTerminal.QueuedFork) = fork!(terminal, agent, history, directory, draft, choice, attempt(() -> SessionCatalog.queuedpath(tree, choice.node)))
 fork!(terminal, agent, history, directory, draft, choice::TreeTerminal.QueuedFork, failure::ToolFailure) = resume!(terminal, agent, history, failure)
 fork!(terminal, agent, history, directory, draft, choice::TreeTerminal.QueuedFork, rejected::History.Rejected) = (agent, history, result!(terminal, rejected))

@@ -156,3 +156,42 @@ end
         queuerelease!(provider)
     end
 end
+
+@testset "image queues survive recording and continue in order" begin
+    mktempdir() do dir
+        path = joinpath(dir, "images.sqlite")
+        history = open(QueueHistory.SQLite, path)
+        provider = QueueProvider(Channel{Nothing}(1), Channel{Nothing}(1), Any[])
+        agent = Agent(provider, []; history)
+        image = Image("image/png", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aX0AAAAASUVORK5CYII=")
+        prompt = JuliaForever.Conversation.ImagePrompt("look", [image])
+        steer!(agent, prompt)
+        followup!(agent, prompt)
+        close(history)
+        history = open(QueueHistory.SQLite, path)
+        agent = Agent(provider, []; history)
+        @test agent.fault === nothing
+        task = Threads.@spawn respond!(agent, "start"; on_event=identity)
+        try
+            if queuestart(provider, task)
+                @test queuefinish(provider, task) == "answer"
+                users(request) = [m for m in request if m["role"] == "user"]
+                contents = users.(provider.requests)
+                @test length.(contents) == [2, 3]
+                @test contents[1][2] == contents[2][3]
+                @test contents[1][2]["content"] == "look"
+                @test contents[1][2]["images"] == [Dict("mime" => image.mime, "data" => image.data)]
+                close(history)
+                history = open(QueueHistory.SQLite, path)
+                restored = Agent(provider, []; history)
+                @test restored.fault === nothing
+                @test restored.messages == agent.messages
+                @test respond!(restored, "next"; on_event=identity) == "answer"
+                @test users(provider.requests[end])[2]["images"] == contents[1][2]["images"]
+            end
+        finally
+            queuerelease!(provider)
+            close(history)
+        end
+    end
+end

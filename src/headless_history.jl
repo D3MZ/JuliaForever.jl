@@ -1,6 +1,6 @@
 struct ForkEntry
     id::String
-    choice::Union{J.TreeTerminal.InputFork, J.TreeTerminal.QueuedFork}
+    choice::Union{J.TreeTerminal.InputFork, J.TreeTerminal.QueuedFork, J.TreeTerminal.ImageFork}
 end
 
 forks(session) = forks(J.sessiontree(session.store[]))
@@ -11,7 +11,7 @@ function forks(tree, branches::Vector)
     entries = ForkEntry[]
     ids = forkids(branches)
     for item in branches
-        choices = Union{J.TreeTerminal.InputFork, J.TreeTerminal.QueuedFork}[]
+        choices = Union{J.TreeTerminal.InputFork, J.TreeTerminal.QueuedFork, J.TreeTerminal.ImageFork}[]
         J.TreeTerminal.forkitem!(choices, item, J.History.treeevent(item.batch), branches)
         for (index, choice) in enumerate(choices)
             native = string(item.id, ":", index)
@@ -45,7 +45,7 @@ associatefork!(ids, entry, native::String) = (ids[native] = entry; nothing)
 findfork(branches, node::Int, text, ids) = findfork(branches, node, text, ids, get(branches, node, nothing))
 findfork(branches, node, text, ids, ::Nothing) = nothing
 function findfork(branches, node, text, ids, item::NamedTuple)
-    choices = Union{J.TreeTerminal.InputFork, J.TreeTerminal.QueuedFork}[]
+    choices = Union{J.TreeTerminal.InputFork, J.TreeTerminal.QueuedFork, J.TreeTerminal.ImageFork}[]
     J.TreeTerminal.forkitem!(choices, item, J.History.treeevent(item.batch), branches)
     index = findfirst(index -> choices[index].text == text && !haskey(ids, string(item.id, ":", index)), eachindex(choices))
     foundfork(branches, item, text, ids, index)

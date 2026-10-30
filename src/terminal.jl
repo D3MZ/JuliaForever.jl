@@ -189,30 +189,35 @@ result!(::Terminal, ::Union{AbstractString, Nothing}) = 0
 
 struct PendingInputs end
 
-queueplace(::Union{Nothing, History.Memory}) = "These messages exist only in memory."
+queueplace(::Union{Nothing, History.Memory}) = "These messages exist only in memory; exiting discards them."
 queueplace(history::History.Tree) = queueplace(history.store)
 queueplace(history::SessionCatalog.Deferred) = queueplace(history.store)
-queueplace(::History.Store) = "These messages remain saved; start a new session to resubmit them."
+queueplace(::History.Store) = "These messages remain saved in this session."
 
 function checkqueues!(terminal::Terminal, state::Conversation.State, history)
     isempty(state.steering) && isempty(state.followups) && return nothing
     println(terminal.diagnostics, "History has unprocessed queued messages. No new prompt was sent.")
     for text in state.steering
-        println(terminal.diagnostics, "Unprocessed steering: ", repr(redact(terminal, text)))
+        println(terminal.diagnostics, "Unprocessed steering: ", repr(redact(terminal, Conversation.queuetext(text))))
     end
     for text in state.followups
-        println(terminal.diagnostics, "Unprocessed follow-up: ", repr(redact(terminal, text)))
+        println(terminal.diagnostics, "Unprocessed follow-up: ", repr(redact(terminal, Conversation.queuetext(text))))
     end
+    queuewarning!(terminal, Conversation.queuecontent(state))
     println(terminal.diagnostics, queueplace(history))
     flush(terminal.diagnostics)
     PendingInputs()
 end
+queuewarning!(terminal, ::Conversation.TextOnly) = nothing
+queuewarning!(terminal, ::Conversation.ContainsImages) = result!(terminal, History.Rejected(:queued_images))
 
 const historydiagnostics = Dict(
     :uncertain_effect => "History has an uncertain pending effect. It was not retried. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.",
     :incomplete_turn => "History has an incomplete turn. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.",
     :not_interrupted => "History has no interrupted turn to abandon.",
     :pending_inputs => "History has unprocessed queued messages. Review them before forking this session.",
+    :queued_images => "Queued images cannot be restored to the text editor; the queue remains unchanged.",
+    :image_edit => "Image messages cannot be edited in the text editor; the session remains unchanged.",
 )
 
 function result!(terminal::Terminal, result::History.Rejected)

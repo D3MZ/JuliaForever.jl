@@ -27,6 +27,8 @@ using Test, JSON3
             @test success(process)
             process = run(ignorestatus(`$python $(joinpath(@__DIR__, "live_pty.py")) $root $julia`))
             @test success(process)
+            process = run(ignorestatus(`$python $(joinpath(@__DIR__, "image_queue_terminal_pty.py")) $root $julia`))
+            @test success(process)
         else
             @test_skip false
         end

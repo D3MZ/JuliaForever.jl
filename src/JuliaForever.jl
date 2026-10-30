@@ -492,8 +492,10 @@ startagent!(terminal, rejected::History.Rejected, extensions, store, args, sessi
 startagent!(terminal, agent::Agent, extensions, store, args, sessiondir, sessionname, skills) = startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, agent.fault)
 startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, fault::History.Rejected) = sessionfault!(terminal, fault, store[])
 function startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, ::Nothing)
-    startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, checkqueues!(terminal, agent.state, store[]))
+    startagentmode!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, terminal.mode)
 end
+startagentmode!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, mode) = startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, checkqueues!(terminal, agent.state, store[]))
+startagentmode!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, ::RPCMode) = startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, nothing)
 
 startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, ::PendingInputs) = 1
 

@@ -69,7 +69,7 @@ end
 
 function queuerequest(message)
     role = message["role"]
-    role == "user" && return Dict("role" => role, "content" => message["content"])
+    role == "user" && return Dict(key => message[key] for key in (haskey(message, "images") ? ("role", "content", "images") : ("role", "content")))
     role == "tool" && return Dict("role" => role, "id" => message["tool_call_id"], "content" => message["content"], "is_error" => message["is_error"])
     calls = [Dict("id" => call["id"], "name" => call["function"]["name"], "arguments" => JSON3.read(call["function"]["arguments"], Dict{String, Any})) for call in get(message, "tool_calls", [])]
     Dict("role" => role, "content" => message["content"], "calls" => calls)
@@ -131,6 +131,36 @@ end
             finally
                 isnothing(history) || close(history)
             end
+        end
+    end
+end
+
+@testset "Pi image queues at tool boundaries" begin
+    source = ENV["PI_SOURCE"]
+    @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
+    for execution in (:sequential, :parallel), mode in (:one_at_a_time, :all)
+        code = mode == :all ? "all" : "one-at-a-time"
+        reference = JSON3.read(read(`node $(joinpath(@__DIR__, "queue_modes_reference.mjs")) $source $(String(execution)) image $code`, String), Dict{String, Any})
+        mktempdir() do dir
+            calls = [call("one", "write", (; path="a.txt", content="first")), call("two", "write", (; path="b.txt", content="second"))]
+            responses = [completion(nothing; calls, finish="tool_calls"), completion("steered"), completion("followed"), completion("followed"), completion("followed")]
+            provider = AgentFixture(responses, [])
+            gate, started = Channel{Nothing}(1), Channel{Nothing}(1)
+            tool = QueueModeTool(dir, gate, started, execution == :parallel)
+            agent = Agent(provider, [tool])
+            image = Image("image/png", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aX0AAAAASUVORK5CYII=")
+            prompt(text) = JuliaForever.Conversation.ImagePrompt(text, [image])
+            respond!(agent, "start"; tool_execution=execution, on_event=identity, on_agent_event=event -> begin
+                trigger = execution == :parallel ? "two" : "one"
+                if event.type == :tool_execution_end && event.tool_call_id == trigger
+                    steer!(agent, prompt("steer one")); steer!(agent, "steer two")
+                    followup!(agent, prompt("follow one")); followup!(agent, "follow two")
+                    steeringmode!(agent, mode); followupmode!(agent, mode)
+                    execution == :parallel && put!(gate, nothing)
+                end
+            end)
+            @test [queuerequest.(request) for request in provider.requests] == reference["requests"]
+            @test [message["role"] for message in agent.messages] == reference["roles"]
         end
     end
 end

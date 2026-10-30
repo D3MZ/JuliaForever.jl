@@ -287,7 +287,16 @@ setqueuemode!(session, setter, ::Nothing) = Failure("Unknown queue mode")
 setqueuemode!(session, setter, mode::Symbol) = queuemoderesult(setter(session.agent, mode))
 queuemoderesult(::Nothing) = Success()
 queuemoderesult(rejected::J.History.Rejected) = Failure(string(rejected.reason))
-handle!(session, ::ClearQueue) = cleared(session, J.dequeue!(session.agent))
+function handle!(session, ::ClearQueue)
+    agent = session.agent
+    result = lock(agent.lock) do
+        clearqueue!(agent, J.Conversation.queuecontent(agent.state))
+    end
+    cleared(session, result)
+end
+clearqueue!(agent, ::J.Conversation.TextOnly) = J.dequeue!(agent)
+clearqueue!(agent, ::J.Conversation.ContainsImages) = Failure("Cannot clear queued images: RPC returns text only")
+cleared(session, failure::Failure) = failure
 function cleared(session, queue::NamedTuple)
     queues!(session)
     Success((; data=(; steering=queue.steering, followUp=queue.followups)))
@@ -314,6 +323,11 @@ named!(session, name, failure::J.History.Rejected) = Failure(string(failure.reas
 handle!(session, command::NewSession) = newsession!(session, command.parent)
 newsession!(session, parent::String) = Failure("Parent session tracking is not supported")
 function newsession!(session, ::Nothing)
+    pending = lock(() -> J.Conversation.queuecontent(session.agent.state), session.agent.lock)
+    newsession!(session, pending)
+end
+newsession!(session, ::J.Conversation.ContainsImages) = Failure("Session has pending inputs")
+function newsession!(session, ::J.Conversation.TextOnly)
     handle!(session, Abort())
     agent, history, status = J.new!(session.terminal, session.agent, session.store[], session.directory, session.extensions, session.templates)
     newresult!(session, agent, history, get(newstatuses, status, nothing), NewBinding())
@@ -424,12 +438,11 @@ end
 queued!(session, failure::J.History.Rejected) = Failure(string(failure.reason))
 handle!(session, command::Queue) = queue!(session, command.message, command.mode, command.images)
 function queue!(session, message, mode, images)
-    isempty(images) || return Failure("Queued images are not supported")
-    queue!(session, J.Prompts.expand(message, session.templates), mode)
+    queue!(session, J.fileprompt(J.Prompts.expand(message, session.templates), images), mode)
 end
 function queues!(session)
     queues = lock(session.agent.lock) do
-        (; steering=copy(session.agent.state.steering), followUp=copy(session.agent.state.followups))
+        (; steering=map(J.Conversation.queuetext, session.agent.state.steering), followUp=map(J.Conversation.queuetext, session.agent.state.followups))
     end
     lock(session.lock) do
         queues.steering == session.steering && queues.followUp == session.followups && return nothing
@@ -495,6 +508,7 @@ function rpc!(terminal, agent, extensions, store, args, sessiondir, templates)
     isempty(parsed.files) || return rpcfiles!(terminal)
     session = Session(terminal, agent, extensions, store, templates, sessiondir)
     write!(session, (; type="queue_update", steering=String[], followUp=String[]))
+    queues!(session)
     for line in eachline(stdin)
         respond!(session, request(line))
     end
