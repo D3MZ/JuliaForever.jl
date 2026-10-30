@@ -49,9 +49,11 @@ mutable struct State
     nextid::Int
     records::Dict{Int, Record}
     requests::Dict{Tuple{Int, String}, Int}
+    entries::Dict{Int, Int}
+    documents::Dict{Int, Vector{Pair{Int, Document}}}
 end
 
-State() = State(0, 0, Dict{Int, Record}(), Dict{Tuple{Int, String}, Int}())
+State() = State(0, 0, Dict{Int, Record}(), Dict{Tuple{Int, String}, Int}(), Dict{Int, Int}(), Dict{Int, Vector{Pair{Int, Document}}}())
 
 abstract type Health end
 struct Healthy <: Health end
@@ -248,6 +250,14 @@ store!(state::State, record::Record, rejected::Rejected) = rejected
 
 function store!(state::State, record::Record, ::Nothing)
     state.records[record.id] = record
+    index!(state, record)
+    nothing
+end
+
+index!(state::State, record::Record) = nothing
+index!(state::State, record::Entry) = (state.entries[record.id] = state.seq + 1; nothing)
+function index!(state::State, record::Document)
+    push!(get!(Vector{Pair{Int, Document}}, state.documents, record.id), (state.seq + 1) => record)
     nothing
 end
 
@@ -462,6 +472,26 @@ function entries(store::Store, conversation::Integer)
 end
 
 entries(tx::Transaction, conversation::Integer) = copyentries(tx.state, conversation, status(tx))
+function snapshot(store::Store, conversation::Integer, document::Integer, entry::Integer)
+    lock(store.lock) do
+        snapshot(store.state, conversation, document, entry, status(store))
+    end
+end
+snapshot(state, conversation, document, entry, rejected::Rejected) = rejected
+snapshot(state, conversation, document, entry, ::Nothing) = snapshotentry(state, conversation, document, get(state.records, entry, nothing))
+snapshotentry(state, conversation, document, ::Union{Nothing, Record}) = Rejected(:entry_not_visible)
+function snapshotentry(state, conversation, document, entry::Entry)
+    entry.conversation == conversation || return Rejected(:entry_not_visible)
+    snapshotdocument(state, conversation, state.entries[entry.id], get(state.records, document, nothing))
+end
+snapshotdocument(state, conversation, seq, ::Union{Nothing, Record}) = nothing
+function snapshotdocument(state, conversation, seq, document::Document)
+    document.conversation == conversation || return nothing
+    versions = state.documents[document.id]
+    snapshotversion(versions, findlast(version -> version.first <= seq, versions))
+end
+snapshotversion(versions, ::Nothing) = nothing
+snapshotversion(versions, index::Integer) = deepcopy(versions[index].second)
 
 Base.get(tx::Transaction, ::Type{T}, id::Integer) where {T <: Record} = readrecord(tx, T, id, status(tx))
 mint!(tx::Transaction) = mint!(tx, status(tx))
