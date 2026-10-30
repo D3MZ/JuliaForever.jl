@@ -153,6 +153,14 @@ function failure!(terminal::Terminal, ::InvalidResponse)
     1
 end
 
+function request!(terminal::Terminal, task, exception::Union{HTTP.HTTPError, InterruptException})
+    line!(terminal)
+    terminal.streamed = false
+    (; value=nothing, status=failure!(terminal, exception))
+end
+
+request!(terminal::Terminal, task, exception) = (; value=fetch(task), status=0)
+
 function request!(f, terminal::Terminal)
     task = Threads.@spawn f()
     ready = Channel{Nothing}(1)
@@ -166,11 +174,7 @@ function request!(f, terminal::Terminal)
     take!(ready)
     if istaskfailed(task)
         entry = last(current_exceptions(task))
-        if entry.exception isa Union{HTTP.HTTPError, InterruptException}
-            line!(terminal)
-            terminal.streamed = false
-            return (; value=nothing, status=failure!(terminal, entry.exception))
-        end
+        return request!(terminal, task, entry.exception)
     end
     (; value=fetch(task), status=0)
 end

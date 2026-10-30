@@ -36,16 +36,38 @@ end
 
 canonical(path) = ispath(path) ? realpath(path) : path
 
-function shadow(cwd)
-    git = gitpaths(cwd)
-    isnothing(git) && return nothing
+shadow(cwd::AbstractString) = shadow(gitpaths(cwd))
+shadow(::Nothing) = nothing
+
+function shadow(git::NamedTuple)
     common = canonical(git.common)
     worktree = canonical(git.root)
     main = dirname(common)
     startswith(worktree, joinpath(main, "")) || return nothing
     canonical(joinpath(main, ".git")) == common || return nothing
-    context = file(worktree)
-    isnothing(context) ? nothing : joinpath(main, basename(context.path))
+    shadow(main, file(worktree))
+end
+
+shadow(main, ::Nothing) = nothing
+shadow(main, context::NamedTuple) = joinpath(main, basename(context.path))
+
+load!(files, seen, ::Nothing) = nothing
+load!(files, seen, dir::AbstractString) = load!(files, seen, file(abspath(expanduser(dir))))
+
+function load!(files, seen, context::NamedTuple)
+    push!(files, context)
+    push!(seen, context.path)
+    nothing
+end
+
+shadowed(::Nothing, dir, context) = false
+shadowed(path::AbstractString, dir, context) = joinpath(canonical(dir), basename(context.path)) == path
+load!(files, seen, dir, ::Nothing, shadow) = nothing
+
+function load!(files, seen, dir, context::NamedTuple, shadow)
+    shadowed(shadow, dir, context) && return nothing
+    context.path in seen && return nothing
+    load!(files, seen, context)
 end
 
 """
@@ -59,22 +81,12 @@ function load(cwd=pwd(); agentdir=nothing)
     cwd = abspath(expanduser(cwd))
     files = NamedTuple{(:path, :content), Tuple{String, String}}[]
     seen = Set{String}()
-    if !isnothing(agentdir)
-        globalfile = file(abspath(expanduser(agentdir)))
-        if !isnothing(globalfile)
-            push!(files, globalfile)
-            push!(seen, globalfile.path)
-        end
-    end
+    load!(files, seen, agentdir)
     ancestors = similar(files, 0)
     shadowed = shadow(cwd)
     dir = cwd
     while true
-        context = file(dir)
-        if !isnothing(context) && (isnothing(shadowed) || joinpath(canonical(dir), basename(context.path)) != shadowed) && !(context.path in seen)
-            push!(ancestors, context)
-            push!(seen, context.path)
-        end
+        load!(ancestors, seen, dir, file(dir), shadowed)
         parent = dirname(dir)
         parent == dir && break
         dir = parent

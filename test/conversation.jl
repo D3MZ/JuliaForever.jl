@@ -8,6 +8,19 @@ function reply(text; calls=C.ToolCall[], finish="stop", done=true)
 end
 
 @testset "conversation transitions" begin
+    phases = (C.Ready, C.ReadyModel, C.ReadyDecision, C.WaitingModel, C.WaitingTools, C.Complete, C.Incomplete, C.Cancelled)
+    @test length(unique(typeof.(phases))) == length(phases)
+    @test string.(phases) == ("Ready", "ReadyModel", "ReadyDecision", "WaitingModel", "WaitingTools", "Complete", "Incomplete", "Cancelled")
+    @test instances(C.Phase) == phases
+    @test Int.(phases) == Tuple(0:7)
+    @test Int32.(phases) == Tuple(Int32.(0:7))
+    @test C.Phase.(0:7) == collect(phases)
+    @test (C.Ready .== C.Complete) === false
+    @test C.Ready < C.Complete
+    @test C.Ready <= C.Ready
+    @test C.Complete > C.Ready
+    @test C.Complete >= C.Complete
+    @test sort([C.Complete, C.Ready]) == [C.Ready, C.Complete]
     state = C.State("session")
     @test isconcretetype(typeof(state))
     @test state.revision == 0

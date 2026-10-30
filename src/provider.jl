@@ -92,8 +92,12 @@ Base.close(callback::OpenRouterCallback) = (close(callback.server); wait(callbac
 function exchange(login::OpenRouterLogin, code; base="https://openrouter.ai/api/v1")
     body = JSON3.write((; code, code_verifier=login.verifier, code_challenge_method="S256"))
     response = HTTP.post("$(rstrip(base, '/'))/auth/keys", ["Content-Type" => "application/json"], body; redirect=false, retry=false, cookies=false)
-    data = decode(String(response.body))
-    data isa InvalidResponse && return data
+    apikey(decode(String(response.body)))
+end
+
+apikey(failure::InvalidResponse) = failure
+
+function apikey(data::AbstractDict)
     key = get(data, "key", nothing)
     key isa AbstractString && !isempty(key) ? key : nothing
 end
@@ -118,24 +122,43 @@ end
 
 incomplete(failure::InvalidResponse) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, failure)
 
+usage(::Nothing) = nothing
+details(::Nothing) = Dict()
+details(data) = data
+upstream(::Nothing) = 0
+upstream(data) = get(data, "upstream_inference_cost", 0)
+usagecost(::Nothing, data) = nothing
+usagecost(cost, data) = Float64(get(data, "is_byok", false) ? cost + upstream(get(data, "cost_details", nothing)) : cost)
+
 function usage(data)
     prompt = get(data, "prompt_tokens", 0)
     output = get(data, "completion_tokens", 0)
-    prompt_details = get(data, "prompt_tokens_details", nothing)
-    prompt_details = isnothing(prompt_details) ? Dict() : prompt_details
-    output_details = get(data, "completion_tokens_details", nothing)
-    output_details = isnothing(output_details) ? Dict() : output_details
+    prompt_details = details(get(data, "prompt_tokens_details", nothing))
+    output_details = details(get(data, "completion_tokens_details", nothing))
     cache_read = get(prompt_details, "cached_tokens", get(data, "prompt_cache_hit_tokens", get(data, "cached_tokens", 0)))
     cache_write = get(prompt_details, "cache_write_tokens", 0)
     reasoning = get(output_details, "reasoning_tokens", 0)
     input = max(0, prompt - cache_read - cache_write)
-    cost = get(data, "cost", nothing)
-    if !isnothing(cost) && get(data, "is_byok", false)
-        details = get(data, "cost_details", nothing)
-        cost += isnothing(details) ? 0 : get(details, "upstream_inference_cost", 0)
-    end
-    Usage(input, output, cache_read, cache_write, reasoning, input + output + cache_read + cache_write, isnothing(cost) ? nothing : Float64(cost))
+    cost = usagecost(get(data, "cost", nothing), data)
+    Usage(input, output, cache_read, cache_write, reasoning, input + output + cache_read + cache_write, cost)
 end
+
+recordusage!(reported, callback, ::Nothing) = nothing
+function recordusage!(reported, callback, raw)
+    reported[] = usage(raw)
+    callback((; type=:usage, usage=reported[]))
+end
+
+recordfinish!(finish, callback, ::Nothing) = nothing
+function recordfinish!(finish, callback, reason)
+    finish[] = reason
+    callback((; type=:finish, reason))
+end
+
+appendtext(::Nothing, text) = text
+appendtext(current, text) = current * text
+writeonce!(output, key, ::Nothing) = nothing
+writeonce!(output, key, value) = isempty(output[key]) && (output[key] = value)
 
 function payload(provider::OpenAI, messages, tools, parameters; streaming=false)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(parameters))
@@ -156,12 +179,16 @@ endpoint(provider::OpenAI) = "$(rstrip(provider.base, '/'))/chat/completions"
 
 function complete(provider::OpenAI, messages, tools; parameters=Dict())
     response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false)
-    data = decode(String(response.body))
-    data isa InvalidResponse && return incomplete(data)
+    complete(provider, decode(String(response.body)))
+end
+
+complete(provider::OpenAI, failure::InvalidResponse) = incomplete(failure)
+
+function complete(provider::OpenAI, data::AbstractDict)
     choice = first(data["choices"])
     finish = get(choice, "finish_reason", nothing)
     raw_usage = get(data, "usage", nothing)
-    used = isnothing(raw_usage) ? nothing : usage(raw_usage)
+    used = usage(raw_usage)
     done = finish in ("stop", "end", "length", "tool_calls", "function_call")
     failure = done ? nothing : "Provider finish_reason: $(isnothing(finish) ? "missing" : finish)"
     Completion(choice["message"], used, finish, done, failure)
@@ -191,19 +218,11 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
             failure[] = JSON3.write(data["error"])
             return
         end
-        raw_usage = get(data, "usage", nothing)
-        if !isnothing(raw_usage)
-            reported_usage[] = usage(raw_usage)
-            on_event((; type=:usage, usage=reported_usage[]))
-        end
+        recordusage!(reported_usage, on_event, get(data, "usage", nothing))
         choices = get(data, "choices", [])
         isempty(choices) && return
         choice = first(choices)
-        reason = get(choice, "finish_reason", nothing)
-        if !isnothing(reason)
-            finish[] = reason
-            on_event((; type=:finish, reason))
-        end
+        recordfinish!(finish, on_event, get(choice, "finish_reason", nothing))
         delta = get(choice, "delta", nothing)
         isnothing(delta) && return
         for field in ("reasoning_content", "reasoning", "reasoning_text")
@@ -215,8 +234,7 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
         end
         text = get(delta, "content", nothing)
         if text isa AbstractString && !isempty(text)
-            current = message["content"]
-            message["content"] = isnothing(current) ? text : current * text
+            message["content"] = appendtext(message["content"], text)
             on_event((; type=:text, text))
         end
         for call in get(delta, "tool_calls", [])
@@ -227,10 +245,10 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
             end
             output = calls[index]
             id = get(call, "id", nothing)
-            !isnothing(id) && isempty(output["id"]) && (output["id"] = id)
+            writeonce!(output, "id", id)
             fn = get(call, "function", Dict())
             name = get(fn, "name", nothing)
-            !isnothing(name) && isempty(output["function"]["name"]) && (output["function"]["name"] = name)
+            writeonce!(output["function"], "name", name)
             arguments = get(fn, "arguments", "")
             output["function"]["arguments"] *= arguments
             on_event((; type=:tool_call, index, id, name, arguments))

@@ -7,30 +7,25 @@ typecode(::Type{Int}) = "int"
 typecode(::Type{Float64}) = "float"
 typecode(::Type{String}) = "string"
 
-function typecode(::Type{Vector{T}}) where T
-    code = typecode(T)
-    code isa Rejected ? code : Any["vector", code]
+typecode(::Type{Vector{T}}) where T = typecode("vector", typecode(T))
+typecode(::Type{Dict{String, T}}) where T = typecode("dict", typecode(T))
+typecode(kind, code::Rejected) = code
+typecode(kind, code) = Any[kind, code]
+
+valuetype(code) = Rejected(:invalid_record)
+const valuetypes = Dict("any" => Any, "nothing" => Nothing, "bool" => Bool, "int" => Int, "float" => Float64, "string" => String)
+const containertypes = Dict("vector" => Vector, "dict" => Dict)
+valuetype(code::AbstractString) = get(valuetypes, code, Rejected(:invalid_record))
+
+function valuetype(code::Vector)
+    length(code) == 2 || return Rejected(:invalid_record)
+    valuetype(get(containertypes, code[1], nothing), valuetype(code[2]))
 end
 
-function typecode(::Type{Dict{String, T}}) where T
-    code = typecode(T)
-    code isa Rejected ? code : Any["dict", code]
-end
-
-function valuetype(code)
-    code == "any" && return Any
-    code == "nothing" && return Nothing
-    code == "bool" && return Bool
-    code == "int" && return Int
-    code == "float" && return Float64
-    code == "string" && return String
-    code isa Vector && length(code) == 2 || return Rejected(:invalid_record)
-    type = valuetype(code[2])
-    type isa Rejected && return type
-    code[1] == "vector" && return Vector{type}
-    code[1] == "dict" && return Dict{String, type}
-    Rejected(:invalid_record)
-end
+valuetype(kind, rejected::Rejected) = rejected
+valuetype(::Nothing, type::Type) = Rejected(:invalid_record)
+valuetype(::Type{Vector}, type::Type) = Vector{type}
+valuetype(::Type{Dict}, type::Type) = Dict{String, type}
 
 packvalue(x, seen=IdDict()) = Rejected(:unsupported_value)
 packvalue(x::Union{Nothing, Bool, Int, Float64, String}, seen=IdDict()) = value(x, seen)
@@ -75,50 +70,53 @@ end
 unvalue(x::Union{Nothing, Bool, Int, Float64, String}) = value(x, IdDict())
 unvalue(x) = Rejected(:invalid_record)
 
-function unvalue(x::Dict)
-    type = valuetype(x["type"])
-    type isa Rejected && return type
-    if x["kind"] == "vector" && x["items"] isa Vector
-        result = type[]
-        for item in x["items"]
-            item = unvalue(item)
-            item isa Rejected && return item
-            item isa type || return Rejected(:invalid_record)
-            push!(result, item)
-        end
-        return result
-    elseif x["kind"] == "dict" && x["items"] isa Dict
-        result = Dict{String, type}()
-        for (key, item) in x["items"]
-            key isa String && isvalid(key) || return Rejected(:invalid_record)
-            item = unvalue(item)
-            item isa Rejected && return item
-            item isa type || return Rejected(:invalid_record)
-            result[key] = item
-        end
-        return result
-    end
-    Rejected(:invalid_record)
-end
+unvalue(x::Dict) = unvalue(x, valuetype(x["type"]))
+unvalue(x::Dict, rejected::Rejected) = rejected
+unvalue(x::Dict, type::Type) = unvalue(get(containertypes, x["kind"], nothing), get(x, "items", nothing), type)
+unvalue(kind, items, type) = Rejected(:invalid_record)
 
-function node(kind, fields...)
-    for field in fields
-        field isa Rejected && return field
-    end
-    data = Dict("kind" => kind, "fields" => Any[fields...])
-    checked = value(data, IdDict())
-    checked isa Rejected ? checked : data
-end
-
-function packall(xs)
-    items = Any[]
-    for x in xs
-        item = pack(x)
+function unvalue(::Type{Vector}, items::Vector, type::Type)
+    result = type[]
+    for item in items
+        item = unvalue(item)
         item isa Rejected && return item
-        push!(items, item)
+        item isa type || return Rejected(:invalid_record)
+        push!(result, item)
     end
-    items
+    result
 end
+
+function unvalue(::Type{Dict}, items::Dict, type::Type)
+    result = Dict{String, type}()
+    for (key, item) in items
+        key isa String && isvalid(key) || return Rejected(:invalid_record)
+        item = unvalue(item)
+        item isa Rejected && return item
+        item isa type || return Rejected(:invalid_record)
+        result[key] = item
+    end
+    result
+end
+
+rejection(result, field) = result
+rejection(::Nothing, field::Rejected) = field
+
+node(kind, fields...) = node(kind, fields, foldl(rejection, fields; init=nothing))
+node(kind, fields::Tuple, rejected::Rejected) = rejected
+
+function node(kind, fields::Tuple, ::Nothing)
+    data = Dict("kind" => kind, "fields" => Any[fields...])
+    validated(data, value(data, IdDict()))
+end
+
+validated(data, checked::Rejected) = checked
+validated(data, checked) = data
+
+packall(xs) = foldl(packitem, xs; init=Any[])
+packitem(rejected::Rejected, item) = rejected
+packitem(items::Vector, item) = packed(items, pack(item))
+packed(items::Vector, rejected::Rejected) = rejected
+packed(items::Vector, item) = push!(items, item)
 
 pack(x) = Rejected(:unsupported_value)
 pack(x::C.User) = node("user", x.content)
@@ -159,43 +157,49 @@ function unpackall(xs, type)
     items
 end
 
-function unpack(x)
-    x isa Dict || return Rejected(:invalid_record)
-    kind, f = x["kind"], x["fields"]
-    f isa Vector || return Rejected(:invalid_record)
-    kind == "user" && return C.User(f[1])
-    kind == "raw" && return C.RawMessage(unvalue(f[1]))
-    kind == "tool_call" && return C.ToolCall(f[1], f[2], f[3], unvalue(f[4]))
-    kind == "assistant" && return C.Assistant(f[1], unpackall(f[2], C.ToolCall), f[3], f[4], unvalue(f[5]))
-    kind == "tool_message" && return C.ToolMessage(f[1], f[2], f[3])
-    kind == "model_request" && return C.ModelRequest(unpackall(f[1], C.Message))
-    kind == "tool_request" && return C.ToolRequest(unpack(f[1]))
-    kind == "skip_request" && return C.SkipRequest(unpack(f[1]))
-    kind == "model_reply" && return C.ModelReply(unpack(f[1]))
-    kind == "tool_reply" && return C.ToolReply(f[1], f[2])
-    kind == "model_failure" && return C.ModelFailure(f[1])
-    kind == "abandoned" && return C.Abandoned(f[1])
-    kind == "input" && return C.Input(f[1], f[2])
-    kind == "steer" && return C.Steer(f[1], f[2])
-    kind == "followup" && return C.Followup(f[1], f[2])
-    kind == "advance" && return C.Advance(f[1])
-    kind == "cancel" && return C.Cancel(f[1])
-    kind == "history" && return C.History(f[1], unpackall(f[2], C.Message))
-    kind == "interrupt" && return C.Interrupt(f[1], f[2])
-    kind == "abandon" && return C.Abandon(f[1], f[2])
-    kind == "call" && return K.Call(f[1], unvalue(f[2]))
-    kind == "return" && return K.Return(unvalue(f[1]))
-    kind == "fail" && return K.Fail(unvalue(f[1]))
-    kind == "plan" && return K.Plan(f[1], f[2], unpack(f[3]))
-    kind == "observe" && return K.Observe(f[1], f[2], unpack(f[3]))
-    kind == "finish" && return K.Finish(f[1])
-    Rejected(:invalid_record)
-end
+const nodetypes = Dict(
+    "user" => C.User, "raw" => C.RawMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant,
+    "tool_message" => C.ToolMessage, "model_request" => C.ModelRequest, "tool_request" => C.ToolRequest,
+    "skip_request" => C.SkipRequest, "model_reply" => C.ModelReply, "tool_reply" => C.ToolReply,
+    "model_failure" => C.ModelFailure, "abandoned" => C.Abandoned, "input" => C.Input, "steer" => C.Steer,
+    "followup" => C.Followup, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History,
+    "interrupt" => C.Interrupt, "abandon" => C.Abandon, "call" => K.Call, "return" => K.Return,
+    "fail" => K.Fail, "plan" => K.Plan, "observe" => K.Observe, "finish" => K.Finish,
+)
 
-function encode(event::K.Event)
-    data = pack(event)
-    data isa Rejected ? data : Dict("format" => "JuliaForever.AgentEvent/1", "event" => data)
-end
+unpack(x) = Rejected(:invalid_record)
+unpack(x::Dict) = unpack(get(nodetypes, x["kind"], nothing), x["fields"])
+unpack(type, fields) = Rejected(:invalid_record)
+unpack(::Type{C.User}, f::Vector) = C.User(f[1])
+unpack(::Type{C.RawMessage}, f::Vector) = C.RawMessage(unvalue(f[1]))
+unpack(::Type{C.ToolCall}, f::Vector) = C.ToolCall(f[1], f[2], f[3], unvalue(f[4]))
+unpack(::Type{C.Assistant}, f::Vector) = C.Assistant(f[1], unpackall(f[2], C.ToolCall), f[3], f[4], unvalue(f[5]))
+unpack(::Type{C.ToolMessage}, f::Vector) = C.ToolMessage(f[1], f[2], f[3])
+unpack(::Type{C.ModelRequest}, f::Vector) = C.ModelRequest(unpackall(f[1], C.Message))
+unpack(::Type{C.ToolRequest}, f::Vector) = C.ToolRequest(unpack(f[1]))
+unpack(::Type{C.SkipRequest}, f::Vector) = C.SkipRequest(unpack(f[1]))
+unpack(::Type{C.ModelReply}, f::Vector) = C.ModelReply(unpack(f[1]))
+unpack(::Type{C.ToolReply}, f::Vector) = C.ToolReply(f[1], f[2])
+unpack(::Type{C.ModelFailure}, f::Vector) = C.ModelFailure(f[1])
+unpack(::Type{C.Abandoned}, f::Vector) = C.Abandoned(f[1])
+unpack(::Type{C.Input}, f::Vector) = C.Input(f[1], f[2])
+unpack(::Type{C.Steer}, f::Vector) = C.Steer(f[1], f[2])
+unpack(::Type{C.Followup}, f::Vector) = C.Followup(f[1], f[2])
+unpack(::Type{C.Advance}, f::Vector) = C.Advance(f[1])
+unpack(::Type{C.Cancel}, f::Vector) = C.Cancel(f[1])
+unpack(::Type{C.History}, f::Vector) = C.History(f[1], unpackall(f[2], C.Message))
+unpack(::Type{C.Interrupt}, f::Vector) = C.Interrupt(f[1], f[2])
+unpack(::Type{C.Abandon}, f::Vector) = C.Abandon(f[1], f[2])
+unpack(::Type{K.Call}, f::Vector) = K.Call(f[1], unvalue(f[2]))
+unpack(::Type{K.Return}, f::Vector) = K.Return(unvalue(f[1]))
+unpack(::Type{K.Fail}, f::Vector) = K.Fail(unvalue(f[1]))
+unpack(::Type{K.Plan}, f::Vector) = K.Plan(f[1], f[2], unpack(f[3]))
+unpack(::Type{K.Observe}, f::Vector) = K.Observe(f[1], f[2], unpack(f[3]))
+unpack(::Type{K.Finish}, f::Vector) = K.Finish(f[1])
+
+encode(event::K.Event) = encoded(pack(event))
+encoded(rejected::Rejected) = rejected
+encoded(data) = Dict("format" => "JuliaForever.AgentEvent/1", "event" => data)
 
 function decode_event(record)
     try
@@ -209,9 +213,11 @@ end
 
 function encode_initial(state::C.State)
     state.revision == 0 && state.kernel.revision == 0 && state.phase == C.Ready || return Rejected(:unsupported_value)
-    messages = packall(state.messages)
-    messages isa Rejected ? messages : Dict("format" => "JuliaForever.Agent/1", "id" => state.kernel.id, "automatic" => state.automatic, "messages" => messages)
+    encode_initial(state, packall(state.messages))
 end
+
+encode_initial(state::C.State, rejected::Rejected) = rejected
+encode_initial(state::C.State, messages::Vector) = Dict("format" => "JuliaForever.Agent/1", "id" => state.kernel.id, "automatic" => state.automatic, "messages" => messages)
 
 function decode_initial(record)
     try

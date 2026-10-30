@@ -214,3 +214,56 @@ end
         wait(server)
     end
 end
+
+@testset "Responses message conversion" begin
+    messages = Any[
+        Dict("role" => "user", "content" => "hello"),
+        Dict("role" => "assistant", "content" => "thinking", "tool_calls" => [Dict("id" => "c", "function" => Dict("name" => "read", "arguments" => "{}"))]),
+        Dict("role" => "tool", "tool_call_id" => "c", "content" => "done"),
+        Dict("role" => "assistant", "response_output" => [Dict("type" => "reasoning", "id" => "r")]),
+    ]
+    @test JuliaForever.input(messages) == Any[
+        Dict("role" => "user", "content" => "hello"),
+        Dict("role" => "assistant", "content" => "thinking"),
+        Dict("type" => "function_call", "call_id" => "c", "name" => "read", "arguments" => "{}"),
+        Dict("type" => "function_call_output", "call_id" => "c", "output" => "done"),
+        Dict("type" => "reasoning", "id" => "r"),
+    ]
+    output = Any[
+        Dict("type" => "message", "content" => Any[Dict("type" => "output_text", "text" => "yes"), Dict("type" => "refusal", "refusal" => "no"), Dict("type" => "other", "" => "ignored")]),
+        Dict("type" => "function_call", "call_id" => "c", "name" => "read", "arguments" => "{}"),
+        Dict("type" => "reasoning", "id" => "r"),
+    ]
+    result = JuliaForever.message(output)
+    @test result["content"] == "yesno"
+    @test result["tool_calls"] == [Dict("id" => "c", "type" => "function", "function" => Dict("name" => "read", "arguments" => "{}"))]
+    @test result["response_output"] === output
+end
+
+@testset "Responses event conversion" begin
+    @test JuliaForever.responseevent(Dict("type" => "response.output_text.delta", "delta" => "text")) isa JuliaForever.TextDelta
+    @test JuliaForever.responseevent(Dict("type" => "response.refusal.delta", "delta" => "text")) isa JuliaForever.TextDelta
+    @test JuliaForever.responseevent(Dict("type" => "response.reasoning_text.delta", "delta" => "text")) isa JuliaForever.ThinkingDelta
+    @test JuliaForever.responseevent(Dict("type" => "response.output_item.added", "item" => Dict())) isa JuliaForever.OutputAdded
+    @test JuliaForever.responseevent(Dict("type" => "response.function_call_arguments.delta", "delta" => "{}")) isa JuliaForever.ArgumentDelta
+    @test JuliaForever.responseevent(Dict("type" => "response.output_item.done", "item" => Dict())) isa JuliaForever.OutputDone
+    @test JuliaForever.responseevent(Dict("type" => "response.completed", "response" => Dict())) isa JuliaForever.ResponseEnded
+    @test JuliaForever.responseevent(Dict("type" => "error", "message" => "bad")) isa JuliaForever.ResponseError
+    @test isnothing(JuliaForever.responseevent(Dict("type" => "unknown")))
+end
+
+@testset "Responses event handling" begin
+    events = Any[]
+    state = JuliaForever.ResponseStream(event -> push!(events, event))
+    receive(data) = JuliaForever.receive!(state, JSON3.write(data))
+    receive(Dict("type" => "response.output_text.delta", "delta" => "hello"))
+    receive(Dict("type" => "response.refusal.delta", "delta" => " there"))
+    @test state.partial["content"] == "hello there"
+    @test [event.type for event in events] == [:provider, :text, :provider, :text]
+    receive(Dict("type" => "response.output_item.added", "item" => Dict("type" => "message")))
+    @test isempty(state.active)
+    receive(Dict("type" => "response.function_call_arguments.delta", "output_index" => 3))
+    @test state.failure == "Responses stream contained an ambiguous function call delta"
+    receive(Dict("type" => "response.output_item.done", "item" => Dict("type" => "message")))
+    @test state.failure == "Responses stream omitted an output index"
+end

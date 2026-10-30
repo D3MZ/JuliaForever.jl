@@ -1,6 +1,7 @@
 module Execution
 
 using Distributed
+import ..JuliaForever: emit
 
 function perform end
 
@@ -45,6 +46,7 @@ end
 
 Base.fetch(handle::Handle) = fetch(handle.result)
 cancel!(handle::Handle) = cancel!(handle.cancellation)
+cancel!(::Nothing) = nothing
 
 struct Request{W}
     work::W
@@ -89,7 +91,7 @@ end
 
 function submit!(executor::Executor, id::AbstractString, attempt::Integer, work; on_handle=nothing)
     handle = Handle(String(id), Int(attempt), Cancellation(), Channel{Result}(1))
-    isnothing(on_handle) || on_handle(handle)
+    emit(on_handle, handle)
     put!(executor.queue, Request(work, handle))
     handle
 end

@@ -26,20 +26,22 @@ function seen!(seen, a, b)
     false
 end
 
-function same(a, b, seen)
-    typeof(a) === typeof(b) && isequal(a, b) || return false
-    type = typeof(a)
-    (isbitstype(type) || a isa Union{AbstractString, Symbol, Type, Function, Ptr, Module}) && return true
-    isstructtype(type) || return true
-    ismutabletype(type) && seen!(seen, a, b) && return true
-    for field in fieldnames(type)
+same(a, b, seen) = false
+same(a::T, b::T, seen) where {T <: Union{AbstractString, Symbol, Type, Function, Ptr, Module}} = isequal(a, b)
+
+function same(a::T, b::T, seen) where T
+    isequal(a, b) || return false
+    isbitstype(T) && return true
+    isstructtype(T) || return true
+    ismutabletype(T) && seen!(seen, a, b) && return true
+    for field in fieldnames(T)
         same(getfield(a, field), getfield(b, field), seen) || return false
     end
     true
 end
 
-function same(a::AbstractArray, b::AbstractArray, seen)
-    typeof(a) === typeof(b) && axes(a) == axes(b) || return false
+function same(a::T, b::T, seen) where {T <: AbstractArray}
+    axes(a) == axes(b) || return false
     seen!(seen, a, b) && return true
     for (x, y) in zip(a, b)
         same(x, y, seen) || return false
@@ -47,8 +49,8 @@ function same(a::AbstractArray, b::AbstractArray, seen)
     true
 end
 
-function same(a::AbstractDict, b::AbstractDict, seen)
-    typeof(a) === typeof(b) && length(a) == length(b) || return false
+function same(a::T, b::T, seen) where {T <: AbstractDict}
+    length(a) == length(b) || return false
     seen!(seen, a, b) && return true
     for (key, value) in a
         found = false
@@ -64,17 +66,15 @@ function same(a::AbstractDict, b::AbstractDict, seen)
     true
 end
 
-function same(a::Tuple, b::Tuple, seen)
-    typeof(a) === typeof(b) && length(a) == length(b) || return false
+function same(a::T, b::T, seen) where {T <: Tuple}
+    length(a) == length(b) || return false
     for (x, y) in zip(a, b)
         same(x, y, seen) || return false
     end
     true
 end
 
-function same(a::NamedTuple, b::NamedTuple, seen)
-    typeof(a) === typeof(b) && same(Tuple(a), Tuple(b), seen)
-end
+same(a::T, b::T, seen) where {T <: NamedTuple} = same(Tuple(a), Tuple(b), seen)
 
 Base.isequal(a::Return, b::Return) = same(a.value, b.value)
 Base.isequal(a::Fail, b::Fail) = same(a.value, b.value)
@@ -196,13 +196,15 @@ Base.IteratorSize(::Type{<:Replay}) = Base.SizeUnknown()
 Base.IteratorEltype(::Type{<:Replay}) = Base.EltypeUnknown()
 Base.iterate(replay::Replay) = iterate(replay, (getfield(replay, :initial), 1))
 
-function Base.iterate(replay::Replay, cursor::Tuple{S, Int}) where S
-    state, index = cursor
+cursor(result::Rejected, events, index) = (result.state, length(events) + 1)
+cursor(result, events, index) = (result.state, index + 1)
+
+function Base.iterate(replay::Replay, position::Tuple{S, Int}) where S
+    state, index = position
     events = getfield(replay, :events)
     index > length(events) && return nothing
     result = step(state, events[index])
-    next = result isa Rejected ? length(events) + 1 : index + 1
-    result, (result.state, next)
+    result, cursor(result, events, index)
 end
 
 end

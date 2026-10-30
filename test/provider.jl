@@ -1,5 +1,18 @@
 using HTTP, JSON3
 
+@testset "provider usage decoding" begin
+    @test JuliaForever.usage(nothing) === nothing
+    plain = JuliaForever.usage(Dict{String, Any}("prompt_tokens" => 20, "completion_tokens" => 5, "prompt_tokens_details" => nothing, "completion_tokens_details" => nothing, "cost" => 0.003))
+    @test (plain.input, plain.output, plain.cache_read, plain.cache_write, plain.reasoning, plain.total) == (20, 5, 0, 0, 0, 25)
+    @test plain.cost ≈ 0.003
+    byok = JuliaForever.usage(Dict{String, Any}("prompt_tokens" => 20, "completion_tokens" => 5, "prompt_tokens_details" => Dict("cached_tokens" => 4, "cache_write_tokens" => 2), "completion_tokens_details" => Dict("reasoning_tokens" => 3), "cost" => 0.003, "is_byok" => true, "cost_details" => Dict("upstream_inference_cost" => 0.002)))
+    @test (byok.input, byok.output, byok.cache_read, byok.cache_write, byok.reasoning, byok.total) == (14, 5, 4, 2, 3, 25)
+    @test byok.cost ≈ 0.005
+    @test JuliaForever.usage(Dict("cost" => nothing, "is_byok" => true)).cost === nothing
+    @test JuliaForever.usage(Dict("cost" => 0.003, "is_byok" => true, "cost_details" => nothing)).cost ≈ 0.003
+    @test signbit(JuliaForever.usage(Dict("cost" => -0.0)).cost)
+end
+
 @testset "OpenAI-compatible provider" begin
     mktempdir() do dir
         requests = []
