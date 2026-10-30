@@ -89,9 +89,9 @@ taskstatus(::Type{Completed}, state) = Completed(state["result"])
 taskstatus(::Type{Failed}, state) = Failed(Symbol(state["reason"]))
 taskstatus(::Type{Cancelled}, state) = Cancelled()
 
-function taskview(record::Task)
-    state = record.state
-    state isa AbstractDict || return nothing
+taskview(record::Task) = taskview(record, record.state)
+taskview(record::Task, state) = nothing
+function taskview(record::Task, state::AbstractDict)
     get(state, "scheduler", nothing) == "JuliaForever.Scheduler/1" || return nothing
     spec = state["spec"]
     TaskView(record.id, record.conversation, spec["kind"], state["request"], spec["input"], checkpoint(state["checkpoint"]), state["phase"], state["attempts"], state["restarts"], spec["maxattempts"], state["message"], taskstatus(state))
@@ -124,9 +124,9 @@ function recover!(state::AbstractDict, view::TaskView, ::Active)
     nothing
 end
 
-function Base.open(::Type{Scheduler}, path::AbstractString)
-    store = open(Store, path)
-    store isa Rejected && return store
+Base.open(::Type{Scheduler}, path::AbstractString) = open_scheduler(open(Store, path))
+open_scheduler(rejected::Rejected) = rejected
+function open_scheduler(store::Store)
     success = false
     try
         records = scan(store, Task)
@@ -136,13 +136,18 @@ function Base.open(::Type{Scheduler}, path::AbstractString)
             end
             nothing
         end
-        result isa Rejected && return result
-        scheduler = Scheduler(store, ReentrantLock(), 0)
-        success = true
-        scheduler
+        finish_open!(store, result) do
+            success = true
+        end
     finally
         success || close(store)
     end
+end
+finish_open!(f, store::Store, rejected::Rejected) = rejected
+function finish_open!(f, store::Store, ::Nothing)
+    scheduler = Scheduler(store, ReentrantLock(), 0)
+    f()
+    scheduler
 end
 
 function Base.close(scheduler::Scheduler)
@@ -170,11 +175,14 @@ scan(scheduler::Scheduler; conversation::Union{Nothing, Integer}=nothing) = task
 taskview(tx::Transaction, id::Integer, rejected::Rejected) = rejected
 taskview(tx::Transaction, id::Integer, result::Integer) = taskview(get(tx, Task, id))
 
+taskkey(::Nothing) = nothing
+taskkey(request::AbstractString) = String(request)
+
 function enqueue!(scheduler::Scheduler, conversation::Integer, handler::Handler, phase::Phase, input; request::Union{Nothing, AbstractString}=nothing, maxattempts::Integer=3)
     maxattempts > 0 || return Rejected(:invalid_attempt_limit)
     initial = checkpoint(encode(phase))
     spec = JSON3.read(JSON3.write(Dict("kind" => name(handler), "input" => input, "initial" => initial, "maxattempts" => maxattempts)), Dict{String, Any})
-    key = isnothing(request) ? nothing : String(request)
+    key = taskkey(request)
     commit!(scheduler.store) do tx
         if key !== nothing
             for record in scan(scheduler.store, Task; conversation)
