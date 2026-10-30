@@ -66,6 +66,7 @@ end
 end
 
 include("agent_core.jl")
+include("parallel_recorded.jl")
 include("continuation_slice.jl")
 include("extensions.jl")
 include("queue.jl")

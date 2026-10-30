@@ -189,7 +189,7 @@ end
         provider = Scripted([Dict{String, Any}("role" => "assistant", "content" => nothing, "tool_calls" => calls)], [])
         store = H.Memory()
         agent = Agent(provider, [Write(dir)]; history=FailHistory(store, 6))
-        @test respond!(agent, "go") == H.Rejected(:failed)
+        @test respond!(agent, "go"; tool_execution=:sequential) == H.Rejected(:failed)
         @test isfile(joinpath(dir, "1.txt"))
         @test !isfile(joinpath(dir, "2.txt"))
         @test length(provider.requests) == 1
@@ -341,7 +341,6 @@ JuliaForever.complete(::BrokenHistoryProvider, messages, tools) = error("provide
 @testset "recorded failures expose uncertainty" begin
     history = H.Memory()
     agent = Agent(BrokenHistoryProvider(), []; history)
-    @test respond!(agent, "start"; tool_execution=:parallel) == H.Rejected(:unsupported_execution)
     @test respond!(agent, "start"; tool_execution=:unknown) == H.Rejected(:unsupported_execution)
     @test H.snapshot(history).revision == 1
     @test_throws ErrorException respond!(agent, "start")

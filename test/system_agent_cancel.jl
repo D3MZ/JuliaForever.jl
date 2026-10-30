@@ -13,7 +13,7 @@ end
 
 @testset "agent shell cancellation" begin
     if !Sys.iswindows()
-        for (mode, recorded) in ((:sequential, false), (:parallel, false), (:sequential, true))
+        for (mode, recorded) in ((:sequential, false), (:parallel, false), (:sequential, true), (:parallel, true))
             mktempdir() do dir
                 count = mode == :parallel ? 2 : 1
                 commands = [shellfixture(dir, i) for i in 1:count]

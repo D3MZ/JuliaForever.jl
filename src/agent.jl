@@ -14,6 +14,7 @@ struct Sequential <: ToolMode end
 struct Parallel <: ToolMode end
 const toolmodes = Dict(:sequential => Sequential(), :parallel => Parallel())
 toolmode(mode) = get(toolmodes, mode, nothing)
+toolmode(mode::ToolMode) = mode
 
 mutable struct Agent{P, T}
     provider::P
@@ -73,9 +74,10 @@ end
 transition!(agent::Agent, event, before, result, rejected::History.Rejected) = (rejected, Conversation.Message[])
 
 function transition!(agent::Agent, event, before, result::Kernel.Applied, ::Nothing)
+    previous = agent.state
     agent.state = result.state
     push!(getfield(agent, :events), event)
-    applied!(agent.tools, event)
+    applied!(agent.tools, previous, event, result.state)
     result, result.state.messages[before+1:end]
 end
 
@@ -255,7 +257,7 @@ invoke(tool::Tool, args, ::ShellCancellation, update) = execute(tool, args)
 invoke(tool::ToolSearch, args, ::ShellCancellation, update) = search(tool, args)
 invoke(tool::Union{Bash, PowerShell}, args, cancel::ShellCancellation, update) = Sys.iswindows() ? execute(tool, args; on_update=update) : execute(tool, args; cancel, on_update=update)
 
-function invoke(agent, call, update, callback)
+function prepare(agent::Agent, call, callback)
     tool, args = try
         tool = call["function"]
         agent.tools[tool["name"]], JSON3.read(codeunits(tool["arguments"]))
@@ -268,11 +270,14 @@ function invoke(agent, call, update, callback)
     catch exception
         return ToolFailure(sprint(showerror, exception))
     end
-    invokeprepared(agent, call, tool, input, update, callback, before)
+    prepare(tool, input, before)
 end
 
 interceptcall(callback, call, input) = nothing
-invokeprepared(agent, call, tool, input, update, callback, ::Nothing) = runprepared(agent, call, tool, input, update, callback)
+prepare(tool::Tool, input, ::Nothing) = (; tool, input)
+invoke(agent, call, update, callback) = invoke(agent, call, prepare(agent, call, callback), update, callback)
+invoke(agent, call, result::ToolResult, update, callback) = result
+invoke(agent, call, plan::NamedTuple, update, callback) = runprepared(agent, call, plan.tool, plan.input, update, callback)
 function runprepared(agent, call, tool, input, update, callback)
     args = JSON3.read(codeunits(JSON3.write(input)))
     result = attempt(() -> invoke(tool, args, agent.shell, update))
@@ -450,6 +455,12 @@ function toolresult(agent, call, request, on_agent_event)
     turn = lock(() -> agent.turn, agent.lock)
     update = partial_result -> emit(on_agent_event, (; type=:tool_execution_update, tool_call_id=id, tool_name=info.name, args=info.args, partial_result))
     result = invoke(agent, call, request, turn, update, on_agent_event)
+    toolend(call, result, on_agent_event)
+end
+
+function toolend(call, result, on_agent_event)
+    info = callinfo(call)
+    id = call["id"]
     emit(on_agent_event, (; type=:tool_execution_end, tool_call_id=id, tool_name=info.name, result=visible(result), iserror=result.iserror))
     result
 end
@@ -483,19 +494,98 @@ end
 
 runtools!(agent, effects, messages, on_agent_event, ::Parallel) = runtoolsparallel!(agent, effects, messages, on_agent_event, batchmode(effects))
 runtoolsparallel!(agent, effects, messages, on_agent_event, mode::Sequential) = runtools!(agent, effects, messages, on_agent_event, mode)
-function runtoolsparallel!(agent, effects, messages, on_agent_event, ::Parallel)
-    calls = [convert(Dict{String, Any}, effect.effect.call) for effect in effects]
-    foreach(call -> toolstart(call, on_agent_event), calls)
-    completed = Vector{ToolResult}(undef, length(calls))
-    @sync for i in eachindex(calls)
-        Threads.@spawn completed[i] = toolresult(agent, calls[i], effects[i].effect, on_agent_event)
+runtoolsparallel!(agent, effects, messages, on_agent_event, ::Parallel) = parallel!(agent, preflight(agent, effects, on_agent_event), messages, on_agent_event)
+
+preflight(agent, effects, callback) = foldl((plans, effect) -> preflight(agent, effect, callback, plans), effects; init=Any[])
+preflight(agent, effect, callback, rejected::History.Rejected) = rejected
+function preflight(agent, effect, callback, plans::Vector)
+    call = convert(Dict{String, Any}, effect.effect.call)
+    toolstart(call, callback)
+    preflight(agent, effect, callback, plans, call, fault(agent))
+end
+preflight(agent, effect, callback, plans, call, rejected::History.Rejected) = rejected
+function preflight(agent, effect, callback, plans, call, ::Nothing)
+    plan = prepare(agent, call, effect.effect, turnstate(agent), callback)
+    preflight(agent, effect, callback, plans, call, plan, fault(agent))
+end
+preflight(agent, effect, callback, plans, call, plan, rejected::History.Rejected) = rejected
+function preflight(agent, effect, callback, plans, call, plan, ::Nothing)
+    preparedevent(call, plan, callback)
+    push!(plans, (; effect, call, plan))
+end
+
+prepare(agent, call, ::Conversation.ToolRequest, ::Union{Idle, Running}, callback) = prepare(agent, call, callback)
+prepare(agent, call, ::Conversation.SkipRequest, ::Union{Idle, Running}, callback) = ToolFailure("Tool call \"$(callinfo(call).name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.")
+prepare(agent, call, ::Union{Conversation.ToolRequest, Conversation.SkipRequest}, ::Cancelled, callback) = ToolFailure("Operation cancelled")
+preparedevent(call, plan::NamedTuple, callback) = nothing
+preparedevent(call, result::ToolResult, callback) = toolend(call, result, callback)
+
+parallelresult(agent, item, callback) = parallelresult(agent, item, callback, fault(agent))
+parallelresult(agent, item, callback, rejected::History.Rejected) = rejected
+parallelresult(agent, item, callback, ::Nothing) = parallelresult(agent, item, callback, item.plan, turnstate(agent))
+parallelresult(agent, item, callback, result::ToolResult, turn) = result
+parallelresult(agent, item, callback, plan::NamedTuple, ::Cancelled) = toolend(item.call, ToolFailure("Operation cancelled"), callback)
+function parallelresult(agent, item, callback, plan::NamedTuple, ::Union{Idle, Running})
+    call = item.call
+    info = callinfo(call)
+    update = partial_result -> emit(callback, (; type=:tool_execution_update, tool_call_id=call["id"], tool_name=info.name, args=info.args, partial_result))
+    toolend(call, invoke(agent, call, plan, update, callback), callback)
+end
+
+parallel!(agent, rejected::History.Rejected, messages, callback) = rejected
+function parallel!(agent, plans::Vector, messages, callback)
+    completed = Vector{Any}(undef, length(plans))
+    tasks = Vector{Task}(undef, length(plans))
+    ready = Channel{Int}(length(plans))
+    added = Conversation.Message[]
+    failure = nothing
+    @sync begin
+        for i in eachindex(plans)
+            tasks[i] = Threads.@spawn try
+                parallelresult(agent, plans[i], callback)
+            finally
+                put!(ready, i)
+            end
+        end
+        for _ in eachindex(plans)
+            i = take!(ready)
+            completed[i] = fetch(tasks[i])
+            failure = parallelobserve!(agent, plans[i], completed[i], added, failure)
+        end
     end
-    results = Dict{String, Any}[]
-    for i in eachindex(calls)
-        toolobserve!(agent, effects[i], completed[i], messages, on_agent_event)
-        push!(results, toolmessage(calls[i], completed[i]))
+    parallelfinish!(agent, plans, completed, added, messages, callback, failure)
+end
+
+parallelobserve!(agent, plan, result, added, rejected) = rejected
+parallelobserve!(agent, plan, rejected::History.Rejected, added, ::Nothing) = rejected
+function parallelobserve!(agent, plan, result::ToolResult, added, ::Nothing)
+    transition, visible = transition!(revision -> Kernel.Observe(revision, plan.effect.id, Conversation.ToolReply(result)), agent)
+    parallelobserve!(transition, added, visible)
+end
+parallelobserve!(transition, added, visible) = transition
+function parallelobserve!(::Kernel.Applied, added, visible)
+    append!(added, visible)
+    nothing
+end
+
+parallelfinish!(agent, plans, completed, added, messages, callback, rejected) = rejected
+function parallelfinish!(agent, plans, completed, added, messages, callback, ::Nothing)
+    presentation = Ref{MessagePresentation}(Unannounced())
+    try
+        present!(agent, added, messages, callback)
+        presentation[] = Announced()
+    finally
+        preserve!(agent, presentation[])
     end
-    results
+    [toolmessage(plan.call, result) for (plan, result) in zip(plans, completed)]
+end
+
+preserve!(agent, ::Announced) = nothing
+function preserve!(agent, ::Unannounced)
+    lock(agent.lock) do
+        empty!(agent.messages)
+        append!(agent.messages, [convert(Dict{String, Any}, message) for message in agent.state.messages])
+    end
 end
 
 function conversation_reply(answer)
@@ -533,13 +623,14 @@ interrupt!(agent::Agent, ::Conversation.Phase) = nothing
 interrupt!(agent::Agent, ::Union{Conversation.ReadyModelPhase, Conversation.ReadyDecisionPhase, Conversation.WaitingModelPhase, Conversation.WaitingToolsPhase}) = transition!(revision -> Conversation.Interrupt(revision, "turn interrupted"), agent)
 
 """
-    respond!(agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential, executor=nothing, context=nothing)
+    respond!(agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=nothing, executor=nothing, context=nothing)
 
-Run a turn and queued messages. `on_event` receives provider stream events; `on_agent_event` receives lifecycle events. Tool calls run sequentially unless `tool_execution=:parallel`; recorded agents currently support sequential execution only. Returns `:busy` for an overlapping run and `:cancelled` for cooperative cancellation. Providers returning a `Completion` retain finish metadata; a custom provider returning only a message cannot report truncation.
+Run a turn and queued messages. `on_event` receives provider stream events; `on_agent_event` receives lifecycle events. Local tool calls run in parallel by default; set `tool_execution=:sequential` to run them in order. Executor-backed turns default to sequential execution. Returns `:busy` for an overlapping run and `:cancelled` for cooperative cancellation. Providers returning a `Completion` retain finish metadata; a custom provider returning only a message cannot report truncation.
 
 Supplying `executor` and `context` selects the executor-backed path, including for a recorded agent. It returns an `Execution.Turn` with the outcome and per-model usage and error metadata; unsupported combinations return `Execution.Rejected` before starting. See `docs/execution.md` for its limitations.
 """
-function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential, executor=nothing, context=nothing, auto_compaction=nothing, summarize=Summarizer(agent.provider))
+function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=nothing, executor=nothing, context=nothing, auto_compaction=nothing, summarize=Summarizer(agent.provider))
+    tool_execution = defaultmode(tool_execution, executor)
     used = Ref{Union{Nothing, Usage}}(nothing)
     result = task_local_storage(:jf_compaction_usage, used) do
         respond!(agent, prompt, executor, context; on_event, on_agent_event, parameters, tool_execution)
@@ -547,6 +638,10 @@ function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing
     finishauto!(agent, result, used[], auto_compaction, summarize, on_agent_event)
     result
 end
+
+defaultmode(::Nothing, ::Nothing) = :parallel
+defaultmode(::Nothing, executor) = :sequential
+defaultmode(mode, executor) = mode
 
 respond!(agent::Agent, prompt, executor, context; kwargs...) = respond_execution!(agent, prompt, executor, context; kwargs...)
 respond!(agent::Agent, prompt, ::Nothing, ::Nothing; kwargs...) = respond!(agent, prompt, agent.history; kwargs...)
@@ -659,7 +754,7 @@ function direct_next!(run, message, completion, next, added, ::Union{Idle, Runni
 end
 
 "Continue a transcript ending in a user or tool message. Returns :empty or :assistant_tail for unsupported tails."
-function continue!(agent::Agent; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential)
+function continue!(agent::Agent; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:parallel)
     selected = lock(agent.lock) do
         continue_start!(agent, agent.turn, agent.fault, toolmode(tool_execution))
     end
@@ -669,7 +764,7 @@ continue_start!(agent, ::Union{Running, Cancelled}, fault, mode) = :busy
 continue_start!(agent, ::Idle, fault::History.Rejected, mode) = fault
 continue_start!(agent, ::Idle, ::Nothing, mode) = continue_tail!(agent, agent.history, mode)
 continue_tail!(agent, history::History.Store, mode) = History.Rejected(:unsupported_execution)
-continue_tail!(agent, history::History.Store, ::Sequential) = continue_tail!(agent)
+continue_tail!(agent, history::History.Store, ::Union{Sequential, Parallel}) = continue_tail!(agent)
 continue_tail!(agent, ::Nothing, mode) = continue_tail!(agent)
 struct SystemTail end
 const continuationroles = Dict("system" => SystemTail(), "assistant" => Conversation.ContinueQueued)
