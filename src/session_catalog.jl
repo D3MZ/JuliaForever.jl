@@ -184,7 +184,7 @@ function choose(::Picker, dir, cwd, input, output, redact=identity)
     end
     for (index, item) in enumerate(items)
         title = strip(replace(redact(item.title), r"[\x00-\x1f\x7f]" => " "))
-        println(output, "[", index, "] ", item.id, "  ", first(title, min(length(title), 100)))
+        println(output, "[", index, "] ", redact(item.id), "  ", first(title, min(length(title), 100)))
     end
     pick(items, input, output)
 end

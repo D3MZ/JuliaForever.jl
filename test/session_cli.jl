@@ -40,10 +40,13 @@ end
         workspace = joinpath(root, "project")
         sessions = joinpath(root, "sessions")
         requests = joinpath(root, "requests.jsonl")
-        key = "SYNTHETIC_API_ABC"
+        key = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
         mkpath(workspace)
         created = session_process(requests, workspace, sessions, ["before " * key * " after"]; key)
         @test created.status == 0
+        file = only(readdir(sessions; join=true))
+        project = first(split(basename(file), "--"))
+        mv(file, joinpath(sessions, project * "--" * key * ".sqlite"))
         longtitle = repeat("z", 96) * key * " tail"
         @test session_process(requests, workspace, sessions, [longtitle]; key).status == 0
         picked = session_process(requests, workspace, sessions, ["--resume"]; input="q\n", key)
@@ -51,7 +54,13 @@ end
         @test occursin("before [redacted] after", picked.diagnostics)
         @test occursin(repeat("z", 96), picked.diagnostics)
         @test !occursin(key, picked.diagnostics)
-        @test !occursin(first(key, 4), picked.diagnostics)
+        titles = [last(split(line, "  "; limit=2)) for line in split(picked.diagnostics, '\n') if startswith(line, "[")]
+        @test all(title -> !occursin(first(key, 4), title), titles)
+        choice = only(match(r"\[(\d+)\].*before \[redacted\] after", picked.diagnostics).captures)
+        resumed = session_process(requests, workspace, sessions, ["--resume", "chosen"]; input=choice * "\n", key)
+        @test resumed.status == 0 && resumed.output == "reply:chosen\n"
+        messages = JSON3.read(last(readlines(requests)))
+        @test [m.content for m in messages if m.role in ("user", "assistant")] == ["before " * key * " after", "reply:before " * key * " after", "chosen"]
     end
 end
 
