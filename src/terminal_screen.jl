@@ -5,11 +5,17 @@ struct FullscreenMode <: Mode
     provider::String
 end
 FullscreenMode() = FullscreenMode("")
-struct RegularMode <: Mode end
+struct RegularMode <: Mode
+    provider::String
+end
+RegularMode() = RegularMode("")
 withprovider(::FullscreenMode, name) = FullscreenMode(name)
-withprovider(mode::RegularMode, name) = mode
+withprovider(::RegularMode, name) = RegularMode(name)
 abstract type View end
-struct Regular <: View end
+struct Regular <: View
+    provider::String
+end
+Regular() = Regular("")
 abstract type Detail end
 struct Collapsed <: Detail end
 struct Expanded <: Detail end
@@ -55,8 +61,8 @@ mutable struct Fullscreen <: View
 end
 Fullscreen(provider="") = Fullscreen(Union{TextBlock, ToolBlock}[], Dict{String, ToolBlock}(), Collapsed(), 0, (0, 0), nothing, Unpainted(), "session", provider)
 
-createview(::RegularMode, output) = Regular()
-createview(::FullscreenMode, output::IO) = Regular()
+createview(mode::RegularMode, output) = Regular(mode.provider)
+createview(mode::FullscreenMode, output::IO) = Regular(mode.provider)
 createview(mode::FullscreenMode, output::Base.TTY) = Fullscreen(mode.provider)
 intro!(::Regular, output) = println(output, "Julia Forever — Enter sends, Alt+Enter follows up, Esc interrupts, /exit quits")
 intro!(::Fullscreen, output) = nothing

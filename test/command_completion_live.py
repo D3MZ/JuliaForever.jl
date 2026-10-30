@@ -43,7 +43,7 @@ def paste(text):
     run("send-keys", "-t", "completion", "-H", *(f"{byte:02x}" for byte in data))
 
 def ready(value):
-    return "fixture | ready" in value if mode == "fullscreen" else "> " in value
+    return " | ready" in value if mode == "fullscreen" else "> " in value
 
 def messages(path):
     try:
@@ -192,6 +192,40 @@ try:
         send("after cancellation")
         key("Enter")
         wait_for(lambda s: messages(capture)[-1:] == ["after cancellation"] and ready(s), "cancel pending file search")
+
+        send("/model gpt-4o-mini")
+        wait_for(lambda s: "→ gpt-4o-mini" in s, "model argument suggestion")
+        key("Enter")
+        wait_for(lambda s: "> /model openai/gpt-4o-mini" in s and "Model set: gpt-4o-mini" not in s, "enter accepts model without submitting")
+        key("Enter")
+        wait_for(lambda s: "Model set: gpt-4o-mini" in s and ready(s), "qualified model selection")
+        send("after model selection")
+        key("Enter")
+        wait_for(lambda s: messages(capture)[-1:] == ["after model selection"] and ready(s), "request after model selection")
+        send("/exit")
+        key("Enter")
+        status, death_signal = wait_for_exit(run, "completion", seconds=30)
+        assert status == "0", (status, death_signal, screen())
+
+        run("kill-session", "-t", "completion")
+        agent = root / "agent"
+        agent.mkdir(exist_ok=True)
+        (agent / "models.json").write_text(json.dumps({"providers": {"fixture": {"baseUrl": "http://127.0.0.1/v1", "api": "openai-completions", "apiKey": "synthetic", "models": [{"id": "vendor/alpha", "name": "Alpha"}, {"id": "vendor/beta", "name": "Beta"}]}}}))
+        env["JF_PROVIDER"] = "fixture"
+        settings = [f"{name}={env[name]}" for name in names if name in env]
+        command = shlex.join(["env", *settings, julia, "--startup-file=no", "--compiled-modules=existing", f"--project={project}", str(project / "test/terminal_process.jl"), "--tui-mode", mode, "--no-session", "--model", "vendor/alpha"])
+        run("new-session", "-d", "-s", "completion", "-x", "100", "-y", "30", "-c", str(root), command, env=env)
+        run("set-option", "-t", "completion", "remain-on-exit", "on")
+        wait_for(lambda s: ready(s) and "> " in s, "custom provider startup", 90)
+        send("/model beta")
+        wait_for(lambda s: "→ vendor/beta" in s, "custom model suggestion")
+        key("Tab")
+        wait_for(lambda s: "> /model fixture/vendor/beta" in s, "qualified custom model")
+        key("Enter")
+        wait_for(lambda s: "Model set: vendor/beta" in s and ready(s), "custom model selection")
+        send("custom selected")
+        key("Enter")
+        wait_for(lambda s: messages(capture)[-1:] == ["custom selected"] and ready(s), "custom model request")
         send("/exit")
         key("Enter")
         status, death_signal = wait_for_exit(run, "completion", seconds=30)

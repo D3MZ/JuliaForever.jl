@@ -85,7 +85,8 @@ mutable struct Session{V<:View, T}
     agent::JuliaForever.Agent
     terminal::JuliaForever.Terminal
     templates::T
-    completion::Union{Completion.Closed, Completion.Dismissed, Completion.Menu, Completion.PendingFiles, Completion.FileMenu, Completion.DismissedFiles}
+    completion::Union{Completion.Closed, Completion.Dismissed, Completion.Menu, Completion.ModelMenu, Completion.DismissedModel, Completion.PendingFiles, Completion.FileMenu, Completion.DismissedFiles}
+    models::Union{Nothing, Vector{JuliaForever.Models.Model}}
     extensions::Union{Nothing, JuliaForever.Extensions.Snapshot}
     activity::Activity
     visibility::Visibility
@@ -111,7 +112,7 @@ function Base.unsafe_write(output::Output, pointer::Ptr{UInt8}, count::UInt)
 end
 
 function Session(editor, terminal, agent, templates, extensions, view::View)
-    session = Session(editor, terminal.diagnostics, agent, terminal, templates, Completion.Closed(), extensions, Available(), Visible(), nothing, "", nothing, DeferredQueue(), "", 0, view)
+    session = Session(editor, terminal.diagnostics, agent, terminal, templates, Completion.Closed(), nothing, extensions, Available(), Visible(), nothing, "", nothing, DeferredQueue(), "", 0, view)
     session.terminal = maketerminal(session, terminal, view)
     session
 end
@@ -266,7 +267,7 @@ function sendcompletion!(session, state, ::Send, completion::Completion.Menu)
     applycompletion!(session, state, completion)
     sendinput!(session, state, Send())
 end
-sendcompletion!(session, state, ::Send, completion::Completion.FileMenu) = (applycompletion!(session, state, completion); :ok)
+sendcompletion!(session, state, ::Send, completion::Union{Completion.FileMenu, Completion.ModelMenu}) = (applycompletion!(session, state, completion); :ok)
 
 function sendinput!(session, state, mode::Submission)
     continuation!(state, mode) && return :ok

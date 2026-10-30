@@ -2,7 +2,7 @@ using Test, JuliaForever, JSON3
 
 struct ExportFixture end
 function JuliaForever.complete(::ExportFixture, messages, tools; parameters=Dict())
-    JuliaForever.Completion(Dict{String,Any}("role" => "assistant", "content" => "Stored answer & details"), nothing, "stop", JuliaForever.Finished(), nothing)
+    JuliaForever.Completion(Dict{String,Any}("role" => "assistant", "content" => "Stored answer & details", "reasoning" => "Check <script>thinking()</script>"), nothing, "stop", JuliaForever.Finished(), nothing)
 end
 
 @testset "export saved conversation" begin
@@ -44,10 +44,12 @@ end
             messages = JSON3.read(read(json, String))
             @test occursin("Stored answer &amp; details", page)
             @test occursin("&lt;script&gt;alert(1)&lt;/script&gt;", page)
+            @test occursin("Check &lt;script&gt;thinking()&lt;/script&gt;", page)
             @test !occursin("<script>alert(1)</script>", page)
             @test [row.role for row in messages] == ["user", "assistant"]
             @test messages[1].content == "Read <script>alert(1)</script>"
             @test messages[2].content == "Stored answer & details"
+            @test messages[2].reasoning == "Check <script>thinking()</script>"
         end
     end
 end
@@ -73,6 +75,11 @@ end
     code = IOBuffer()
     JuliaForever.Logs.conversationhtml(code, [Dict("role" => "assistant", "content" => "```python\ndef answer():\n    return 42\n```")])
     @test occursin("data-language=\"python\"", String(take!(code)))
+    for field in ("reasoning_content", "reasoning", "reasoning_text")
+        output = IOBuffer()
+        JuliaForever.Logs.conversationhtml(output, [Dict("role" => "assistant", "content" => "answer", field => "Plan <carefully>")])
+        @test occursin("Plan &lt;carefully&gt;", String(take!(output)))
+    end
 end
 
 @testset "conversation export browser controls" begin
@@ -80,7 +87,7 @@ end
     if !isempty(browser)
         mktempdir() do root
             markdown = "**violet** answer using `notes.txt`. [safe](https://example.test) [unsafe](javascript:alert(1)) ![remote image](https://example.test/a.png)\n\n1. first\n2. second\n\n```julia\nx < 2\n```\n\n```python\ndef answer():\n    return \"<img src=x onerror=globalThis.injected=true>\"\n```\n\n```python\" data-pwned=\"yes\n</script><script>globalThis.injected=true</script>\n```\n\n| name | value |\n| --- | --- |\n| red | 3 |\n\n> quoted text"
-            messages = [Dict("role" => "user", "content" => "violet harbor"), Dict("role" => "assistant", "content" => markdown, "tool_calls" => [Dict("function" => Dict("name" => "read", "arguments" => "notes"))]), Dict("role" => "tool", "content" => "amber result"), Dict("role" => "user", "content" => "<script>globalThis.injected = true</script>")]
+            messages = [Dict("role" => "user", "content" => "violet harbor"), Dict("role" => "assistant", "content" => markdown, "reasoning" => "Inspect <img src=x onerror=globalThis.injected=true>", "tool_calls" => [Dict("function" => Dict("name" => "read", "arguments" => "notes"))]), Dict("role" => "tool", "content" => "amber result"), Dict("role" => "user", "content" => "<script>globalThis.injected = true</script>")]
             page = joinpath(root, "conversation.html")
             open(page, "w") do io
                 JuliaForever.Logs.conversationhtml(io, messages)

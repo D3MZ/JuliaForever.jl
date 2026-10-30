@@ -114,6 +114,10 @@ function suggest(items::Vector{Item}, query::AbstractString)
     items[[first; second]]
 end
 
+modeltext(model::JuliaForever.Models.Model) = model.id * " " * model.provider * " " * model.provider * "/" * model.id * " " * model.provider * " " * model.id * " " * model.name
+suggestmodels(models::Vector{JuliaForever.Models.Model}, query::AbstractString) = models[rank(models, query, eachindex(models), modeltext)]
+modelvalue(model::JuliaForever.Models.Model) = model.provider * "/" * model.id
+
 abstract type State end
 struct Closed <: State end
 struct Dismissed <: State
@@ -124,11 +128,26 @@ mutable struct Menu <: State
     items::Vector{Item}
     index::Int
 end
+mutable struct ModelMenu <: State
+    before::String
+    text::String
+    prefix::String
+    items::Vector{JuliaForever.Models.Model}
+    index::Int
+end
+struct DismissedModel <: State
+    before::String
+    text::String
+end
 
 const pattern = r"\A[^\S\r\n]*(/[^ \r\n]*)\z"
 prefix(text::AbstractString) = prefix(match(pattern, text))
 prefix(::Nothing) = nothing
 prefix(found::RegexMatch) = String(found[1])
+const modelpattern = r"\A[^\S\r\n]*/model ([^\r\n]*)\z"
+modelprefix(text::AbstractString) = modelprefix(match(modelpattern, text))
+modelprefix(::Nothing) = nothing
+modelprefix(found::RegexMatch) = String(found[1])
 
 update(state::State, ::Nothing, resources) = Closed()
 update(::Closed, prefix::String, resources) = open(prefix, resources)
@@ -141,8 +160,11 @@ end
 
 dismiss(state::State) = state
 dismiss(menu::Menu) = Dismissed(menu.prefix)
+dismiss(menu::ModelMenu) = DismissedModel(menu.before, menu.text)
 move!(menu::Menu, offset::Int) = (menu.index = mod1(menu.index + offset, length(menu.items)); nothing)
 page!(menu::Menu, offset::Int) = (menu.index = clamp(menu.index + offset, 1, length(menu.items)); nothing)
+move!(menu::ModelMenu, offset::Int) = (menu.index = mod1(menu.index + offset, length(menu.items)); nothing)
+page!(menu::ModelMenu, offset::Int) = (menu.index = clamp(menu.index + offset, 1, length(menu.items)); nothing)
 
 include("terminal_files.jl")
 
