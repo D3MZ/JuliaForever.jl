@@ -99,6 +99,18 @@ function modeloptions(session, provider)
     sort!(JuliaForever.Models.pool(JuliaForever.modelcatalog(provider), name); by=model -> JuliaForever.Models.collation(model.id))
 end
 
+modelargument(session, text) = modelargument(text, modelchoices!(session))
+modelargument(text, models::Vector{JuliaForever.Models.Model}) = modelargument(text, models, findfirst(model -> Completion.modelvalue(model) == text, models))
+modelargument(text, models, ::Nothing) = text
+modelargument(text, models, index::Int) = models[index].id
+
+function uicommand!(session, ::Regular, command::JuliaForever.SetModel, terminal, history, input, directory, snapshot, draft)
+    JuliaForever.setmodel!(terminal, session.agent, history, modelargument(session, command.model))
+end
+function uicommand!(session, ::Fullscreen, command::JuliaForever.SetModel, terminal, history, input, directory, snapshot, draft)
+    JuliaForever.setmodel!(session.terminal, session.agent, history, modelargument(session, command.model))
+end
+
 function uicommand!(session, ::Fullscreen, ::JuliaForever.SelectModel, terminal, history, input, directory, snapshot, draft)
     current = modelname(session.agent.provider)
     models = modeloptions(session, session.agent.provider)
