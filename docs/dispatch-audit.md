@@ -114,6 +114,8 @@ Glob construction selects path scope and case handling at its input boundary, re
 
 Ignore-file parsing produces include, ignore, and directory-only patterns carrying their regular expressions. Matching dispatches on those patterns while preserving rule order and nested repository boundaries.
 
+Ignore-file precedence now applies Git rules before file-ignore rules across directory levels; its matching change adds no branch or dispatch entries.
+
 SQLite history opening now dispatches on initialization outcomes and closes the database unless ownership transfers to an open history.
 
 The full-screen terminal adds 45 branch entries, mostly rendering, viewport, and menu iteration. It adds one dispatch candidate for the optional result of a menu key; role and event handling dispatch on typed values.
