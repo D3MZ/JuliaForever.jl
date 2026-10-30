@@ -444,13 +444,16 @@ function loop!(terminal, agent, extensions, history, input::Base.TTY, directory,
             redraw!(session)
         end
     finally
-        lock(editor.state.line_modify_lock) do
-            session.visibility = Hidden()
-            empty!(session.deferred)
+        try
+            lock(editor.state.line_modify_lock) do
+                session.visibility = Hidden()
+                empty!(session.deferred)
+            end
+            stop!(session, session.activity)
+            waittask(session.task)
+        finally
+            finish!(session)
         end
-        stop!(session, session.activity)
-        waittask(session.task)
-        finish!(session)
     end
     session.status
 end

@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import termios
 
 from terminal_pty import Session
 
@@ -23,6 +24,24 @@ with tempfile.TemporaryDirectory(prefix="jf-fullscreen-pty-") as directory:
         actual = {"enter": b"\x1b[?1049h" in session.output, "exit": b"\x1b[?1049l" in session.output}
         assert session.process.returncode == 0, session.output
         assert actual == oracle, (actual, oracle, session.output)
+    finally:
+        session.close()
+with tempfile.TemporaryDirectory(prefix="jf-fullscreen-failure-") as directory:
+    session = Session(julia, project, directory, args=("--tui-mode", "fullscreen"), mode="bug")
+    try:
+        session.until(lambda: b"> " in session.output, "initial prompt", timeout=90)
+        os.write(session.master, b"broken\r")
+        session.until(lambda: session.records() == ["broken"], "failing request")
+        os.write(session.master, b"/exit\r")
+        session.wait_exit()
+        while True:
+            before = len(session.output)
+            session.read()
+            if len(session.output) == before:
+                break
+        assert session.process.returncode != 0, session.output
+        assert b"\x1b[?1049l" in session.output, session.output
+        assert termios.tcgetattr(session.slave) == session.initial_mode
     finally:
         session.close()
 with tempfile.TemporaryDirectory(prefix="jf-fullscreen-redirect-") as directory:
