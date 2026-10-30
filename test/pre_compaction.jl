@@ -122,19 +122,27 @@ end
 end
 
 @testset "pre-prompt checks context after a system update" begin
-    model = provider()
-    agent = Agent(model, []; history=H.Memory())
-    respond!(agent, "first")
-    respond!(agent, "second")
-    messages = copy(getfield(agent.state, :messages))
-    pushfirst!(messages, JuliaForever.Conversation.SkillContext(repeat("s", 400)))
-    result, _ = JuliaForever.transition!(revision -> JuliaForever.Conversation.History(revision, messages), agent)
-    @test result isa JuliaForever.Kernel.Applied
-    agent.messages = [convert(Dict{String, Any}, message) for message in messages]
-    summaries = Ref(0)
-    @test respond!(agent, "third"; auto_compaction=policy(), summarize=_ -> (summaries[] += 1; "checkpoint")) == "third answer"
-    @test summaries[] == 1 && occursin("checkpoint", JSON3.write(last(model.requests)))
-    @test any(message -> get(message, "role", "") == "system" && occursin(repeat("s", 400), get(message, "content", "")), last(model.requests))
+    mktempdir() do root
+        path = joinpath(root, ".pi", "skills", "example", "SKILL.md")
+        mkpath(dirname(path))
+        write(path, "---\nname: example\ndescription: $(repeat("s", 400))\n---\nprivate content\n")
+        historypath = joinpath(root, "history.sqlite")
+        history = open(H.SQLite, historypath)
+        model = provider()
+        agent = Agent(model, [Read(root)]; history)
+        respond!(agent, "first")
+        respond!(agent, "second")
+        close(history)
+        history = open(H.SQLite, historypath)
+        agent = Agent(model, [Read(root)]; history)
+        skills = JuliaForever.Skills.load(root; home=root, agentdir=joinpath(root, "agent"))
+        @test JuliaForever.refreshskills!(agent, skills) === nothing
+        summaries = Ref(0)
+        @test respond!(agent, "third"; auto_compaction=policy(), summarize=_ -> (summaries[] += 1; "checkpoint")) == "third answer"
+        @test summaries[] == 1 && occursin("checkpoint", JSON3.write(last(model.requests)))
+        @test any(message -> get(message, "role", "") == "system" && occursin(repeat("s", 400), get(message, "content", "")), last(model.requests))
+        close(history)
+    end
 end
 
 @testset "pre-prompt checks estimate missing usage and protect a cancelled request" begin
