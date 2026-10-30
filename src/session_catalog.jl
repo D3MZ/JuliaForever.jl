@@ -81,10 +81,11 @@ mutable struct Deferred <: H.Store
     path::String
     store::H.Store
     lock::ReentrantLock
+    cwd::Union{Nothing, String}
 end
 
-Deferred(path) = Deferred(path, H.Memory(), ReentrantLock())
-new(dir, cwd) = H.Tree(Deferred(joinpath(dir, filename(cwd, bytes2hex(rand(UInt8, 16))))))
+Deferred(path, cwd=nothing) = Deferred(path, H.Memory(), ReentrantLock(), cwd)
+new(dir, cwd) = H.Tree(Deferred(joinpath(dir, filename(cwd, bytes2hex(rand(UInt8, 16)))), abspath(cwd)))
 
 function H.snapshot(history::Deferred)
     lock(history.lock) do
@@ -122,10 +123,30 @@ end
 materialize!(history, rejected::H.Rejected, snapshot) = rejected
 
 function materialize!(history, store::H.SQLite, snapshot::H.Snapshot)
-    history.store = store
-    foldl(snapshot.batches; init=0) do revision, batch
-        appendbatch!(store, revision, batch)
+    completed = nothing
+    try
+        SQLite.execute(store.db, "BEGIN IMMEDIATE")
+        savecwd!(store, history.cwd)
+        revision = foldl(snapshot.batches; init=0) do revision, batch
+            SH.write!(store.db, revision, batch)
+        end
+        SQLite.execute(store.db, "COMMIT")
+        history.store = store
+        completed = Some(revision)
+        revision
+    finally
+        finishmaterialize!(store, completed)
     end
+end
+
+finishmaterialize!(store, ::Some) = nothing
+finishmaterialize!(store, ::Nothing) = close(store)
+
+savecwd!(store, ::Nothing) = nothing
+function savecwd!(store, cwd::String)
+    SQLite.execute(store.db, "ALTER TABLE jf_meta ADD COLUMN cwd TEXT")
+    SQLite.execute(store.db, "UPDATE jf_meta SET cwd = ?", (cwd,))
+    nothing
 end
 
 appendbatch!(store, rejected::H.Rejected, batch) = rejected

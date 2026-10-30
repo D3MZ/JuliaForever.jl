@@ -65,10 +65,11 @@ sqltext(statement, ::SQLType) = nothing
 sqltext(statement, ::SQLText) = sqlbytes(SQLite.C.sqlite3_column_text(statement, 1), SQLite.C.sqlite3_column_bytes(statement, 1))
 sqlbytes(pointer, length) = pointer == C_NULL ? nothing : unsafe_string(pointer, length)
 
+caseinitial(value) = nothing
+caseinitial(snapshot::H.Snapshot) = caseinitial(snapshot.batches)
+caseinitial(batches::Vector{Vector{Any}}) = isempty(batches) ? nothing : caseinitial(H.treenode(first(batches), 0))
+caseinitial(node::H.TreeNode) = H.firststate(node.batch)
 casecwd(value) = nothing
-casecwd(snapshot::H.Snapshot) = casecwd(snapshot.batches)
-casecwd(batches::Vector{Vector{Any}}) = isempty(batches) ? nothing : casecwd(H.treenode(first(batches), 0))
-casecwd(node::H.TreeNode) = casecwd(H.firststate(node.batch))
 casecwd(state::C.State) = casecwd(first(state.messages, 1))
 casecwd(messages::AbstractVector) = isempty(messages) ? nothing : casecwd(first(messages))
 abstract type InitialRole end
@@ -87,9 +88,25 @@ end
 function casecandidate(path, id, prefix, paths, forms)
     readonly(path) do db
         initial = historyrows(db, historyquery * " LIMIT 1")
-        casecandidate(db, path, id, prefix, paths, forms, casecwd(initial))
+        casecandidate(db, path, id, prefix, paths, forms, catalogcwd(db, caseinitial(initial)))
     end
 end
+catalogcwd(db, value) = nothing
+catalogcwd(db, state::C.State) = readcwd(db, casecwd(state))
+function readcwd(db, fallback)
+    statement = Ref{SQLite.StmtHandle}(C_NULL)
+    code = SQLite.C.sqlite3_prepare_v2(db, "SELECT 0, cwd FROM jf_meta", -1, statement, C_NULL)
+    try
+        readcwd(statement[], sqlstatus(code), fallback)
+    finally
+        SQLite.C.sqlite3_finalize(statement[])
+    end
+end
+readcwd(statement, ::SQLStatus, fallback) = fallback
+readcwd(statement, ::SQLOk, fallback) = readcwd(statement, sqlstatus(SQLite.C.sqlite3_step(statement)), fallback)
+readcwd(statement, ::SQLRow, fallback) = recordedcwd(sqltext(statement), fallback)
+recordedcwd(::Nothing, fallback) = fallback
+recordedcwd(cwd::String, fallback) = cwd
 casecandidate(db, path, id, prefix, paths, forms, recorded) = nothing
 function casecandidate(db, path, id, prefix, paths, forms, recorded::String)
     directory = abspath(recorded)

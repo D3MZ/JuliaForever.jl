@@ -103,9 +103,41 @@ end
         end
         casefork = forkto(altered)
         crossfork = forkto(other)
+        source = Catalog.wrap(open(H.SQLite, sourcefile; create=false))
+        branchfork = Catalog.duplicate(Catalog.new(forkdir, altered), Catalog.branchpath(source, source.leaf), Catalog.Path())
+        branchfile = Catalog.path(branchfork)
+        close(branchfork)
+        close(source)
+        forkbytes = Dict(file => read(file) for file in (sourcefile, casefork, crossfork, branchfile))
         @test casefork in Set(item.path for item in Catalog.listcase(forkdir, (altered,)))
-        @test_broken casefork in Set(item.path for item in Catalog.listcase(forkdir, (original,)))
+        @test casefork in Set(item.path for item in Catalog.listcase(forkdir, (original,)))
+        @test branchfile in Set(item.path for item in Catalog.listcase(forkdir, (original,)))
         @test crossfork ∉ Set(item.path for item in Catalog.listcase(forkdir, (original,)))
+        @test Dict(file => read(file) for file in keys(forkbytes)) == forkbytes
+        forkactive = open(H.SQLite, casefork; create=false)
+        try
+            SQLite.execute(forkactive.db, "UPDATE jf_meta SET cwd=?", (original,))
+            SQLite.execute(forkactive.db, "PRAGMA journal_mode=WAL")
+            SQLite.execute(forkactive.db, "UPDATE jf_meta SET cwd=?", (altered,))
+            wal = casefork * "-wal"
+            @test isfile(wal)
+            beforefork = (read(casefork), read(wal))
+            shadow = joinpath(root, "shadow.sqlite")
+            write(shadow, beforefork[1])
+            stale = open(H.SQLite, shadow; create=false)
+            @test only([row.cwd for row in SQLite.DBInterface.execute(stale.db, "SELECT cwd FROM jf_meta")]) == original
+            close(stale)
+            @test casefork in Set(item.path for item in Catalog.listcase(forkdir, (original,)))
+            @test (read(casefork), read(wal)) == beforefork
+            Catalog.readonly(casefork) do reader
+                initial = Catalog.caseinitial(Catalog.historyrows(reader, Catalog.historyquery * " LIMIT 1"))
+                @test Catalog.catalogcwd(reader, initial) == altered
+                SQLite.execute(forkactive.db, "UPDATE jf_meta SET cwd=?", (original,))
+                @test Catalog.catalogcwd(reader, initial) == altered
+            end
+        finally
+            close(forkactive)
+        end
         active = open(H.SQLite, second; create=false)
         try
             SQLite.execute(active.db, "PRAGMA journal_mode=WAL")
@@ -171,6 +203,14 @@ end
             @test !samefile(workspace, alternate)
             @test Set(item.path for item in Catalog.list(root, workspace)) == Set((current,))
             @test Dict(file => bytes2hex(sha256(read(file))) for file in files) == before
+            source = Catalog.new(root, workspace)
+            messages = Dict{String, Any}[Dict("role" => "system", "content" => JuliaForever.context(workspace, JuliaForever.Tool[], []))]
+            @test JuliaForever.respond!(JuliaForever.Agent(CaseProvider(), [], messages; history=source), "source") == "reply"
+            copied = Catalog.fork(source, root, alternate)
+            forkfile = Catalog.path(copied)
+            close(copied)
+            @test forkfile in Set(item.path for item in Catalog.list(root, alternate))
+            @test forkfile ∉ Set(item.path for item in Catalog.list(root, workspace))
         end
     end
 end
@@ -209,6 +249,159 @@ end
                 SQLite.close(db)
             end
         end
+    end
+end
+
+const metadata_fault = Ref(:none)
+const copy_inserts = Ref(0)
+const scan_root = Ref("")
+const scan_original = Ref("")
+const scan_alternate = Ref("")
+const scan_file = Ref("")
+const visible_during_copy = Ref(true)
+function catalog_authorizer(arg::Ptr{Cvoid}, action::Cint, table::Cstring, column::Cstring, database::Cstring, source::Cstring)::Cint
+    if table != C_NULL
+        name = unsafe_string(table)
+        if action == SQLite.C.SQLITE_UPDATE && name == "jf_meta" && metadata_fault[] == :metadata
+            return SQLite.C.SQLITE_DENY
+        elseif action == SQLite.C.SQLITE_INSERT && name == "jf_history" && metadata_fault[] in (:copy, :observe)
+            copy_inserts[] += 1
+            if copy_inserts[] == 6
+                metadata_fault[] == :copy && return SQLite.C.SQLITE_DENY
+                paths = (scan_original[], scan_alternate[])
+                visible_during_copy[] = any(cwd -> scan_file[] in Set(item.path for item in Catalog.listcase(scan_root[], (cwd,))), paths)
+            end
+        end
+    end
+    SQLite.C.SQLITE_OK
+end
+const deny_catalog_write = @cfunction(catalog_authorizer, Cint, (Ptr{Cvoid}, Cint, Cstring, Cstring, Cstring, Cstring))
+
+@testset "Case aliases discover forks without a standard system message" begin
+    mktempdir() do root
+        original, alternate = joinpath.((root,), ("Case Project", "cASE pROJECT"))
+        mkpath(original)
+        isdir(alternate) || symlink(original, alternate; dir_target=true)
+        for messages in (Dict{String, Any}[], [Dict{String, Any}("role" => "system", "content" => "Custom instructions")])
+            source = Catalog.new(root, original)
+            @test JuliaForever.respond!(JuliaForever.Agent(CaseProvider(), [], messages; history=source), "source") == "reply"
+            copied = Catalog.fork(source, root, alternate)
+            file = Catalog.path(copied)
+            close(copied)
+            reopened = open(H.SQLite, file; create=false)
+            @test H.snapshot(reopened).revision > 1
+            @test only([row.cwd for row in SQLite.DBInterface.execute(reopened.db, "SELECT cwd FROM jf_meta")]) == abspath(alternate)
+            close(reopened)
+            before = read(file)
+            @test file in Set(item.path for item in Catalog.listcase(root, (original,)))
+            @test read(file) == before
+        end
+    end
+end
+
+@testset "Failed materialization preserves history and hides incomplete copies" begin
+    mktempdir() do root
+        original, alternate = joinpath.((root,), ("Case Project", "cASE pROJECT"))
+        mkpath(original)
+        isdir(alternate) || symlink(original, alternate; dir_target=true)
+        source = Catalog.new(root, original)
+        messages = Dict{String, Any}[Dict("role" => "system", "content" => JuliaForever.context(original, JuliaForever.Tool[], []))]
+        agent = JuliaForever.Agent(CaseProvider(), [], messages; history=source)
+        @test JuliaForever.respond!(agent, "first") == "reply"
+        @test JuliaForever.respond!(agent, "second") == "reply"
+        snapshot = H.snapshot(source.store)
+        @test snapshot.revision > 6
+        sourcefile = Catalog.path(source)
+        close(source)
+        sourcebytes = read(sourcefile)
+        for failure in (:metadata, :copy)
+            target = Catalog.new(root, alternate)
+            pending = target.store
+            for (revision, batch) in enumerate(snapshot.batches)
+                @test H.append!(pending.store, revision - 1, batch) == revision
+            end
+            file = Catalog.path(target)
+            store = open(H.SQLite, file)
+            metadata_fault[] = failure
+            copy_inserts[] = 0
+            @test SQLite.C.sqlite3_set_authorizer(store.db.handle, deny_catalog_write, C_NULL) == SQLite.C.SQLITE_OK
+            @test_throws Exception Catalog.materialize!(pending, store, snapshot)
+            after = H.snapshot(pending)
+            @test after isa H.Snapshot && after.batches == snapshot.batches
+            close(target)
+            reopened = open(H.SQLite, file; create=false)
+            @test H.snapshot(reopened).revision == 0
+            close(reopened)
+            @test file ∉ Set(item.path for item in Catalog.listcase(root, (original,)))
+            @test file ∉ Set(item.path for item in Catalog.listcase(root, (alternate,)))
+            @test read(sourcefile) == sourcebytes
+        end
+        target = Catalog.new(root, alternate)
+        pending = target.store
+        for (revision, batch) in enumerate(snapshot.batches)
+            @test H.append!(pending.store, revision - 1, batch) == revision
+        end
+        file = Catalog.path(target)
+        store = open(H.SQLite, file)
+        metadata_fault[] = :observe
+        copy_inserts[] = 0
+        scan_root[], scan_original[], scan_alternate[], scan_file[] = root, original, alternate, file
+        visible_during_copy[] = true
+        @test SQLite.C.sqlite3_set_authorizer(store.db.handle, deny_catalog_write, C_NULL) == SQLite.C.SQLITE_OK
+        @test Catalog.materialize!(pending, store, snapshot) == snapshot.revision
+        @test !visible_during_copy[]
+        @test H.snapshot(pending).batches == snapshot.batches
+        @test file in Set(item.path for item in Catalog.listcase(root, (original,)))
+        @test file in Set(item.path for item in Catalog.listcase(root, (alternate,)))
+        close(target)
+        @test read(sourcefile) == sourcebytes
+
+        crashfile = joinpath(root, Catalog.filename(alternate, repeat("f", 32)))
+        script = """
+            using SQLite, JuliaForever
+            import JuliaForever.History as H
+            import JuliaForever.SessionCatalog as Catalog
+            const inserts = Ref(0)
+            function pause(arg::Ptr{Cvoid}, action::Cint, table::Cstring, column::Cstring, database::Cstring, source::Cstring)::Cint
+                if action == SQLite.C.SQLITE_INSERT && table != C_NULL && unsafe_string(table) == \"jf_history\"
+                    inserts[] += 1
+                    if inserts[] == 6
+                        println(\"copying\")
+                        flush(stdout)
+                        Base.Libc.systemsleep(300)
+                    end
+                end
+                SQLite.C.SQLITE_OK
+            end
+            const callback = @cfunction(pause, Cint, (Ptr{Cvoid}, Cint, Cstring, Cstring, Cstring, Cstring))
+            source = open(H.SQLite, ARGS[1]; create=false)
+            snapshot = H.snapshot(source)
+            close(source)
+            target = Catalog.Deferred(ARGS[2], ARGS[3])
+            for (revision, batch) in enumerate(snapshot.batches)
+                H.append!(target.store, revision - 1, batch)
+            end
+            store = open(H.SQLite, ARGS[2])
+            SQLite.C.sqlite3_set_authorizer(store.db.handle, callback, C_NULL)
+            Catalog.materialize!(target, store, snapshot)
+        """
+        project = dirname(Base.active_project())
+        process = open(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -e $script $sourcefile $crashfile $alternate`, "r")
+        try
+            @test readline(process) == "copying"
+            @test crashfile ∉ Set(item.path for item in Catalog.listcase(root, (original,)))
+            @test crashfile ∉ Set(item.path for item in Catalog.listcase(root, (alternate,)))
+        finally
+            kill(process, Base.SIGKILL)
+            wait(process)
+            close(process)
+        end
+        reopened = open(H.SQLite, crashfile; create=false)
+        @test H.snapshot(reopened).revision == 0
+        close(reopened)
+        @test crashfile ∉ Set(item.path for item in Catalog.listcase(root, (original,)))
+        @test crashfile ∉ Set(item.path for item in Catalog.listcase(root, (alternate,)))
+        @test read(sourcefile) == sourcebytes
     end
 end
 
