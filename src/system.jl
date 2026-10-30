@@ -249,11 +249,13 @@ function execute(tool::Union{Bash, PowerShell}, args; cancel=nothing)
     Sys.iswindows() && !isnothing(timeout) && return ToolFailure("Timeout is not supported on Windows")
     Sys.iswindows() && !isnothing(cancel) && return ToolFailure("Cancellation is not supported on Windows")
     !isdir(tool.cwd) && return ToolFailure("Working directory does not exist: $(tool.cwd)\nCannot execute $(shellname(tool)) commands.")
-    settings = config(tool)
-    if isnothing(settings)
-        message = tool isa PowerShell && !Sys.iswindows() ? "The powershell tool is only available on Windows." : "No $(shellname(tool)) executable found."
-        return ToolFailure(message)
-    end
+    shell(tool, args, cancel, timeout, config(tool))
+end
+
+shell(tool::Bash, args, cancel, timeout, ::Nothing) = ToolFailure("No $(shellname(tool)) executable found.")
+shell(tool::PowerShell, args, cancel, timeout, ::Nothing) = ToolFailure(Sys.iswindows() ? "No $(shellname(tool)) executable found." : "The powershell tool is only available on Windows.")
+
+function shell(tool::Union{Bash, PowerShell}, args, cancel, timeout, settings::Tuple)
     executable, arguments = settings
     env = copy(ENV)
     for key in ("PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL")

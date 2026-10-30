@@ -241,13 +241,11 @@ system.jl	:(isnothing(executable))
 system.jl	:(isnothing(executable))
 system.jl	:(isnothing(executable))
 system.jl	:(isnothing(executable))
-system.jl	:(isnothing(settings))
 system.jl	:(isnothing(shellrun))
 system.jl	:(isnothing(timeout))
 system.jl	:(isnothing(timeout))
 system.jl	:(isnothing(timeout))
 system.jl	:(token.cancelled)
-system.jl	:(tool isa PowerShell)
 system.jl	:bybytes
 system.jl	:keep
 system.jl	:partial
