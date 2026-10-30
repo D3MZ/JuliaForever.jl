@@ -19,8 +19,6 @@ JuliaForever.jl	:callback_requested
 JuliaForever.jl	:callback_requested
 JuliaForever.jl	:codemode
 JuliaForever.jl	:inspect
-JuliaForever.jl	:interactive
-JuliaForever.jl	:interactive
 JuliaForever.jl	:login
 JuliaForever.jl	:login_requested
 agent.jl	:(answer.started)

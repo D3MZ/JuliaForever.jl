@@ -28,6 +28,7 @@ include("logs.jl")
 include("search.jl")
 include("codemode.jl")
 include("terminal.jl")
+include("terminal_editor.jl")
 include("tree_terminal.jl")
 include("session_terminal.jl")
 include("mcp.jl")
@@ -196,16 +197,8 @@ function runsession!(history, terminal, model, tools, args, sessiondir)
         agent isa History.Rejected && return result!(terminal, agent)
         isnothing(agent.fault) || return sessionfault!(terminal, agent.fault, history)
         if isempty(args)
-            interactive = stdin isa Base.TTY
-            interactive && println(stderr, "Julia Forever — enter a message, or /exit to quit")
             status = 0
-            while true
-                if interactive
-                    print(stderr, "> ")
-                    flush(stderr)
-                end
-                eof(stdin) && break
-                line = readline(stdin)
+            for line in terminalinput(stdin, stderr)
                 line == "/exit" && break
                 if haskey(terminalcommands, line)
                     agent, history, result = command!(terminalcommands[line], terminal, agent, history, stdin, sessiondir)
