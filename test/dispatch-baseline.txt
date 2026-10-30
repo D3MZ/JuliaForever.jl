@@ -41,8 +41,6 @@ durable.jl	:(visible(state, conversation, at))
 execution.jl	:(cancelled(cancellation))
 execution.jl	:(cancelled(handle.cancellation))
 execution_conversation.jl	:(name === :detailed)
-extensions.jl	:(hook.event == :tool_result)
-extensions.jl	:(hook.event == event.type)
 history.jl	:(name === :batches)
 history.jl	:(name === :batches)
 history.jl	:(name === :status)
@@ -57,8 +55,6 @@ kernel.jl	:(same(value, result, seen))
 kernel.jl	:(same(x, y, seen))
 kernel.jl	:(same(x, y, seen))
 kernel.jl	:found
-logs.jl	:empty
-logs.jl	:first
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :state)
@@ -110,9 +106,6 @@ sessions.jl	:(name === :terminated)
 sqlite_history.jl	:(formaterror((last(exceptions)).exception))
 sqlite_history.jl	:(mode in ("delete", "truncate", "persist", "wal"))
 system.jl	:(code != 0)
-system.jl	:bybytes
-system.jl	:partial
-system.jl	:partial
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :streamed)
