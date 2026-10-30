@@ -84,7 +84,7 @@ anthropicsse(event) = "event: " * event["type"] * "\ndata: " * JSON3.write(event
             @test all(block.type != "thinking" for block in handoff.messages[1].content)
             @test handoff.messages[1].content[end].id == "call-1"
         end
-        model = provider(Dict("JF_PROVIDER" => "anthropic", "ANTHROPIC_MODEL" => "claude", "ANTHROPIC_API_KEY" => "secret"))
+        model = provider(Dict("JF_PROVIDER" => "anthropic", "ANTHROPIC_MODEL" => "claude", "ANTHROPIC_API_KEY" => "secret", "PI_CODING_AGENT_DIR" => mktempdir()))
         @test model isa Anthropic
         @test model.base == "https://api.anthropic.com"
     finally

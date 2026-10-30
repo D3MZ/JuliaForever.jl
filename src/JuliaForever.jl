@@ -4,10 +4,12 @@ using HTTP, JSON3, StructTypes, Unicode, Base64, Random, SHA, REPL
 
 export Execution, ContextEstimates
 export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, CodeSuccess, CodeFailure, cancel!, codeexecute, Image, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Anthropic, Google, Usage, Completion, Truncated, InvalidResponse, ProviderStatus, ProviderError, UnsupportedImage, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
+export ToolSet, ToolNamespace, expose!, register!, unregister!
 
 include("instructions.jl")
 include("prompts.jl")
 include("tools.jl")
+include("tool_search.jl")
 include("file_arguments.jl")
 include("system.jl")
 include("provider.jl")
@@ -16,10 +18,12 @@ include("conversation.jl")
 include("durable.jl")
 include("history.jl")
 include("sqlite_history.jl")
+include("tool_search_events.jl")
 include("agent.jl")
 include("estimates.jl")
 include("extensions.jl")
 include("agent_history.jl")
+include("compaction.jl")
 include("responses.jl")
 include("anthropic.jl")
 include("google.jl")
@@ -31,6 +35,7 @@ include("agent_execution.jl")
 include("logs.jl")
 include("search.jl")
 include("context.jl")
+include("skills.jl")
 include("codemode.jl")
 include("tool_selection.jl")
 include("terminal.jl")
@@ -49,9 +54,12 @@ function reportmissing(missing)
     false
 end
 
+missingkey!(missing, ::Nothing, info) = push!(missing, info.key)
+missingkey!(missing, key::AbstractString, info) = isempty(key) && push!(missing, info.key)
+
 function configured(env, info, model)
     missing = missingmodel(env, info, model)
-    isempty(get(env, info.key, "")) && push!(missing, info.key)
+    missingkey!(missing, keyvalue(env, info), info)
     reportmissing(missing)
 end
 
@@ -63,15 +71,21 @@ abstract type OpenRouterAuth <: Authentication end
 struct CodeAuth <: OpenRouterAuth end
 struct CallbackAuth <: OpenRouterAuth end
 
+struct HistoryInspection end
+struct HistoryAbandonment
+    reason::String
+end
+struct HistoryConflict end
+
+historyinspect(::Nothing) = HistoryInspection()
+historyinspect(action::HistoryInspection) = action
+historyinspect(::Union{HistoryAbandonment, HistoryConflict}) = HistoryConflict()
+historyabandon(::Union{Nothing, HistoryAbandonment}, reason) = HistoryAbandonment(reason)
+historyabandon(::Union{HistoryInspection, HistoryConflict}, reason) = HistoryConflict()
+
 haslogin(::APIKeyAuth) = false
 haslogin(::OpenRouterAuth) = true
-validprovider(::Nothing) = true
-validprovider(name::AbstractString) = known(providerinfo(name))
-known(::Nothing) = false
-known(::NamedTuple) = true
-compatible(::APIKeyAuth, selected) = true
-compatible(::OpenRouterAuth, ::Nothing) = true
-compatible(::OpenRouterAuth, selected::AbstractString) = selected == "openrouter"
+const loginproviders = Dict("openrouter" => providerinfos["openrouter"])
 providername(::APIKeyAuth, ::Nothing) = get(ENV, "JF_PROVIDER", "openai")
 providername(::APIKeyAuth, selected::AbstractString) = selected
 providername(::OpenRouterAuth, selected) = "openrouter"
@@ -133,12 +147,6 @@ function acquire(auth::OpenRouterAuth, info::NamedTuple, model)
     configuredlogin(ENV, info, model) || return 2
     login, code = authorize(auth)
     login!(login, code, info, model)
-end
-
-acquire(auth, info, model, ::ToolSelection.Rule) = acquire(auth, info, model)
-function acquire(auth, info, model, invalid::ToolSelection.Invalid)
-    println(stderr, "--tools: ", invalid.message)
-    2
 end
 
 launch(status::Integer, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded) = status
@@ -213,9 +221,7 @@ function (@main)(args)
     codemode = false
     packages = String[]
     environments = String[]
-    path = nothing
-    reason = nothing
-    inspect = false
+    action = nothing
     selected = nothing
     requested_model = nothing
     auth = APIKeyAuth()
@@ -285,8 +291,7 @@ function (@main)(args)
                 println(stderr, "--history requires a path.")
                 return 2
             end
-            path = args[2]
-            session = SessionCatalog.assign(session, SessionCatalog.Explicit(path))
+            session = SessionCatalog.assign(session, SessionCatalog.Explicit(args[2]))
             args = args[3:end]
         elseif first(args) in ("--session", "--session-dir", "--fork")
             if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
@@ -322,10 +327,10 @@ function (@main)(args)
                 println(stderr, "--abandon requires a reason.")
                 return 2
             end
-            reason = args[2]
+            action = historyabandon(action, args[2])
             args = args[3:end]
         elseif first(args) == "--inspect-history"
-            inspect = true
+            action = historyinspect(action)
             args = args[2:end]
         else
             push!(positional, first(args))
@@ -333,42 +338,69 @@ function (@main)(args)
         end
     end
     args = positional
-    if !validprovider(selected)
-        println(stderr, "Unknown provider; choose openai, openai-responses, openrouter, anthropic, or google.")
-        return 2
-    end
-    if inspect
-        if isnothing(path) || !isnothing(reason) || haslogin(auth) || !isempty(args) || !SessionCatalog.recovery(session) || !recoveryname(sessionname)
-            println(stderr, "--inspect-history requires --history PATH and no prompt or --abandon.")
-            return 2
-        end
-        return inspecthistory!(Terminal(stdout, stderr, String[]), path)
-    end
-    if !isnothing(reason)
-        if isnothing(path) || haslogin(auth) || !isempty(args) || !SessionCatalog.recovery(session) || !recoveryname(sessionname)
-            println(stderr, "--abandon requires --history PATH and no prompt.")
-            return 2
-        end
-        return abandonhistory!(Terminal(stdout, stderr, String[]), path, reason)
-    end
-    if !compatible(auth, selected)
-        println(stderr, "OpenRouter login requires --provider openrouter.")
-        return 2
-    end
-    info = providerinfo(providername(auth, selected))
-    model = acquire(auth, info, requested_model, rules)
-    launch(model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
+    options = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
+    selectedtools(action, options, rules)
 end
 
-recoveryname(::Nothing) = true
-recoveryname(::String) = false
+selectedtools(action, options, ::ToolSelection.Rule) = selectedprovider(action, options, options.selected)
+function selectedtools(action, options, invalid::ToolSelection.Invalid)
+    println(stderr, "--tools: ", invalid.message)
+    2
+end
+selectedprovider(action, options, ::Nothing) = historyaction(action, options)
+selectedprovider(action, options, selected::AbstractString) = providerselection(action, options, providerinfo(selected))
+providerselection(action, options, ::NamedTuple) = historyaction(action, options)
+function providerselection(action, options, ::Nothing)
+    println(stderr, "Unknown provider; choose openai, openai-responses, openrouter, anthropic, or google.")
+    2
+end
+
+historyaction(::Nothing, options) = loginprovider(options.auth, options.selected, options)
+loginprovider(::APIKeyAuth, selected, options) = launchprovider(options)
+loginprovider(::OpenRouterAuth, ::Nothing, options) = launchprovider(options)
+loginprovider(::OpenRouterAuth, selected::AbstractString, options) = loginprovider(options, get(loginproviders, selected, nothing))
+loginprovider(options, ::NamedTuple) = launchprovider(options)
+function loginprovider(options, ::Nothing)
+    println(stderr, "OpenRouter login requires --provider openrouter.")
+    2
+end
+function launchprovider(options)
+    (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded) = options
+    info = providerinfo(providername(auth, selected))
+    model = acquire(auth, info, requested_model)
+    launch(model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
+end
+historyaction(::HistoryInspection, options) = inspectrequest!(options.session, options.auth, options.sessionname, options.args)
+historyaction(::HistoryConflict, options) = invalidinspection()
+historyaction(action::HistoryAbandonment, options) = abandonrequest!(options.session, options.auth, options.sessionname, options.args, action.reason)
+
+function invalidinspection()
+    println(stderr, "--inspect-history requires --history PATH and no prompt or --abandon.")
+    2
+end
+function invalidabandon()
+    println(stderr, "--abandon requires --history PATH and no prompt.")
+    2
+end
+inspectrequest!(session, auth, name, args) = invalidinspection()
+function inspectrequest!(session::SessionCatalog.Explicit, ::APIKeyAuth, ::Nothing, args)
+    isempty(args) || return invalidinspection()
+    inspecthistory!(Terminal(stdout, stderr, String[]), session.path)
+end
+abandonrequest!(session, auth, name, args, reason) = invalidabandon()
+function abandonrequest!(session::SessionCatalog.Explicit, ::APIKeyAuth, ::Nothing, args, reason)
+    isempty(args) || return invalidabandon()
+    abandonhistory!(Terminal(stdout, stderr, String[]), session.path, reason)
+end
 terminal!(terminal::Terminal, model, registry::Integer, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded) = registry
 
 function initial(extensions)
     cwd = pwd()
     files = Instructions.load(cwd; agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing))
     prompt = context(cwd, Extensions.tools(extensions), files)
-    Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+    messages = Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+    Skills.appendprompt!(messages, Skills.render(Skills.load(cwd)))
+    messages
 end
 
 initial(extensions, ::Nothing) = initial(extensions)

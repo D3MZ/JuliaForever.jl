@@ -46,7 +46,9 @@ function restore(provider, tools, history::History.Store, snapshot::History.Snap
     state, events = replayed
     messages = Dict{String, Any}[convert(Dict{String, Any}, message) for message in state.messages]
     failure = fault(state)
-    Agent(provider, tools, messages, initial, state, events, ReentrantLock(), Idle(), ShellCancellation(), nothing, history, snapshot.revision, failure)
+    agent = Agent(provider, tools, messages, initial, state, events, ReentrantLock(), Idle(), ShellCancellation(), nothing, history, snapshot.revision, failure)
+    foreach(event -> applied!(agent.tools, event), events)
+    agent
 end
 
 persist!(agent::Agent, event) = persist!(agent, agent.history, event)
@@ -183,9 +185,7 @@ recorded_mode!(agent, prompt, ::Sequential; on_event, on_agent_event, parameters
 recorded_start!(agent, prompt, ::Nothing; kwargs...) = :busy
 function recorded_start!(agent, prompt, ::Running; on_event, on_agent_event, parameters)
     messages = Dict{String, Any}[]
-    event_lock = ReentrantLock()
-    callback = on_agent_event
-    on_agent_event = event -> lock(() -> emit(callback, event), event_lock)
+    on_agent_event = EventSink(ReentrantLock(), on_agent_event)
     run = (; agent, on_event, callback=on_agent_event, parameters, messages)
     try
         emit(on_agent_event, (; type=:agent_start))
@@ -272,6 +272,7 @@ end
 function recorded_step!(run, effect, ::Union{Idle, Running})
     request = [convert(Dict{String, Any}, message) for message in effect.effect.messages]
     answer = response(run.agent, request, run.parameters, run.on_event, run.callback)
+    rememberusage!(answer.result)
     recorded_answer!(run, effect, answer, run.agent.fault)
 end
 

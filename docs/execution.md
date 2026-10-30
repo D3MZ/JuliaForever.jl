@@ -48,6 +48,8 @@ This example handles a successful result only. The supervisor decides whether to
 
 ## Conversation effects
 
+For deferred discovery, install a matching `ToolSet` in each worker context and construct the agent with its own matching `ToolSet`. Each request carries the agent’s committed exposed names; workers search a fresh snapshot, and exposure takes effect only when the result is recorded. Reopening history restores exposure. Update worker catalogs separately when registrations change.
+
 A worker can execute `Conversation.ModelRequest`, `ToolRequest`, and `SkipRequest` with capabilities installed in that process. A context contains the live provider, an iterable of tool values, and provider parameters; the submitted `Work` contains only its context ID and the typed effect. Install the same fresh, non-secret ID independently on every worker that an executor may select. `install!` returns `false` if that ID is already installed on the process. `uninstall!` removes the context for subsequent lookups.
 
 `Work` now carries the requested result type; its `detailed` property and constructor remain available. Its field layout changed, so work serialized by an older version may not deserialize with this version. Run matching code on every worker.

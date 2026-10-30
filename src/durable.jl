@@ -49,9 +49,11 @@ mutable struct State
     nextid::Int
     records::Dict{Int, Record}
     requests::Dict{Tuple{Int, String}, Int}
+    entries::Dict{Int, Int}
+    documents::Dict{Int, Vector{Pair{Int, Document}}}
 end
 
-State() = State(0, 0, Dict{Int, Record}(), Dict{Tuple{Int, String}, Int}())
+State() = State(0, 0, Dict{Int, Record}(), Dict{Tuple{Int, String}, Int}(), Dict{Int, Int}(), Dict{Int, Vector{Pair{Int, Document}}}())
 
 abstract type Health end
 struct Healthy <: Health end
@@ -213,9 +215,6 @@ forkcheck(state::State, records::Vector{Record}) = foldl((result, record) -> for
 forkcheck(state::State, record::Record, ::Nothing) = forkcheck(state, record)
 forkcheck(::State, ::Record, result::Rejected) = result
 
-valid(::Nothing) = true
-valid(result) = false
-
 validate(::Conversation) = nothing
 validate(parent) = Rejected(:conversation_missing)
 validate(state::State, ::Nothing, record::Conversation) = forkcheck(state, record)
@@ -248,36 +247,62 @@ store!(state::State, record::Record, rejected::Rejected) = rejected
 
 function store!(state::State, record::Record, ::Nothing)
     state.records[record.id] = record
+    index!(state, record)
+    nothing
+end
+
+index!(state::State, record::Record) = nothing
+index!(state::State, record::Entry) = (state.entries[record.id] = state.seq + 1; nothing)
+function index!(state::State, record::Document)
+    push!(get!(Vector{Pair{Int, Document}}, state.documents, record.id), (state.seq + 1) => record)
     nothing
 end
 
 function replay!(state::State, batch)
     try
-        seq = batch["seq"]
-        seq isa Int && seq == state.seq + 1 || return false
-        nextid = batch["nextid"]
-        nextid isa Int && nextid >= state.nextid || return false
-        writes = batch["writes"]
-        writes isa AbstractVector && !isempty(writes) || return false
-        records = Record[]
-        for encoded in writes
-            record = decode(encoded)
-            record isa Record || return false
-            record.id <= nextid || return false
-            haskey(state.records, record.id) || record.id > state.nextid || return false
-            valid(forkcheck(state, record)) || return false
-            push!(records, record)
-        end
-        for record in records
-            valid(apply!(state, record)) || return false
-        end
-        valid(forkcheck(state, records)) || return false
-        state.seq += 1
-        state.nextid = nextid
-        true
+        replayseq!(state, batch, batch["seq"])
     catch
-        false
+        Rejected(:corrupt_log)
     end
+end
+
+replayseq!(state, batch, seq) = Rejected(:corrupt_log)
+function replayseq!(state, batch, seq::Int)
+    seq == state.seq + 1 || return Rejected(:corrupt_log)
+    replaynext!(state, batch, batch["nextid"])
+end
+replaynext!(state, batch, nextid) = Rejected(:corrupt_log)
+function replaynext!(state, batch, nextid::Int)
+    nextid >= state.nextid || return Rejected(:corrupt_log)
+    replaywrites!(state, nextid, batch["writes"])
+end
+replaywrites!(state, nextid, writes) = Rejected(:corrupt_log)
+function replaywrites!(state, nextid, writes::AbstractVector)
+    isempty(writes) && return Rejected(:corrupt_log)
+    records = foldl((records, encoded) -> replayrecord!(state, nextid, records, encoded), writes; init=Record[])
+    replayrecords!(state, nextid, records)
+end
+replayrecord!(state, nextid, rejected::Rejected, encoded) = rejected
+replayrecord!(state, nextid, records::Vector{Record}, encoded) = replaydecoded!(state, nextid, records, decode(encoded))
+replaydecoded!(state, nextid, records, record) = Rejected(:corrupt_log)
+function replaydecoded!(state, nextid, records, record::Record)
+    record.id <= nextid || return Rejected(:corrupt_log)
+    haskey(state.records, record.id) || record.id > state.nextid || return Rejected(:corrupt_log)
+    replayaccepted!(records, record, forkcheck(state, record))
+end
+replayaccepted!(records, record, rejected::Rejected) = rejected
+replayaccepted!(records, record, ::Nothing) = push!(records, record)
+replayrecords!(state, nextid, rejected::Rejected) = Rejected(:corrupt_log)
+replayrecords!(state, nextid, records::Vector{Record}) = replayapplied!(state, nextid, records, foldl((result, record) -> replayapply!(state, result, record), records; init=nothing))
+replayapply!(state, rejected::Rejected, record) = rejected
+replayapply!(state, ::Nothing, record) = apply!(state, record)
+replayapplied!(state, nextid, records, rejected::Rejected) = Rejected(:corrupt_log)
+replayapplied!(state, nextid, records, ::Nothing) = replayfinish!(state, nextid, forkcheck(state, records))
+replayfinish!(state, nextid, rejected::Rejected) = Rejected(:corrupt_log)
+function replayfinish!(state, nextid, ::Nothing)
+    state.seq += 1
+    state.nextid = nextid
+    nothing
 end
 
 function sync(io::IOStream)
@@ -321,18 +346,25 @@ function recover(io::IOStream)
     bytes = read(io)
     ends = findall(==(0x0a), bytes)
     state = State()
-    start = 1
-    for last in ends
-        line = bytes[start:last-1]
-        isvalid(String, line) || return Rejected(:corrupt_log)
-        batch = try
-            JSON3.read(String(line), Dict{String, Any})
-        catch
-            return Rejected(:corrupt_log)
-        end
-        replay!(state, batch) || return Rejected(:corrupt_log)
-        start = last + 1
+    start = foldl((start, last) -> recoverline!(state, bytes, start, last), ends; init=1)
+    recover(io, state, bytes, ends, start)
+end
+
+recoverline!(state, bytes, rejected::Rejected, last) = rejected
+function recoverline!(state, bytes, start::Int, last::Int)
+    line = bytes[start:last-1]
+    isvalid(String, line) || return Rejected(:corrupt_log)
+    batch = try
+        JSON3.read(String(line), Dict{String, Any})
+    catch
+        return Rejected(:corrupt_log)
     end
+    replayline!(last, replay!(state, batch))
+end
+replayline!(last, rejected::Rejected) = rejected
+replayline!(last, ::Nothing) = last + 1
+recover(io, state, bytes, ends, rejected::Rejected) = rejected
+function recover(io, state, bytes, ends, start::Int)
     complete = isempty(ends) ? 0 : ends[end]
     if complete < length(bytes)
         truncate(io, complete)
@@ -348,23 +380,27 @@ function Base.open(::Type{Store}, path::AbstractString)
     end
     created = !isfile(path)
     io = open(path, "a+")
-    success = false
+    result = nothing
     try
-        result = claim(io)
-        result === nothing || return result
-        if created
-            sync(io)
-            syncdir(path)
-        end
-        state = recover(io)
-        state isa Rejected && return state
-        store = Store(io, state, state.nextid, ReentrantLock(), false, false, false)
-        success = true
-        store
+        result = opened(io, path, created, claim(io))
     finally
-        success || close(io)
+        release(io, result)
     end
+    result
 end
+
+opened(io, path, created, result) = result
+function opened(io, path, created, ::Nothing)
+    if created
+        sync(io)
+        syncdir(path)
+    end
+    recovered(io, recover(io))
+end
+recovered(io, rejected::Rejected) = rejected
+recovered(io, state::State) = Store(io, state, state.nextid, ReentrantLock(), false, false, false)
+release(io, ::Store) = nothing
+release(io, result) = close(io)
 
 function Base.close(store::Store)
     lock(store.lock) do
@@ -462,6 +498,26 @@ function entries(store::Store, conversation::Integer)
 end
 
 entries(tx::Transaction, conversation::Integer) = copyentries(tx.state, conversation, status(tx))
+function snapshot(store::Store, conversation::Integer, document::Integer, entry::Integer)
+    lock(store.lock) do
+        snapshot(store.state, conversation, document, entry, status(store))
+    end
+end
+snapshot(state, conversation, document, entry, rejected::Rejected) = rejected
+snapshot(state, conversation, document, entry, ::Nothing) = snapshotentry(state, conversation, document, get(state.records, entry, nothing))
+snapshotentry(state, conversation, document, ::Union{Nothing, Record}) = Rejected(:entry_not_visible)
+function snapshotentry(state, conversation, document, entry::Entry)
+    entry.conversation == conversation || return Rejected(:entry_not_visible)
+    snapshotdocument(state, conversation, state.entries[entry.id], get(state.records, document, nothing))
+end
+snapshotdocument(state, conversation, seq, ::Union{Nothing, Record}) = nothing
+function snapshotdocument(state, conversation, seq, document::Document)
+    document.conversation == conversation || return nothing
+    versions = state.documents[document.id]
+    snapshotversion(versions, findlast(version -> version.first <= seq, versions))
+end
+snapshotversion(versions, ::Nothing) = nothing
+snapshotversion(versions, index::Integer) = deepcopy(versions[index].second)
 
 Base.get(tx::Transaction, ::Type{T}, id::Integer) where {T <: Record} = readrecord(tx, T, id, status(tx))
 mint!(tx::Transaction) = mint!(tx, status(tx))

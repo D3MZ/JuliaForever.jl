@@ -130,3 +130,27 @@ end
 
 Agent(provider, snapshot::Extensions.Snapshot; history=nothing) = Agent(provider, Extensions.tools(snapshot); history)
 Agent(provider, snapshot::Extensions.Snapshot, messages; history=nothing) = Agent(provider, Dict{String, Tool}(name(tool) => tool for tool in Extensions.tools(snapshot)), messages; history)
+
+"""Chain `:tool_result` hooks on a listener. Return a `ToolResult` to replace the current result, or `nothing` to leave it unchanged. Hook failures are recorded and later hooks still run. Pass this listener as `on_agent_event` to enable interception."""
+function interceptresult(listener::Extensions.Listener, call, args, result::ToolResult)
+    lock(listener.lock) do
+        current = result
+        for hook in listener.hooks
+            hook.event == :tool_result || continue
+            event = (; type=:tool_result, tool_call_id=call["id"], tool_name=callinfo(call).name, args, result=current)
+            try
+                current = resultvalue(current, hook.handler(deepcopy(event)))
+            catch exception
+                push!(listener.errors, Extensions.Failure(hook.plugin, :tool_result, exception))
+            end
+        end
+        discovery(result, current)
+    end
+end
+
+discovery(original::ToolResult, result::ToolResult) = result
+discovery(original::ToolLoaded, result::ToolLoaded) = result
+discovery(original::ToolLoaded, result::ToolResult) = ToolDiscovery(result, loaded(original))
+
+resultvalue(current::ToolResult, ::Nothing) = current
+resultvalue(current::ToolResult, result::ToolResult) = result
