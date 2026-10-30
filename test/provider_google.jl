@@ -2,6 +2,28 @@ using HTTP, JSON3
 
 googlesse(data) = "data: $(JSON3.write(data))\n\n"
 
+@testset "Google finish reasons" begin
+    reason = Ref("STOP")
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        data = Dict("candidates" => [Dict("content" => Dict("parts" => [Dict("text" => "partial")]), "finishReason" => reason[])])
+        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(data))
+    end
+    try
+        model = Google("http://$(HTTP.server_addr(server))/v1beta", "gemini-fixture", "synthetic")
+        for (value, expected) in (("STOP", "stop"), ("MAX_TOKENS", "length"))
+            reason[] = value
+            result = JuliaForever.complete(model, [], Dict())
+            @test result.done && result.finish == expected
+        end
+        reason[] = "SAFETY"
+        result = JuliaForever.complete(model, [], Dict())
+        @test !result.done && occursin("SAFETY", result.error)
+    finally
+        close(server)
+        wait(server)
+    end
+end
+
 function google_chunks()
     [
         Dict("candidates" => [Dict("content" => Dict("role" => "model", "parts" => [Dict("thought" => true, "text" => "thinking")]))]),

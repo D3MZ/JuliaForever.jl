@@ -32,9 +32,11 @@ include("tree_terminal.jl")
 include("session_terminal.jl")
 include("mcp.jl")
 
+const credentials = Dict("openai" => ("OPENAI_MODEL", "OPENAI_API_KEY"), "openai-responses" => ("OPENAI_MODEL", "OPENAI_API_KEY"), "openrouter" => ("OPENROUTER_MODEL", "OPENROUTER_API_KEY"), "anthropic" => ("ANTHROPIC_MODEL", "ANTHROPIC_API_KEY"), "google" => ("GEMINI_MODEL", "GEMINI_API_KEY"))
+
 function configured(env, login)
     selected = get(env, "JF_PROVIDER", "openai")
-    required = login ? ("OPENROUTER_MODEL",) : selected in ("openai", "openai-responses") ? ("OPENAI_MODEL", "OPENAI_API_KEY") : selected == "openrouter" ? ("OPENROUTER_MODEL", "OPENROUTER_API_KEY") : selected == "anthropic" ? ("ANTHROPIC_MODEL", "ANTHROPIC_API_KEY") : selected == "google" ? ("GEMINI_MODEL", "GEMINI_API_KEY") : ()
+    required = login ? ("OPENROUTER_MODEL",) : get(credentials, selected, ())
     missing = filter(name -> !haskey(env, name), required)
     isempty(missing) && return true
     println(stderr, "Set ", join(missing, " and "), ".")

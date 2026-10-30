@@ -236,9 +236,21 @@ function receivecandidate!(state, candidate, callback)
     reportfinish!(callback, state.reason, state.calls)
 end
 reportfinish!(callback, ::Nothing, calls) = nothing
+
+abstract type Finish end
+struct Stop <: Finish end
+struct Limit <: Finish end
+struct Other <: Finish
+    reason
+end
+const finishes = Dict("STOP" => Stop(), "MAX_TOKENS" => Limit())
+finish(reason) = get(finishes, reason, Other(reason))
+finishname(::Stop, calls) = isempty(calls) ? "stop" : "tool_calls"
+finishname(::Limit, calls) = "length"
+finishname(other::Other, calls) = other.reason
+
 function reportfinish!(callback, reason, calls)
-    mapped = get(Dict("STOP" => "stop", "MAX_TOKENS" => "length"), reason, reason)
-    name = mapped == "stop" && !isempty(calls) ? "tool_calls" : mapped
+    name = finishname(finish(reason), calls)
     callback((; type=:finish, reason=name))
 end
 
@@ -251,15 +263,13 @@ function result(message, state, ::Nothing)
     Completion(message, state.used, nothing, false, something(state.failure, "Google stream ended without a finish reason"))
 end
 function result(message, state, reason::AbstractString)
-    mapped = get(Dict("STOP" => "stop", "MAX_TOKENS" => "length"), reason, nothing)
-    result(message, state, reason, mapped)
+    result(message, state, reason, finish(reason))
 end
-function result(message, state, reason, ::Nothing)
+function result(message, state, reason, ::Other)
     Completion(message, state.used, nothing, false, something(state.failure, "Google finish reason: $reason"))
 end
-function result(message, state, reason, mapped::AbstractString)
-    finish = mapped == "stop" && !isempty(state.calls) ? "tool_calls" : mapped
-    outcome(message, state, finish, state.failure)
+function result(message, state, reason, mapped::Union{Stop, Limit})
+    outcome(message, state, finishname(mapped, state.calls), state.failure)
 end
 outcome(message, state, finish, ::Nothing) = Completion(message, state.used, finish, true, nothing)
 outcome(message, state, finish, failure) = Completion(message, state.used, finish, false, failure)

@@ -1,5 +1,31 @@
 using HTTP, JSON3
 
+@testset "chat finish reasons" begin
+    reason = Ref{Union{Nothing, String}}("stop")
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        message = Dict("role" => "assistant", "content" => "answer")
+        data = Dict("choices" => [Dict("message" => message, "finish_reason" => reason[])])
+        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(data))
+    end
+    try
+        model = OpenAI("http://$(HTTP.server_addr(server))/v1", "fixture", "synthetic")
+        for value in ("stop", "end", "length", "tool_calls", "function_call")
+            reason[] = value
+            result = JuliaForever.complete(model, [], Dict())
+            @test result.done && result.finish == value && result.error === nothing
+        end
+        for value in (nothing, "content_filter")
+            reason[] = value
+            result = JuliaForever.complete(model, [], Dict())
+            @test !result.done && result.finish == value
+            @test occursin(isnothing(value) ? "missing" : value, result.error)
+        end
+    finally
+        close(server)
+        wait(server)
+    end
+end
+
 @testset "provider usage decoding" begin
     @test JuliaForever.usage(nothing) === nothing
     plain = JuliaForever.usage(Dict{String, Any}("prompt_tokens" => 20, "completion_tokens" => 5, "prompt_tokens_details" => nothing, "completion_tokens_details" => nothing, "cost" => 0.003))

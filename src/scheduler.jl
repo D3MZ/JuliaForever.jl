@@ -81,15 +81,13 @@ end
 checkpoint(data) = Checkpoint(data["name"], data["value"])
 checkpoint(value::Checkpoint) = Dict("name" => value.name, "value" => value.value)
 
-function taskstatus(state)
-    value = state["status"]
-    value == "pending" && return Pending()
-    value == "running" && return Running(state["cancelled"])
-    value == "completed" && return Completed(state["result"])
-    value == "failed" && return Failed(Symbol(state["reason"]))
-    value == "cancelled" && return Cancelled()
-    Dict{String, TaskStatus}()[value]
-end
+const taskstatuses = Dict("pending" => Pending, "running" => Running, "completed" => Completed, "failed" => Failed, "cancelled" => Cancelled)
+taskstatus(state) = taskstatus(taskstatuses[state["status"]], state)
+taskstatus(::Type{Pending}, state) = Pending()
+taskstatus(::Type{Running}, state) = Running(state["cancelled"])
+taskstatus(::Type{Completed}, state) = Completed(state["result"])
+taskstatus(::Type{Failed}, state) = Failed(Symbol(state["reason"]))
+taskstatus(::Type{Cancelled}, state) = Cancelled()
 
 function taskview(record::Task)
     state = record.state
