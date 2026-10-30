@@ -298,11 +298,11 @@ function fuzzy(text)
     replace(join(lines, '\n'), r"[\u2018\u2019\u201a\u201b]" => "'", r"[\u201c\u201d\u201e\u201f]" => "\"", r"[\u2010-\u2015\u2212]" => "-", r"[\u00a0\u2002-\u200a\u202f\u205f\u3000]" => " ")
 end
 
-duplicate(text, content) = duplicate(text, content, findfirst(text, content))
-duplicate(text, content, ::Nothing) = false
-duplicate(text, content, match) = duplicate(findnext(text, content, nextind(content, first(match))))
-duplicate(::Nothing) = false
-duplicate(match) = true
+editduplicate(text, content) = editduplicate(text, content, findfirst(text, content))
+editduplicate(text, content, ::Nothing) = nothing
+editduplicate(text, content, match::UnitRange) = editduplicate(findnext(text, content, nextind(content, first(match))))
+editduplicate(::Nothing) = nothing
+editduplicate(match::UnitRange) = ToolFailure("Edit text must match exactly once")
 
 function apply(content, edits, offset=0)
     for edit in Iterators.reverse(edits)
@@ -356,19 +356,30 @@ function edit(destination, args)
     requested = [(old=normalize(edit.oldText), text=normalize(edit.newText), fuzzy=fuzzy(edit.oldText)) for edit in args.edits]
     any(edit -> isempty(edit.old), requested) && return ToolFailure("Edit text must not be empty")
     comparable = fuzzy(originalcontent)
-    for edit in requested
-        duplicate(edit.old, originalcontent) && return ToolFailure("Edit text must match exactly once")
-        if isempty(edit.fuzzy)
-            (isempty(comparable) && !isnothing(findfirst(edit.old, originalcontent))) || return ToolFailure("Edit text must match exactly once")
-        else
-            duplicate(edit.fuzzy, comparable) && return ToolFailure("Edit text must match exactly once")
-        end
+    context = (; destination, bom, ending, args, original=originalcontent, comparable, requested)
+    checked = foldl((result, edit) -> editvalidate(result, edit, context), requested; init=nothing)
+    editchecked(context, checked)
+end
+
+editvalidate(failure::ToolFailure, edit, context) = failure
+editvalidate(::Nothing, edit, context) = editunique(edit, context, editduplicate(edit.old, context.original))
+editunique(edit, context, failure::ToolFailure) = failure
+function editunique(edit, context, ::Nothing)
+    if isempty(edit.fuzzy)
+        isempty(context.comparable) || return ToolFailure("Edit text must match exactly once")
+        return editrequired(findfirst(edit.old, context.original))
     end
-    strategy = foldl(editstrategy, requested; init=ExactEdit(originalcontent, comparable))
+    editduplicate(edit.fuzzy, context.comparable)
+end
+editrequired(::Nothing) = ToolFailure("Edit text must match exactly once")
+editrequired(match::UnitRange) = nothing
+
+editchecked(context, failure::ToolFailure) = failure
+function editchecked(context, ::Nothing)
+    strategy = foldl(editstrategy, context.requested; init=ExactEdit(context.original, context.comparable))
     base = editbase(strategy)
-    edits = foldl((matches, edit) -> editmatches(matches, edit, base), requested; init=NamedTuple{(:range, :text), Tuple{UnitRange{Int}, String}}[])
-    context = (; destination, bom, ending, args, strategy)
-    editprepared(context, edits)
+    edits = foldl((matches, edit) -> editmatches(matches, edit, base), context.requested; init=NamedTuple{(:range, :text), Tuple{UnitRange{Int}, String}}[])
+    editprepared(merge(context, (; strategy)), edits)
 end
 
 struct ExactEdit
