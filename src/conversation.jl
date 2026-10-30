@@ -232,6 +232,13 @@ struct Dequeue <: K.Event
     revision::Int
 end
 
+struct SessionName <: K.Event
+    revision::Int
+    name::String
+end
+
+sessionname(text::AbstractString) = String(strip(replace(text, r"[\r\n]+" => " ")))
+
 struct Advance <: K.Event
     revision::Int
 end
@@ -311,6 +318,11 @@ end
 function K.step(state::State, event::Dequeue)
     event.revision == state.revision || return K.Rejected(state, :revision)
     K.Applied(update(state; steering=String[], followups=String[]), ())
+end
+
+function K.step(state::State, event::SessionName)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    K.Applied(update(state), ())
 end
 
 function K.step(state::State, event::Cancel)

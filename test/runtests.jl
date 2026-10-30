@@ -78,6 +78,8 @@ include("session_resume.jl")
 include("session_corrupt.jl")
 include("session_queues.jl")
 include("session_reasoning_estimate.jl")
+include("session_name_unit.jl")
+include("session_names.jl")
 include("tree_history.jl")
 include("tree_cli.jl")
 

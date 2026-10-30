@@ -28,6 +28,11 @@ end
     @test occursin("[tool] greet: started", result.diagnostics)
     @test occursin("[tool] greet: ok", result.diagnostics)
 
+    restarted = plugin_process(["--no-session"; selected]; input="one\n/new\ntwo\n/exit\n")
+    @test restarted.status == 0
+    @test restarted.output == "Before\nplugin:Hello, Ada!\nBefore\nplugin:Hello, Ada!\n"
+    @test restarted.events == repeat(["agent_start", "tool_execution_end", "agent_end"], 2)
+
     mktempdir() do dir
         cp(joinpath(fixture, "GreetingPlugin"), joinpath(dir, "GreetingPlugin"))
         fresh = plugin_process(["--plugin-env", dir, "--plugin", "GreetingPlugin", "start"]; compile=true, depot=joinpath(dir, "depot"))

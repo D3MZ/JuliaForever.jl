@@ -133,14 +133,14 @@ function acquire(auth::OpenRouterAuth, info::NamedTuple, model)
     login!(login, code, info, model)
 end
 
-launch(status::Integer, packages, environments, codemode, session, sessiondir, args) = status
+launch(status::Integer, packages, environments, codemode, session, sessiondir, args, sessionname) = status
 
-function launch(model::Union{OpenAI, OpenAIResponses, Anthropic, Google}, packages, environments, codemode, session, sessiondir, args)
+function launch(model::Union{OpenAI, OpenAIResponses, Anthropic, Google}, packages, environments, codemode, session, sessiondir, args, sessionname)
     tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
     Sys.iswindows() && push!(tools, PowerShell(pwd()))
     terminal = Terminal(stdout, stderr, [model.key])
     registry = plugins(terminal, tools, packages, environments)
-    Base.invokelatest(terminal!, terminal, model, registry, codemode, session, sessiondir, args)
+    Base.invokelatest(terminal!, terminal, model, registry, codemode, session, sessiondir, args, sessionname)
 end
 
 pluginfailure!(terminal::Terminal, name, exception::InterruptException) = failure!(terminal, exception)
@@ -206,6 +206,7 @@ function (@main)(args)
     auth = APIKeyAuth()
     session = SessionCatalog.New()
     sessiondir = SessionCatalog.directory(ENV)
+    sessionname = nothing
     while !isempty(args)
         if first(args) == "--codemode"
             codemode = true
@@ -265,6 +266,13 @@ function (@main)(args)
         elseif first(args) == "--no-session"
             session = SessionCatalog.assign(session, SessionCatalog.Ephemeral())
             args = args[2:end]
+        elseif first(args) in ("--name", "-n")
+            if length(args) < 2 || isempty(Conversation.sessionname(args[2]))
+                println(stderr, "--name requires a non-empty value.")
+                return 2
+            end
+            sessionname = Conversation.sessionname(args[2])
+            args = args[3:end]
         elseif first(args) == "--abandon"
             if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
                 println(stderr, "--abandon requires a reason.")
@@ -281,7 +289,7 @@ function (@main)(args)
     end
     if args == ["--help"] || args == ["-h"]
         println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
-        println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --session-dir DIR, --no-session. Set JF_SESSION_DIR to choose the default directory.")
+        println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
         return 0
     end
     if !validprovider(selected)
@@ -289,14 +297,14 @@ function (@main)(args)
         return 2
     end
     if inspect
-        if isnothing(path) || !isnothing(reason) || haslogin(auth) || !isempty(args) || !SessionCatalog.recovery(session)
+        if isnothing(path) || !isnothing(reason) || haslogin(auth) || !isempty(args) || !SessionCatalog.recovery(session) || !recoveryname(sessionname)
             println(stderr, "--inspect-history requires --history PATH and no prompt or --abandon.")
             return 2
         end
         return inspecthistory!(Terminal(stdout, stderr, String[]), path)
     end
     if !isnothing(reason)
-        if isnothing(path) || haslogin(auth) || !isempty(args) || !SessionCatalog.recovery(session)
+        if isnothing(path) || haslogin(auth) || !isempty(args) || !SessionCatalog.recovery(session) || !recoveryname(sessionname)
             println(stderr, "--abandon requires --history PATH and no prompt.")
             return 2
         end
@@ -308,10 +316,12 @@ function (@main)(args)
     end
     info = providerinfo(providername(auth, selected))
     model = acquire(auth, info, requested_model)
-    launch(model, packages, environments, codemode, session, sessiondir, args)
+    launch(model, packages, environments, codemode, session, sessiondir, args, sessionname)
 end
 
-terminal!(terminal::Terminal, model, registry::Integer, codemode, session, sessiondir, args) = registry
+recoveryname(::Nothing) = true
+recoveryname(::String) = false
+terminal!(terminal::Terminal, model, registry::Integer, codemode, session, sessiondir, args, sessionname) = registry
 
 function initial(extensions)
     cwd = pwd()
@@ -326,21 +336,22 @@ initial(extensions, snapshot::History.Snapshot) = iszero(snapshot.revision) ? in
 selection(result::ToolFailure) = SessionCatalog.Invalid(result.text)
 selection(result) = result
 
-function terminal!(terminal::Terminal, model, registry::Extensions.Registry, codemode, session, sessiondir, args)
+function terminal!(terminal::Terminal, model, registry::Extensions.Registry, codemode, session, sessiondir, args, sessionname)
     if codemode
         mode = CodeMode(Extensions.tools(Extensions.snapshot(registry)))
         result = Extensions.register!(registry, gensym(:codemode), Extensions.Plugin(; tools=(mode,)))
-        return terminal!(terminal, model, registered(terminal, registry, "codemode", result), false, session, sessiondir, args)
+        return terminal!(terminal, model, registered(terminal, registry, "codemode", result), false, session, sessiondir, args, sessionname)
     end
     extensions = Extensions.snapshot(registry)
     history = selection(attempt(() -> SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr, text -> redact(terminal, text))))
-    runsession!(history, terminal, model, extensions, args, sessiondir)
+    runsession!(history, terminal, model, extensions, args, sessiondir, sessionname)
 end
 
-runsession!(history, terminal, model, extensions, args) = runsession!(history, terminal, model, extensions, args, SessionCatalog.directory(ENV))
-runsession!(::SessionCatalog.Cancelled, terminal, model, extensions, args, sessiondir) = 0
+runsession!(history, terminal, model, extensions, args) = runsession!(history, terminal, model, extensions, args, SessionCatalog.directory(ENV), nothing)
+runsession!(history, terminal, model, extensions, args, sessiondir) = runsession!(history, terminal, model, extensions, args, sessiondir, nothing)
+runsession!(::SessionCatalog.Cancelled, terminal, model, extensions, args, sessiondir, sessionname) = 0
 
-function runsession!(invalid::SessionCatalog.Invalid, terminal, model, extensions, args, sessiondir)
+function runsession!(invalid::SessionCatalog.Invalid, terminal, model, extensions, args, sessiondir, sessionname)
     println(terminal.diagnostics, redact(terminal, invalid.message))
     2
 end
@@ -354,12 +365,12 @@ end
 
 sessionfault!(terminal, fault, ::Nothing) = result!(terminal, fault)
 
-runsession!(rejected::History.Rejected, terminal, model, extensions, args, sessiondir) = result!(terminal, rejected)
+runsession!(rejected::History.Rejected, terminal, model, extensions, args, sessiondir, sessionname) = result!(terminal, rejected)
 
-function runsession!(history, terminal, model, extensions, args, sessiondir)
+function runsession!(history, terminal, model, extensions, args, sessiondir, sessionname)
     store = Ref{Union{Nothing, History.Store}}(history)
     try
-        preparesession!(sessionsnapshot(history), terminal, model, extensions, store, args, sessiondir)
+        preparesession!(sessionsnapshot(history), terminal, model, extensions, store, args, sessiondir, sessionname)
     finally
         closehistory!(store[])
     end
@@ -367,33 +378,37 @@ end
 
 sessionsnapshot(::Nothing) = nothing
 sessionsnapshot(history::History.Store) = History.snapshot(history)
-preparesession!(rejected::History.Rejected, terminal, model, extensions, store, args, sessiondir) = result!(terminal, rejected)
-preparesession!(snapshot, terminal, model, extensions, store, args, sessiondir) = startsession!(terminal, model, extensions, store, args, sessiondir, attempt(() -> initial(extensions, snapshot)))
+preparesession!(rejected::History.Rejected, terminal, model, extensions, store, args, sessiondir, sessionname) = result!(terminal, rejected)
+preparesession!(snapshot, terminal, model, extensions, store, args, sessiondir, sessionname) = startsession!(terminal, model, extensions, store, args, sessiondir, sessionname, attempt(() -> initial(extensions, snapshot)))
 
 closehistory!(::Nothing) = nothing
 closehistory!(history::History.Store) = close(history)
 
-function startsession!(terminal, model, extensions, store, args, sessiondir, failure::ToolFailure)
+function startsession!(terminal, model, extensions, store, args, sessiondir, sessionname, failure::ToolFailure)
     println(terminal.diagnostics, "Failed to initialize project context: ", redact(terminal, failure.text))
     flush(terminal.diagnostics)
     1
 end
 
-function startsession!(terminal, model, extensions, store, args, sessiondir, messages)
+function startsession!(terminal, model, extensions, store, args, sessiondir, sessionname, messages)
     agent = Agent(model, extensions, messages; history=store[])
-    startagent!(terminal, agent, extensions, store, args, sessiondir)
+    startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname)
 end
 
-startagent!(terminal, rejected::History.Rejected, extensions, store, args, sessiondir) = result!(terminal, rejected)
-startagent!(terminal, agent::Agent, extensions, store, args, sessiondir) = startagent!(terminal, agent, extensions, store, args, sessiondir, agent.fault)
-startagent!(terminal, agent, extensions, store, args, sessiondir, fault::History.Rejected) = sessionfault!(terminal, fault, store[])
-function startagent!(terminal, agent, extensions, store, args, sessiondir, ::Nothing)
-    startsession!(terminal, agent, extensions, store, args, sessiondir, checkqueues!(terminal, agent.state, store[]))
+startagent!(terminal, rejected::History.Rejected, extensions, store, args, sessiondir, sessionname) = result!(terminal, rejected)
+startagent!(terminal, agent::Agent, extensions, store, args, sessiondir, sessionname) = startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, agent.fault)
+startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, fault::History.Rejected) = sessionfault!(terminal, fault, store[])
+function startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, ::Nothing)
+    startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, checkqueues!(terminal, agent.state, store[]))
 end
 
-startsession!(terminal, agent, extensions, store, args, sessiondir, ::PendingInputs) = 1
+startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, ::PendingInputs) = 1
 
-startsession!(terminal, agent, extensions, store, args, sessiondir, ::Nothing) = starttemplates!(terminal, agent, extensions, store, args, sessiondir, attempt(() -> Prompts.load(pwd())))
+startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, ::Nothing) = startnamed!(terminal, agent, extensions, store, args, sessiondir, startname!(agent, sessionname))
+startname!(agent, ::Nothing) = nothing
+startname!(agent, name::String) = name!(agent, name)
+startnamed!(terminal, agent, extensions, store, args, sessiondir, rejected::History.Rejected) = result!(terminal, rejected)
+startnamed!(terminal, agent, extensions, store, args, sessiondir, ::Nothing) = starttemplates!(terminal, agent, extensions, store, args, sessiondir, attempt(() -> Prompts.load(pwd())))
 
 function starttemplates!(terminal, agent, extensions, store, args, sessiondir, failure::ToolFailure)
     println(terminal.diagnostics, "Failed to load prompt templates: ", redact(terminal, failure.text))
@@ -435,14 +450,13 @@ function readloop!(terminal, agent, extensions, input, output, store, sessiondir
         eof(input) && break
         line = readline(input)
         line == "/exit" && break
-        if haskey(terminalcommands, line)
-            agent, store[], result = command!(terminalcommands[line], terminal, agent, store[], input, sessiondir, extensions)
-            status = max(status, result)
-            continue
-        end
-        status = max(status, run!(terminal, agent, Prompts.expand(line, templates), extensions))
+        agent, store[], result = readcommand!(terminal, agent, extensions, store[], line, input, sessiondir, templates, terminalcommand(line))
+        status = max(status, result)
     end
     status
 end
+
+readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, ::Nothing) = (agent, history, run!(terminal, agent, Prompts.expand(line, templates), extensions))
+readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, command::TerminalCommand) = command!(command, terminal, agent, history, input, sessiondir, extensions)
 
 end

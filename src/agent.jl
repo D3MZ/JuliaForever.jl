@@ -1,4 +1,4 @@
-export steer!, followup!, dequeue!, cancel!, abandon!
+export steer!, followup!, dequeue!, name!, cancel!, abandon!
 
 struct Truncated
     completion::Completion
@@ -105,6 +105,12 @@ function dequeue!(agent::Agent, queued, ::Nothing)
     isempty(queued.steering) && isempty(queued.followups) && return queued
     result, _ = transition!(revision -> Conversation.Dequeue(revision), agent)
     outcome(result, queued)
+end
+
+"Set the current session's display name."
+function name!(agent::Agent, text::AbstractString)
+    result, _ = transition!(revision -> Conversation.SessionName(revision, Conversation.sessionname(text)), agent)
+    outcome(result, nothing)
 end
 
 "Cancel native provider requests and in-flight Unix shell calls; other work stops at the next boundary."

@@ -1,11 +1,93 @@
 abstract type TerminalCommand end
 struct TreeCommand <: TerminalCommand end
 struct ResumeCommand <: TerminalCommand end
+struct NewCommand <: TerminalCommand end
+struct ExitCommand <: TerminalCommand end
+struct ShowName <: TerminalCommand end
+struct SetName <: TerminalCommand
+    name::String
+end
 
-const terminalcommands = Dict{String, TerminalCommand}("/tree" => TreeCommand(), "/resume" => ResumeCommand())
+const terminalcommands = Dict{String, TerminalCommand}("/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand(), "/exit" => ExitCommand())
+const namepattern = r"\A/name(?: +([\s\S]*))?\z"
+terminalcommand(text) = terminalcommand(get(terminalcommands, text, nothing), text)
+terminalcommand(command::TerminalCommand, text) = command
+terminalcommand(::Nothing, text) = namecommand(match(namepattern, text))
+namecommand(::Nothing) = nothing
+namecommand(found::RegexMatch) = namecommand(Conversation.sessionname(something(found[1], "")))
+namecommand(name::String) = isempty(name) ? ShowName() : SetName(name)
 
 command!(::TreeCommand, terminal, agent, history, input, directory, snapshot) = tree!(terminal, agent, history, input, snapshot)
 command!(::ResumeCommand, terminal, agent, history, input, directory, snapshot) = resume!(terminal, agent, history, input, directory)
+command!(::NewCommand, terminal, agent, history, input, directory, snapshot) = new!(terminal, agent, history, directory, snapshot)
+command!(::ShowName, terminal, agent, history, input, directory, snapshot) = showname!(terminal, agent, history, SessionCatalog.sessionname(history))
+command!(command::SetName, terminal, agent, history, input, directory, snapshot) = setname!(terminal, agent, history, command.name, name!(agent, command.name))
+
+function showname!(terminal, agent, history, ::Nothing)
+    println(terminal.diagnostics, "Usage: /name <name>")
+    flush(terminal.diagnostics)
+    agent, history, 0
+end
+function showname!(terminal, agent, history, name::String)
+    println(terminal.diagnostics, "Session name: ", name)
+    flush(terminal.diagnostics)
+    agent, history, 0
+end
+showname!(terminal, agent, history, rejected::History.Rejected) = (agent, history, result!(terminal, rejected))
+
+function setname!(terminal, agent, history, name, ::Nothing)
+    println(terminal.diagnostics, "Session name set: ", name)
+    flush(terminal.diagnostics)
+    agent, history, 0
+end
+setname!(terminal, agent, history, name, rejected::History.Rejected) = (agent, history, result!(terminal, rejected))
+
+fresh(::Nothing, directory) = History.Tree(History.Memory())
+fresh(::History.Memory, directory) = History.Tree(History.Memory())
+fresh(::History.Tree{<:History.Memory}, directory) = History.Tree(History.Memory())
+fresh(history::History.Store, directory) = SessionCatalog.new(directory, pwd())
+
+new!(terminal::Terminal, agent::Agent, history, directory, snapshot) = newchecked!(terminal, agent, history, directory, snapshot, sourcecheck!(terminal, agent, history))
+newchecked!(terminal, agent, history, directory, snapshot, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
+
+function newchecked!(terminal, agent, history, directory, snapshot, ::Nothing)
+    selected = fresh(history, directory)
+    pending = Ref{Union{Nothing, History.Tree}}(selected)
+    try
+        replacement = attempt(() -> Agent(agent.provider, agent.tools, initial(agent, snapshot); history=selected))
+        newresult!(terminal, agent, history, selected, replacement, pending)
+    finally
+        release!(history, pending[])
+    end
+end
+
+initial(agent::Agent, snapshot::Extensions.Snapshot) = initial(snapshot)
+function initial(agent::Agent, ::Nothing)
+    cwd = pwd()
+    files = Instructions.load(cwd; agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing))
+    prompt = context(cwd, collect(values(agent.tools)), files)
+    Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+end
+
+newresult!(terminal, agent, history, selected, rejected::History.Rejected, pending) = (agent, history, result!(terminal, rejected))
+newresult!(terminal, agent, history, selected, failure::ToolFailure, pending) = resume!(terminal, agent, history, failure)
+newresult!(terminal, agent, history, selected, replacement::Agent, pending) = newresult!(terminal, agent, history, selected, replacement, pending, replacement.fault)
+newresult!(terminal, agent, history, selected, replacement::Agent, pending, rejected::History.Rejected) = (agent, history, sessionfault!(terminal, rejected, selected))
+
+function newresult!(terminal, agent, history, selected, replacement::Agent, pending, ::Nothing)
+    lock(agent.lock) do
+        newfinal!(terminal, agent, history, selected, replacement, pending, sourcecheck!(terminal, agent, history, agent.fault))
+    end
+end
+
+newfinal!(terminal, agent, history, selected, replacement, pending, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
+function newfinal!(terminal, agent, history, selected, replacement, pending, ::Nothing)
+    closehistory!(history)
+    pending[] = nothing
+    println(terminal.diagnostics, "New session started.")
+    flush(terminal.diagnostics)
+    replacement, selected, 0
+end
 
 function resume!(terminal::Terminal, agent::Agent, history, input::IO, directory::AbstractString)
     resumepick!(terminal, agent, history, input, directory, sourcecheck!(terminal, agent, history))

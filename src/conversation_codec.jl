@@ -140,6 +140,7 @@ pack(x::C.Input) = node("input", x.revision, x.text)
 pack(x::C.Steer) = node("steer", x.revision, x.text)
 pack(x::C.Followup) = node("followup", x.revision, x.text)
 pack(x::C.Dequeue) = node("dequeue", x.revision)
+pack(x::C.SessionName) = node("session_name", x.revision, x.name)
 pack(x::C.Advance) = node("advance", x.revision)
 pack(x::C.Cancel) = node("cancel", x.revision)
 pack(x::C.History) = node("history", x.revision, packall(x.messages))
@@ -168,7 +169,7 @@ const nodetypes = Dict(
     "tool_message" => C.ToolMessage, "model_request" => C.ModelRequest, "tool_request" => C.ToolRequest,
     "skip_request" => C.SkipRequest, "model_reply" => C.ModelReply, "tool_reply" => C.ToolReply,
     "model_failure" => C.ModelFailure, "abandoned" => C.Abandoned, "input" => C.Input, "steer" => C.Steer,
-    "followup" => C.Followup, "dequeue" => C.Dequeue, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History,
+    "followup" => C.Followup, "dequeue" => C.Dequeue, "session_name" => C.SessionName, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History,
     "interrupt" => C.Interrupt, "abandon" => C.Abandon, "call" => K.Call, "return" => K.Return,
     "fail" => K.Fail, "plan" => K.Plan, "observe" => K.Observe, "finish" => K.Finish, "image" => C.Image,
 )
@@ -195,6 +196,7 @@ unpack(::Type{C.Input}, f::Vector) = C.Input(f[1], f[2])
 unpack(::Type{C.Steer}, f::Vector) = C.Steer(f[1], f[2])
 unpack(::Type{C.Followup}, f::Vector) = C.Followup(f[1], f[2])
 unpack(::Type{C.Dequeue}, f::Vector) = C.Dequeue(f[1])
+unpack(::Type{C.SessionName}, f::Vector) = C.SessionName(f[1], f[2])
 unpack(::Type{C.Advance}, f::Vector) = C.Advance(f[1])
 unpack(::Type{C.Cancel}, f::Vector) = C.Cancel(f[1])
 unpack(::Type{C.History}, f::Vector) = C.History(f[1], unpackall(f[2], C.Message))

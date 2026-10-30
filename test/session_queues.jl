@@ -139,3 +139,19 @@ end
         close(history)
     end
 end
+
+@testset "new sessions preserve pending input" begin
+    mktempdir() do root
+        history = QueueHistory.Tree(QueueHistory.Memory())
+        provider = QueueResumeProvider(Ref(0))
+        agent = Agent(provider, []; history)
+        steer!(agent, "keep synthetic-key")
+        terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), ["synthetic-key"])
+        previous, owner, status = JuliaForever.new!(terminal, agent, history, root, nothing)
+        @test status == 1 && previous === agent && owner === history
+        @test agent.state.steering == ["keep synthetic-key"] && provider.calls[] == 0
+        @test occursin("keep [redacted]", String(take!(terminal.diagnostics)))
+        @test QueueHistory.snapshot(history) isa QueueHistory.Snapshot
+        close(history)
+    end
+end

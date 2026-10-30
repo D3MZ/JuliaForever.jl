@@ -69,15 +69,21 @@ function append!(history::Deferred, revision::Integer, batch::Vector)
 end
 
 append!(history::Deferred, store::H.SQLite, revision, batch) = append!(store, revision, batch)
-append!(history::Deferred, store::H.Memory, revision, batch) = materialize!(history, revision, append!(store, revision, batch))
-materialize!(history, revision::Integer, rejected::H.Rejected) = rejected
+append!(history::Deferred, store::H.Memory, revision, batch) = materialize!(history, store, revision, batch, append!(store, revision, batch))
+materialize!(history, store::H.Memory, revision, batch, rejected::H.Rejected) = rejected
+materialize!(history, store::H.Memory, revision, batch, saved::Integer) = revision == 0 || namebatch(batch) ? saved : materialize!(history, store, H.snapshot(store))
 
-function materialize!(history, revision::Integer, saved::Integer)
-    revision == 0 && return saved
+namebatch(batch::Vector) = namebatch(H.treenode(batch, 0))
+namebatch(::H.Rejected) = false
+namebatch(node::H.TreeNode) = length(node.batch) == 1 && nameevent(H.decode_event(only(node.batch)))
+nameevent(::Any) = false
+nameevent(::C.SessionName) = true
+
+function materialize!(history, store::H.Memory, snapshot::H.Snapshot)
     mkpath(dirname(history.path))
     file = Base.Filesystem.open(history.path, Base.JL_O_WRONLY | Base.JL_O_CREAT | Base.JL_O_EXCL, 0o600)
     close(file)
-    materialize!(history, open(H.SQLite, history.path), H.snapshot(history.store))
+    materialize!(history, open(H.SQLite, history.path), snapshot)
 end
 
 materialize!(history, rejected::H.Rejected, snapshot) = rejected
@@ -125,6 +131,24 @@ function firstprompt(entries::Vector)
     end
 end
 
+sessionname(current, ::Any) = current
+sessionname(current, event::C.SessionName) = isempty(event.name) ? nothing : event.name
+sessionname(current, batch::AbstractVector) = foldl((value, record) -> sessionname(value, H.decode_event(record)), batch; init=current)
+sessionname(batches::AbstractVector{<:AbstractVector}) = foldl(sessionname, batches; init=nothing)
+sessionname(entries::AbstractVector{<:NamedTuple}) = foldl((value, entry) -> sessionname(value, entry.batch), entries; init=nothing)
+sessionname(snapshot::H.Snapshot) = sessionname(snapshot.batches)
+sessionname(rejected::H.Rejected) = rejected
+sessionname(history::H.Tree) = sessionname(H.entries(history))
+sessionname(history::H.Store) = sessionname(H.snapshot(history))
+sessionname(::Nothing) = nothing
+
+title(::Nothing, fallback) = fallback
+title(name::String, fallback) = name
+title(rejected::H.Rejected, fallback) = rejected
+title(entries::Vector) = title(sessionname(entries), firstprompt(entries))
+title(snapshot::H.Snapshot) = title(sessionname(snapshot), firstprompt(snapshot))
+title(rejected::H.Rejected) = rejected
+
 info(path, id, ::Nothing) = nothing
 function modified(path)
     time = stat(path).mtime
@@ -134,8 +158,8 @@ end
 
 info(path, id, title::String) = Info(path, id, title, modified(path))
 info(path, id, ::H.Rejected) = Info(path, id, "Unavailable session", modified(path))
-info(path, id, snapshot::H.Snapshot) = info(path, id, firstprompt(snapshot))
-info(path, id, tree::H.Tree) = info(path, id, firstprompt(H.entries(tree)))
+info(path, id, snapshot::H.Snapshot) = info(path, id, title(snapshot))
+info(path, id, tree::H.Tree) = info(path, id, title(H.entries(tree)))
 
 function info(path, id, store::H.SQLite)
     try

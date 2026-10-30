@@ -1,0 +1,21 @@
+import { existsSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
+
+const { SessionManager } = await import(pathToFileURL(join(process.argv[2], "packages/coding-agent/src/core/session-manager.ts")));
+const root = mkdtempSync(join(tmpdir(), "jf-pi-session-names-"));
+const dir = join(root, "sessions");
+const user = content => ({ role: "user", content, timestamp: Date.now() });
+const first = SessionManager.create(root, dir);
+first.appendSessionInfo("  First\nName  ");
+const normalized = first.getSessionName();
+const beforePrompt = existsSync(first.getSessionFile());
+first.appendMessage(user("one"));
+first.appendSessionInfo("First Renamed");
+await new Promise(resolve => setTimeout(resolve, 20));
+const second = SessionManager.create(root, dir);
+second.appendSessionInfo("Second");
+second.appendMessage(user("two"));
+const listed = await SessionManager.list(root, dir);
+process.stdout.write(JSON.stringify({ beforePrompt, normalized, titles: listed.map(item => item.name ?? item.firstMessage) }));
