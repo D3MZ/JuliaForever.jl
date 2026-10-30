@@ -41,6 +41,7 @@ end
 
 const levels = Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"])
 const path = joinpath(@__DIR__, "..", "data", "models.json")
+# The bundled catalog's IDs are ASCII; match Pi's punctuation order when listing them.
 const punctuation = Dict(char => Char(index) for (index, char) in enumerate(" _-,;:!?.()[]{}@*/&#%`^+<=>|~\$"))
 
 catalog() = JSON3.read(read(path), Vector{Model})

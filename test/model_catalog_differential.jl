@@ -1,5 +1,16 @@
 using Test, JuliaForever, JSON3, HTTP
 
+function modelreference(source, data, parse=JSON3.read)
+    mktemp() do path, io
+        JSON3.write(io, data)
+        close(io)
+        script = joinpath(@__DIR__, "model_catalog_pi.mjs")
+        parse(read(`node --conditions=source --experimental-strip-types $script $source $path`))
+    end
+end
+
+modelrow(model) = (; provider=String(model.provider), id=String(model.id), contextWindow=Int(model.context), maxTokens=Int(model.maxoutput), reasoning=Bool(model.reasoning), input=Bool(model.images) ? ["text", "image"] : ["text"])
+
 @testset "Pi model references" begin
     source = ENV["PI_SOURCE"]
     @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
@@ -28,12 +39,7 @@ using Test, JuliaForever, JSON3, HTTP
         (; text="unknown", provider=nothing, usable=String[]),
         (; text="sample", provider="punct", usable=String[]),
     ]
-    reference = mktemp() do path, io
-        JSON3.write(io, (; models=fixture, cases))
-        close(io)
-        script = joinpath(@__DIR__, "model_catalog_pi.mjs")
-        JSON3.read(read(`node --conditions=source --experimental-strip-types $script $source $path`, String), Vector{Dict{String, Any}})
-    end
+    reference = modelreference(source, (; models=fixture, cases), text -> JSON3.read(text, Vector{Dict{String, Any}}))
     @test getindex.(reference, "status") == ["resolved", "resolved", "resolved", "resolved", "ambiguous", "ambiguous", "resolved", "resolved", "resolved", "not-found", "not-found", "resolved"]
     M = JuliaForever.Models
     models = [M.Model(row.provider, row.id, row.name) for row in fixture]
@@ -46,14 +52,9 @@ using Test, JuliaForever, JSON3, HTTP
     @test observed == reference
 
     catalog = JSON3.read(read(joinpath(@__DIR__, "..", "data", "models.json")))
-    available = [(; provider=String(model.provider), id=String(model.id), contextWindow=Int(model.context), maxTokens=Int(model.maxoutput), reasoning=Bool(model.reasoning), input=Bool(model.images) ? ["text", "image"] : ["text"]) for model in catalog if model.provider == "anthropic"]
+    available = [modelrow(model) for model in catalog if model.provider == "anthropic"]
     listing = "anthropic opus"
-    expected = mktemp() do path, io
-        JSON3.write(io, (; models=available, listing))
-        close(io)
-        script = joinpath(@__DIR__, "model_catalog_pi.mjs")
-        JSON3.read(read(`node --conditions=source --experimental-strip-types $script $source $path`, String), String)
-    end
+    expected = modelreference(source, (; models=available, listing))
     mktempdir() do dir
         project = dirname(@__DIR__)
         cmd = `$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --list-models $listing`
@@ -68,13 +69,8 @@ using Test, JuliaForever, JSON3, HTTP
     end
 
     router = filter(model -> model.provider == "openrouter", catalog)
-    available = [(; provider=String(model.provider), id=String(model.id), contextWindow=Int(model.context), maxTokens=Int(model.maxoutput), reasoning=Bool(model.reasoning), input=Bool(model.images) ? ["text", "image"] : ["text"]) for model in router]
-    expected = mktemp() do path, io
-        JSON3.write(io, (; models=available, listing="openrouter"))
-        close(io)
-        script = joinpath(@__DIR__, "model_catalog_pi.mjs")
-        JSON3.read(read(`node --conditions=source --experimental-strip-types $script $source $path`, String), String)
-    end
+    available = modelrow.(router)
+    expected = modelreference(source, (; models=available, listing="openrouter"))
     actual = split(sprint(M.list, filter(model -> model.provider == "openrouter", M.catalog()), "openrouter"), '\n')
     wanted = split(expected, '\n')
     @test length(actual) == length(wanted)
@@ -83,12 +79,7 @@ using Test, JuliaForever, JSON3, HTTP
 
     query = "anthropic/claude-opus"
     modelcase = [(; text=query, provider=nothing, usable=["anthropic"])]
-    choice = mktemp() do path, io
-        JSON3.write(io, (; models=catalog, cases=modelcase))
-        close(io)
-        script = joinpath(@__DIR__, "model_catalog_pi.mjs")
-        only(JSON3.read(read(`node --conditions=source --experimental-strip-types $script $source $path`, String)))
-    end
+    choice = only(modelreference(source, (; models=catalog, cases=modelcase)))
     requests = []
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
         body = JSON3.read(codeunits(String(request.body)))
@@ -108,21 +99,27 @@ using Test, JuliaForever, JSON3, HTTP
             cmd = `$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --no-session --model $query hello`
             cmd = addenv(cmd, "PI_CODING_AGENT_DIR" => dir, "ANTHROPIC_API_KEY" => "fixture", "ANTHROPIC_BASE_URL" => "http://$(HTTP.server_addr(server))", "OPENAI_API_KEY" => nothing, "OPENROUTER_API_KEY" => nothing, "GEMINI_API_KEY" => nothing, "JF_INSTRUCTIONS_DIR" => dir)
             output, diagnostics = joinpath(dir, "output"), joinpath(dir, "diagnostics")
-            process = run(pipeline(ignorestatus(cmd); stdout=output, stderr=diagnostics))
+            input = joinpath(dir, "input")
+            write(input, "")
+            process = run(pipeline(ignorestatus(cmd); stdin=input, stdout=output, stderr=diagnostics))
             @test (process.exitcode, read(output, String), read(diagnostics, String)) == (0, "ok\n", "")
             @test requests == [(; path="/v1/messages", model=String(choice.id))]
 
+            modelcase = [(; text="claude-opus", provider="ANTHROPIC", usable=["anthropic"])]
+            uppercase_choice = only(modelreference(source, (; models=catalog, cases=modelcase)))
+            cmd = `$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --no-session --provider ANTHROPIC --model claude-opus hello`
+            cmd = addenv(cmd, "PI_CODING_AGENT_DIR" => dir, "ANTHROPIC_API_KEY" => "fixture", "ANTHROPIC_BASE_URL" => "http://$(HTTP.server_addr(server))", "OPENAI_API_KEY" => nothing, "OPENROUTER_API_KEY" => nothing, "GEMINI_API_KEY" => nothing, "JF_INSTRUCTIONS_DIR" => dir)
+            before = length(requests)
+            process = run(pipeline(ignorestatus(cmd); stdin=input, stdout=output, stderr=diagnostics))
+            @test (process.exitcode, read(output, String), read(diagnostics, String)) == (0, "ok\n", "")
+            @test length(requests) == before + 1 && last(requests) == (; path="/v1/messages", model=String(uppercase_choice.id))
+
             query = "openai/gpt-4"
             modelcase = [(; text=query, provider=nothing, usable=["openai"])]
-            reference = mktemp() do path, io
-                JSON3.write(io, (; models=catalog, cases=modelcase))
-                close(io)
-                script = joinpath(@__DIR__, "model_catalog_pi.mjs")
-                only(JSON3.read(read(`node --conditions=source --experimental-strip-types $script $source $path`, String)))
-            end
+            reference = only(modelreference(source, (; models=catalog, cases=modelcase)))
             cmd = `$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --no-session --model $query hello`
             cmd = addenv(cmd, "PI_CODING_AGENT_DIR" => dir, "OPENAI_API_KEY" => "fixture", "OPENAI_BASE_URL" => "http://$(HTTP.server_addr(server))", "ANTHROPIC_API_KEY" => nothing, "OPENROUTER_API_KEY" => nothing, "GEMINI_API_KEY" => nothing, "JF_INSTRUCTIONS_DIR" => dir)
-            process = run(pipeline(ignorestatus(cmd); stdout=output, stderr=diagnostics))
+            process = run(pipeline(ignorestatus(cmd); stdin=input, stdout=output, stderr=diagnostics))
             @test (process.exitcode, read(output, String), read(diagnostics, String)) == (0, "ok\n", "")
             @test last(requests) == (; path="/responses", model=String(reference.id))
         end

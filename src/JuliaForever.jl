@@ -288,7 +288,7 @@ function (@main)(args)
                 return 2
             end
             if option == "--provider"
-                selected = args[2]
+                selected = lowercase(args[2])
             else
                 requested_model = args[2]
             end
