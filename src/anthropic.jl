@@ -3,20 +3,32 @@ module AnthropicAPI
 using HTTP, JSON3, SHA
 import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, provider, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute
 
+abstract type ThinkingMode end
+struct DefaultThinking <: ThinkingMode end
+struct BudgetThinking <: ThinkingMode
+    level::String
+    budget::Int
+end
+struct OffThinking <: ThinkingMode end
+
 struct Anthropic
     base::String
     model::String
     key::String
     extra::Vector{Pair{String, String}}
     route::Union{DirectRoute, CatalogRoute}
+    thinking::ThinkingMode
 end
+Anthropic(base, model, key, extra, route) = Anthropic(base, model, key, extra, route, DefaultThinking())
 Anthropic(base, model, key) = Anthropic(base, model, key, Pair{String, String}[], DirectRoute())
 Anthropic(base, model, key, extra) = Anthropic(base, model, key, extra, DirectRoute())
 
 Base.show(io::IO, provider::Anthropic) = print(io, "Anthropic(", repr(provider.model), ", [redacted])")
 JSON3.StructTypes.StructType(::Type{Anthropic}) = JSON3.StructTypes.CustomStruct()
 JSON3.StructTypes.lower(provider::Anthropic) = (; model=provider.model, credentials="[redacted]")
-headers(provider::Anthropic) = mergeheaders(vcat(isempty(provider.key) ? Pair{String, String}[] : ["x-api-key" => provider.key], ["anthropic-version" => "2023-06-01", "content-type" => "application/json"]), provider.extra)
+thinkingheaders(::ThinkingMode) = Pair{String, String}[]
+thinkingheaders(::BudgetThinking) = ["anthropic-beta" => "interleaved-thinking-2025-05-14"]
+headers(provider::Anthropic) = mergeheaders(vcat(isempty(provider.key) ? Pair{String, String}[] : ["x-api-key" => provider.key], ["anthropic-version" => "2023-06-01", "content-type" => "application/json"], thinkingheaders(provider.thinking)), provider.extra)
 endpoint(provider::Anthropic) = "$(rstrip(provider.base, '/'))/v1/messages"
 origin(provider::Anthropic) = bytes2hex(sha256(provider.base)) * ":" * provider.model
 
@@ -129,13 +141,33 @@ function payload(provider::Anthropic, input, tools, parameters; streaming=false)
     data["model"] = provider.model
     data["messages"] = transcript.messages
     data["stream"] = streaming
-    get!(data, "max_tokens", 4096)
+    thinking!(data, provider.thinking, input, tools)
     isempty(transcript.system) || (data["system"] = join(transcript.system, "\n\n"))
     delete!(data, "tools")
     if !isempty(tools)
         data["tools"] = [Dict("name" => fn["name"], "description" => fn["description"], "input_schema" => fn["parameters"]) for fn in (definition(tool)["function"] for tool in values(tools))]
     end
     JSON3.write(data)
+end
+
+thinking!(data, ::DefaultThinking, input, tools) = get!(data, "max_tokens", 4096)
+function thinking!(data, ::OffThinking, input, tools)
+    data["max_tokens"] = min(get(data, "max_tokens", 64000), ceiling(input, tools))
+    data["thinking"] = Dict("type" => "disabled")
+end
+function thinking!(data, mode::BudgetThinking, input, tools)
+    limit = ceiling(input, tools)
+    base = min(get(data, "max_tokens", 64000), limit)
+    maximum = min(base + mode.budget, 64000, limit)
+    budget = min(mode.budget, max(0, maximum - 1024))
+    data["max_tokens"] = maximum
+    data["thinking"] = Dict("type" => "enabled", "budget_tokens" => iszero(budget) ? 1024 : budget, "display" => "summarized")
+    delete!(data, "temperature")
+end
+function ceiling(input, tools)
+    estimates = parentmodule(@__MODULE__).ContextEstimates
+    messages = [parentmodule(@__MODULE__).Conversation.RawMessage(Dict{String, Any}(string(key) => value for (key, value) in pairs(message))) for message in input]
+    max(1, 200000 - estimates.estimate(messages; tools=values(tools)).total - 4096)
 end
 
 function usage(data::AbstractDict)

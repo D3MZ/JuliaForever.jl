@@ -18,7 +18,7 @@ To try a free OpenRouter model, run `jf --model openrouter/free` with a key save
 
 For Anthropic set `JF_PROVIDER=anthropic`, `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`; for Google set `JF_PROVIDER=google`, `GEMINI_API_KEY` and `GEMINI_MODEL`.
 
-Use `jf --list-models [search]` to browse the bundled catalog for providers with keys, and `jf --model provider/model` to select a model. Thinking suffixes such as `--model openai/gpt-5.2:high` and `--model google/gemini-3-flash-preview:high` are supported for selected catalog models; configured providers and other unsupported combinations fail explicitly. See [models](docs/models.md) for supported levels, snapshot age and compatibility limits.
+Use `jf --list-models [search]` to browse the bundled catalog for providers with keys, and `jf --model provider/model` to select a model. Thinking suffixes are supported for selected OpenAI Responses, Gemini, and budget-based Anthropic models; configured providers and other unsupported combinations fail explicitly. See [models](docs/models.md) for supported levels, snapshot age and compatibility limits.
 
 ```sh
 julia --project=. -e 'using Pkg; Pkg.instantiate()'

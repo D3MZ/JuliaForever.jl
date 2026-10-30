@@ -379,6 +379,7 @@ function launchprovider(options)
 end
 applythinking(model, ::Nothing) = model
 applythinking(model::Integer, thinking::AbstractString) = model
+applythinking(model::Anthropic, thinking::AbstractString) = anthropiclevel(model, model.model, thinking)
 applythinking(model::OpenAIResponses, thinking::AbstractString) = responselevel(model, model.model, thinking)
 applythinking(model::Google, thinking::AbstractString) = googlelevel(model, model.model, thinking)
 applythinking(model, thinking) = unsupportedthinking()

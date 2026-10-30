@@ -293,3 +293,23 @@ function modelchange(provider, model, route::CatalogRoute)
 end
 modelchange(configured, model, ::Nothing) = invalidmodelconfig()
 modelchange(configured, model, ::Models.Model) = acquire(APIKeyAuth(), configured, model)
+
+function anthropiclevel(provider::Anthropic, model, level)
+    valid = model in anthropicbudgetmodels && haskey(anthropicbudgets, level) && !occursin("sk-ant-oat", provider.key) && isempty(provider.extra)
+    anthropicroute(provider, model, level, provider.route, Models.check(valid))
+end
+anthropicroute(provider, model, level, ::CatalogRoute, validity) = unsupportedthinking()
+anthropicroute(provider, model, level, ::DirectRoute, validity) = anthropiclevel(provider, model, level, validity)
+anthropiclevel(provider, model, level, ::Models.InvalidConfig) = unsupportedthinking()
+function anthropiclevel(provider, model, level, ::Models.ValidConfig)
+    budget = anthropicbudgets[level]
+    mode = anthropicmode(level, Models.check(iszero(budget)), budget)
+    Anthropic(provider.base, String(model), provider.key, provider.extra, provider.route, mode)
+end
+anthropicmode(level, ::Models.ValidConfig, budget) = AnthropicAPI.OffThinking()
+anthropicmode(level, ::Models.InvalidConfig, budget) = AnthropicAPI.BudgetThinking(String(level), budget)
+modelchange(provider::Anthropic, model, ::DirectRoute) = anthropicchange(provider, model, provider.thinking, Models.suffix(model))
+anthropicchange(provider, model, ::AnthropicAPI.DefaultThinking, ::Nothing) = Anthropic(provider.base, String(model), provider.key, provider.extra, provider.route)
+anthropicchange(provider, model, mode, ::Models.Suffix) = unsupportedthinking()
+anthropicchange(provider, model, mode::AnthropicAPI.BudgetThinking, ::Nothing) = anthropiclevel(provider, model, mode.level)
+anthropicchange(provider, model, ::AnthropicAPI.OffThinking, ::Nothing) = anthropiclevel(provider, model, "off")

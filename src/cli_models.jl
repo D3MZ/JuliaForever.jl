@@ -66,7 +66,14 @@ const googlelevels = Dict(
     "gemini-3.1-pro-preview" => Dict("off" => "low", "low" => "low", "medium" => "medium", "high" => "high"),
 )
 const thinkingcatalogs = Dict(("openai", "openai-responses") => responselevels, ("google", "google-generative-ai") => googlelevels)
-resolveprovider(options, model::Models.Model, thinking::AbstractString) = selectthinking(options, model, thinking, get(get(thinkingcatalogs, (model.provider, model.api), Dict()), model.id, nothing))
+const anthropicbudgets = Dict("off" => 0, "minimal" => 1024, "low" => 2048, "medium" => 8192, "high" => 16384, "xhigh" => 16384, "max" => 16384)
+const anthropicbudgetmodels = Set(["claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-opus-4-5", "claude-opus-4-5-20251101", "claude-sonnet-4-5", "claude-sonnet-4-5-20250929"])
+resolveprovider(options, model::Models.Model, thinking::AbstractString) = selectmodelthinking(options, model, thinking, Models.check(model.provider == "anthropic" && model.api == "anthropic-messages"))
+selectmodelthinking(options, model, thinking, ::Models.InvalidConfig) = selectthinking(options, model, thinking, get(get(thinkingcatalogs, (model.provider, model.api), Dict()), model.id, nothing))
+function selectmodelthinking(options, model, thinking, ::Models.ValidConfig)
+    valid = model.id in anthropicbudgetmodels && !haskey(options.modelconfig.providers, model.provider) && haskey(anthropicbudgets, thinking)
+    selectthinking(options, model, thinking, Models.check(valid))
+end
 selectthinking(options, model, thinking, ::Nothing) = unsupportedthinking()
 function selectthinking(options, model, thinking, levels::AbstractDict)
     effort = get(levels, thinking, nothing)
