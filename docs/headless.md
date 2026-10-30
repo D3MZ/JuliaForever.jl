@@ -10,7 +10,7 @@ Command discovery lists Julia's prompt templates and skills; it does not list Pi
 
 Model listing uses the pinned Pi snapshot for OpenAI, Anthropic, Google, and OpenRouter Chat Completions, alongside explicit custom definitions. Other Pi providers and OpenRouter's Anthropic API models are omitted. Model selection and cycling work within the current provider and API while idle; switching providers, switching APIs, and changing models during a run are not yet supported. ChatGPT-backed sessions do not expose model listing or switching through RPC. An explicit startup model is reapplied on session changes; otherwise new sessions use the startup default and existing sessions restore recorded models within the current provider and API.
 
-Thinking controls support mapped OpenAI Responses levels, including configuration updates where the native provider permits them, and selected Gemini levels described in [models](models.md). Routes with configured provider overrides or unsupported authorization have fewer levels than Pi. Other providers expose only `off`.
+Thinking controls support mapped OpenAI Responses levels, including configuration updates where the native provider permits them, and selected Gemini and Anthropic levels described in [models](models.md). Routes with configured provider overrides or unsupported authorization have fewer levels than Pi. Other providers expose only `off`.
 
 Both queues support `one-at-a-time` and `all`, and their modes follow the current RPC session and its saved history. Pi also saves mode changes as global settings, which Julia Forever does not currently do.
 

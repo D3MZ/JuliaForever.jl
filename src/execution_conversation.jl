@@ -1,4 +1,4 @@
-import ..JuliaForever: Tool, ToolSet, ToolResult, ToolFailure, Completion, Usage, InvalidResponse, ProviderStatus, ProviderError, UnsupportedImage, name, execute, complete, conversation_reply, modelmessages, attempt, fresh, expose!
+import ..JuliaForever: Tool, ToolSet, ToolResult, ToolFailure, Completion, Usage, InvalidResponse, ProviderStatus, ProviderError, UnsupportedImage, name, execute, complete, conversation_reply, modelmessages, attempt, fresh, expose!, withcontext
 import ..Conversation
 import ..Kernel
 using JSON3
@@ -101,7 +101,9 @@ function perform(work::Work{Conversation.ModelRequest}, cancellation::Cancellati
         messages = modelmessages(work.effect.messages)
         tools = worktools(capabilities.tools, work.exposed)
         parameters = deepcopy(capabilities.parameters)
-        response = isempty(parameters) ? complete(capabilities.provider, messages, tools) : complete(capabilities.provider, messages, tools; parameters)
+        response = withcontext(work.effect.messages) do
+            isempty(parameters) ? complete(capabilities.provider, messages, tools) : complete(capabilities.provider, messages, tools; parameters)
+        end
         result(response, work.result)
     catch
         failure = Conversation.ModelFailure("provider did not return")

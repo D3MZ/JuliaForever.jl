@@ -53,8 +53,17 @@ functionunits(data::AbstractDict) = units(get(data, "name", nothing)) + argument
 
 thinking() = 0
 thinking(text::AbstractString, rest...) = isempty(text) ? thinking(rest...) : units(text)
+thinking(value::Integer) = value
 thinking(value, rest...) = thinking(rest...)
-reasoningunits(metadata::AbstractDict) = thinking(get(metadata, "reasoning_content", nothing), get(metadata, "reasoning", nothing), get(metadata, "reasoning_text", nothing))
+anthropicthinking(blocks::AbstractVector) = sum(reasoningblock, blocks; init=0)
+anthropicthinking(value) = 0
+reasoningblock(block) = 0
+reasoningblock(block::AbstractDict) = get(reasoningblocks, get(block, "type", ""), reasoningother)(block)
+reasoningother(block) = 0
+reasoningtext(block) = units(get(block, "thinking", nothing))
+reasoningredacted(block) = units("[Reasoning redacted]")
+const reasoningblocks = Dict("thinking" => reasoningtext, "redacted_thinking" => reasoningredacted)
+reasoningunits(metadata::AbstractDict) = thinking(get(metadata, "reasoning_content", nothing), get(metadata, "reasoning", nothing), get(metadata, "reasoning_text", nothing), anthropicthinking(get(metadata, "anthropic_content", nothing)))
 assistantunits(content, calls, metadata) = units(content) + reasoningunits(metadata) + sum(callunits, calls; init=0)
 tokens(message::Conversation.Assistant) = cld(2 * assistantunits(message.content, message.calls, message.metadata), 7)
 tokens(message::Conversation.ToolMessage) = cld(2 * (units(message.content) + attached(message.image)), 7)

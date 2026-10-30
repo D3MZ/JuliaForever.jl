@@ -91,6 +91,9 @@ include("terminal_models.jl")
 include("thinking_cli.jl")
 include("google_thinking.jl")
 include("google_thinking_rpc.jl")
+include("anthropic_thinking.jl")
+include("anthropic_rpc.jl")
+include("anthropic_context.jl")
 include("thinking_update.jl")
 include("tool_options.jl")
 include("file_arguments.jl")
@@ -206,6 +209,9 @@ include("codemode_compat.jl")
 include("mcp.jl")
 include("mcp_image.jl")
 include("mcp_resources.jl")
+module MCPWriteRaceTests
+include("mcp_write_race.jl")
+end
 module MCPProgressTests
 include("mcp_progress_native.jl")
 end
