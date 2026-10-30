@@ -10,9 +10,8 @@ const request = JSON3.read(codeunits(readline(input)))
 const writelock = ReentrantLock()
 const pendinglock = ReentrantLock()
 const storelock = ReentrantLock()
-const pending = Dict{Int, Channel{Any}}()
+const pending = Ref{Union{Nothing, Dict{Int, Channel{Any}}}}(Dict{Int, Channel{Any}}())
 const serial = Ref(0)
-const connected = Ref(true)
 const data = Dict{String, Any}(String(key) => value for (key, value) in pairs(request.store))
 const writes = Dict{String, Any}()
 const deletes = Set{String}()
@@ -24,16 +23,22 @@ function send(message)
     end
 end
 
+register!(::Nothing, channel) = nothing
+function register!(pending::Dict, channel)
+    serial[] += 1
+    pending[serial[]] = channel
+    serial[]
+end
+
 function toolcall(name, args)
     channel = Channel{Any}(1)
     id = lock(pendinglock) do
-        if connected[]
-            serial[] += 1
-            pending[serial[]] = channel
-            serial[]
-        end
+        register!(pending[], channel)
     end
-    isnothing(id) && return (; text="Tool connection closed", iserror=true)
+    toolcall(name, args, channel, id)
+end
+toolcall(name, args, channel, ::Nothing) = (; text="Tool connection closed", iserror=true)
+function toolcall(name, args, channel, id::Int)
     send((; type="call", id, name, args))
     take!(channel)
 end
@@ -46,7 +51,9 @@ Base.getproperty(::Tools, name::Symbol) = ToolCall(String(name))
 Base.getindex(::Tools, name::AbstractString) = ToolCall(String(name))
 (call::ToolCall)(args) = toolcall(call.name, args)
 
-text(value) = send((; type="text", text=value isa AbstractString ? String(value) : JSON3.write(value)))
+textvalue(value::AbstractString) = String(value)
+textvalue(value) = JSON3.write(value)
+text(value) = send((; type="text", text=textvalue(value)))
 function load(key::AbstractString)
     lock(storelock) do
         JSON3.read(codeunits(JSON3.write(get(data, key, nothing))))
@@ -70,21 +77,30 @@ function forget!(key::AbstractString)
     nothing
 end
 
+takepending!(::Nothing, id) = nothing
+takepending!(pending::Dict, id) = pop!(pending, id, nothing)
+deliver!(::Nothing, result) = nothing
+deliver!(channel::Channel, result) = put!(channel, result)
+disconnect!(::Nothing) = nothing
+function disconnect!(pending::Dict)
+    foreach(channel -> put!(channel, (; text="Tool connection closed", iserror=true)), values(pending))
+    empty!(pending)
+end
+
 Threads.@spawn begin
     try
         for line in eachline(input)
             message = JSON3.read(codeunits(line))
             channel = lock(pendinglock) do
-                pop!(pending, Int(message.id), nothing)
+                takepending!(pending[], Int(message.id))
             end
-            !isnothing(channel) && put!(channel, message.result)
+            deliver!(channel, message.result)
         end
     catch
     finally
         lock(pendinglock) do
-            connected[] = false
-            foreach(channel -> put!(channel, (; text="Tool connection closed", iserror=true)), values(pending))
-            empty!(pending)
+            disconnect!(pending[])
+            pending[] = nothing
         end
     end
 end

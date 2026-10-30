@@ -1,5 +1,5 @@
-detailed(::Conversation.ModelRequest) = true
-detailed(::Kernel.Effect) = false
+resulttype(::Conversation.ModelRequest) = Execution.ModelResult
+resulttype(::Kernel.Effect) = Kernel.Observation
 
 function register!(agent::Agent, handle::Execution.Handle)
     turn, failure = lock(agent.lock) do
@@ -23,7 +23,7 @@ exposure(tools::ToolSet) = lock(() -> copy(tools.loaded), tools.lock)
 
 function submitted(agent::Agent, executor, effect, context, ::Nothing)
     handle = try
-        Execution.submit!(executor, effect, 1, context; detailed=detailed(effect.effect), exposed=exposure(agent.tools), on_handle=handle -> register!(agent, handle))
+        Execution.submit!(executor, effect, 1, context, resulttype(effect.effect); exposed=exposure(agent.tools), on_handle=handle -> register!(agent, handle))
     catch
         lock(agent.lock) do
             agent.handle = nothing

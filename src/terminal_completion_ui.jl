@@ -61,7 +61,7 @@ end
 
 searchfiles!(session, state, pending, before, root, home, request, active, ::Completion.Stopped) = nothing
 function searchfiles!(session, state, pending, before, root, home, request, active, ::Completion.Searching)
-    files = Completion.files(before, root; force=Completion.forced(request), home, active)
+    files = Completion.files(before, root, request; home, active)
     lock(session.editor.state.line_modify_lock) do
         finishfiles!(session, state, pending, files, active())
     end

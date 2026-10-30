@@ -5,6 +5,8 @@ agent.jl	:(name === :cancelled)
 agent.jl	:(name === :events)
 agent.jl	:(name === :running)
 agent.jl	:(requestcancelled((last(exceptions)).exception, turnstate(agent)))
+agent.jl	:(visible(result))
+agent_execution.jl	:(visible(result))
 chatgpt_store.jl	:(code == Base.Libc.EAGAIN)
 codemode.jl	:(cancel.cancelled[])
 codemode.jl	:(cancel.cancelled[])
@@ -12,11 +14,8 @@ codemode.jl	:(cancel.cancelled[])
 codemode.jl	:(context.done[])
 codemode.jl	:(isopen(context.events))
 codemode.jl	:(name === :ok)
+codemode.jl	:(ok(result))
 codemode.jl	:(timedout[])
-codemode_worker.jl	:(connected[])
-codemode_worker.jl	:(isnothing(channel))
-codemode_worker.jl	:(isnothing(id))
-codemode_worker.jl	:(value isa AbstractString)
 compaction.jl	:(Kernel.same(agent.messages, plan.original))
 conversation.jl	:(index === nothing)
 conversation.jl	:(name === :automatic)
@@ -129,10 +128,6 @@ sessions.jl	:(name === :terminated)
 sessions.jl	:(parent isa AbstractString)
 sqlite_history.jl	:(formaterror((last(exceptions)).exception))
 sqlite_history.jl	:(mode in ("delete", "truncate", "persist", "wal"))
-sqlite_history.jl	:complete
-sqlite_history.jl	:create
-sqlite_history.jl	:create
-sqlite_history.jl	:create
 system.jl	:(code != 0)
 system.jl	:bybytes
 system.jl	:partial

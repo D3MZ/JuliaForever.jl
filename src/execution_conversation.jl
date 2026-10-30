@@ -69,7 +69,10 @@ end
 Base.propertynames(::Work, private::Bool=false) = (:context, :effect, :detailed, :result, :exposed)
 
 function submit!(executor::Executor, pending::Kernel.Pending, attempt::Integer, context::AbstractString; detailed=false, exposed=nothing, on_handle=nothing)
-    submit!(executor, pending.id, attempt, Work(context, pending.effect; detailed, exposed); on_handle)
+    submit!(executor, pending, attempt, context, resulttype(detailed); exposed, on_handle)
+end
+function submit!(executor::Executor, pending::Kernel.Pending, attempt::Integer, context::AbstractString, result::Type; exposed=nothing, on_handle=nothing)
+    submit!(executor, pending.id, attempt, Work(String(context), pending.effect, result, exposed); on_handle)
 end
 
 struct Turn{T}
