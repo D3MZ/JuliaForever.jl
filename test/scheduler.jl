@@ -150,7 +150,7 @@ end
         worker = Threads.@spawn D.step!(scheduler, id, handler)
         context = take!(handler.entered)
         @test (context.task, context.phase, context.attempt) == (id, 1, 1)
-        @test get(scheduler, id).status isa D.Running
+        @test get(scheduler, id).status isa D.Running && !get(scheduler, id).status.cancelled
         @test D.step!(scheduler, id, handler).reason == :not_pending
         @test close(scheduler).reason == :busy
         marked = D.cancel!(scheduler, id)
@@ -318,14 +318,6 @@ end
     end
 end
 end
-@testset "running states" begin
-    active = D.Running(false)
-    cancelling = D.Running(true)
-    @test active isa D.Running && !active.cancelled
-    @test cancelling isa D.Running && cancelling.cancelled
-    @test typeof(active) !== typeof(cancelling)
-end
-
 if Sys.isunix()
 @testset "durable sleep and native wake" begin
     mktempdir() do dir
