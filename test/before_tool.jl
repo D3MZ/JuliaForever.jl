@@ -75,6 +75,17 @@ end
     end
 end
 
+@testset "before-tool hooks retain Unicode arguments" begin
+    value = "unicode " * string(Char(0x10ffff))
+    reg = E.Registry()
+    E.register!(reg, :hooks, E.Plugin(; tools=(Echo(),), hooks=(:tool_call => (event -> (event.input["value"] *= "!"; nothing)),)))
+    snapshot = E.snapshot(reg)
+    call = Dict("id" => "unicode", "type" => "function", "function" => Dict("name" => "echo", "arguments" => JSON3.write((; value))))
+    provider = Provider([Dict("role" => "assistant", "content" => nothing, "tool_calls" => [call]), Dict("role" => "assistant", "content" => "done")], [])
+    @test respond!(Agent(provider, snapshot), "go"; on_agent_event=E.listen(snapshot)) == "done"
+    @test provider.requests[2][end]["content"] == value * "!"
+end
+
 @testset "continuation combines call hooks and deferred discovery" begin
     for history in (nothing, JuliaForever.History.Memory())
         reg = E.Registry()
