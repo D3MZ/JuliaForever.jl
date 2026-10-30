@@ -23,6 +23,8 @@ Records are conversations, entries, tasks, documents, and submissions. A transac
 
 A submission request key is scoped to a conversation. Retrying the same key and kind returns the original ID even if the new value differs; it does not create a commit. Reusing the key for a different kind rejects the transaction. `nothing` means no deduplication key. The store keeps submission data but does not execute or settle submissions.
 
+`Store.failed`, `Store.closed`, `Store.busy`, and `Transaction.active` remain Boolean properties. Their internal fields now use typed lifecycle states; code using `getfield` or field reflection must use the properties instead.
+
 One process owns the file through an advisory exclusive `flock`; nested commits, transaction access from another Julia task, and use of a transaction after its callback are rejected. All readers and writers must use this store and must not replace the file while it is open. On platforms without Unix `flock`, opening returns `Rejected(:unsupported_platform)`; this implementation has only been tested on macOS.
 
 Each committed batch is one newline-terminated JSON record. The store flushes and calls `fsync` before adopting it in memory; when creating a file it also syncs its parent directory. Reopening replays complete records in order, removes an incomplete trailing line, and rejects a malformed complete line without truncating it. If a storage operation fails, the open store is failed and must be closed and reopened: a complete batch may or may not have reached disk. A retry with the same request key resolves an admission whose outcome was uncertain. These checks cover abrupt process exit and controlled torn tails, not hardware power-loss qualification. OS and filesystem errors propagate normally.

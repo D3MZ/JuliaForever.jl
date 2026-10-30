@@ -14,6 +14,28 @@ if !Sys.isunix()
     end
 else
 
+@testset "durable lifecycle properties" begin
+    mktempdir() do dir
+        store = open(D.Store, joinpath(dir, "state.jsonl"))
+        @test !store.failed && !store.closed && !store.busy
+        @test setproperty!(store, :failed, 1) === true
+        @test D.revision(store) == D.Rejected(:failed)
+        @test setproperty!(store, :failed, 0) === false
+        @test setproperty!(store, :nextid, 0.0) === 0
+        held = Ref{Any}()
+        @test D.commit!(store) do tx
+            held[] = tx
+            @test store.busy && tx.active
+            @test setproperty!(tx, :active, 1) === true
+            @test close(store) == D.Rejected(:busy)
+            nothing
+        end === nothing
+        @test !store.busy && !held[].active
+        close(store)
+        @test store.closed && !store.failed
+    end
+end
+
 @testset "durable store" begin
     mktempdir() do dir
         path = joinpath(dir, "session.jsonl")
@@ -203,8 +225,10 @@ end
         @test_throws Exception D.commit!(store) do tx
             D.put!(tx, D.Document(D.mint!(tx), id, Dict("value" => 2)))
         end
-        @test D.revision(store) isa D.Rejected
+        @test D.revision(store) == D.Rejected(:failed)
+        @test store.failed && !store.closed && !store.busy
         close(store)
+        @test store.failed && store.closed
         reopened = open(D.Store, path)
         @test D.revision(reopened) == 1
         @test get(reopened, D.Conversation, id).value["value"] == 1
