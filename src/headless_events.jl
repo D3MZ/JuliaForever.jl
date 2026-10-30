@@ -57,10 +57,16 @@ function event!(session, kind::LiveJSON.MessageStart, event)
     queues!(session)
     observe!(session, kind, event)
 end
+function event!(session, kind::LiveJSON.TurnStart, event)
+    before = length(session.messages)
+    observe!(session, kind, event)
+    foreach(message -> recordmessage!(session, message), @view session.messages[before+1:end])
+end
 function event!(session, kind::LiveJSON.MessageEnd, event)
     cancelled!(session.stream, J.turnstate(session.agent), LiveJSON.role(event.message))
     observe!(session, kind, event)
     completed!(session, LiveJSON.role(event.message), event.message)
+    recordmessage!(session, LiveJSON.role(event.message))
 end
 event!(session, kind::LiveJSON.Event, event) = observe!(session, kind, event)
 
@@ -91,6 +97,7 @@ function failedturn!(session, finish)
         before = length(session.stream.messages)
         LiveJSON.failedturn!(session.stream, finish)
         append!(session.messages, @view session.stream.messages[before+1:end])
+        foreach(message -> recordmessage!(session, message), @view session.stream.messages[before+1:end])
         session.lastcontent = ""
     end
 end

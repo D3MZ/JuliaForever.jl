@@ -1,6 +1,6 @@
 module Headless
 
-using JSON3
+using JSON3, Dates, Random
 import ..JuliaForever as J
 const LiveJSON = J.LiveJSON
 
@@ -9,6 +9,10 @@ struct GetState <: Command end
 struct GetMessages <: Command end
 struct GetAvailableModels <: Command end
 struct GetCommands <: Command end
+struct GetEntries <: Command
+    since::Union{Nothing, String}
+end
+struct GetTree <: Command end
 struct GetSessionStats <: Command end
 struct ClearQueue <: Command end
 struct CloneSession <: Command end
@@ -85,14 +89,13 @@ const newstatuses = Dict(0 => SessionStarted())
 
 const unsupportedcommands = (
     "set_model", "cycle_model", "compact",
-    "get_entries", "get_tree",
 )
 const commands = merge(
     Dict(name => Unsupported for name in unsupportedcommands),
     Dict(
         "prompt" => Prompt, "steer" => Queue{Steering}, "follow_up" => Queue{FollowUp}, "abort" => Abort,
         "clear_queue" => ClearQueue, "clone" => CloneSession, "fork" => ForkSession, "get_fork_messages" => GetForkMessages, "new_session" => NewSession, "switch_session" => SwitchSession, "export_html" => ExportHTML, "get_state" => GetState, "get_session_stats" => GetSessionStats,
-        "get_messages" => GetMessages, "get_available_models" => GetAvailableModels, "get_commands" => GetCommands, "get_last_assistant_text" => GetLastText, "set_session_name" => SetName,
+        "get_messages" => GetMessages, "get_available_models" => GetAvailableModels, "get_commands" => GetCommands, "get_entries" => GetEntries, "get_tree" => GetTree, "get_last_assistant_text" => GetLastText, "set_session_name" => SetName,
         "get_available_thinking_levels" => GetThinkingLevels, "cycle_thinking_level" => CycleThinking, "set_thinking_level" => SetThinking,
         "set_steering_mode" => SetSteeringMode, "set_follow_up_mode" => SetFollowUpMode,
         "set_auto_compaction" => SetAutoCompaction, "set_auto_retry" => SetAutoRetry, "abort_retry" => AbortRetry, "abort_bash" => AbortBash, "bash" => BashCommand,
@@ -129,6 +132,7 @@ end
 
 command(type::Type{<:Command}, data) = type()
 command(::Type{SetName}, data) = SetName(String(data["name"]))
+command(::Type{GetEntries}, data) = GetEntries(get(data, "since", nothing))
 command(::Type{NewSession}, data) = NewSession(get(data, "parentSession", nothing))
 command(::Type{SwitchSession}, data) = SwitchSession(String(data["sessionPath"]))
 command(::Type{ExportHTML}, data) = ExportHTML(get(data, "outputPath", nothing))
@@ -174,12 +178,16 @@ mutable struct Session{A, T, E, S, P, L}
     bashcancel::J.ShellCancellation
     bashtasks::Set{Task}
     pendingbash::Vector{J.Conversation.BashMessage}
+    entries::Vector{J.Conversation.SessionRecordValue}
+    entryleaf::Union{Nothing, String}
 end
 
 function Session(terminal, agent, extensions, store, templates, directory)
     stream = LiveJSON.Stream(terminal, agent, terminal.mode)
-    session = Session(agent, terminal, extensions, store, templates, directory, ReentrantLock(), Dict{String, Any}[], LiveJSON.id(store[]), sessionname(J.SessionCatalog.sessionname(store[])), stream, nothing, String[], String[], nothing, Base.Event(), OpenOutput(), AvailableStatistics(), J.ShellCancellation(), Set{Task}(), J.Conversation.BashMessage[])
+    session = Session(agent, terminal, extensions, store, templates, directory, ReentrantLock(), Dict{String, Any}[], LiveJSON.id(store[]), sessionname(J.SessionCatalog.sessionname(store[])), stream, nothing, String[], String[], nothing, Base.Event(), OpenOutput(), AvailableStatistics(), J.ShellCancellation(), Set{Task}(), J.Conversation.BashMessage[], J.Conversation.SessionRecordValue[], nothing)
     restore!(session, agent)
+    restoreentries!(session)
+    session
 end
 sessionname(::Nothing) = nothing
 sessionname(value::String) = value
@@ -190,6 +198,7 @@ include("headless_statistics.jl")
 include("headless_history.jl")
 include("headless_commands.jl")
 include("headless_bash.jl")
+include("headless_entries.jl")
 
 function write!(session, value)
     lock(session.lock) do
@@ -279,6 +288,7 @@ function setname!(session, name)
 end
 function named!(session, name, ::Nothing)
     session.name = name
+    entrysaved!(session, recordentry!(session, J.Conversation.NameEntry(name)))
     write!(session, (; type="session_info_changed", name))
     Success()
 end
@@ -310,6 +320,7 @@ function rebind!(session, agent, history)
         empty!(session.steering)
         empty!(session.followups)
         restore!(session, agent)
+        restoreentries!(session)
         write!(session, (; type="queue_update", steering=String[], followUp=String[]))
     end
     nothing

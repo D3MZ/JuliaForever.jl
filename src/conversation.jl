@@ -310,6 +310,29 @@ struct BashOutput{M<:BashMessage} <: K.Event
     message::M
 end
 
+abstract type SessionEntry end
+struct ModelEntry <: SessionEntry
+    provider::String
+    model::String
+end
+struct ThinkingEntry <: SessionEntry
+    level::String
+end
+struct MessageEntry <: SessionEntry
+    message::Dict{String, Any}
+end
+struct NameEntry <: SessionEntry
+    name::String
+end
+struct SessionRecord{E<:SessionEntry} <: K.Event
+    revision::Int
+    id::String
+    parent::Union{Nothing, String}
+    timestamp::String
+    entry::E
+end
+const SessionRecordValue = Union{SessionRecord{ModelEntry}, SessionRecord{ThinkingEntry}, SessionRecord{MessageEntry}, SessionRecord{NameEntry}}
+
 sessionname(text::AbstractString) = String(strip(replace(text, r"[\r\n]+" => " ")))
 
 struct ContinueQueued <: K.Event
@@ -429,6 +452,11 @@ function K.step(state::State, event::BashOutput)
     messages = copy(getfield(state, :messages))
     push!(messages, event.message)
     K.Applied(update(state; messages), ())
+end
+
+function K.step(state::State, event::SessionRecord)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    K.Applied(update(state), ())
 end
 
 function K.step(state::State, event::Cancel)

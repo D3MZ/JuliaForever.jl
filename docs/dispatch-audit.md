@@ -163,3 +163,5 @@ Markdown export adds six branch entries for list numbering and rendering iterati
 Terminal completion adds 22 branch entries for fuzzy scoring, matching, list iteration, and viewport layout; it adds no dispatch candidates.
 
 MCP JSON-RPC routing dispatches on message fields, request IDs, and error values; Boolean IDs and error codes remain invalid.
+
+RPC session-entry inspection adds ten branch entries for history traversal, entry matching, serialization, and revision checks, bringing the inventory from 1,496 to 1,506.

@@ -47,7 +47,9 @@ function savebash!(session, message)
 end
 savebash!(session, message, rejected::J.History.Rejected) = rejected
 function savebash!(session, message, ::Nothing)
-    push!(session.messages, convert(Dict{String, Any}, message))
+    value = convert(Dict{String, Any}, message)
+    push!(session.messages, value)
+    entrysaved!(session, recordentry!(session, J.Conversation.MessageEntry(value)))
     nothing
 end
 

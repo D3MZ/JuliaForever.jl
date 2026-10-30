@@ -139,6 +139,11 @@ pack(x::C.Followup) = node("followup", x.revision, x.text)
 pack(x::C.Dequeue) = node("dequeue", x.revision)
 pack(x::C.SessionName) = node("session_name", x.revision, x.name)
 pack(x::C.BashOutput) = node("bash_output", x.revision, pack(x.message))
+pack(x::C.ModelEntry) = node("entry_model", x.provider, x.model)
+pack(x::C.ThinkingEntry) = node("entry_thinking", x.level)
+pack(x::C.MessageEntry) = node("entry_message", packvalue(x.message))
+pack(x::C.NameEntry) = node("entry_name", x.name)
+pack(x::C.SessionRecord) = node("session_record", x.revision, x.id, x.parent, x.timestamp, pack(x.entry))
 pack(x::C.ContinueQueued) = node("continue_queued", x.revision)
 pack(x::C.Continue) = node("continue", x.revision)
 pack(x::C.Advance) = node("advance", x.revision)
@@ -166,7 +171,7 @@ const nodetypes = Dict(
     "skip_request" => C.SkipRequest, "model_reply" => C.ModelReply, "tool_reply" => C.ToolReply,
     "tool_search_reply" => ToolLoaded, "tool_discovery_reply" => ToolDiscovery,
     "model_failure" => C.ModelFailure, "abandoned" => C.Abandoned, "input" => C.Input, "input_images" => C.ImageInput, "steer" => C.Steer,
-    "followup" => C.Followup, "dequeue" => C.Dequeue, "session_name" => C.SessionName, "bash_output" => C.BashOutput, "continue_queued" => C.ContinueQueued, "continue" => C.Continue, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History,
+    "followup" => C.Followup, "dequeue" => C.Dequeue, "session_name" => C.SessionName, "bash_output" => C.BashOutput, "entry_model" => C.ModelEntry, "entry_thinking" => C.ThinkingEntry, "entry_message" => C.MessageEntry, "entry_name" => C.NameEntry, "session_record" => C.SessionRecord, "continue_queued" => C.ContinueQueued, "continue" => C.Continue, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History,
     "interrupt" => C.Interrupt, "abandon" => C.Abandon, "call" => K.Call, "return" => K.Return,
     "fail" => K.Fail, "plan" => K.Plan, "observe" => K.Observe, "finish" => K.Finish, "image" => C.Image,
 )
@@ -202,6 +207,11 @@ unpack(::Type{C.Followup}, f::Vector) = C.Followup(f[1], f[2])
 unpack(::Type{C.Dequeue}, f::Vector) = C.Dequeue(f[1])
 unpack(::Type{C.SessionName}, f::Vector) = C.SessionName(f[1], f[2])
 unpack(::Type{C.BashOutput}, f::Vector) = C.BashOutput(f[1], unpack(f[2]))
+unpack(::Type{C.ModelEntry}, f::Vector) = C.ModelEntry(f[1], f[2])
+unpack(::Type{C.ThinkingEntry}, f::Vector) = C.ThinkingEntry(f[1])
+unpack(::Type{C.MessageEntry}, f::Vector) = C.MessageEntry(unvalue(f[1]))
+unpack(::Type{C.NameEntry}, f::Vector) = C.NameEntry(f[1])
+unpack(::Type{C.SessionRecord}, f::Vector) = C.SessionRecord(f[1], f[2], f[3], f[4], unpack(f[5]))
 unpack(::Type{C.ContinueQueued}, f::Vector) = C.ContinueQueued(f[1])
 unpack(::Type{C.Continue}, f::Vector) = C.Continue(f[1])
 unpack(::Type{C.Advance}, f::Vector) = C.Advance(f[1])

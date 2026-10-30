@@ -84,6 +84,8 @@ end
 
 function forksession(process, channel, observed)
     send(value) = (println(process, JSON3.write(value)); flush(process))
+    send((; id="fork-entries", type="get_entries"))
+    records = receive!(channel, observed, value -> get(value, "id", "") == "fork-entries")
     send((; id="fork-messages", type="get_fork_messages"))
     messages = receive!(channel, observed, value -> get(value, "id", "") == "fork-messages")
     entries = get(get(messages, "data", Dict()), "messages", [])
@@ -96,7 +98,7 @@ function forksession(process, channel, observed)
     invalid = receive!(channel, observed, value -> get(value, "id", "") == "fork-invalid")
     send((; id="fork-after-invalid", type="get_state"))
     after = receive!(channel, observed, value -> get(value, "id", "") == "fork-after-invalid")
-    (; messages, reply, state, invalid, after)
+    (; records, messages, reply, state, invalid, after)
 end
 
 function exportsession(process, channel, observed, state; protect=false)
@@ -170,7 +172,11 @@ function exchangequeued(cmd, env, arrivals)
             end
             send((; id="messages", type="get_messages"))
             messages = receive!(channel, observed, value -> get(value, "id", "") == "messages")
-            (; first, steer, follow, busy, messages, observed)
+            send((; id="queue-entries", type="get_entries"))
+            entries = receive!(channel, observed, value -> get(value, "id", "") == "queue-entries")
+            send((; id="queue-forks", type="get_fork_messages"))
+            forks = receive!(channel, observed, value -> get(value, "id", "") == "queue-forks")
+            (; first, steer, follow, busy, messages, entries, forks, observed)
         finally
             for gate in held
                 isready(gate) || put!(gate, nothing)
@@ -249,7 +255,9 @@ function exchangebash(cmd, env; promptafter=false, sessiondir=nothing)
             end
             send((; id="bash-messages", type="get_messages"))
             messages = receive!(channel, observed, value -> get(value, "id", "") == "bash-messages")
-            (; replies, messages, observed, shellfile)
+            send((; id="bash-entries", type="get_entries"))
+            entries = receive!(channel, observed, value -> get(value, "id", "") == "bash-entries")
+            (; replies, messages, entries, observed, shellfile)
         finally
             close(process.in)
             timedwait(() -> process_exited(process), 5) == :ok || kill(process)
@@ -286,6 +294,36 @@ function exchangebashduringturn(cmd, env, arrivals)
             (; reply, before, after)
         finally
             isnothing(gate) || put!(gate, nothing)
+            close(process.in)
+            timedwait(() -> process_exited(process), 5) == :ok || kill(process)
+            wait(process)
+            wait(reader)
+        end
+    end
+end
+
+function exchangeentries(cmd, env)
+    mktempdir() do dir
+        process = open(pipeline(addenv(cmd, env...); stderr=joinpath(dir, "error")), "r+")
+        channel = Channel{Any}(Inf)
+        reader = @async for line in eachline(process)
+            put!(channel, JSON3.read(line, Dict{String, Any}))
+        end
+        observed = Any[]
+        try
+            send(value) = (println(process, JSON3.write(value)); flush(process))
+            send((; id="entries", type="get_entries"))
+            entries = receive!(channel, observed, value -> get(value, "id", "") == "entries")
+            items = get(get(entries, "data", Dict()), "entries", [])
+            firstid = isempty(items) ? "missing" : first(items)["id"]
+            send((; id="since", type="get_entries", since=firstid))
+            since = receive!(channel, observed, value -> get(value, "id", "") == "since")
+            send((; id="invalid", type="get_entries", since="missing-entry"))
+            invalid = receive!(channel, observed, value -> get(value, "id", "") == "invalid")
+            send((; id="tree", type="get_tree"))
+            tree = receive!(channel, observed, value -> get(value, "id", "") == "tree")
+            (; entries, since, invalid, tree)
+        finally
             close(process.in)
             timedwait(() -> process_exited(process), 5) == :ok || kill(process)
             wait(process)
@@ -361,10 +399,27 @@ end
         @test [updates(actual_bash, id) for id in ("bash-ok", "bash-fail", "bash-color", "bash-unicode", "bash-long", "bash-cancel")] == [updates(expected_bash, id) for id in ("bash-ok", "bash-fail", "bash-color", "bash-unicode", "bash-long", "bash-cancel")]
         bashmessages(exchange) = [normalizepath(Dict(key => value for (key, value) in message if key != "timestamp")) for message in exchange.messages["data"]["messages"]]
         @test bashmessages(actual_bash) == bashmessages(expected_bash)
+        entrymessages(exchange) = [normalizepath(Dict(key => value for (key, value) in entry["message"] if key != "timestamp")) for entry in get(get(exchange.entries, "data", Dict()), "entries", []) if entry["type"] == "message"]
+        @test entrymessages(actual_bash) == entrymessages(expected_bash)
         outputpath(exchange) = only(reply["data"]["fullOutputPath"] for reply in exchange.replies if get(reply, "id", "") == "bash-long")
         @test read(outputpath(actual_bash), String) == read(outputpath(expected_bash), String)
         rm(outputpath(actual_bash))
         rm(outputpath(expected_bash))
+
+        expected_entries = exchangeentries(pi, env)
+        actual_entries = exchangeentries(jf, env)
+        entriesview(response) = [Dict(key => value for (key, value) in item if !(key in ("id", "parentId", "timestamp"))) for item in get(get(response, "data", Dict()), "entries", [])]
+        treeview(node) = (; entry=Dict(key => value for (key, value) in node["entry"] if !(key in ("id", "parentId", "timestamp"))), children=treeview.(node["children"]))
+        @test entriesview(actual_entries.entries) == entriesview(expected_entries.entries)
+        @test entriesview(actual_entries.since) == entriesview(expected_entries.since)
+        @test actual_entries.invalid == expected_entries.invalid
+        @test treeview.(get(get(actual_entries.tree, "data", Dict()), "tree", [])) == treeview.(expected_entries.tree["data"]["tree"])
+        function entrychain(exchange)
+            entries = exchange.entries["data"]["entries"]
+            parents = [nothing; [item["id"] for item in entries[1:end-1]]]
+            [item["parentId"] for item in entries] == parents && exchange.entries["data"]["leafId"] == last(entries)["id"] && exchange.since["data"]["entries"] == entries[2:end]
+        end
+        @test entrychain(actual_entries) && entrychain(expected_entries)
     end
 end
 
@@ -484,14 +539,18 @@ toolview(value) = (; role=value["role"], id=value["toolCallId"], name=value["too
             @test length(bashcontext(jf_context)) == 5
             @test all(!occursin("printf 'bad", text) for text in bashcontext(jf_context))
             @test !pi_bash.shellfile && !jf_bash.shellfile
+            entryroles(exchange) = [(entry["type"], get(get(entry, "message", Dict()), "role", "")) for entry in get(get(exchange.entries, "data", Dict()), "entries", [])]
+            @test entryroles(jf_bash) == entryroles(pi_bash)
             pi_bash_resume = Cmd(`node $oracle $source --mode rpc --continue --session-dir $pi_bash_dir --provider openai --model fixture`; dir=workspace)
             jf_bash_resume = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --continue --session-dir $jf_bash_dir`; dir=workspace)
-            resumeinput = JSON3.write((; id="messages", type="get_messages")) * "\n"
+            resumeinput = join(JSON3.write.([(; id="messages", type="get_messages"), (; id="entries", type="get_entries")]), "\n") * "\n"
             pi_restored = runprocess(pi_bash_resume, resumeinput, env)
             jf_restored = runprocess(jf_bash_resume, resumeinput, env)
             savedbash(messages) = [Dict(key => value for (key, value) in message if key != "timestamp") for message in messages if get(message, "role", "") == "bashExecution"]
             @test savedbash(responses(pi_restored.output)["messages"]["data"]["messages"]) == savedbash(pi_bash.messages["data"]["messages"])
             @test savedbash(responses(jf_restored.output)["messages"]["data"]["messages"]) == savedbash(jf_bash.messages["data"]["messages"])
+            @test responses(pi_restored.output)["entries"]["data"]["entries"] == pi_bash.entries["data"]["entries"]
+            @test responses(jf_restored.output)["entries"]["data"]["entries"] == jf_bash.entries["data"]["entries"]
             for exchange in (pi_bash, jf_bash), reply in exchange.replies
                 haskey(get(reply, "data", Dict()), "fullOutputPath") && rm(reply["data"]["fullOutputPath"])
             end
@@ -508,6 +567,9 @@ toolview(value) = (; role=value["role"], id=value["toolCallId"], name=value["too
             @test jf_run.clonestate["data"]["sessionId"] != jf_run.state["data"]["sessionId"]
             forktexts(result) = [item["text"] for item in get(get(result.fork.messages, "data", Dict()), "messages", [])]
             @test forktexts(jf_run) == forktexts(pi_run) == ["hello"]
+            userentryids(run) = Set(entry["id"] for entry in run.fork.records["data"]["entries"] if entry["type"] == "message" && get(entry["message"], "role", "") == "user")
+            @test all(entry["entryId"] in userentryids(jf_run) for entry in jf_run.fork.messages["data"]["messages"])
+            @test all(entry["entryId"] in userentryids(pi_run) for entry in pi_run.fork.messages["data"]["messages"])
             @test jf_run.fork.reply == pi_run.fork.reply
             @test jf_run.fork.state["data"]["messageCount"] == pi_run.fork.state["data"]["messageCount"]
             @test jf_run.fork.state["data"]["sessionId"] != jf_run.clonestate["data"]["sessionId"]
@@ -580,6 +642,9 @@ toolview(value) = (; role=value["role"], id=value["toolCallId"], name=value["too
                 @test jf_queue.busy == pi_queue.busy
                 usertexts(run) = [join(block["text"] for block in message["content"] if block["type"] == "text") for message in run.messages["data"]["messages"] if message["role"] == "user"]
                 @test usertexts(jf_queue) == usertexts(pi_queue)
+                queuedids(run) = Set(entry["id"] for entry in run.entries["data"]["entries"] if entry["type"] == "message" && get(entry["message"], "role", "") == "user")
+                @test all(item["entryId"] in queuedids(jf_queue) for item in jf_queue.forks["data"]["messages"])
+                @test all(item["entryId"] in queuedids(pi_queue) for item in pi_queue.forks["data"]["messages"])
                 pi_pending = exchangebashduringturn(pi_rpc, gatedenv, arrivals)
                 jf_pending = exchangebashduringturn(jf_rpc, gatedenv, arrivals)
                 @test jf_pending.reply == pi_pending.reply
