@@ -52,11 +52,13 @@ function exchange(cmd, env, workspace, gate, arrivals, mode)
             target = reply("target")["data"]
             send((; id="new", type="new_session"))
             @test reply("new")["success"]
-            if mode in (:blocked_target, :fault_target)
+            if mode in (:blocked_target, :fault_target, :missing_model)
                 history = JuliaForever.History.Tree(open(JuliaForever.History.SQLite, target["sessionFile"]; create=false))
                 targetagent = Agent(nothing, []; history)
                 if mode == :blocked_target
                     @test steer!(targetagent, "target queued") === nothing
+                elseif mode == :missing_model
+                    JuliaForever.transition!(revision -> JuliaForever.Conversation.SessionRecord(revision, "missing-model", nothing, "2026-01-01T00:00:00Z", JuliaForever.Conversation.ModelEntry("missing", "missing")), targetagent)
                 else
                     JuliaForever.transition!(revision -> JuliaForever.Conversation.Input(revision, "target pending"), targetagent)
                     JuliaForever.transition!(revision -> JuliaForever.Conversation.Advance(revision), targetagent)
@@ -152,7 +154,7 @@ function exercise(kind, mode)
                 @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
                 Cmd(`node $(joinpath(@__DIR__, "headless_reference.mjs")) $source --mode rpc --session-dir $sessions --provider openai --model fixture --approve`; dir=workspace)
             else
-                Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $sessions --provider openai --model fixture`; dir=workspace)
+                mode == :missing_model ? Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $sessions --provider openai`; dir=workspace) : Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $sessions --provider openai --model fixture`; dir=workspace)
             end
             exchange(cmd, env, workspace, gate, arrivals, mode)
         finally
@@ -164,13 +166,13 @@ function exercise(kind, mode)
 end
 
 @testset "switching an active RPC session settles its outgoing turn" begin
-    for mode in (Sys.isunix() ? (:provider, :same, :tool, :queued, :blocked_target, :fault_target) : (:provider, :same, :queued, :blocked_target, :fault_target))
-        kinds = mode in (:blocked_target, :fault_target) || !haskey(ENV, "PI_SOURCE") ? (:julia,) : (:pi, :julia)
+    for mode in (Sys.isunix() ? (:provider, :same, :tool, :queued, :blocked_target, :fault_target, :missing_model) : (:provider, :same, :queued, :blocked_target, :fault_target, :missing_model))
+        kinds = mode in (:blocked_target, :fault_target, :missing_model) || !haskey(ENV, "PI_SOURCE") ? (:julia,) : (:pi, :julia)
         results = Dict(kind => exercise(kind, mode) for kind in kinds)
         for (kind, result) in results
             @test !result.invalid["success"] && result.unchanged
             @test result.afterinvalid["sessionId"] == result.source["sessionId"] && result.afterinvalid["isStreaming"]
-            if mode in (:blocked_target, :fault_target) || (mode == :queued && kind == :julia)
+            if mode in (:blocked_target, :fault_target, :missing_model) || (mode == :queued && kind == :julia)
                 @test !result.switched["success"] && result.unchanged_switch
                 @test result.selected["sessionId"] == result.source["sessionId"] && result.selected["isStreaming"]
                 @test result.selected["pendingMessageCount"] == (mode == :queued ? 1 : 0)

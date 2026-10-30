@@ -438,6 +438,12 @@ targetready!(session, selected, state, ::Nothing) = J.checkqueues!(session.termi
 switchtarget!(session, pending, blocked::Union{J.PendingInputs, J.History.Rejected}) = switchchecked!(session, pending, blocked)
 switchtarget!(session, pending, failure::J.ToolFailure) = Failure(J.redact(session.terminal, failure.text))
 function switchtarget!(session, pending, ::Nothing)
+    checked = J.attempt(() -> targetmodel(session, pending[], session.terminal.mode.model))
+    switchtargetmodel!(session, pending, checked)
+end
+switchtargetmodel!(session, pending, failure::Failure) = failure
+switchtargetmodel!(session, pending, failure::J.ToolFailure) = Failure(J.redact(session.terminal, failure.text))
+function switchtargetmodel!(session, pending, ::Nothing)
     selected = pending[]
     path = J.SessionCatalog.path(selected)
     pending[] = nothing
