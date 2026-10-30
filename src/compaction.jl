@@ -146,3 +146,18 @@ function autocompact!(agent, usage, settings, summarize, ::Val{true})
     tokens > 0 && settings.context_window > 0 && tokens > settings.context_window - settings.reserve_tokens || return nothing
     compact!(agent, summarize)
 end
+
+rememberusage!(result) = nothing
+function rememberusage!(result::Completion)
+    storage = task_local_storage()
+    haskey(storage, :jf_compaction_usage) && (storage[:jf_compaction_usage][] = result.usage)
+    nothing
+end
+
+finishauto!(agent, result, usage, ::Nothing, summarize, callback) = nothing
+finishauto!(agent, result, usage, settings::AutoCompaction, summarize, callback) = nothing
+function finishauto!(agent, result::AbstractString, usage, settings::AutoCompaction, summarize, callback)
+    compacted = autocompact!(agent, usage, settings, summarize)
+    compacted === nothing || emit(callback, (; type=:auto_compaction_end, result=compacted))
+    nothing
+end
