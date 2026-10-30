@@ -14,6 +14,12 @@ function gone(pid)
     ccall(:kill, Cint, (Cint, Cint), pid, 0) == -1 && Base.Libc.errno() == Base.Libc.ESRCH
 end
 
+@testset "shell outcome messages" begin
+    @test JuliaForever.shellresult(JuliaForever.ShellTimeout(), "before", 0.5, nothing) == ToolFailure("before\n\nCommand timed out after 0.5 seconds")
+    @test JuliaForever.shellresult(JuliaForever.ShellCancelled(), "", nothing, nothing) == ToolFailure("Command aborted")
+    @test JuliaForever.shellresult(JuliaForever.ShellStopFailed(), "before", nothing, nothing) == ToolFailure("before\n\nCould not stop shell process group; the command may still be running")
+end
+
 @testset "shell cancellation" begin
     if Sys.iswindows()
         mktempdir() do dir

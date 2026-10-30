@@ -6,6 +6,17 @@ struct Grep <: Tool
     cwd::String
 end
 
+struct FoldedPattern
+    text::String
+end
+
+Base.occursin(pattern::FoldedPattern, line::AbstractString) = occursin(pattern.text, lowercase(line))
+
+function searchpattern(pattern, literal::Bool, ignorecase::Bool)
+    literal && return ignorecase ? FoldedPattern(lowercase(pattern)) : pattern
+    Regex(pattern, ignorecase ? "i" : "")
+end
+
 name(::Find) = "find"
 name(::Grep) = "grep"
 
@@ -86,15 +97,26 @@ end
 
 posix(path) = Sys.iswindows() ? replace(path, '\\' => '/') : path
 
-struct IgnoreRule
+abstract type IgnoreRule end
+
+struct GitRule <: IgnoreRule
     base::String
     regex::Regex
     directory::Bool
     negate::Bool
-    git::Bool
 end
 
-function rules(file, git; base=dirname(file))
+struct FileRule <: IgnoreRule
+    base::String
+    regex::Regex
+    directory::Bool
+    negate::Bool
+end
+
+keep(::GitRule) = false
+keep(::FileRule) = true
+
+function rules(file, ::Type{T}; base=dirname(file)) where {T <: IgnoreRule}
     isfile(file) || return IgnoreRule[]
     result = IgnoreRule[]
     for line in eachline(file)
@@ -108,7 +130,7 @@ function rules(file, git; base=dirname(file))
         anchored = startswith(line, '/')
         anchored && (line = chopprefix(line, "/"))
         isempty(line) && continue
-        push!(result, IgnoreRule(base, glob(line; anywhere=!anchored && !occursin('/', line)), directory, negate, git))
+        push!(result, T(base, glob(line; anywhere=!anchored && !occursin('/', line)), directory, negate))
     end
     result
 end
@@ -142,11 +164,11 @@ function initialrules(root, findmode)
     result = IgnoreRule[]
     for (i, dir) in enumerate(dirs)
         if ispath(joinpath(dir, ".git"))
-            filter!(rule -> !rule.git, result)
-            append!(result, rules(joinpath(dir, ".git", "info", "exclude"), true; base=dir))
+            filter!(keep, result)
+            append!(result, rules(joinpath(dir, ".git", "info", "exclude"), GitRule; base=dir))
         end
-        (findmode || (!isnothing(repo) && i >= repo)) && append!(result, rules(joinpath(dir, ".gitignore"), true))
-        append!(result, rules(joinpath(dir, ".ignore"), false))
+        (findmode || (!isnothing(repo) && i >= repo)) && append!(result, rules(joinpath(dir, ".gitignore"), GitRule))
+        append!(result, rules(joinpath(dir, ".ignore"), FileRule))
     end
     result, findmode || !isnothing(repo)
 end
@@ -156,12 +178,12 @@ function walksearch(visit, root, findmode; whitelist=(target -> false))
     function walk(dir, inherited, inside)
         ruleset = copy(inherited)
         if ispath(joinpath(dir, ".git"))
-            filter!(rule -> !rule.git, ruleset)
-            append!(ruleset, rules(joinpath(dir, ".git", "info", "exclude"), true; base=dir))
+            filter!(keep, ruleset)
+            append!(ruleset, rules(joinpath(dir, ".git", "info", "exclude"), GitRule; base=dir))
             inside = true
         end
-        (findmode || inside) && append!(ruleset, rules(joinpath(dir, ".gitignore"), true))
-        append!(ruleset, rules(joinpath(dir, ".ignore"), false))
+        (findmode || inside) && append!(ruleset, rules(joinpath(dir, ".gitignore"), GitRule))
+        append!(ruleset, rules(joinpath(dir, ".ignore"), FileRule))
         for entry in readdir(dir)
             entry == ".git" && continue
             target = joinpath(dir, entry)
@@ -224,11 +246,8 @@ function execute(tool::Grep, args)
     ispath(root) || return ToolFailure("Path not found: $root")
     limit = max(1, Int(get(args, :limit, 100)))
     context = max(0, Int(get(args, :context, 0)))
-    pattern = args.pattern
-    literal = get(args, :literal, false)
-    ignorecase = get(args, :ignoreCase, false)
     regex = try
-        literal ? nothing : Regex(pattern, ignorecase ? "i" : "")
+        searchpattern(args.pattern, get(args, :literal, false), get(args, :ignoreCase, false))
     catch exception
         return ToolFailure(sprint(showerror, exception))
     end
@@ -263,7 +282,7 @@ function execute(tool::Grep, args)
         lastmatch = length(lines) - endswith(text, '\n')
         for number in 1:lastmatch
             line = lines[number]
-            matched = literal ? occursin(ignorecase ? lowercase(pattern) : pattern, ignorecase ? lowercase(line) : line) : occursin(regex, line)
+            matched = occursin(regex, line)
             matched || continue
             count += 1
             for n in max(1, number - context):min(length(lines), number + context)

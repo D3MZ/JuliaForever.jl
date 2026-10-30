@@ -20,6 +20,8 @@
         (; tool="grep", args=(; pattern="NEEDLE", path="root.txt", ignoreCase=true, context=1, limit=1)),
         (; tool="grep", args=(; pattern="^Beta", path="root.txt")),
         (; tool="grep", args=(; pattern="^Beta", path="root.txt", literal=true)),
+        (; tool="grep", args=(; pattern="café [x]", path="literal.dat", literal=true)),
+        (; tool="grep", args=(; pattern="café [x]", path="literal.dat", literal=true, ignoreCase=true)),
         (; tool="grep", args=(; pattern="needle", glob="*.ts")),
         (; tool="grep", args=(; pattern="needle", path="missing")),
         (; tool="grep", args=(; pattern="needle", glob="*.txt"), unordered=true),
@@ -45,6 +47,7 @@
         write(joinpath(dir, "trailing space "), "needle\n")
         write(joinpath(dir, "long.txt"), repeat("x", 501) * "needle\n")
         write(joinpath(dir, "unicode.txt"), repeat("🌱", 250) * "needle\n")
+        write(joinpath(dir, "literal.dat"), "CAFÉ [x]\ncafé [x]\n")
         input = tempname()
         write(input, JSON3.write(cases))
         try

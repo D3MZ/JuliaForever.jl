@@ -150,36 +150,37 @@ forkcheck(::State, ::Record, result::Rejected) = result
 valid(::Nothing) = true
 valid(result) = false
 
-function apply!(state::State, record::Record)
-    existing = get(state.records, record.id, nothing)
-    record.id > 0 || return Rejected(:invalid_id)
-    if existing !== nothing
-        typeof(existing) === typeof(record) || return Rejected(:id_in_use)
-        record isa Union{Conversation, Entry} && return Rejected(:immutable)
-        existing.conversation == record.conversation || return Rejected(:immutable)
-        if record isa Submission
-            (existing.request, existing.kind) == (record.request, record.kind) || return Rejected(:immutable)
-        end
-    else
-        return applynew!(state, record)
-    end
-    save!(state, record)
+validate(::Conversation) = nothing
+validate(parent) = Rejected(:conversation_missing)
+validate(state::State, ::Nothing, record::Conversation) = forkcheck(state, record)
+validate(state::State, ::Nothing, record::Record) = validate(get(state.records, record.conversation, nothing))
+validate(state::State, existing::Record, record::Record) = validate(existing, record)
+validate(existing::Record, record::Record) = Rejected(:id_in_use)
+validate(existing::T, record::T) where {T <: Union{Conversation, Entry}} = Rejected(:immutable)
+validate(existing::T, record::T) where {T <: Record} = existing.conversation == record.conversation ? nothing : Rejected(:immutable)
+validate(existing::Submission, record::Submission) = existing.conversation == record.conversation && (existing.request, existing.kind) == (record.request, record.kind) ? nothing : Rejected(:immutable)
+
+register!(state::State, record::Record) = nothing
+register!(state::State, record::Submission) = register!(state, record, record.request)
+register!(state::State, record::Submission, ::Nothing) = nothing
+
+function register!(state::State, record::Submission, request::String)
+    key = (record.conversation, request)
+    get(state.requests, key, record.id) == record.id || return Rejected(:request_in_use)
+    state.requests[key] = record.id
+    nothing
 end
 
-applynew!(state::State, record::Conversation) = applynew!(state, record, forkcheck(state, record))
-applynew!(state::State, record::Conversation, ::Nothing) = save!(state, record)
-applynew!(::State, ::Conversation, result::Rejected) = result
-applynew!(state::State, record::Record) = applynew!(state, record, get(state.records, record.conversation, nothing))
-applynew!(state::State, record::Record, ::Conversation) = save!(state, record)
-applynew!(::State, ::Record, parent) = Rejected(:conversation_missing)
+function apply!(state::State, record::Record)
+    record.id > 0 || return Rejected(:invalid_id)
+    apply!(state, record, validate(state, get(state.records, record.id, nothing), record))
+end
 
-function save!(state::State, record::Record)
-    if record isa Submission && record.request !== nothing
-        key = (record.conversation, record.request)
-        found = get(state.requests, key, record.id)
-        found == record.id || return Rejected(:request_in_use)
-        state.requests[key] = record.id
-    end
+apply!(state::State, record::Record, rejected::Rejected) = rejected
+apply!(state::State, record::Record, ::Nothing) = store!(state, record, register!(state, record))
+store!(state::State, record::Record, rejected::Rejected) = rejected
+
+function store!(state::State, record::Record, ::Nothing)
     state.records[record.id] = record
     nothing
 end
@@ -319,12 +320,17 @@ function revision(store::Store)
     end
 end
 
+selected(::Type{T}, record) where {T <: Record} = nothing
+selected(::Type{T}, record::T) where {T <: Record} = deepcopy(record)
+matches(::Type{T}, record, conversation) where {T <: Record} = false
+matches(::Type{T}, record::T, conversation) where {T <: Record} = belongs(record, conversation)
+
 function Base.get(store::Store, ::Type{T}, id::Integer) where {T <: Record}
     lock(store.lock) do
         result = status(store)
         result === nothing || return result
         record = get(store.state.records, id, nothing)
-        record isa T ? deepcopy(record) : nothing
+        selected(T, record)
     end
 end
 
@@ -339,12 +345,13 @@ end
 
 belongs(record::Conversation, conversation::Integer) = record.id == conversation
 belongs(record::Record, conversation::Integer) = record.conversation == conversation
+belongs(record::Record, ::Nothing) = true
 
 function scan(store::Store, ::Type{T}; conversation::Union{Nothing, Integer}=nothing) where {T <: Record}
     lock(store.lock) do
         result = status(store)
         result === nothing || return result
-        records = T[record for record in values(store.state.records) if record isa T && (conversation === nothing || belongs(record, conversation))]
+        records = T[record for record in values(store.state.records) if matches(T, record, conversation)]
         sort!(records; by=record -> record.id)
         deepcopy(records)
     end
@@ -383,7 +390,7 @@ function Base.get(tx::Transaction, ::Type{T}, id::Integer) where {T <: Record}
     result = status(tx)
     result === nothing || return result
     record = get(tx.state.records, id, nothing)
-    record isa T ? deepcopy(record) : nothing
+    selected(T, record)
 end
 
 function mint!(tx::Transaction)

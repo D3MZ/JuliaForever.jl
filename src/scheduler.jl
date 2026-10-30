@@ -35,9 +35,9 @@ end
 
 abstract type TaskStatus end
 struct Pending <: TaskStatus end
-struct Running <: TaskStatus
-    cancelled::Bool
-end
+abstract type Running <: TaskStatus end
+struct Active <: Running end
+struct Cancelling <: Running end
 struct Completed <: TaskStatus
     value::Any
 end
@@ -45,6 +45,17 @@ struct Failed <: TaskStatus
     reason::Symbol
 end
 struct Cancelled <: TaskStatus end
+
+Running(cancelled::Bool) = cancelled ? Cancelling() : Active()
+cancelled(::Active) = false
+cancelled(::Cancelling) = true
+
+function Base.getproperty(status::Running, name::Symbol)
+    name === :cancelled && return cancelled(status)
+    getfield(status, name)
+end
+
+Base.propertynames(::Running, private::Bool=false) = (:cancelled,)
 
 struct TaskView
     id::Int
@@ -88,6 +99,33 @@ function taskview(record::Task)
     TaskView(record.id, record.conversation, spec["kind"], state["request"], spec["input"], checkpoint(state["checkpoint"]), state["phase"], state["attempts"], state["restarts"], spec["maxattempts"], state["message"], taskstatus(state))
 end
 
+taskview(record) = record
+
+recover!(tx, record::Task, ::Nothing) = nothing
+recover!(tx, record::Task, view::TaskView) = recover!(tx, record, view, view.status)
+recover!(tx, record::Task, view::TaskView, ::TaskStatus) = nothing
+
+function recover!(tx, record::Task, view::TaskView, status::Running)
+    state = record.state
+    state["restarts"] += 1
+    recover!(state, view, status)
+    put!(tx, record)
+    nothing
+end
+
+recover!(state::AbstractDict, view::TaskView, ::Cancelling) = (state["status"] = "cancelled"; nothing)
+
+function recover!(state::AbstractDict, view::TaskView, ::Active)
+    if view.attempts >= view.maxattempts
+        state["status"] = "failed"
+        state["reason"] = "attempt_limit"
+    else
+        state["status"] = "pending"
+    end
+    state["message"] = "interrupted"
+    nothing
+end
+
 function Base.open(::Type{Scheduler}, path::AbstractString)
     store = open(Store, path)
     store isa Rejected && return store
@@ -96,22 +134,7 @@ function Base.open(::Type{Scheduler}, path::AbstractString)
         records = scan(store, Task)
         result = commit!(store) do tx
             for record in records
-                view = taskview(record)
-                view === nothing && continue
-                view.status isa Running || continue
-                state = record.state
-                state["restarts"] += 1
-                if view.status.cancelled
-                    state["status"] = "cancelled"
-                elseif view.attempts >= view.maxattempts
-                    state["status"] = "failed"
-                    state["reason"] = "attempt_limit"
-                    state["message"] = "interrupted"
-                else
-                    state["status"] = "pending"
-                    state["message"] = "interrupted"
-                end
-                put!(tx, record)
+                recover!(tx, record, taskview(record))
             end
             nothing
         end
@@ -131,21 +154,23 @@ function Base.close(scheduler::Scheduler)
     end
 end
 
-function Base.get(scheduler::Scheduler, id::Integer)
-    record = get(scheduler.store, Task, id)
-    record isa Task ? taskview(record) : record
-end
+Base.get(scheduler::Scheduler, id::Integer) = taskview(get(scheduler.store, Task, id))
 
-function scan(scheduler::Scheduler; conversation::Union{Nothing, Integer}=nothing)
-    records = scan(scheduler.store, Task; conversation)
-    records isa Rejected && return records
+taskviews(rejected::Rejected) = rejected
+add!(views::Vector{TaskView}, ::Nothing) = nothing
+add!(views::Vector{TaskView}, view::TaskView) = (push!(views, view); nothing)
+
+function taskviews(records::AbstractVector{<:Task})
     result = TaskView[]
     for record in records
-        view = taskview(record)
-        view === nothing || push!(result, view)
+        add!(result, taskview(record))
     end
     result
 end
+
+scan(scheduler::Scheduler; conversation::Union{Nothing, Integer}=nothing) = taskviews(scan(scheduler.store, Task; conversation))
+taskview(tx::Transaction, id::Integer, rejected::Rejected) = rejected
+taskview(tx::Transaction, id::Integer, result::Integer) = taskview(get(tx, Task, id))
 
 function enqueue!(scheduler::Scheduler, conversation::Integer, handler::Handler, phase::Phase, input; request::Union{Nothing, AbstractString}=nothing, maxattempts::Integer=3)
     maxattempts > 0 || return Rejected(:invalid_attempt_limit)
@@ -169,18 +194,26 @@ end
 
 function reserve!(scheduler::Scheduler, id::Integer, handler::Handler)
     commit!(scheduler.store) do tx
-        record = get(tx, Task, id)
-        record === nothing && return Rejected(:task_missing)
-        record isa Rejected && return record
-        view = taskview(record)
-        view === nothing && return Rejected(:not_scheduled)
-        view.kind == name(handler) || return Rejected(:handler_mismatch)
-        view.status isa Pending || return Rejected(:not_pending)
-        record.state["status"] = "running"
-        record.state["attempts"] += 1
-        result = put!(tx, record)
-        result isa Rejected ? result : taskview(get(tx, Task, id))
+        reserve!(tx, id, handler, get(tx, Task, id))
     end
+end
+
+reserve!(tx::Transaction, id::Integer, handler::Handler, ::Nothing) = Rejected(:task_missing)
+reserve!(tx::Transaction, id::Integer, handler::Handler, rejected::Rejected) = rejected
+reserve!(tx::Transaction, id::Integer, handler::Handler, record::Task) = reserve!(tx, id, handler, record, taskview(record))
+reserve!(tx::Transaction, id::Integer, handler::Handler, record::Task, ::Nothing) = Rejected(:not_scheduled)
+
+function reserve!(tx::Transaction, id::Integer, handler::Handler, record::Task, view::TaskView)
+    view.kind == name(handler) || return Rejected(:handler_mismatch)
+    reserve!(tx, id, record, view.status)
+end
+
+reserve!(tx::Transaction, id::Integer, record::Task, ::TaskStatus) = Rejected(:not_pending)
+
+function reserve!(tx::Transaction, id::Integer, record::Task, ::Pending)
+    record.state["status"] = "running"
+    record.state["attempts"] += 1
+    taskview(tx, id, put!(tx, record))
 end
 
 function advance!(state, result::Next)
@@ -215,28 +248,32 @@ function advance!(state, result::Fail)
     state["message"] = result.message
 end
 
+advance!(state, result, ::Active) = advance!(state, result)
+advance!(state, result, ::Cancelling) = (state["status"] = "cancelled"; nothing)
+
+begin!(scheduler::Scheduler, result) = result
+
+function begin!(scheduler::Scheduler, view::TaskView)
+    scheduler.active += 1
+    view
+end
+
 function step!(scheduler::Scheduler, id::Integer, handler::Handler)
     reserved = lock(scheduler.lock) do
-        result = reserve!(scheduler, id, handler)
-        result isa TaskView && (scheduler.active += 1)
-        result
+        begin!(scheduler, reserve!(scheduler, id, handler))
     end
-    reserved isa TaskView || return reserved
+    step!(scheduler, id, handler, reserved)
+end
+
+step!(scheduler::Scheduler, id::Integer, handler::Handler, result) = result
+
+function step!(scheduler::Scheduler, id::Integer, handler::Handler, reserved::TaskView)
     try
         phase = decode(handler, reserved.checkpoint)
         context = Invocation(reserved.id, reserved.conversation, reserved.phase, reserved.attempts)
         outcome = run(handler, phase, reserved.input, context)
         commit!(scheduler.store) do tx
-            record = get(tx, Task, id)
-            record isa Task || return record
-            state = record.state
-            if state["cancelled"]
-                state["status"] = "cancelled"
-            else
-                advance!(state, outcome)
-            end
-            result = put!(tx, record)
-            result isa Rejected ? result : taskview(get(tx, Task, id))
+            step!(tx, id, outcome, get(tx, Task, id))
         end
     finally
         lock(scheduler.lock) do
@@ -245,24 +282,34 @@ function step!(scheduler::Scheduler, id::Integer, handler::Handler)
     end
 end
 
+step!(tx::Transaction, id::Integer, outcome, result) = result
+
+function step!(tx::Transaction, id::Integer, outcome, record::Task)
+    state = record.state
+    advance!(state, outcome, Running(state["cancelled"]))
+    taskview(tx, id, put!(tx, record))
+end
+
 function cancel!(scheduler::Scheduler, id::Integer)
     commit!(scheduler.store) do tx
-        record = get(tx, Task, id)
-        record === nothing && return Rejected(:task_missing)
-        record isa Rejected && return record
-        view = taskview(record)
-        view === nothing && return Rejected(:not_scheduled)
-        view.status isa Cancelled && return view
-        view.status isa Union{Completed, Failed} && return Rejected(:finished)
-        state = record.state
-        if view.status isa Pending
-            state["status"] = "cancelled"
-        elseif state["cancelled"]
-            return view
-        else
-            state["cancelled"] = true
-        end
-        result = put!(tx, record)
-        result isa Rejected ? result : taskview(get(tx, Task, id))
+        cancel!(tx, id, get(tx, Task, id))
     end
+end
+
+cancel!(tx::Transaction, id::Integer, ::Nothing) = Rejected(:task_missing)
+cancel!(tx::Transaction, id::Integer, rejected::Rejected) = rejected
+cancel!(tx::Transaction, id::Integer, record::Task) = cancel!(tx, id, record, taskview(record))
+cancel!(tx::Transaction, id::Integer, record::Task, ::Nothing) = Rejected(:not_scheduled)
+cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView) = cancel!(tx, id, record, view, view.status)
+cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView, ::Union{Cancelled, Cancelling}) = view
+cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView, ::Union{Completed, Failed}) = Rejected(:finished)
+
+function cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView, ::Pending)
+    record.state["status"] = "cancelled"
+    taskview(tx, id, put!(tx, record))
+end
+
+function cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView, ::Active)
+    record.state["cancelled"] = true
+    taskview(tx, id, put!(tx, record))
 end

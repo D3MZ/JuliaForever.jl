@@ -1,6 +1,7 @@
 using Test, JuliaForever
 
 include("quality.jl")
+include("branch_audit.jl")
 include("dispatch_lint.jl")
 include("dispatch.jl")
 include("integration_dispatch.jl")
@@ -97,6 +98,7 @@ end
 include("system.jl")
 include("durable.jl")
 include("durable_forks.jl")
+include("durable_dispatch.jl")
 include("history.jl")
 include("session.jl")
 include("kernel.jl")
@@ -115,6 +117,7 @@ include("logs.jl")
 include("search.jl")
 include("codemode.jl")
 include("codemode_store.jl")
+include("codemode_compat.jl")
 include("mcp.jl")
 include("mcp_image.jl")
 if haskey(ENV, "PI_SOURCE")

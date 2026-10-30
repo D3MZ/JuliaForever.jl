@@ -69,3 +69,39 @@ end
     @test respond!(agent, "prompt"; context="worker") == JuliaForever.Execution.Rejected(:executor)
     @test isempty(agent.events)
 end
+
+@testset "agent lifecycle states" begin
+    agent = Agent(nothing, [])
+    @test !agent.running && !agent.cancelled
+    @test JuliaForever.begin!(agent)
+    @test agent.running && !agent.cancelled
+    @test !JuliaForever.begin!(agent)
+    @test cancel!(agent)
+    @test agent.running && agent.cancelled
+    @test cancel!(agent)
+    @test !JuliaForever.begin!(agent)
+    JuliaForever.finish!(agent)
+    @test !agent.running && !agent.cancelled
+    @test !cancel!(agent)
+end
+
+@testset "executor tool outcomes" begin
+    E = JuliaForever.Execution
+    reply = JuliaForever.Conversation.ToolReply(ToolSuccess("ok"))
+    completed = E.Completed("id", 1, 1, reply)
+    @test JuliaForever.toolreply(completed, JuliaForever.Running()) === reply
+    @test JuliaForever.toolreply(E.Completed("id", 1, 1, "wrong"), JuliaForever.Running()) == E.Rejected(:unexpected_result)
+    cancelled = E.Cancelled("id", 1, 1)
+    @test JuliaForever.toolreply(cancelled, JuliaForever.Running()) === cancelled
+    @test JuliaForever.toolreply(cancelled, JuliaForever.Cancelled()).text == "Operation cancelled"
+    failed = E.Failed("id", 1, 1, "worker")
+    @test JuliaForever.toolreply(failed, JuliaForever.Running()) === failed
+end
+
+@testset "code execution outcomes" begin
+    success = CodeResult(true, 3, String[], NamedTuple[], Dict{String, Any}(), nothing, "", "", "", 1)
+    failure = CodeResult(false, nothing, String[], NamedTuple[], Dict{String, Any}(), :script, "bad", "", "", 1)
+    @test success isa JuliaForever.CodeSuccess && success.ok
+    @test failure isa JuliaForever.CodeFailure && !failure.ok
+    @test hasproperty(success, :ok) && hasproperty(failure, :ok)
+end

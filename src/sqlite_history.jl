@@ -61,7 +61,7 @@ function Base.open(::Type{H.SQLite}, path::AbstractString; create=true)
         result = initialize(db; create)
         result isa H.Rejected && return result
         opened = true
-        H.SQLite(db, ReentrantLock(), :open)
+        H.SQLite(db, ReentrantLock(), H.Open())
     finally
         opened || close(db)
     end
@@ -69,58 +69,78 @@ end
 
 function Base.close(history::H.SQLite{SQLite.DB})
     lock(history.lock) do
-        history.status === :closed && return nothing
-        history.status = :closed
-        close(history.db)
-        nothing
+        close(history, getfield(history, :status))
     end
 end
 
+Base.close(history::H.SQLite{SQLite.DB}, ::H.Closed) = nothing
+
+function Base.close(history::H.SQLite{SQLite.DB}, status::H.SQLiteStatus)
+    setfield!(history, :status, H.Closed())
+    close(history.db)
+    nothing
+end
+
+H.Rejected(::H.Closed) = H.Rejected(:closed)
+H.Rejected(::H.Uncertain) = H.Rejected(:uncertain)
+
 function H.snapshot(history::H.SQLite{SQLite.DB})
     lock(history.lock) do
-        history.status === :open || return H.Rejected(history.status)
-        DBI.execute(history.db, "SELECT revision, data FROM jf_history ORDER BY revision") do rows
-            batches = Vector{Any}[]
-            for row in rows
-                row.revision == length(batches) + 1 || return H.Rejected(:history_format)
-                batch = JSON3.read(row.data, Vector{Any})
-                push!(batches, Any[H.decode(item) for item in batch])
-            end
-            H.Snapshot(length(batches), batches)
+        H.snapshot(history, getfield(history, :status))
+    end
+end
+
+H.snapshot(history::H.SQLite{SQLite.DB}, status::H.SQLiteStatus) = H.Rejected(status)
+
+function H.snapshot(history::H.SQLite{SQLite.DB}, ::H.Open)
+    DBI.execute(history.db, "SELECT revision, data FROM jf_history ORDER BY revision") do rows
+        batches = Vector{Any}[]
+        for row in rows
+            row.revision == length(batches) + 1 || return H.Rejected(:history_format)
+            batch = JSON3.read(row.data, Vector{Any})
+            push!(batches, Any[H.decode(item) for item in batch])
         end
+        H.Snapshot(length(batches), batches)
     end
 end
 
 function append!(history::H.SQLite{SQLite.DB}, revision::Integer, batch::Vector)
     lock(history.lock) do
-        history.status === :open || return H.Rejected(history.status)
-        db = history.db
-        complete = false
-        try
-            SQLite.execute(db, "BEGIN IMMEDIATE")
-            current = DBI.execute(db, "SELECT COALESCE(MAX(revision), 0) AS revision FROM jf_history") do rows
-                only([row.revision for row in rows])
-            end
-            result = if current != revision
-                H.Rejected(:revision)
-            elseif isempty(batch)
-                H.Rejected(:empty_batch)
-            else
-                saved = H.value(batch, IdDict())
-                if saved isa H.Rejected
-                    saved
-                else
-                    data = JSON3.write(Any[H.encode(item) for item in saved])
-                    SQLite.execute(db, "INSERT INTO jf_history (revision, data) VALUES (?, ?)", (current + 1, data))
-                    current + 1
-                end
-            end
-            SQLite.execute(db, result isa H.Rejected ? "ROLLBACK" : "COMMIT")
-            complete = true
-            result
-        finally
-            complete || (history.status = :uncertain)
+        append!(history, revision, batch, getfield(history, :status))
+    end
+end
+
+append!(history::H.SQLite{SQLite.DB}, revision::Integer, batch::Vector, status::H.SQLiteStatus) = H.Rejected(status)
+transaction(::H.Rejected) = "ROLLBACK"
+transaction(::Integer) = "COMMIT"
+write!(db, revision, rejected::H.Rejected) = rejected
+
+function write!(db, revision, saved::Vector)
+    data = JSON3.write(Any[H.encode(item) for item in saved])
+    SQLite.execute(db, "INSERT INTO jf_history (revision, data) VALUES (?, ?)", (revision + 1, data))
+    revision + 1
+end
+
+function append!(history::H.SQLite{SQLite.DB}, revision::Integer, batch::Vector, ::H.Open)
+    db = history.db
+    complete = false
+    try
+        SQLite.execute(db, "BEGIN IMMEDIATE")
+        current = DBI.execute(db, "SELECT COALESCE(MAX(revision), 0) AS revision FROM jf_history") do rows
+            only([row.revision for row in rows])
         end
+        result = if current != revision
+            H.Rejected(:revision)
+        elseif isempty(batch)
+            H.Rejected(:empty_batch)
+        else
+            write!(db, current, H.value(batch, IdDict()))
+        end
+        SQLite.execute(db, transaction(result))
+        complete = true
+        result
+    finally
+        complete || setfield!(history, :status, H.Uncertain())
     end
 end
 
