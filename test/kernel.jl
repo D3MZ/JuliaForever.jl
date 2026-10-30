@@ -1,4 +1,4 @@
-using Test, JuliaForever
+using Test, JuliaForever, JSON3
 
 import JuliaForever.Kernel as K
 
@@ -17,6 +17,13 @@ struct EqualBox
 end
 
 Base.isequal(a::EqualBox, b::EqualBox) = isequal(a.value, b.value)
+
+@testset "kernel state properties" begin
+    state = K.State("properties")
+    @test !state.closed && !JSON3.read(JSON3.write(state)).closed
+    finished = K.step(state, K.Finish(0)).state
+    @test finished.closed && JSON3.read(JSON3.write(finished)).closed
+end
 
 @testset "observation equality preserves value types" begin
     @test K.same(Int, Int)
