@@ -134,6 +134,7 @@ function execution_start!(agent, prompt, executor, context, ::Running; on_agent_
     on_agent_event = event -> lock(() -> emit(callback, event), event_lock)
     run = (; agent, executor, context, messages, models, callback=on_agent_event)
     try
+        precompact!(agent, on_agent_event)
         emit(on_agent_event, (; type=:agent_start))
         emit(on_agent_event, (; type=:turn_start))
         execution_input_sync!(run, prompt, sync!(agent))
@@ -260,6 +261,7 @@ function execution_tools_done!(run, message, results::Vector)
 end
 execution_post_sync!(run, message, rejected::History.Rejected) = Execution.Turn(rejected, run.models)
 function execution_post_sync!(run, message, ::Nothing)
+    precompactnext!(run.agent, run.callback)
     result, added = transition!(revision -> Conversation.Advance(revision), run.agent)
     execution_next!(run, message, result, added)
 end

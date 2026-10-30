@@ -863,6 +863,7 @@ function direct_complete!(run, answer, transition, added)
     results = runtools!(agent, transition.effects, run.messages, run.callback; tool_execution=run.tool_execution)
     emit(run.callback, (; type=:turn_end, message=deepcopy(message), tool_results=deepcopy(results)))
     sync!(agent)
+    precompactnext!(agent, run.callback)
     next, added = transition!(revision -> Conversation.Advance(revision), agent)
     direct_next!(run, message, answer.result, next, added, turnstate(agent))
 end

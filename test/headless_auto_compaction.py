@@ -19,6 +19,7 @@ class Fixture:
         self.gated_user = None
         self.fail_summary = False
         self.overflow = False
+        self.tool = False
         self.counts = {}
         fixture = self
         class Handler(BaseHTTPRequestHandler):
@@ -43,12 +44,18 @@ class Fixture:
                     return
                 answer = 'checkpoint' if summary else 'reply:' + user
                 finish = 'length' if summary and fixture.fail_summary else 'stop'
+                tool_call = fixture.tool and user == 'third' and not summary and body['messages'][-1]['role'] == 'user'
+                if tool_call:
+                    finish = 'tool_calls'
                 count = 10 if summary else fixture.counts.get(user, {'first': 100, 'second': 101}.get(user, 50))
                 usage = {'prompt_tokens': count, 'completion_tokens': 0, 'total_tokens': count}
                 base = {'id': 'chatcmpl-fixture', 'created': 1, 'model': body['model']}
                 if body.get('stream'):
                     base['object'] = 'chat.completion.chunk'
-                    chunks = [dict(base, choices=[{'index': 0, 'delta': {'role': 'assistant', 'content': answer}, 'finish_reason': None}]), dict(base, choices=[{'index': 0, 'delta': {}, 'finish_reason': finish}]), dict(base, choices=[], usage=usage)]
+                    delta = {'role': 'assistant', 'content': answer}
+                    if tool_call:
+                        delta = {'role': 'assistant', 'tool_calls': [{'index': 0, 'id': 'read-large', 'type': 'function', 'function': {'name': 'read', 'arguments': json.dumps({'path': 'target.txt'})}}]}
+                    chunks = [dict(base, choices=[{'index': 0, 'delta': delta, 'finish_reason': None}]), dict(base, choices=[{'index': 0, 'delta': {}, 'finish_reason': finish}]), dict(base, choices=[], usage=usage)]
                     data = ''.join('data: ' + json.dumps(chunk) + '\n\n' for chunk in chunks) + 'data: [DONE]\n\n'
                     kind = 'text/event-stream'
                 else:
@@ -294,6 +301,24 @@ def run_rpc(kind, root, fixture, env):
         failed = [event for event in rpc.events[before:] if event['type'] == 'compaction_end']
         assert len(failed) == 1 and not failed[0]['aborted'] and 'errorMessage' in failed[0] and 'result' not in failed[0], (kind, failed)
         assert 'checkpoint' not in json.dumps(fixture.requests[-1]['messages'])
+
+        fixture.fail_summary = False
+        assert rpc.ask('tool-toggle-new', 'new_session')['success']
+        assert rpc.ask('tool-toggle-off', 'set_auto_compaction', enabled=False)['success']
+        rpc.prompt('first')
+        rpc.prompt('second')
+        fixture.gated_user = 'third'
+        fixture.release.clear()
+        fixture.arrived.clear()
+        before = len(rpc.events)
+        rpc.send({'id': 'tool-toggle-prompt', 'type': 'prompt', 'message': 'third'})
+        assert rpc.reply('tool-toggle-prompt')['success']
+        assert fixture.arrived.wait(60), (kind, 'model request did not start')
+        assert rpc.ask('tool-toggle-on', 'set_auto_compaction', enabled=True)['success']
+        fixture.gated_user = None
+        fixture.release.set()
+        rpc.until(lambda event: event['type'] == 'agent_settled')
+        assert any(event['type'] == 'compaction_end' and event['reason'] == 'threshold' and not event['aborted'] for event in rpc.events[before:])
         entries = rpc.ask('failure-entries', 'get_entries')['data']['entries']
         assert not any(entry['type'] == 'compaction' for entry in entries)
 
@@ -391,9 +416,107 @@ def run_model_switch(kind, root, fixture, env):
     finally:
         rpc.close()
 
+def check_tool_compaction(kind, events, fixture):
+    types = [event['type'] for event in events if event['type'] != 'entry_appended']
+    assert 'compaction_start' in types and 'compaction_end' in types, (kind, types, fixture.requests)
+    start, end = types.index('compaction_start'), types.index('compaction_end')
+    assert types[start - 1] == 'turn_end' and types[end + 1] == 'turn_start', (kind, types)
+    assert 'agent_end' not in types[:end], (kind, types)
+    compacted = next(event for event in events if event['type'] == 'compaction_end')
+    assert compacted['reason'] == 'threshold' and not compacted['aborted'] and not compacted['willRetry']
+    assert 'checkpoint' in compacted['result']['summary'] and compacted['result']['tokensBefore'] == 150, (kind, compacted)
+    flags = [request['summary'] for request in fixture.requests]
+    assert flags[:3] == [False, False, False] and flags[3:-1] and all(flags[3:-1]) and not flags[-1], (kind, flags)
+    messages = fixture.requests[-1]['messages']
+    assert 'checkpoint' in json.dumps(messages) and 'x' * 400 in json.dumps(messages), (kind, messages)
+    assert any(message.get('role') == 'tool' for message in messages), (kind, messages)
+    return compacted
+
+def run_tool_compaction(kind, root, fixture, env, json_mode=False):
+    fixture.tool = True
+    fixture.counts.update(first=50, second=50, third=50)
+    (root / 'target.txt').write_text('x' * 400)
+    if json_mode:
+        process = subprocess.run(command(kind, 'json', root, ['first', 'second', 'third']), cwd=root, env=env, input='', text=True, capture_output=True, timeout=120)
+        assert process.returncode == 0, (kind, process.returncode, process.stderr)
+        events = records(process.stdout)
+        settled = [index for index, event in enumerate(events) if event['type'] == 'agent_settled']
+        check_tool_compaction(kind, events[settled[1] + 1:], fixture)
+        return
+    rpc = RPC(kind, root, fixture, env)
+    try:
+        rpc.prompt('first')
+        rpc.prompt('second')
+        before = len(rpc.events)
+        rpc.prompt('third')
+        compacted = check_tool_compaction(kind, rpc.events[before:], fixture)
+        kept = compacted['result']['firstKeptEntryId']
+        entries = rpc.ask('tool-entries', 'get_entries')['data']['entries']
+        assert any(entry['id'] == kept for entry in entries)
+        assert any(entry['type'] == 'compaction' and entry['firstKeptEntryId'] == kept for entry in entries)
+        saved = rpc.ask('tool-saved', 'get_state')['data']['sessionFile']
+        assert rpc.ask('tool-new', 'new_session')['success']
+        assert rpc.ask('tool-reopen', 'switch_session', sessionPath=saved)['success']
+        messages = rpc.ask('tool-messages', 'get_messages')['data']['messages']
+        assert any(message['role'] == 'compactionSummary' and 'checkpoint' in message['summary'] for message in messages)
+        assert any(message['role'] == 'toolResult' and 'x' * 400 in message_text(message) for message in messages), (kind, messages)
+    finally:
+        rpc.close()
+
+def run_tool_controls(kind, root, fixture, env):
+    fixture.tool = True
+    fixture.counts.update(first=50, second=50, third=50)
+    (root / 'target.txt').write_text('x' * 400)
+    rpc = RPC(kind, root, fixture, env)
+    try:
+        rpc.prompt('first')
+        rpc.prompt('second')
+        fixture.release.clear()
+        fixture.arrived.clear()
+        rpc.send({'id': 'tool-queue-prompt', 'type': 'prompt', 'message': 'third'})
+        assert rpc.reply('tool-queue-prompt')['success']
+        assert fixture.arrived.wait(60), (kind, 'summary did not start')
+        assert rpc.ask('tool-queue-state', 'get_state')['data']['isCompacting']
+        assert rpc.ask('tool-queue', 'steer', message='queued')['success']
+        fixture.release.set()
+        rpc.until(lambda event: event['type'] == 'agent_settled')
+        request = fixture.requests[-1]['messages']
+        assert any(message.get('role') == 'user' and message_text(message) == 'queued' for message in request), (kind, request)
+        assert 'checkpoint' in json.dumps(request) and 'x' * 400 in json.dumps(request)
+
+        assert rpc.ask('tool-cancel-new', 'new_session')['success']
+        rpc.prompt('first')
+        rpc.prompt('second')
+        fixture.release.clear()
+        fixture.arrived.clear()
+        rpc.send({'id': 'tool-cancel-prompt', 'type': 'prompt', 'message': 'third'})
+        assert rpc.reply('tool-cancel-prompt')['success']
+        assert fixture.arrived.wait(60), (kind, 'summary did not start')
+        rpc.send({'id': 'tool-abort', 'type': 'abort'})
+        stopped = rpc.until(lambda event: event['type'] == 'compaction_end')
+        assert stopped['aborted'] and not stopped['willRetry'] and 'result' not in stopped, (kind, stopped)
+        assert rpc.until(lambda event: event['type'] == 'agent_settled')['aborted']
+        assert rpc.reply('tool-abort')['success']
+        fixture.release.set()
+        entries = rpc.ask('tool-cancel-entries', 'get_entries')['data']['entries']
+        assert not any(entry['type'] == 'compaction' for entry in entries)
+
+        assert rpc.ask('tool-failure-new', 'new_session')['success']
+        rpc.prompt('first')
+        rpc.prompt('second')
+        fixture.fail_summary = True
+        before = len(rpc.events)
+        rpc.prompt('third')
+        failed = [event for event in rpc.events[before:] if event['type'] == 'compaction_end']
+        assert len(failed) == 1 and not failed[0]['aborted'] and 'errorMessage' in failed[0] and 'result' not in failed[0], (kind, failed)
+        assert 'checkpoint' not in json.dumps(fixture.requests[-1]['messages'])
+    finally:
+        fixture.release.set()
+        rpc.close()
+
 with tempfile.TemporaryDirectory(prefix='jf-headless-auto-') as tmp:
     base = Path(tmp)
-    for mode in ('json', 'overflow', 'rpc', 'cross', 'cross-json', 'switch'):
+    for mode in ('json', 'overflow', 'rpc', 'cross', 'cross-json', 'switch', 'tool', 'tool-json', 'tool-controls'):
         if os.environ.get('JF_HEADLESS_CASE', mode) != mode:
             continue
         for kind in ('pi', 'julia'):
@@ -414,6 +537,12 @@ with tempfile.TemporaryDirectory(prefix='jf-headless-auto-') as tmp:
                     run_cross_mode(kind, root, fixture, env, json_first=True)
                 elif mode == 'switch':
                     run_model_switch(kind, root, fixture, env)
+                elif mode == 'tool':
+                    run_tool_compaction(kind, root, fixture, env)
+                elif mode == 'tool-json':
+                    run_tool_compaction(kind, root, fixture, env, json_mode=True)
+                elif mode == 'tool-controls':
+                    run_tool_controls(kind, root, fixture, env)
                 else:
                     run_rpc(kind, root, fixture, env)
             finally:

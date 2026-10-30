@@ -265,9 +265,18 @@ function autostart!(agent, summarize, callback, retention, ::Running)
 end
 autoplan!(agent, summarize, callback, retention, rejected::History.Rejected) = rejected
 function autoplan!(agent, summarize, callback, retention, ::Nothing)
-    plan = lock(() -> compactionplan(agent, agent.fault, retention), agent.lock)
+    plan = lock(() -> autocompactionplan(agent, agent.fault, retention, agent.state.phase, agent.turn), agent.lock)
     autoplan!(agent, summarize, callback, retention, plan)
 end
+autocompactionplan(agent, fault, retention, phase::Conversation.Phase, turn::TurnState) = compactionplan(agent, fault, retention)
+autocompactionplan(agent, fault, retention, phase::Union{Conversation.ReadyModelPhase, Conversation.ReadyDecisionPhase}, ::Running) = runningcompactionplan(agent, fault, retention)
+runningcompactionplan(agent, rejected::History.Rejected, retention) = rejected
+function runningcompactionplan(agent, ::Nothing, retention)
+    isempty(agent.state.kernel.pending) || return History.Rejected(:uncertain_effect)
+    runningcompactionplan(agent, retention)
+end
+runningcompactionplan(agent, ::LastTurn) = compactionplan(agent, nothing, nothing)
+runningcompactionplan(agent, retention::RecentTokens) = compactionrecent(agent, nothing, retention)
 function autoplan!(agent, summarize, callback, retention, plan::CompactionPlan)
     tokens = compactiontokens(agent)
     emit(callback, (; type=:auto_compaction_start, reason=:threshold, plan, tokens_before=tokens))

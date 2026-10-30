@@ -334,6 +334,7 @@ recorded_post_tools!(run, message, completion, rejected::History.Rejected) = rej
 recorded_post_tools!(run, message, completion, ::Nothing) = recorded_post_sync!(run, message, completion, sync!(run.agent))
 recorded_post_sync!(run, message, completion, rejected::History.Rejected) = rejected
 function recorded_post_sync!(run, message, completion, ::Nothing)
+    precompactnext!(run.agent, run.callback)
     result, added = transition!(revision -> Conversation.Advance(revision), run.agent)
     recorded_next!(run, message, completion, result, added)
 end

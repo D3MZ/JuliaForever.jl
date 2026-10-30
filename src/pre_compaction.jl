@@ -17,6 +17,22 @@ function prethreshold!(agent, callback, settings, summarize, tokens::Int)
     autoplan!(agent, summarize, callback, settings.retention, nothing)
 end
 
+precompactnext!(agent, callback) = precompactnext!(agent, callback, turnstate(agent))
+precompactnext!(agent, callback, ::Cancelled) = nothing
+function precompactnext!(agent, callback, ::Union{Idle, Running})
+    phase, steering, followups = lock(agent.lock) do
+        state = agent.state
+        (state.phase, getfield(state, :steering), getfield(state, :followups))
+    end
+    precompactnext!(agent, callback, phase, steering, followups)
+end
+precompactnext!(agent, callback, phase::Conversation.Phase, steering, followups) = nothing
+precompactnext!(agent, callback, ::Conversation.ReadyModelPhase, steering, followups) = precompact!(agent, callback)
+function precompactnext!(agent, callback, ::Conversation.ReadyDecisionPhase, steering, followups)
+    isempty(steering) && isempty(followups) && return nothing
+    precompact!(agent, callback)
+end
+
 struct InitialSummary end
 struct EditedContext end
 initialreply(pair::Tuple, message::Conversation.Message) = pair
@@ -65,7 +81,7 @@ preestimate(message, anchor, messages, ::Finished, info::Conversation.ResponseIn
 preestimate(message, anchor, messages, ::Nothing) = preestimated(anchor, messages)
 function preestimate(message, anchor, messages, usage::Usage)
     tokens = contexttokens(usage)
-    tokens > 0 ? tokens : preestimated(anchor, messages)
+    tokens > 0 ? preestimated(message, messages) : preestimated(anchor, messages)
 end
 
 preestimated(::Nothing, messages) = sum(pretoken, messages; init=0)
