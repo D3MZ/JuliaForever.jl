@@ -90,7 +90,7 @@ end
 incomplete!(counts, message, ::J.Finished) = nothing
 incomplete!(counts, message, ::J.Unfinished) = count!(counts, message)
 
-added!(counts, before, after, ::J.Conversation.History) = nothing
+added!(counts, before, after, ::Union{J.Conversation.History, J.Conversation.SystemUpdate}) = nothing
 function added!(counts, before, after, event::J.Kernel.Event)
     previous = getfield(before, :messages)
     current = getfield(after, :messages)

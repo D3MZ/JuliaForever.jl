@@ -164,6 +164,7 @@ pack(x::C.Cancel) = node("cancel", x.revision)
 pack(x::C.History) = pack(x, x.compaction)
 pack(x::C.History, ::Nothing) = node("history", x.revision, packall(x.messages))
 pack(x::C.History, info::C.ResponseInfo) = node("history", x.revision, packall(x.messages), pack(info))
+pack(x::C.SystemUpdate) = node("system_update", x.revision, packall(x.messages))
 pack(x::C.CompactionUsage) = node("compaction_usage", x.revision, pack(x.info))
 pack(x::C.Interrupt) = node("interrupt", x.revision, x.reason)
 pack(x::C.Abandon) = node("abandon", x.revision, x.reason)
@@ -188,7 +189,7 @@ const nodetypes = Dict(
     "tool_search_reply" => ToolLoaded, "tool_discovery_reply" => ToolDiscovery,
     "model_failure" => C.ModelFailure, "abandoned" => C.Abandoned, "input" => C.Input, "input_images" => C.ImageInput, "steer" => C.Steer,
     "followup" => C.Followup, "steer_images" => C.ImageSteer, "followup_images" => C.ImageFollowup, "steering_mode" => C.SteeringMode, "followup_mode" => C.FollowupMode, "dequeue" => C.Dequeue, "session_name" => C.SessionName, "bash_output" => C.BashOutput, "entry_model" => C.ModelEntry, "entry_thinking" => C.ThinkingEntry, "entry_message" => C.MessageEntry, "entry_name" => C.NameEntry, "session_record" => C.SessionRecord, "continue_queued" => C.ContinueQueued, "continue" => C.Continue, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History, "compaction_usage" => C.CompactionUsage,
-    "interrupt" => C.Interrupt, "abandon" => C.Abandon, "call" => K.Call, "return" => K.Return,
+    "system_update" => C.SystemUpdate, "interrupt" => C.Interrupt, "abandon" => C.Abandon, "call" => K.Call, "return" => K.Return,
     "fail" => K.Fail, "plan" => K.Plan, "observe" => K.Observe, "finish" => K.Finish, "image" => C.Image,
 )
 
@@ -243,6 +244,7 @@ unpack(::Type{C.Continue}, f::Vector) = C.Continue(f[1])
 unpack(::Type{C.Advance}, f::Vector) = C.Advance(f[1])
 unpack(::Type{C.Cancel}, f::Vector) = C.Cancel(f[1])
 unpack(::Type{C.History}, f::Vector) = C.History(f[1], unpackall(f[2], C.Message), unpackinfo(get(f, 3, nothing)))
+unpack(::Type{C.SystemUpdate}, f::Vector) = C.SystemUpdate(f[1], unpackall(f[2], C.Message))
 unpack(::Type{C.CompactionUsage}, f::Vector) = C.CompactionUsage(f[1], unpack(f[2]))
 unpack(::Type{C.Interrupt}, f::Vector) = C.Interrupt(f[1], f[2])
 unpack(::Type{C.Abandon}, f::Vector) = C.Abandon(f[1], f[2])

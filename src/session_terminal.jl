@@ -129,7 +129,7 @@ function reloadcommit!(terminal, agent, history, plan, content, ::Nothing)
     messages = skillmessages(plan.messages, content)
     projected = Dict{String, Any}[convert(Dict{String, Any}, message) for message in messages]
     Kernel.same(projected, plan.original) && return reloadsuccess!(terminal, agent, history)
-    result = attempt(() -> transition!(revision -> Conversation.History(revision, messages), agent))
+    result = attempt(() -> transition!(revision -> Conversation.SystemUpdate(revision, messages), agent))
     reloadtransition!(terminal, agent, history, plan, result)
 end
 reloadtransition!(terminal, agent, history, plan, failure::ToolFailure) = reloadloaded!(terminal, agent, history, plan, failure)
@@ -168,7 +168,7 @@ function refreshskills!(agent, skills)
         addskill!(messages, content)
         projected = Dict{String, Any}[convert(Dict{String, Any}, message) for message in messages]
         Kernel.same(projected, agent.messages) && return nothing
-        result, _ = transition!(revision -> Conversation.History(revision, messages), agent)
+        result, _ = transition!(revision -> Conversation.SystemUpdate(revision, messages), agent)
         refreshresult!(agent, result)
     end
 end

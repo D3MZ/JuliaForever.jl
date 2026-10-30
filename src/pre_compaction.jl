@@ -35,6 +35,7 @@ function preestimate(agent)
     preestimate(replies, getfield(agent.state, :messages))
 end
 previousreply(pair, event) = pair
+previousreply(pair, event::Conversation.SystemUpdate) = (editedreply(first(pair)), nothing)
 previousreply(pair, event::Conversation.History) = previoushistory(event.compaction, event.messages)
 previoushistory(info::Conversation.ResponseInfo, messages) = (nothing, nothing)
 function previoushistory(::Nothing, messages)
