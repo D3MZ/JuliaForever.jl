@@ -49,6 +49,16 @@ end
 retention(policy::DisabledCompaction, keep) = policy
 retention(policy::UsageCompaction, keep) = UsageCompaction(policy.context_window, policy.reserve_tokens, RecentTokens(keep))
 
+manualretention(provider, name) = isempty(name) ? LastTurn() : manualretention(provider, name, attempt(() -> terminalsettings(ENV, pwd())))
+manualretention(provider, name, settings) = History.Rejected(:invalid_compaction_settings)
+manualretention(provider, name, settings::AbstractDict) = manualconfig(provider, name, get(settings, "compaction", Dict{String, Any}()))
+manualconfig(provider, name, config) = History.Rejected(:invalid_compaction_settings)
+manualconfig(provider, name, config::AbstractDict) = manualenabled(provider, name, config, validcompactionbool(get(config, "enabled", true)))
+manualenabled(provider, name, config, ::Models.InvalidConfig) = History.Rejected(:invalid_compaction_settings)
+manualenabled(provider, name, config, ::Models.ValidConfig) = manualretention(compactionconfig(provider, name, merge(Dict{String, Any}(config), Dict("enabled" => true))))
+manualretention(policy) = History.Rejected(:invalid_compaction_settings)
+manualretention(policy::UsageCompaction) = policy.retention
+
 validcompactionbool(::Bool) = Models.ValidConfig()
 validcompactionbool(value) = Models.InvalidConfig()
 validcompactiontokens(value) = Models.InvalidConfig()
