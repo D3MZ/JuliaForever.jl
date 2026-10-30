@@ -119,8 +119,8 @@ while !eof(stdin)
             elseif name in ("image_webp", "image_animated_webp")
                 data = base64encode(read(joinpath(@__DIR__, "fixtures", name == "image_webp" ? "static.webp" : "animated.webp")))
                 [Dict("type" => "resource", "resource" => Dict("uri" => "file:///image.webp", "mimeType" => "image/webp", "blob" => data))]
-            elseif name == "image_gif"
-                data = base64encode(read(joinpath(@__DIR__, "fixtures", "static.gif")))
+            elseif name in ("image_gif", "image_animated_gif")
+                data = base64encode(read(joinpath(@__DIR__, "fixtures", name == "image_gif" ? "static.gif" : "animated.gif")))
                 [Dict("type" => "image", "mimeType" => "image/gif", "data" => data)]
             elseif name == "image_unsupported"
                 [Dict("type" => "image", "mimeType" => "image/gif", "data" => base64encode("GIF89a"))]
