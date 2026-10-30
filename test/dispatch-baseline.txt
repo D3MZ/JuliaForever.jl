@@ -211,10 +211,7 @@ search.jl	:truncatedlines
 search.jl	:truncatedlines
 search.jl	:windows
 search.jl	:windows
-sessions.jl	:(entry["type"] == "message")
-sessions.jl	:(entry["type"] == "message")
 sessions.jl	:(entryid isa AbstractString)
-sessions.jl	:(get(entry["message"], "role", nothing) in ("user", "assistant"))
 sessions.jl	:(get(header, "type", nothing) == "session")
 sessions.jl	:(get(header, key, nothing) isa AbstractString)
 sessions.jl	:(get(row, "timestamp", nothing) isa AbstractString)
@@ -223,10 +220,11 @@ sessions.jl	:(isnothing(from))
 sessions.jl	:(isnothing(from))
 sessions.jl	:(isnothing(parent))
 sessions.jl	:(isnothing(path))
-sessions.jl	:(isnothing(session.file))
+sessions.jl	:(name === :flushed)
+sessions.jl	:(name === :flushed)
+sessions.jl	:(name === :terminated)
+sessions.jl	:(name === :terminated)
 sessions.jl	:(parent isa AbstractString)
-sessions.jl	:(session.flushed)
-sessions.jl	:(session.terminated)
 sqlite_history.jl	:(mode in ("delete", "truncate", "persist", "wal"))
 sqlite_history.jl	:(result isa H.Rejected)
 sqlite_history.jl	:complete
