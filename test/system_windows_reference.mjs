@@ -35,6 +35,33 @@ for (const tool of tools) for (const stage of ["normal", "timeout", "cancel"]) {
     }
 }
 
+if (tools.includes("bash")) {
+    const dir = await mkdtemp(join(tmpdir(), "jf-bash-trace-"));
+    const saved = Object.fromEntries(["SHELLOPTS", "BASH_ENV", "BASH_XTRACEFD", "PS4"].map(name => [name, process.env[name]]));
+    try {
+        process.env.SHELLOPTS = "xtrace";
+        process.env.PS4 = "+ ";
+        delete process.env.BASH_ENV;
+        delete process.env.BASH_XTRACEFD;
+        const result = await createBashToolDefinition(dir).execute("trace", { command: "printf complete >&2", timeout: 30 }, new AbortController().signal);
+        results.push({ text: result.content.find(block => block.type === "text").text, iserror: result.isError === true });
+    } finally {
+        for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : process.env[name] = value;
+        await rm(dir, { recursive: true, force: true });
+    }
+} else results.push(null);
+
+{
+    const dir = await mkdtemp(join(tmpdir(), "jf-powershell-parse-"));
+    try {
+        const command = "[IO.File]::WriteAllText('unreachable','bad'); if (";
+        const result = await createPowerShellToolDefinition(dir).execute("parse", { command, timeout: 30 }, new AbortController().signal);
+        results.push({ text: result.content.find(block => block.type === "text").text, iserror: result.isError === true });
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
+}
+
 // The child has a bounded lifetime and exits after the release file appears.
 {
     const { writeFile } = await import("node:fs/promises");

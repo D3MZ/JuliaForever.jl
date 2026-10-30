@@ -49,6 +49,10 @@ struct PowerShellGate
     name::String
 end
 
+struct PowerShellExited
+    process::Base.Process
+end
+
 struct FileRemoved end
 struct FileRemovalFailed end
 const filedeletions = Dict(:ok => FileRemoved(), :timed_out => FileRemovalFailed())
@@ -146,9 +150,9 @@ end
 shellcommand(tool::Union{Bash, PowerShell}, command, cancel, timeout, ::Nothing) = shellcommand(tool, command)
 shellcommand(::Bash, command, cancel, timeout, ::BashGate) = ":"
 function shellcommand(tool::PowerShell, command, cancel, timeout, gate::PowerShellGate)
-    "[IO.File]::WriteAllText([Environment]::GetEnvironmentVariable('" * gate.name * "'), [string]\$PID + \"`n\")\n" *
-    "[Environment]::SetEnvironmentVariable('" * gate.name * "', \$null)\n" *
-    "if ([Console]::In.ReadLine() -ne 'ready') { exit 1 }\n" * shellcommand(tool, command)
+    "[IO.File]::WriteAllText([Environment]::GetEnvironmentVariable('" * gate.name * "'), [string]\$PID + \"`n\"); " *
+    "[Environment]::SetEnvironmentVariable('" * gate.name * "', \$null); " *
+    "if ([Console]::In.ReadLine() -ne 'ready') { exit 1 }; " * shellcommand(tool, command)
 end
 
 shellgate(::PowerShell, env, ::Nothing, ::Nothing, command) = nothing
@@ -180,6 +184,12 @@ function bashenvironment!(env)
 end
 
 shellgate(::Bash, env, ::Nothing, ::Nothing, command) = nothing
+function bashtrace!(env)
+    options = split(get(env, "SHELLOPTS", ""), ':')
+    "xtrace" in options || return "+x"
+    env["SHELLOPTS"] = join(filter(!=("xtrace"), options), ':')
+    "-x"
+end
 function shellgate(::Bash, env, cancel, timeout, command)
     any(name -> startswith(uppercase(name), "BASH_FUNC_") && endswith(name, "%%"), keys(env)) && return ToolFailure("Could not isolate Bash with exported functions; command was not started")
     file, io = mktemp()
@@ -196,9 +206,10 @@ function shellgate(::Bash, env, cancel, timeout, command)
         env[pidname] = replace(pidfile, '\\' => '/')
         env[commandname] = command
         env["BASH_ENV"] = "\${" * name * "}"
+        trace = bashtrace!(env)
         write(io, "IFS= read -r " * pidvalue * " < /proc/\$\$/winpid || :\n", "printf '%s\\n' \"\${" * pidvalue * "}\" > \"\${" * pidname * "}\"\n", "unset " * pidvalue * " " * pidname * "\n", "(IFS= read -r ready) || exit 1\n", startup, commandvalue * "=\"\${" * commandname * "}\"\n", "unset " * name * " " * commandname * "\n", raw"""
         SHLVL=$((SHLVL - 1))
-        """, "\"\$BASH\" -c \"\${" * commandvalue * "}\" \"\$0\"\nexit \"\$?\"\n")
+        """, "\"\$BASH\" " * trace * " -c \"\${" * commandvalue * "}\" \"\$0\"\nexit \"\$?\"\n")
     finally
         close(io)
     end
@@ -224,8 +235,19 @@ checkgate(job, process, ::Nothing, timeout) = nothing
 const gateoutcomes = Dict(:ok => ShellComplete(), :timed_out => ShellTimeout())
 function checkgate(job, process, gate::Union{BashGate, PowerShellGate}, timeout)
     outcome = get(gateoutcomes, timedwait(() -> gatepid(gate) > 0 || process_exited(process), gatewait(job, timeout); pollint=0.01), ShellTimeout())
-    gateoutcome(job, gate, timeout, outcome)
+    checkedgate(job, process, gate, timeout, outcome)
 end
+checkedgate(job, process, gate, timeout, outcome) = gateoutcome(job, gate, timeout, outcome)
+function checkedgate(job, process, gate::PowerShellGate, timeout, outcome::ShellComplete)
+    gateexit(process, gate, job, timeout, gateoutcome(job, gate, timeout, outcome))
+end
+gateexit(process, gate, job, timeout, result) = result
+function gateexit(process, gate::PowerShellGate, job, timeout, failure::ToolFailure)
+    process_exited(process) && process.exitcode != 0 && gatepid(gate) == 0 || return failure
+    gateexit(process, gatedeadline(job, timeout))
+end
+gateexit(process, ::Nothing) = PowerShellExited(process)
+gateexit(process, failure::ToolFailure) = failure
 function gateoutcome(job, gate, timeout, ::ShellComplete)
     jobcontains(job, gatepid(gate)) ? gatedeadline(job, timeout) : ToolFailure("Could not isolate Windows shell; command was not started")
 end
@@ -253,7 +275,7 @@ function startjob!(token::ShellCancellation, command, io, job::WindowsJob, shell
     try
         process[] = run(pipeline(ignorestatus(command); stdin=gate, stdout=io, stderr=io); wait=false)
         close(gate.out)
-        assign(job, process[]) || return ToolFailure("Could not isolate Windows shell; command was not started")
+        assign(job, process[]) || return unassigned(token, gateexit(process[], shellgate, job, timeout, ToolFailure("Could not isolate Windows shell; command was not started")))
         registered[] = lock(token.lock) do
             register!(token.runs, ShellRun(process[], job))
         end
@@ -266,6 +288,13 @@ function startjob!(token::ShellCancellation, command, io, job::WindowsJob, shell
     end
 end
 
+function unassigned(token::ShellCancellation, result)
+    lock(token.lock) do
+        unassigned(token.runs, result)
+    end
+end
+unassigned(::Nothing, result) = nothing
+unassigned(::Set{ShellRun}, result) = result
 register!(::Nothing, run::ShellRun) = nothing
 register!(runs::Set{ShellRun}, run::ShellRun) = (push!(runs, run); run)
 startregistered!(::Nothing, job, gate, shellgate, timeout) = nothing
@@ -277,12 +306,13 @@ function startregistered!(run::ShellRun, job, gate, shellgate, timeout)
 end
 releasegate!(run, gate, result, previous::ShellOutcome) = run
 releasegate!(run, gate, failure::ToolFailure, ::Nothing) = failure
+releasegate!(run, gate, exited::PowerShellExited, ::Nothing) = exited
 function releasegate!(run, gate, ::Nothing, ::Nothing)
     write(gate, "ready\n")
     run
 end
 transfer!(transferred, run::ShellRun) = (transferred[] = run)
-transfer!(transferred, ::Union{Nothing, ToolFailure}) = nothing
+transfer!(transferred, ::Union{Nothing, ToolFailure, PowerShellExited}) = nothing
 cleanupstart!(::ShellRun, token, registered, process, job) = nothing
 function cleanupstart!(::Nothing, token, registered, process, job)
     cleanupregistered!(token, registered)
@@ -314,6 +344,7 @@ function startjob!(runs::Set{ShellRun}, command, io, job::WindowsJob, shellgate,
 end
 
 gated!(runs, process, job, gate, failure::ToolFailure) = failure
+gated!(runs, process, job, gate, exited::PowerShellExited) = exited
 function gated!(runs, process, job, gate, ::Nothing)
     write(gate, "ready\n")
     shellrun = ShellRun(process, job)
@@ -321,6 +352,7 @@ function gated!(runs, process, job, gate, ::Nothing)
     shellrun
 end
 registershell!(registered, failure::ToolFailure) = failure
+registershell!(registered, exited::PowerShellExited) = exited
 function registershell!(registered, run::ShellRun)
     registered[] = run
     run
@@ -340,3 +372,8 @@ function cleanupstart(process::Base.Process)
 end
 
 shellrun!(failure::ToolFailure, token, timeout, on_update, file, io, saved, keep) = failure
+function shellrun!(exited::PowerShellExited, token, timeout, on_update, file, io, saved, keep)
+    run = ShellRun(exited.process)
+    signal!(run, ShellComplete())
+    shellrun!(run, token, timeout, on_update, file, io, saved, keep)
+end

@@ -349,6 +349,11 @@ end
                     @test read(joinpath(dir, "hook-runs"), String) == "x"
                     @test read(joinpath(dir, "hook-env"), String) == hook
                 end
+                write(hook, "printf hook >&2\n")
+                withenv("SHELLOPTS" => "xtrace", "BASH_ENV" => hook, "BASH_XTRACEFD" => nothing, "PS4" => "+ ") do
+                    command = "printf complete >&2"
+                    @test execute(bash, (; command, timeout=30)) == execute(bash, (; command))
+                end
 
                 lowerhook = replace(joinpath(dir, "lowercase startup.sh"), '\\' => '/')
                 write(lowerhook, "printf x >> lowercase-runs\n")
@@ -586,6 +591,16 @@ if Sys.iswindows() && haskey(ENV, "PI_SOURCE")
         @test reference[end].text == "complete"
         mktempdir() do dir
             shell = PowerShell(dir)
+            malformed = "[IO.File]::WriteAllText('unreachable','bad'); if ("
+            updates = ShellUpdate[]
+            syntax = execute(shell, (; command=malformed, timeout=30); cancel=ShellCancellation(), on_update=update -> push!(updates, update))
+            @test syntax.iserror
+            @test !isfile(joinpath(dir, "unreachable"))
+            @test any(update -> !isempty(update.text), updates)
+            @test (syntax.text, syntax.iserror) == (reference[end - 1].text, reference[end - 1].iserror)
+            cancelled = ShellCancellation()
+            cancel!(cancelled)
+            @test execute(shell, (; command=malformed, timeout=30); cancel=cancelled) == ToolFailure("Command aborted")
             normal = execute(shell, (; command="[Console]::Write('complete')"))
             @test (normal.text, normal.iserror) == (reference[1].text, reference[1].iserror)
             timed = execute(shell, (; command="[Console]::Write('before'); [Console]::Out.Flush(); Start-Sleep -Seconds 30", timeout=4))
@@ -608,6 +623,11 @@ if Sys.iswindows() && haskey(ENV, "PI_SOURCE")
             end
             if bashenabled == "bash"
                 bash = Bash(dir)
+                withenv("SHELLOPTS" => "xtrace", "BASH_ENV" => nothing, "BASH_XTRACEFD" => nothing, "PS4" => "+ ") do
+                    traced = execute(bash, (; command="printf complete >&2", timeout=30); cancel=ShellCancellation())
+                    @test (traced.text, traced.iserror) == (reference[end - 2].text, reference[end - 2].iserror)
+                    @test startswith(traced.text, "+ printf complete")
+                end
                 normal = execute(bash, (; command="printf complete", timeout=30); cancel=ShellCancellation())
                 @test (normal.text, normal.iserror) == (reference[4].text, reference[4].iserror)
                 timed = execute(bash, (; command="printf before; printf ready > bash-ready; sleep 30", timeout=4))
