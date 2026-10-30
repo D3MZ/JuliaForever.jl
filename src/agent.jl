@@ -258,11 +258,11 @@ invoke(tool::Union{Bash, PowerShell}, args, cancel::ShellCancellation, update) =
 function invoke(agent, call, update, callback)
     tool, args = try
         tool = call["function"]
-        agent.tools[tool["name"]], JSON3.read(IOBuffer(tool["arguments"]))
+        agent.tools[tool["name"]], JSON3.read(codeunits(tool["arguments"]))
     catch exception
         return ToolFailure(sprint(showerror, exception))
     end
-    input = JSON3.read(IOBuffer(JSON3.write(args)), Dict{String, Any})
+    input = JSON3.read(codeunits(JSON3.write(args)), Dict{String, Any})
     before = try
         interceptcall(callback, call, input)
     catch exception
@@ -274,7 +274,7 @@ end
 interceptcall(callback, call, input) = nothing
 invokeprepared(agent, call, tool, input, update, callback, ::Nothing) = runprepared(agent, call, tool, input, update, callback)
 function runprepared(agent, call, tool, input, update, callback)
-    args = JSON3.read(IOBuffer(JSON3.write(input)))
+    args = JSON3.read(codeunits(JSON3.write(input)))
     result = attempt(() -> invoke(tool, args, agent.shell, update))
     interceptresult(callback, call, args, result)
 end

@@ -13,6 +13,11 @@ JuliaForever.name(::Echo) = "echo"
 JuliaForever.description(::Echo) = "echo"
 JuliaForever.schema(::Echo) = Dict("type" => "object", "properties" => Dict())
 JuliaForever.execute(::Echo, args) = ToolResult(args.value)
+struct EmptyAware <: JuliaForever.Tool end
+JuliaForever.name(::EmptyAware) = "emptyaware"
+JuliaForever.description(::EmptyAware) = "count arguments"
+JuliaForever.schema(::EmptyAware) = Dict("type" => "object", "properties" => Dict())
+JuliaForever.execute(::EmptyAware, args) = ToolResult(string(length(args)))
 @testset "before tool interception" begin
     reference = nothing
     if haskey(ENV, "PI_SOURCE")
@@ -94,6 +99,31 @@ end
         @test reply.text == value
     finally
         execution.uninstall!(context)
+    end
+end
+
+@testset "tool arguments are JSON content, not file paths" begin
+    mktempdir() do dir
+        write(joinpath(dir, "{}"), JSON3.write((; value="shadow")))
+        cd(dir) do
+            reg = E.Registry()
+            E.register!(reg, :hooks, E.Plugin(; tools=(EmptyAware(),), hooks=(:tool_call => (event -> nothing),)))
+            snapshot = E.snapshot(reg)
+            call = Dict("id" => "empty", "type" => "function", "function" => Dict("name" => "emptyaware", "arguments" => "{}"))
+            provider = Provider([Dict("role" => "assistant", "content" => nothing, "tool_calls" => [call]), Dict("role" => "assistant", "content" => "done")], [])
+            @test respond!(Agent(provider, snapshot), "go"; on_agent_event=E.listen(snapshot)) == "done"
+            @test provider.requests[2][end]["content"] == "0"
+            execution = JuliaForever.Execution
+            conversation = JuliaForever.Conversation
+            context = "json-path-collision-test"
+            @test execution.install!(context, nothing, [EmptyAware()])
+            try
+                request = conversation.ToolRequest(conversation.ToolCall("empty", "emptyaware", "{}"))
+                @test execution.perform(execution.Work(context, request), execution.Cancellation()).text == "0"
+            finally
+                execution.uninstall!(context)
+            end
+        end
     end
 end
 

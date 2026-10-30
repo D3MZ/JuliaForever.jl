@@ -110,7 +110,7 @@ function perform(work::Work{Conversation.ToolRequest}, cancellation::Cancellatio
     capabilities = context(work.context)
     call = work.effect.call
     tool, args = try
-        worktools(capabilities.tools, work.exposed)[call.name], JSON3.read(IOBuffer(call.arguments))
+        worktools(capabilities.tools, work.exposed)[call.name], JSON3.read(codeunits(call.arguments))
     catch exception
         return Conversation.ToolReply(ToolFailure(sprint(showerror, exception)))
     end
