@@ -1,8 +1,9 @@
 abstract type TerminalCommand end
 struct TreeCommand <: TerminalCommand end
 struct ResumeCommand <: TerminalCommand end
+struct NewCommand <: TerminalCommand end
 
-const terminalcommands = Dict{String, TerminalCommand}("/tree" => TreeCommand(), "/resume" => ResumeCommand())
+const terminalcommands = Dict{String, TerminalCommand}("/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand())
 
 command!(::TreeCommand, terminal, agent, history, input, directory) = tree!(terminal, agent, history, input)
 command!(::ResumeCommand, terminal, agent, history, input, directory) = resume!(terminal, agent, history, input, directory)
@@ -38,4 +39,26 @@ function resume!(terminal::Terminal, agent::Agent, history, selected::History.Tr
     println(terminal.diagnostics, "Resumed session.")
     flush(terminal.diagnostics)
     restored, selected, 0
+end
+
+newhistory(::Nothing, directory) = nothing
+newhistory(::History.Tree{History.Memory}, directory) = History.Tree(History.Memory())
+newhistory(history, directory) = SessionCatalog.new(directory, pwd())
+
+function command!(::NewCommand, terminal, agent, history, input, directory)
+    fresh = newhistory(history, directory)
+    created = Agent(agent.provider, agent.tools, sessioncontext(); history=fresh)
+    newagent!(terminal, agent, history, fresh, created)
+end
+
+function newagent!(terminal, agent, history, fresh, rejected::History.Rejected)
+    isnothing(fresh) || close(fresh)
+    agent, history, result!(terminal, rejected)
+end
+
+function newagent!(terminal, agent, history, fresh, created::Agent)
+    isnothing(history) || close(history)
+    println(terminal.diagnostics, "Started new session; skills refreshed.")
+    flush(terminal.diagnostics)
+    created, fresh, 0
 end

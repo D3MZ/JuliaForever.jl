@@ -65,6 +65,7 @@ include("terminal_http.jl")
 include("terminal_history.jl")
 include("session_catalog.jl")
 include("session_cli.jl")
+include("skill_refresh.jl")
 include("tree_history.jl")
 include("tree_cli.jl")
 

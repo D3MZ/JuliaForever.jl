@@ -185,6 +185,14 @@ function sessionfault!(terminal, fault, history)
     status
 end
 
+function sessioncontext()
+    messages = Dict{String, Any}[]
+    context = Instructions.render(Instructions.load(pwd(); agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing)))
+    isnothing(context) || push!(messages, Dict("role" => "system", "content" => context))
+    Skills.appendprompt!(messages, Skills.render(Skills.load(pwd())))
+    messages
+end
+
 function runsession!(history, terminal, model, tools, args, sessiondir)
     history isa History.Rejected && return result!(terminal, history)
     try
@@ -192,9 +200,7 @@ function runsession!(history, terminal, model, tools, args, sessiondir)
         snapshot isa History.Rejected && return result!(terminal, snapshot)
         messages = Dict{String, Any}[]
         if isnothing(snapshot) || snapshot.revision == 0
-            context = Instructions.render(Instructions.load(pwd(); agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing)))
-            isnothing(context) || push!(messages, Dict("role" => "system", "content" => context))
-            Skills.appendprompt!(messages, Skills.render(Skills.load(pwd())))
+            messages = sessioncontext()
         end
         agent = Agent(model, Dict{String, Tool}(name(tool) => tool for tool in tools), messages; history)
         agent isa History.Rejected && return result!(terminal, agent)
