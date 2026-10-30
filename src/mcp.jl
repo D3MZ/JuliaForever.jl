@@ -439,9 +439,11 @@ resumed(::StreamEnded) = StreamStopped()
 resumed(::StreamAnswered) = StreamAnswered()
 
 function jsonhttp!(client, stream, message, id, type)
-    value = validmessage(jsonmessage(String(read(stream))))
-    received(client, value) || httpfailure!(client, message, Failure(:protocol, "Invalid JSON-RPC message"))
+    value = jsonmessage(String(read(stream)), Union{Dict{String, Any}, Vector{Any}})
+    receivedhttp(client, value) || httpfailure!(client, message, Failure(:protocol, "Invalid JSON-RPC message"))
 end
+receivedhttp(client, value) = received(client, validmessage(value))
+receivedhttp(client, values::AbstractVector) = all(value -> received(client, validmessage(value)), values)
 unsupportedhttp!(client, stream, message, id, type) = httpfailure!(client, message, Failure(:protocol, "Unsupported MCP HTTP response content type: $type"))
 const httpreaders = Dict("text/event-stream" => ssehttp!, "application/json" => jsonhttp!)
 forgethttp!(transport, client, ::Nothing) = nothing

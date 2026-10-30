@@ -251,6 +251,7 @@ include("mcp_http_sse.jl")
 end
 module MCPWireJSONTests
 include("mcp_wire_json.jl")
+include("mcp_http_batch.jl")
 end
 module MCPPOSTSSETests
 include("mcp_post_sse.jl")

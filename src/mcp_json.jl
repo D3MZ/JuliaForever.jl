@@ -4,11 +4,12 @@ const maxjsondepth = 512
 jsonfailures(exceptions, depth) = length(exceptions) > depth ? jsonfailures(last(exceptions).exception) : ()
 jsonfailures(::ArgumentError) = (InvalidMessage(),)
 jsonfailures(exception) = ()
-function jsonmessage(text)
+jsonmessage(text) = jsonmessage(text, Dict{String, Any})
+function jsonmessage(text, target)
     JSON.isvalidjson(text; maxdepth=maxjsondepth) || return InvalidMessage()
     depth = length(current_exceptions())
     try
-        JSON3.read(codeunits(text), Dict{String, Any})
+        JSON3.read(codeunits(text), target)
     finally
         for failure in jsonfailures(current_exceptions(), depth)
             return failure
@@ -16,6 +17,7 @@ function jsonmessage(text)
     end
 end
 
+validmessage(message) = InvalidMessage()
 validmessage(invalid::InvalidMessage) = invalid
 validmessage(message::AbstractDict) = validmessage(message, toolfield(message, "method"), toolfield(message, "error"))
 validmessage(message, ::Some, error) = message
