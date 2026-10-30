@@ -64,10 +64,9 @@ const punctuation = Dict(char => Char(index) for (index, char) in enumerate(" _-
 catalog() = JSON3.read(read(path), Vector{Model})
 
 function configjson(bytes)
-    text = String(bytes)
-    text = startswith(text, '\ufeff') ? text[nextind(text, firstindex(text)):end] : text
-    text = replace(text, r"\"(?:\\.|[^\"\\])*\"|//[^\n]*" => part -> startswith(part, "\"") ? part : "")
-    replace(text, r"\"(?:\\.|[^\"\\])*\"|,(?=\s*[}\]])" => part -> startswith(part, "\"") ? part : "")
+    text = replace(String(bytes), Regex("^\ufeff") => "")
+    text = replace(text, r"(\"(?:\\.|[^\"\\])*\")|//[^\n]*" => s"\1")
+    replace(text, r"(\"(?:\\.|[^\"\\])*\")|,(?=\s*[}\]])" => s"\1")
 end
 
 function load(configpath::AbstractString)
