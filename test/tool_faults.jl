@@ -59,7 +59,7 @@ end
         tool = FaultTool()
         agent = Agent(provider, [tool])
         exception, trace = try
-            respond!(agent, "run"), nothing
+            respond!(agent, "run"; tool_execution=:sequential), nothing
         catch exception
             exception, catch_backtrace()
         end
@@ -76,7 +76,7 @@ end
         task_local_storage(:tool_context, 41) do
             request = call("context", "context", (;))
             provider = AgentFixture([completion(nothing; calls=[request], finish="tool_calls"), completion("done")], [])
-            @test respond!(Agent(provider, [ContextTool(current_task())]), "context") == "done"
+            @test respond!(Agent(provider, [ContextTool(current_task())]), "context"; tool_execution=:sequential) == "done"
             @test last(provider.requests[2])["content"] == "41:true"
             @test task_local_storage(:tool_context) == 42
         end
