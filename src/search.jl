@@ -113,8 +113,15 @@ struct FileRule <: IgnoreRule
     negate::Bool
 end
 
-keep(::GitRule) = false
-keep(::FileRule) = true
+function cleargit!(rules)
+    kept = 0
+    for rule in rules
+        kept = cleargit!(rules, kept, rule)
+    end
+    resize!(rules, kept)
+end
+cleargit!(rules, kept, ::GitRule) = kept
+cleargit!(rules, kept, rule::FileRule) = (rules[kept + 1] = rule; kept + 1)
 
 function rules(file, ::Type{T}; base=dirname(file)) where {T <: IgnoreRule}
     isfile(file) || return IgnoreRule[]
@@ -171,7 +178,7 @@ function initialrules(root, tool::Union{Find, Grep})
     result = IgnoreRule[]
     for (i, dir) in enumerate(dirs)
         if ispath(joinpath(dir, ".git"))
-            filter!(keep, result)
+            cleargit!(result)
             append!(result, rules(joinpath(dir, ".git", "info", "exclude"), GitRule; base=dir))
         end
         gitignore!(result, dir, tool, reposcope(repo, locations, i))
@@ -185,7 +192,7 @@ function walksearch(visit, root, tool::Union{Find, Grep}; whitelist=(target -> f
     function walk(dir, inherited, inside)
         ruleset = copy(inherited)
         if ispath(joinpath(dir, ".git"))
-            filter!(keep, ruleset)
+            cleargit!(ruleset)
             append!(ruleset, rules(joinpath(dir, ".git", "info", "exclude"), GitRule; base=dir))
             inside = dir
         end

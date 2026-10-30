@@ -25,6 +25,23 @@ using HTTP, JSON3
     end
 end
 
+@testset "Anthropic block validation" begin
+    api = JuliaForever.AnthropicAPI
+    text = api.Text(Dict("type" => "text", "text" => "ok"))
+    unknown = api.Unknown(Dict("type" => "unknown"))
+    valid = api.Call(Dict("type" => "tool_use", "id" => "id", "name" => "read", "input" => Dict()))
+    @test api.result([text], "end_turn", nothing, nothing).done
+    @test api.result([valid], "tool_use", nothing, nothing).done
+    for block in (unknown, api.Call(Dict("type" => "tool_use", "id" => "", "name" => "read", "input" => Dict())), api.Call(Dict("type" => "tool_use", "id" => "id", "name" => "", "input" => Dict())), api.Call(Dict("type" => "tool_use", "id" => "id", "name" => "read", "input" => "bad")))
+        result = api.result([block], "tool_use", nothing, nothing)
+        @test !result.done && occursin("invalid content", result.error)
+        @test api.result([block], "tool_use", nothing, "previous").error == "previous"
+    end
+    duplicate = api.result([valid, valid], "tool_use", nothing, nothing)
+    @test !duplicate.done && occursin("invalid content", duplicate.error)
+    @test !api.result([text], "unknown", nothing, nothing).done
+end
+
 anthropicsse(event) = "event: " * event["type"] * "\ndata: " * JSON3.write(event) * "\n\n"
 
 @testset "Anthropic messages" begin

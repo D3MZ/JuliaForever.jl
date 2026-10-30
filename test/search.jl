@@ -1,3 +1,16 @@
+@testset "repository boundary retains file ignores" begin
+    file1 = JuliaForever.FileRule("first", r"first", false, false)
+    file2 = JuliaForever.FileRule("second", r"second", true, true)
+    git1 = JuliaForever.GitRule("git", r"git", false, false)
+    rules = JuliaForever.IgnoreRule[git1, file1, git1, file2, git1]
+    @test JuliaForever.cleargit!(rules) === rules
+    @test rules == JuliaForever.IgnoreRule[file1, file2]
+    @test JuliaForever.cleargit!(rules) === rules
+    @test rules == JuliaForever.IgnoreRule[file1, file2]
+    onlygit = JuliaForever.IgnoreRule[git1, git1]
+    @test isempty(JuliaForever.cleargit!(onlygit))
+end
+
 @testset "repository ignore scope dispatch" begin
     mktempdir() do dir
         write(joinpath(dir, ".gitignore"), "ignored.txt\n")

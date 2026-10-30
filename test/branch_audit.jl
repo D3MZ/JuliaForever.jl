@@ -34,6 +34,9 @@ include("branch_scan.jl")
     @test only(branch for branch in branches if branch.kind == "ifelse").condition == "flag"
     @test only(branch for branch in branches if branch.kind == "if").line == 2
     @test isempty(branchpoints(":(if flag; one; else; two; end)"))
+    @test isempty(branchpoints("count + 1"))
+    @test only(branchpoints("count(predicate, xs)")).condition == "predicate"
+    @test isempty(branchpoints("filter * value"))
     @test branchentry(only(branchpoints("flag ? 1 : 2"))) == branchentry(only(branchpoints("\n\nflag ? 1 : 2")))
     @test branchdifference(["a", "a", "b"], ["a", "b"]) == ["a"]
     mktempdir() do root

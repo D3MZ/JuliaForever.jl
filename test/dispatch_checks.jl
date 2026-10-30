@@ -20,9 +20,9 @@ function dispatchfield(expression)
     nothing
 end
 
-function dispatchpredicate(expression)
-    dispatchcallee(expression) in (:isnothing, :ismissing, :cancelled) && return true
-    expression isa Expr && expression.head == :call && first(expression.args) === :! && length(expression.args) == 2 && return dispatchpredicate(last(expression.args))
+function dispatchpredicate(expression, predicates=Set{Symbol}())
+    (dispatchcallee(expression) in (:isnothing, :ismissing, :cancelled) || dispatchcallee(expression) in predicates) && return true
+    expression isa Expr && expression.head == :call && first(expression.args) === :! && length(expression.args) == 2 && return dispatchpredicate(last(expression.args), predicates)
     false
 end
 
@@ -77,6 +77,20 @@ function dispatchcheck(expression, direct)
     callee in (:get, :getfield, :getproperty) && QuoteNode(:iserror) in expression.args
 end
 
+function dispatchboolreturn(expression)
+    expression isa Bool && return true
+    expression isa Expr || return false
+    if expression.head == :block
+        values = filter(value -> !(value isa LineNumberNode), expression.args)
+        return !isempty(values) && dispatchboolreturn(last(values))
+    elseif expression.head == :return && length(expression.args) == 1
+        return dispatchboolreturn(only(expression.args))
+    elseif expression.head in (:if, :elseif) && length(expression.args) == 3
+        return dispatchboolreturn(expression.args[2]) && dispatchboolreturn(expression.args[3])
+    end
+    false
+end
+
 function dispatchbools!(names, expression)
     expression isa Expr || return names
     expression.head in (:quote, :inert) && return names
@@ -93,7 +107,7 @@ function dispatchbools!(names, expression)
         if body isa Expr && body.head == :return && length(body.args) == 1
             body = only(body.args)
         end
-        if signature isa Expr && signature.head == :call && body isa Bool && any(arg -> arg isa Expr && arg.head == :(::), signature.args[2:end])
+        if signature isa Expr && signature.head == :call && dispatchboolreturn(body) && any(arg -> arg isa Expr && arg.head == :(::), signature.args[2:end])
             name = dispatchcallee(first(signature.args))
             name isa Symbol && push!(names, name)
         end
@@ -129,7 +143,7 @@ function dispatchchecks!(checks, expression, condition=false, direct=true, predi
         predicate = expression.args[2]
         if predicate isa Expr && predicate.head == :->
             dispatchchecks!(checks, predicate.args[2], true, true, predicates)
-        elseif dispatchpredicate(predicate)
+        elseif dispatchpredicate(predicate, predicates)
             push!(checks, sprint(show, predicate))
         else
             dispatchchecks!(checks, predicate, true, false, predicates)

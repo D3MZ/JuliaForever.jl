@@ -127,9 +127,16 @@ jointext(current, text) = current * text
 const responsestatuses = Dict("completed" => Finished())
 responsestatus(status) = get(responsestatuses, status, Unfinished())
 
-valid(call) = valid(call, responsestatus(get(call, "status", "completed")))
-valid(call, ::Unfinished) = false
-valid(call, ::Finished) = all(key -> get(call, key, nothing) isa AbstractString && !isempty(call[key]), ("id", "call_id", "name", "arguments"))
+const unfinishedcall = "Responses contained an unfinished function call"
+checkcall(call) = checkcall(call, responsestatus(get(call, "status", "completed")))
+checkcall(call, ::Unfinished) = unfinishedcall
+checkcall(call, ::Finished) = foldl((failure, key) -> checkfield(failure, call, key), ("id", "call_id", "name", "arguments"); init=nothing)
+checkfield(failure::String, call, key) = failure
+checkfield(::Nothing, call, key) = checkfield(get(call, key, nothing))
+checkfield(value) = unfinishedcall
+checkfield(value::AbstractString) = isempty(value) ? unfinishedcall : nothing
+callcheck(failure::String, call) = failure
+callcheck(::Nothing, call) = checkcall(call)
 
 function responsecalls(output)
     calls = Any[]
@@ -153,8 +160,9 @@ function responsefailure(data, raw, ::Unfinished, ::Nothing)
 end
 
 callfailure(calls, failure) = failure
-function callfailure(calls, ::Nothing)
-    any(call -> !valid(call), calls) && return "Responses contained an unfinished function call"
+callfailure(calls, ::Nothing) = checkedcalls(calls, foldl(callcheck, calls; init=nothing))
+checkedcalls(calls, failure::String) = failure
+function checkedcalls(calls, ::Nothing)
     length(unique(call["id"] for call in calls)) == length(calls) && length(unique(call["call_id"] for call in calls)) == length(calls) || return "Responses contained duplicate function call identifiers"
     nothing
 end
