@@ -18,16 +18,16 @@ function fixtureenv(cmd, workspace)
     addenv(cmd, "HOME" => workspace, "JULIA_DEPOT_PATH" => join(DEPOT_PATH, Sys.iswindows() ? ';' : ':'), "PI_CODING_AGENT_DIR" => joinpath(workspace, "agent"), "JF_CHATGPT_DIR" => joinpath(workspace, "chatgpt"), "JF_OPENROUTER_DIR" => joinpath(workspace, "openrouter"), "JF_CUSTOM_KEY" => "fixture-key", "JF_CUSTOM_HEADER" => "fixture-header", "JF_MISSING_KEY" => nothing, "JF_PROVIDER" => nothing, "OPENAI_API_KEY" => nothing, "OPENROUTER_API_KEY" => nothing, "ANTHROPIC_API_KEY" => nothing, "GEMINI_API_KEY" => nothing, "JF_INSTRUCTIONS_DIR" => nothing, "TERM" => "dumb")
 end
 
-function runtty(workspace, args)
+function runtty(workspace, args; env=[])
     script = joinpath(@__DIR__, "model_overlays_tty.py")
     cmd = `python3 $script $(first(Base.julia_cmd().exec)) $(dirname(@__DIR__)) $workspace $args`
-    JSON3.read(read(fixtureenv(cmd, workspace)))
+    JSON3.read(read(addenv(fixtureenv(cmd, workspace), env...)))
 end
 
 function reference(path, mode; provider="fixture", id="alpha")
     script = joinpath(@__DIR__, "model_overlay_auth_pi.mjs")
     cmd = `node --conditions=source --experimental-strip-types $script $(ENV["PI_SOURCE"]) $path $mode $provider $id`
-    cmd = addenv(cmd, "JF_CUSTOM_KEY" => "fixture-key", "JF_CUSTOM_HEADER" => "fixture-header")
+    cmd = addenv(cmd, "JF_CUSTOM_KEY" => "fixture-key", "JF_CUSTOM_HEADER" => "fixture-header", "JF_MISSING_KEY" => nothing)
     JSON3.read(read(cmd))
 end
 
@@ -153,5 +153,7 @@ end
         wait(server)
     end
 end
+
+include("model_duplicate_routes.jl")
 
 end

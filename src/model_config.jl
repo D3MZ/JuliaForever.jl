@@ -82,6 +82,8 @@ function definition(definitions::AbstractVector, id)
     Models.item(definitions, findfirst(model -> get(model, "id", nothing) == id, definitions))
 end
 definition(settings::AbstractDict, ::Nothing) = nothing
+effective(settings::AbstractDict, id) = get(Dict(model["id"] => model for model in get(settings, "models", [])), id, nothing)
+effective(settings::AbstractDict, ::Nothing) = nothing
 definitionvalue(::Nothing, field, fallback) = fallback
 definitionvalue(definition::AbstractDict, field, fallback) = get(definition, field, fallback)
 modeloverride(settings, id) = get(get(settings, "modelOverrides", Dict()), id, Dict())
@@ -90,8 +92,42 @@ builtinbase(::Nothing, env) = nothing
 builtinbase(info::NamedTuple, env) = get(env, info.base, info.url)
 function modelbase(provider::ConfiguredProvider, env)
     base = get(provider.settings, "baseUrl", builtinbase(provider.builtin, env))
-    definitionvalue(definition(provider.settings, provider.id), "baseUrl", base)
+    providers = foldl(groupmodel!, Models.catalog(); init=Dict{String, Vector{Models.Model}}())
+    builtin = get(providers, provider.name, Models.Model[])
+    routes = Dict{String, NamedTuple}(model.id => (; id=model.id, api=model.api, base) for model in builtin)
+    ids = [model.id for model in builtin]
+    foldl((state, model) -> route!(state, model, provider.settings), get(provider.settings, "models", []); init=(routes, ids))
+    routebase(get(routes, provider.id, nothing), base)
 end
+groupmodel!(providers, model) = (push!(get!(providers, model.provider, Models.Model[]), model); providers)
+routebase(::Nothing, fallback) = fallback
+routebase(route::NamedTuple, fallback) = route.base
+routeapi(::Nothing) = ""
+routeapi(route::NamedTuple) = route.api
+routebase(::Nothing) = nothing
+routebase(route::NamedTuple) = route.base
+
+function route!(state, definition, settings)
+    routes, ids = state
+    id = String(definition["id"])
+    existing = get(routes, id, nothing)
+    candidates = [routes[name] for name in ids]
+    api = get(definition, "api", get(settings, "api", ""))
+    defaults = routedefault(existing, candidates, api)
+    api = String(get(definition, "api", get(settings, "api", routeapi(defaults))))
+    base = get(definition, "baseUrl", get(settings, "baseUrl", routebase(defaults)))
+    routes[id] = (; id, api, base)
+    addroute!(ids, existing, id)
+    state
+end
+addroute!(ids, ::Nothing, id) = (push!(ids, id); nothing)
+addroute!(ids, existing::NamedTuple, id) = nothing
+routedefault(existing::NamedTuple, routes, api) = existing
+routedefault(::Nothing, routes, api) = routedefault(Models.findmodel(route -> route.api == api, routes), routes)
+routedefault(existing::NamedTuple, routes) = existing
+routedefault(::Nothing, routes) = routedefault(Models.findmodel(route -> route.api == "openai-completions", routes), routes, nothing)
+routedefault(existing::NamedTuple, routes, ::Nothing) = existing
+routedefault(::Nothing, routes, ::Nothing) = get(routes, 1, nothing)
 
 const builtinapis = IdDict(openai => "openai-completions", responses => "openai-responses", anthropic => "anthropic-messages", google => "google-generative-ai")
 modelapi(provider::ConfiguredProvider) = modelapi(provider.model, provider)
@@ -105,7 +141,7 @@ const unsupportedmodelsettings = ("compat", "samplingParams", "samplingParamsByT
 supportedsettings(settings::AbstractDict) = Models.check(all(key -> !haskey(settings, key), unsupportedmodelsettings))
 supportedsettings(::Nothing) = Models.ValidConfig()
 function supportedsettings(provider::ConfiguredProvider)
-    Models.combine(supportedsettings(provider.settings), supportedsettings(definition(provider.settings, provider.id)), supportedsettings(modeloverride(provider.settings, provider.id)), Models.check(!haskey(provider.settings, "oauth")))
+    Models.combine(supportedsettings(provider.settings), supportedsettings(effective(provider.settings, provider.id)), supportedsettings(modeloverride(provider.settings, provider.id)), Models.check(!haskey(provider.settings, "oauth")))
 end
 
 function configheaders(provider::ConfiguredProvider, env, key)
@@ -113,8 +149,13 @@ function configheaders(provider::ConfiguredProvider, env, key)
     overrides = modeloverride(provider.settings, provider.id)
     headers = configheaders!(Pair{String, String}[], get(provider.settings, "headers", Dict()), env)
     headers = get(authheaderhandlers, get(provider.settings, "authHeader", false), invalidauthheader)(headers, key)
-    headers = configheaders!(headers, get(overrides, "headers", Dict()), env)
-    configheaders!(headers, definitionvalue(defined, "headers", Dict()), env)
+    modelheaders!(headers, get(overrides, "headers", Dict()), definitionvalue(defined, "headers", Dict()), env)
+end
+modelheaders!(headers, overrides, defined, env) = nothing
+function modelheaders!(headers::Vector{Pair{String, String}}, overrides::AbstractDict, defined::AbstractDict, env)
+    values = merge(overrides, defined)
+    names = unique([collect(keys(overrides)); collect(keys(defined))])
+    foldl((current, name) -> configheader!(current, name, configvalue(values[name], env)), names; init=headers)
 end
 authheader!(headers, key) = configheader!(headers, "Authorization", authvalue(key))
 noauthheader!(headers, key) = headers
