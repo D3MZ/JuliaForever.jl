@@ -426,4 +426,204 @@ function tools(client::Client; prefix="mcp_")
     Failure(:protocol, "MCP tools/list exceeded 1000 pages")
 end
 
+abstract type Listing end
+struct Resources <: Listing end
+struct Templates <: Listing end
+
+method(::Resources) = "resources/list"
+method(::Templates) = "resources/templates/list"
+key(::Resources) = "resources"
+key(::Templates) = "resourceTemplates"
+identifier(::Resources) = "uri"
+identifier(::Templates) = "uriTemplate"
+
+struct Page
+    items::Vector{Dict{String, Any}}
+    cursor::Union{Nothing, String}
+end
+
+available(value) = false
+available(::AbstractDict) = true
+capability(client::Client) = get(client.server["capabilities"], "resources", nothing)
+resourcecapability(client::Client) = resourcecapability(capability(client))
+resourcecapability(value) = Failure(:capability, "MCP server did not advertise resources")
+resourcecapability(::AbstractDict) = nothing
+
+invalidpage(list::Listing) = Failure(:protocol, "Invalid MCP $(method(list)) result")
+invalidentry(list::Listing) = Failure(:protocol, "Invalid entry in MCP $(method(list)) result")
+invalidcursor(list::Listing) = Failure(:protocol, "Invalid MCP $(method(list)) cursor")
+
+entry(list::Listing, item) = invalidentry(list)
+entry(list::Listing, item::AbstractDict) = entry(list, item, get(item, identifier(list), nothing))
+entry(list::Listing, item, uri) = invalidentry(list)
+entry(list::Listing, item, uri::AbstractString) = entry(list, item, uri, get(item, "name", uri))
+entry(list::Listing, item, uri, name) = invalidentry(list)
+entry(list::Listing, item, uri::AbstractString, name::AbstractString) = merge(Dict{String, Any}(item), Dict("name" => String(name)))
+
+addentry!(items::Vector{Dict{String, Any}}, item::Dict{String, Any}) = (push!(items, item); items)
+addentry!(items::Vector{Dict{String, Any}}, failure::Failure) = failure
+addentry!(failure::Failure, item) = failure
+entries(list::Listing, items) = invalidpage(list)
+entries(list::Listing, items::AbstractVector) = foldl((found, item) -> addentry!(found, entry(list, item)), items; init=Dict{String, Any}[])
+
+pagecursor(list::Listing, value) = invalidcursor(list)
+pagecursor(list::Listing, ::Nothing) = nothing
+pagecursor(list::Listing, value::AbstractString) = isempty(value) ? nothing : String(value)
+
+parsepage(list::Listing, failure::Failure) = failure
+parsepage(list::Listing, value) = invalidpage(list)
+parsepage(list::Listing, value::AbstractDict) = pageitems(list, entries(list, get(value, key(list), nothing)), get(value, "nextCursor", nothing))
+pageitems(list::Listing, failure::Failure, cursor) = failure
+pageitems(list::Listing, items::Vector{Dict{String, Any}}, cursor) = pagevalue(list, items, pagecursor(list, cursor))
+pagevalue(list::Listing, items, failure::Failure) = failure
+pagevalue(list::Listing, items, cursor::Union{Nothing, String}) = Page(items, cursor)
+
+fetchpage(client::Client, list::Listing, cursor; timeout=client.timeout) = fetchpage(client, list, cursor, resourcecapability(client); timeout)
+fetchpage(client::Client, list::Listing, cursor, failure::Failure; timeout) = failure
+fetchpage(client::Client, list::Listing, cursor, ::Nothing; timeout) = parsepage(list, request(client, method(list), cursorparams(cursor); timeout))
+
+pageobject(list::Listing, failure::Failure) = failure
+pageobject(list::Listing, page::Page) = pageobject!(Dict{String, Any}(key(list) => page.items), page.cursor)
+pageobject!(result, ::Nothing) = result
+pageobject!(result, cursor::String) = (result["nextCursor"] = cursor; result)
+
+resourcepage(client::Client, cursor::Union{Nothing, AbstractString}=nothing; timeout=client.timeout) = pageobject(Resources(), fetchpage(client, Resources(), cursor; timeout))
+templatepage(client::Client, cursor::Union{Nothing, AbstractString}=nothing; timeout=client.timeout) = pageobject(Templates(), fetchpage(client, Templates(), cursor; timeout))
+
+function listall(client::Client, list::Listing; timeout=client.timeout)
+    listall(client, list, Dict{String, Any}[], Set{String}(), nothing, 1; timeout)
+end
+
+function listall(client::Client, list::Listing, items, cursors, cursor, count; timeout)
+    count > 1000 && return Failure(:protocol, "MCP $(method(list)) exceeded 1000 pages")
+    collectpage(client, list, items, cursors, count, fetchpage(client, list, cursor; timeout); timeout)
+end
+
+collectpage(client::Client, list::Listing, items, cursors, count, failure::Failure; timeout) = failure
+function collectpage(client::Client, list::Listing, items, cursors, count, page::Page; timeout)
+    append!(items, page.items)
+    nextpage(client, list, items, cursors, count, page.cursor; timeout)
+end
+nextpage(client::Client, list::Listing, items, cursors, count, ::Nothing; timeout) = items
+function nextpage(client::Client, list::Listing, items, cursors, count, cursor::String; timeout)
+    cursor in cursors && return Failure(:protocol, "MCP $(method(list)) returned duplicate cursor: $cursor")
+    push!(cursors, cursor)
+    listall(client, list, items, cursors, cursor, count + 1; timeout)
+end
+
+resources(client::Client; timeout=client.timeout) = listall(client, Resources(); timeout)
+templates(client::Client; timeout=client.timeout) = listall(client, Templates(); timeout)
+
+stringvalue(value) = false
+stringvalue(::AbstractString) = true
+validcontent(value) = false
+validcontent(value::AbstractDict) = stringvalue(get(value, "uri", nothing)) && (stringvalue(get(value, "text", nothing)) || stringvalue(get(value, "blob", nothing)))
+readresponse(failure::Failure) = failure
+readresponse(value) = Failure(:protocol, "Invalid MCP resources/read result")
+readresponse(value::AbstractDict) = readcontents(value, get(value, "contents", nothing))
+readcontents(value, contents) = Failure(:protocol, "Invalid MCP resources/read result")
+readcontents(value, contents::AbstractVector) = all(validcontent, contents) ? value : Failure(:protocol, "Invalid contents in MCP resources/read result")
+
+Base.read(client::Client, uri::AbstractString; timeout=client.timeout) = readresource(client, uri, resourcecapability(client); timeout)
+readresource(client::Client, uri, failure::Failure; timeout) = failure
+readresource(client::Client, uri, ::Nothing; timeout) = readresponse(request(client, "resources/read", Dict("uri" => uri); timeout))
+
+struct ListResources{L<:Listing} <: Tool
+    servers::Dict{String, Client}
+end
+struct ReadResource <: Tool
+    servers::Dict{String, Client}
+end
+
+listing(::ListResources{L}) where L = L()
+name(::ListResources{Resources}) = "list_mcp_resources"
+name(::ListResources{Templates}) = "list_mcp_resource_templates"
+name(::ReadResource) = "read_mcp_resource"
+description(::ListResources{Resources}) = "List resources provided by MCP servers."
+description(::ListResources{Templates}) = "List parameterized resource templates provided by MCP servers."
+description(::ReadResource) = "Read a resource from an MCP server by server name and URI."
+schema(::ListResources) = Dict("type" => "object", "properties" => Dict("server" => Dict("type" => "string"), "cursor" => Dict("type" => "string")), "additionalProperties" => false)
+schema(::ReadResource) = Dict("type" => "object", "properties" => Dict("server" => Dict("type" => "string"), "uri" => Dict("type" => "string")), "required" => ["server", "uri"], "additionalProperties" => false)
+
+function resourcetools(servers::AbstractDict{<:AbstractString, <:Client})
+    selected = Dict{String, Client}(String(name) => client for (name, client) in servers if available(capability(client)))
+    isempty(selected) && return Tool[]
+    Tool[ListResources{Resources}(selected), ListResources{Templates}(selected), ReadResource(selected)]
+end
+
+argument(value) = value
+argument(::Nothing) = nothing
+function argument(value::AbstractString)
+    cleaned = strip(value)
+    isempty(cleaned) ? nothing : String(cleaned)
+end
+
+execute(tool::ListResources, args) = listtool(tool, argument(get(args, :server, nothing)), argument(get(args, :cursor, nothing)))
+listtool(tool::ListResources, server, cursor) = ToolFailure("server and cursor must be strings")
+listtool(tool::ListResources, ::Nothing, cursor::AbstractString) = ToolFailure("cursor can only be used when a server is specified")
+listtool(tool::ListResources, ::Nothing, ::Nothing) = listservers(tool)
+listtool(tool::ListResources, server::AbstractString, cursor::Union{Nothing, AbstractString}) = listserver(tool, server, cursor, get(tool.servers, server, nothing))
+
+missingserver(tool, server) = ToolFailure("MCP server \"$server\" has no resources" * (isempty(tool.servers) ? "" : ". Servers with resources: " * join(sort!(collect(keys(tool.servers))), ", ")))
+listserver(tool::ListResources, server, cursor, ::Nothing) = missingserver(tool, server)
+function listserver(tool::ListResources, server, cursor, client::Client)
+    list = listing(tool)
+    page = fallback(list, fetchpage(client, list, cursor), Page(Dict{String, Any}[], nothing))
+    listresult(list, server, page)
+end
+listresult(list::Listing, server, failure::Failure) = toolresult(failure)
+function listresult(list::Listing, server, page::Page)
+    result = Dict{String, Any}("server" => server, key(list) => listed(server, page.items))
+    ToolResult(JSON3.write(pageobject!(result, page.cursor)))
+end
+
+function listservers(tool::ListResources)
+    list = listing(tool)
+    servers = sort!(collect(keys(tool.servers)))
+    jobs = [@async listall(tool.servers[server], list) for server in servers]
+    items = Dict{String, Any}[]
+    failures = Dict{String, String}[]
+    for (server, job) in zip(servers, jobs)
+        result = fallback(list, fetch(job), Dict{String, Any}[])
+        collectlisting!(items, failures, server, result)
+    end
+    result = Dict{String, Any}(key(list) => items)
+    isempty(failures) || (result["errors"] = failures)
+    ToolResult(JSON3.write(result))
+end
+collectlisting!(items, failures, server, result::Vector{Dict{String, Any}}) = append!(items, listed(server, result))
+collectlisting!(items, failures, server, failure::Failure) = push!(failures, Dict("server" => server, "error" => failure.message))
+
+fallback(list::Listing, result, empty) = result
+fallback(::Templates, failure::Failure, empty) = fallback(failure, failure.data, empty)
+fallback(failure::Failure, data, empty) = failure
+fallback(failure::Failure, data::AbstractDict, empty) = get(data, "code", nothing) == -32601 ? empty : failure
+
+apptype(value) = false
+apptype(value::AbstractString) = occursin(r";\s*profile\s*=\s*\"?mcp-app\"?"i, value)
+function visible(item)
+    uri = get(item, "uri", get(item, "uriTemplate", ""))
+    !startswith(uri, "ui://") && !apptype(get(item, "mimeType", ""))
+end
+function listed(server, items)
+    [merge(filter(pair -> first(pair) ∉ ("_meta", "icons"), item), Dict{String, Any}("server" => server)) for item in items if visible(item)]
+end
+
+execute(tool::ReadResource, args) = readtool(tool, argument(get(args, :server, nothing)), argument(get(args, :uri, nothing)))
+readtool(tool::ReadResource, server, uri) = ToolFailure("server and uri must be provided as strings")
+readtool(tool::ReadResource, server::AbstractString, uri::AbstractString) = readserver(tool, server, uri, get(tool.servers, server, nothing))
+readserver(tool::ReadResource, server, uri, ::Nothing) = missingserver(tool, server)
+readserver(tool::ReadResource, server, uri, client::Client) = readresult(uri, read(client, uri))
+readresult(uri, failure::Failure) = toolresult(failure)
+readresult(uri, result::AbstractDict) = typedcontents(uri, result["contents"])
+typedcontents(uri, contents::AbstractVector) = readcontent(uri, Dict{String, Any}[item for item in contents])
+function readcontent(uri::AbstractString, contents::Vector{Dict{String, Any}})
+    isempty(contents) && return ToolResult("Resource $uri is empty.")
+    length(contents) == 1 && return ToolResult(resourcetext(only(contents)))
+    ToolResult(join([string(item["uri"], ":\n", resourcetext(item)) for item in contents], "\n"))
+end
+resourcetext(item)::String = resourcetext(item, get(item, "text", nothing))
+resourcetext(item, text::AbstractString) = String(text)
+resourcetext(item, value) = JSON3.write(filter(pair -> first(pair) != "_meta", item))
+
 end
