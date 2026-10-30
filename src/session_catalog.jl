@@ -53,15 +53,16 @@ directory(env) = abspath(expanduser(get(env, "JF_SESSION_DIR", joinpath(homedir(
 project(cwd) = bytes2hex(sha256(abspath(cwd)))[1:24]
 filename(cwd, id) = project(cwd) * "--" * id * ".sqlite"
 
+function winpath(cwd, api)
+    input = transcode(UInt16, abspath(cwd) * "\0")
+    output = zeros(UInt16, 32768)
+    n = api(input, output)
+    n == 0 || n >= length(output) ? abspath(cwd) : transcode(String, output[1:n])
+end
+
 @static if Sys.iswindows()
     longpath(input, output) = ccall((:GetLongPathNameW, "kernel32"), stdcall, UInt32, (Ptr{UInt16}, Ptr{UInt16}, UInt32), input, output, length(output))
     shortpath(input, output) = ccall((:GetShortPathNameW, "kernel32"), stdcall, UInt32, (Ptr{UInt16}, Ptr{UInt16}, UInt32), input, output, length(output))
-    function winpath(cwd, api)
-        input = transcode(UInt16, abspath(cwd) * "\0")
-        output = zeros(UInt16, 32768)
-        n = api(input, output)
-        n == 0 || n >= length(output) ? abspath(cwd) : transcode(String, output[1:n])
-    end
     spellings(cwd) = unique((abspath(cwd), winpath(cwd, longpath), winpath(cwd, shortpath)))
 else
     spellings(cwd) = (abspath(cwd),)

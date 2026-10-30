@@ -40,6 +40,8 @@ end
                 @test occursin("short original", string(histories[4]))
                 @test length(JuliaForever.SessionCatalog.list(sessions, long)) == 2
                 @test length(JuliaForever.SessionCatalog.list(sessions, short)) == 2
+            else
+                @test_skip false
             end
         end
     end
