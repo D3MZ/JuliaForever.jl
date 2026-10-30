@@ -190,4 +190,6 @@ SQLite transaction cleanup dispatches on whether a commit or rollback returned, 
 
 Durable log opening selects the appropriate sync operation at the filesystem boundary. Commit cleanup dispatches on the actual completed value and marks the store failed when writing or syncing does not complete.
 
+Terminal Markdown rendering adds 50 branch entries for parsing, wrapping, table and list layout, and live redraw; it adds no dispatch candidates.
+
 SQLite open mode is selected at the keyword boundary; existing-only and create paths use separate initialization and retain file safety checks.

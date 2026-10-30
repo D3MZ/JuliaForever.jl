@@ -263,12 +263,14 @@ end
 
 function blocklines(block::TextBlock, detail::Detail, width)
     if block.width != width || block.count != length(block.parts)
-        block.lines = wrap(join(block.parts), width)
+        block.lines = textlines(block.role, join(block.parts), width)
         block.width = width
         block.count = length(block.parts)
     end
     block.lines
 end
+textlines(::TextRole, text, width) = wrap(text, width)
+textlines(::AssistantText, text, width) = MarkdownScreen.render(text, width)
 function blocklines(block::ToolBlock, detail::Detail, width)
     lines = wrap("[tool] $(block.name): $(block.status)", width)
     append!(lines, details(block, detail, width))
