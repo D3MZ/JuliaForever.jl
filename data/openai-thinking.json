@@ -168,7 +168,8 @@
     "medium": "medium",
     "high": "high",
     "xhigh": "xhigh",
-    "max": "max"
+    "max": "max",
+    "configurationUpdate": true
   },
   "gpt-6-luna": {
     "off": "none",
@@ -177,7 +178,8 @@
     "medium": "medium",
     "high": "high",
     "xhigh": "xhigh",
-    "max": "max"
+    "max": "max",
+    "configurationUpdate": true
   },
   "gpt-6-sol": {
     "off": "none",
@@ -186,7 +188,8 @@
     "medium": "medium",
     "high": "high",
     "xhigh": "xhigh",
-    "max": "max"
+    "max": "max",
+    "configurationUpdate": true
   },
   "gpt-6.1-sol": {
     "off": null,
@@ -195,7 +198,8 @@
     "medium": "medium",
     "high": "high",
     "xhigh": "xhigh",
-    "max": "max"
+    "max": "max",
+    "configurationUpdate": true
   },
   "gpt-daybreak-blue-latest": {
     "off": "none",

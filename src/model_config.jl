@@ -226,6 +226,15 @@ modelcatalogname(provider::Union{OpenAI, OpenAIResponses, Anthropic, Google}, fa
 modelcatalogname(route::CatalogRoute, fallback) = route.name
 
 modelchange(provider, model, ::DirectRoute) = typeof(provider)(provider.base, String(model), provider.key, provider.extra, provider.route)
+modelchange(provider::OpenAIResponses, model, ::DirectRoute) = responsechange(provider, model, Models.suffix(model))
+responsechange(provider, model, ::Models.Suffix) = unsupportedthinking()
+responsechange(provider, model, ::Nothing) = responselevel(provider, model, provider.thinking)
+responselevel(provider, model, ::Nothing) = OpenAIResponses(provider.base, String(model), provider.key, provider.extra, provider.route)
+responselevel(provider, model, effort::AbstractString) = responselevel(provider, model, effort, get(responselevels, model, nothing))
+responselevel(provider, model, effort, ::Nothing) = unsupportedthinking()
+responselevel(provider, model, effort, levels::AbstractDict) = responselevel(provider, model, effort, Models.combine(Models.check(effort in values(levels)), supportedthinking(thinkingwire(levels), effort)))
+responselevel(provider, model, effort, ::Models.InvalidConfig) = unsupportedthinking()
+responselevel(provider, model, effort, ::Models.ValidConfig) = OpenAIResponses(provider.base, String(model), provider.key, provider.extra, provider.route, effort)
 function modelchange(provider, model, route::CatalogRoute)
     configured = configuredinfo(route.registry, route.name, model, ENV)
     modelchange(configured, model, configured.model)

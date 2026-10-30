@@ -334,7 +334,7 @@ function launchprovider(options)
     end
 end
 applythinking(model, ::Nothing) = model
-applythinking(model::Integer, thinking) = model
+applythinking(model::Integer, thinking::AbstractString) = model
 applythinking(model::OpenAIResponses, thinking::AbstractString) = OpenAIResponses(model.base, model.model, model.key, model.extra, model.route, thinking)
 applythinking(model, thinking) = unsupportedthinking()
 launchinfo(::APIKeyAuth, registry::Models.Registry, name, model, ::Nothing) = configuredinfo(registry, name, model, ENV)
