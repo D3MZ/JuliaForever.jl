@@ -4,6 +4,19 @@ struct Streamed <: TerminalPresentation end
 abstract type TerminalLine end
 struct LineClosed <: TerminalLine end
 struct LineOpen <: TerminalLine end
+abstract type TerminalMode end
+struct TextMode <: TerminalMode end
+struct JSONMode <: TerminalMode
+    provider::String
+end
+struct InvalidMode <: TerminalMode end
+
+const terminalmodes = Dict("text" => TextMode(), "json" => JSONMode(""))
+terminalmode(value) = get(terminalmodes, value, InvalidMode())
+assignmode(::TerminalMode, mode::TerminalMode) = mode
+assignmode(invalid::InvalidMode, ::TerminalMode) = invalid
+provider(mode::TerminalMode, name) = mode
+provider(::JSONMode, name) = JSONMode(name)
 
 streamstate(value::Bool) = (Unstreamed(), Streamed())[Int(value) + 1]
 linestate(value::Bool) = (LineClosed(), LineOpen())[Int(value) + 1]
@@ -12,16 +25,18 @@ streamed(::Streamed) = true
 lineopen(::LineClosed) = false
 lineopen(::LineOpen) = true
 
-mutable struct Terminal{O<:IO, E<:IO}
+mutable struct Terminal{O<:IO, E<:IO, M<:TerminalMode}
     output::O
     diagnostics::E
     secrets::Vector{String}
     presentation::TerminalPresentation
     line::TerminalLine
+    mode::M
 end
 
-Terminal(output, diagnostics, secrets) = Terminal(output, diagnostics, secrets, Unstreamed(), LineClosed())
-Terminal(output, diagnostics, secrets, streamed::Bool, lineopen::Bool) = Terminal(output, diagnostics, secrets, streamstate(streamed), linestate(lineopen))
+Terminal(output, diagnostics, secrets) = Terminal(output, diagnostics, secrets, TextMode())
+Terminal(output, diagnostics, secrets, mode::TerminalMode) = Terminal(output, diagnostics, secrets, Unstreamed(), LineClosed(), mode)
+Terminal(output, diagnostics, secrets, streamed::Bool, lineopen::Bool) = Terminal(output, diagnostics, secrets, streamstate(streamed), linestate(lineopen), TextMode())
 
 function Base.getproperty(terminal::Terminal, name::Symbol)
     name === :streamed && return streamed(getfield(terminal, :presentation))
@@ -34,7 +49,7 @@ function Base.setproperty!(terminal::Terminal, name::Symbol, value)
     name === :lineopen && return (setfield!(terminal, :line, linestate(convert(Bool, value))); value)
     setfield!(terminal, name, convert(fieldtype(typeof(terminal), name), value))
 end
-Base.propertynames(::Terminal, private::Bool=false) = (:output, :diagnostics, :secrets, :streamed, :lineopen, :presentation, :line)
+Base.propertynames(::Terminal, private::Bool=false) = (:output, :diagnostics, :secrets, :streamed, :lineopen, :presentation, :line, :mode)
 
 # A following hexadecimal or octal digit can change the last escape.
 forms(secret) = (chop(repr(secret * "0"); head=1, tail=2), chop(repr(secret); head=1, tail=1), secret)
@@ -339,6 +354,10 @@ run!(terminal::Terminal, agent::Agent, prompt, snapshot=nothing; on_agent_event=
 run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::PendingInputs, on_agent_event) = 1
 
 function run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::Nothing, on_agent_event)
+    runmode!(terminal, agent, prompt, snapshot, on_agent_event, terminal.mode)
+end
+
+function runmode!(terminal::Terminal, agent::Agent, prompt, snapshot, on_agent_event, ::TextMode)
     callback = observer(terminal, snapshot, on_agent_event)
     result = try
         request!(terminal) do
