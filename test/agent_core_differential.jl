@@ -7,7 +7,7 @@
         provider = AgentFixture([completion(nothing; calls, finish="tool_calls"), completion("steered one"), completion("steered two"), completion("followed")], [])
         agent = Agent(provider, [Write(dir)])
         events = []
-        @test respond!(agent, "start"; on_event=identity, on_agent_event=event -> begin
+        @test respond!(agent, "start"; tool_execution=:sequential, on_event=identity, on_agent_event=event -> begin
             if event.type == :tool_execution_start && event.tool_call_id == "one"
                 JuliaForever.steer!(agent, "steer one")
                 JuliaForever.steer!(agent, "steer two")

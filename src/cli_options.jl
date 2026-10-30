@@ -27,6 +27,9 @@ struct CLIValue{F, V}
     valid::V
     message::String
 end
+struct CLIModelQuery
+    options::CLIOptions
+end
 struct CLIRest
     options::CLIOptions
 end
@@ -63,6 +66,11 @@ function cliargument(state::CLIRest, value)
 end
 cliargument(state::CLIStopped, value) = state
 cliargument(state::CLIReady, value) = get(cliactions, value, clipositional!)(state, value)
+function cliargument(state::CLIModelQuery, value)
+    (startswith(value, "-") || startswith(value, "@")) && return cliargument(CLIReady(state.options), value)
+    state.options.action = ModelListing(value)
+    CLIReady(state.options)
+end
 
 function clipositional!(state, value)
     push!(state.options.args, value)
@@ -80,6 +88,7 @@ clicontinue!(state, value) = (state.options.session = SessionCatalog.assign(stat
 cliresume!(state, value) = (state.options.session = SessionCatalog.assign(state.options.session, SessionCatalog.Picker()); state)
 cliephemeral!(state, value) = (state.options.session = SessionCatalog.assign(state.options.session, SessionCatalog.Ephemeral()); state)
 cliinspect!(state, value) = (state.options.action = historyinspect(state.options.action); state)
+climodels!(state, value) = (state.options.action = ModelListing(""); CLIModelQuery(state.options))
 
 clilogin(state, auth) = clilogin(state, state.options.auth, auth)
 clilogin(state, ::APIKeyAuth, auth::OpenRouterAuth) = (state.options.auth = auth; state)
@@ -88,7 +97,7 @@ clilogin(state, ::OpenRouterAuth, auth) = clierror("Select only one OpenRouter l
 setmode!(options, value) = (options.outputmode = assignmode(options.outputmode, terminalmode(value)); nothing)
 settools!(options, value) = (options.rules = ToolSelection.assign(options.rules, ToolSelection.entries(value)); nothing)
 setexcluded!(options, value) = (options.excluded = ToolSelection.patterns(value); nothing)
-setprovider!(options, value) = (options.selected = value; nothing)
+setprovider!(options, value) = (options.selected = lowercase(value); nothing)
 setmodel!(options, value) = (options.requested_model = value; nothing)
 setplugin!(options, value) = (push!(options.packages, value); nothing)
 setenvironment!(options, value) = (push!(options.environments, value); nothing)
@@ -110,6 +119,7 @@ const cliactions = Dict{String, Function}(
     "--no-builtin-tools" => cliexcludebuiltin!, "-nbt" => cliexcludebuiltin!,
     "--tools" => clitoolsoption, "-t" => clitoolsoption,
     "--exclude-tools" => cliexcludeoption, "-xt" => cliexcludeoption,
+    "--list-models" => climodels!,
     "--provider" => clirequired(setprovider!, cliprovidervalue),
     "--model" => clirequired(setmodel!, cliprovidervalue),
     "--login-openrouter" => (state, option) -> clilogin(state, CodeAuth()),
@@ -129,6 +139,7 @@ const cliactions = Dict{String, Function}(
 
 clifinal(state::CLIReady) = clifinal(state.options)
 clifinal(state::CLIRest) = clifinal(state.options)
+clifinal(state::CLIModelQuery) = clifinal(state.options)
 clifinal(state::CLIValue) = clifinal(clierror(state.message))
 clifinal(state::CLIStopped) = state.status
 function clifinal(options::CLIOptions)

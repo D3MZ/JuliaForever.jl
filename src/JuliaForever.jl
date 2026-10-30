@@ -13,6 +13,7 @@ include("tool_search.jl")
 include("file_arguments.jl")
 include("system.jl")
 include("provider.jl")
+include("models.jl")
 include("kernel.jl")
 include("conversation.jl")
 include("durable.jl")
@@ -76,12 +77,15 @@ struct HistoryAbandonment
     reason::String
 end
 struct HistoryConflict end
+include("cli_models.jl")
 
 historyinspect(::Nothing) = HistoryInspection()
 historyinspect(action::HistoryInspection) = action
 historyinspect(::Union{HistoryAbandonment, HistoryConflict}) = HistoryConflict()
+historyinspect(action::ModelListing) = action
 historyabandon(::Union{Nothing, HistoryAbandonment}, reason) = HistoryAbandonment(reason)
 historyabandon(::Union{HistoryInspection, HistoryConflict}, reason) = HistoryConflict()
+historyabandon(action::ModelListing, reason) = action
 
 const loginproviders = Dict("openrouter" => providerinfos["openrouter"])
 providername(::APIKeyAuth, ::Nothing) = get(ENV, "JF_PROVIDER", "openai")
@@ -213,6 +217,7 @@ function help!()
     println("Tools: --tools (-t) LIST, --exclude-tools (-xt) LIST, --no-builtin-tools (-nbt), --no-tools (-nt).")
     println("Output: --mode text|json.")
     println("Use @PATH to include a text file or image in the initial prompt.")
+    println("Models: --list-models [search] lists models for configured providers; --model accepts provider/model or a model name.")
     0
 end
 
@@ -251,10 +256,11 @@ function providerselection(action, options, ::Nothing)
 end
 
 historyaction(::Nothing, options) = loginprovider(options.auth, options.selected, options)
-loginprovider(::APIKeyAuth, selected, options) = launchprovider(options)
-loginprovider(::OpenRouterAuth, ::Nothing, options) = launchprovider(options)
+historyaction(action::ModelListing, options) = listmodels!(options.output, action.query, ENV)
+loginprovider(::APIKeyAuth, selected, options) = resolveprovider(options, options.requested_model)
+loginprovider(::OpenRouterAuth, ::Nothing, options) = resolveprovider(options, options.requested_model)
 loginprovider(::OpenRouterAuth, selected::AbstractString, options) = loginprovider(options, get(loginproviders, selected, nothing))
-loginprovider(options, ::NamedTuple) = launchprovider(options)
+loginprovider(options, ::NamedTuple) = resolveprovider(options, options.requested_model)
 function loginprovider(options, ::Nothing)
     println(stderr, "OpenRouter login requires --provider openrouter.")
     2
@@ -266,6 +272,7 @@ function launchprovider(options)
     model = acquire(auth, info, requested_model)
     launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, provider(outputmode, name))
 end
+
 historyaction(::HistoryInspection, options) = inspectrequest!(options.session, options.auth, options.sessionname, options.args)
 historyaction(::HistoryConflict, options) = invalidinspection()
 historyaction(action::HistoryAbandonment, options) = abandonrequest!(options.session, options.auth, options.sessionname, options.args, action.reason)

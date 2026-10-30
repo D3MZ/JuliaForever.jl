@@ -31,7 +31,7 @@ end
 
 const dispatchstatuses = Set(["cancelled", "canceled", "complete", "completed", "done", "end", "error", "failed", "function_call", "idle", "in_progress", "incomplete", "length", "pending", "placed", "queued", "ready", "running", "stop", "success", "timed_out", "timeout", "tool_calls"])
 dispatchstatus(value) = false
-dispatchstatus(value::String) = value in dispatchstatuses || (startswith(value, "--") && ncodeunits(value) > 2)
+dispatchstatus(value::String) = value in dispatchstatuses || (startswith(value, "--") && ncodeunits(value) > 2) || occursin(r"^-[A-Za-z]", value)
 dispatchstatus(value::Expr) = value.head in (:tuple, :vect) && any(dispatchstatus, value.args)
 
 function dispatchstatuscheck(expression)
