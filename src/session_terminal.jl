@@ -44,7 +44,36 @@ namecommand(name::String) = isempty(name) ? ShowName() : SetName(name)
 
 command!(::ReloadCommand, terminal, agent, history, input, directory, snapshot) = reload!(terminal, agent, history, () -> Skills.render(Skills.load(pwd()), Skills.reader(values(agent.tools))))
 
-command!(::CompactCommand, terminal, agent, history, input, directory, snapshot) = (agent, history, compactresult!(terminal, compact!(agent)))
+command!(::CompactCommand, terminal, agent, history, input, directory, snapshot) = (agent, history, compactresult!(terminal, textcompact!(terminal, agent, history)))
+
+textcompact!(terminal, agent, ::Nothing) = compact!(agent)
+textcompact!(terminal, agent, ::History.Store) = textcompactstart!(terminal, agent, startturn!(agent))
+textcompactstart!(terminal, agent, ::Nothing) = :busy
+function textcompactstart!(terminal, agent, ::Running)
+    try
+        textcompactready!(terminal, agent, sync!(agent))
+    finally
+        finish!(agent)
+    end
+end
+textcompactready!(terminal, agent, rejected::History.Rejected) = rejected
+function textcompactready!(terminal, agent, ::Nothing)
+    stream = LiveJSON.Stream(terminal, agent, JSONMode(terminal.mode.provider), devnull)
+    recorder = LiveJSON.Recorder(agent)
+    LiveJSON.backfill!(recorder, stream, LiveJSON.recordpresence(recorder.entries))
+    plan = lock(() -> compactionplan(agent, agent.fault), agent.lock)
+    textcompactplan!(agent, recorder, plan)
+end
+textcompactplan!(agent, recorder, rejected::History.Rejected) = rejected
+function textcompactplan!(agent, recorder, plan::CompactionPlan)
+    tokens = compactiontokens(agent)
+    result = compact!(agent, Summarizer(agent.provider), plan)
+    info, after = lock(agent.lock) do
+        (latestcompactioninfo(result, getfield(agent, :events)), sum(pretoken, agent.state.messages; init=0))
+    end
+    entry = LiveJSON.compactionentry((; result, plan, tokens_before=tokens, estimated_after=after, info), recorder.entries)
+    outcome(LiveJSON.savecompaction!(recorder, entry), result)
+end
 
 function compactresult!(terminal, summary::AbstractString)
     println(terminal.diagnostics, "Context compacted.")
