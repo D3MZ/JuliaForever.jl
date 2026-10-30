@@ -12,8 +12,8 @@ include("tools.jl")
 include("tool_search.jl")
 include("file_arguments.jl")
 include("system.jl")
-include("provider.jl")
 include("models.jl")
+include("provider.jl")
 include("kernel.jl")
 include("conversation.jl")
 include("durable.jl")
@@ -81,6 +81,7 @@ struct HistoryAbandonment
 end
 struct HistoryConflict end
 include("cli_models.jl")
+include("model_config.jl")
 
 historyinspect(::Nothing) = HistoryInspection()
 historyinspect(action::HistoryInspection) = action
@@ -160,7 +161,7 @@ launch(output, status::Integer, packages, environments, codemode, session, sessi
 
 function launch(output, model::Union{OpenAI, OpenAIResponses, Anthropic, Google}, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode)
     tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), PowerShell(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
-    terminal = Terminal(output, stderr, [model.key], mode)
+    terminal = Terminal(output, stderr, [model.key; last.(model.extra)], mode)
     registry = plugins(terminal, tools, packages, environments)
     Base.invokelatest(terminal!, terminal, model, registry, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
 end
@@ -399,7 +400,11 @@ end
 selectedprovider(action, options, ::Nothing) = historyaction(action, options)
 selectedprovider(action, options, selected::AbstractString) = providerselection(action, options, providerinfo(selected))
 providerselection(action, options, ::NamedTuple) = historyaction(action, options)
-function providerselection(action, options, ::Nothing)
+providerselection(action, options, ::Nothing) = customselection(action, options, modelconfig(ENV))
+customselection(action, options, ::Models.InvalidConfig) = invalidmodelconfig()
+customselection(action, options, registry::Models.Registry) = customselection(action, options, get(registry.providers, options.selected, nothing))
+customselection(action, options, ::AbstractDict) = historyaction(action, options)
+function customselection(action, options, ::Nothing)
     println(stderr, "Unknown provider; choose openai, openai-responses, openrouter, anthropic, or google.")
     2
 end
@@ -417,12 +422,14 @@ end
 function launchprovider(options)
     (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, outputmode, output) = options
     name = providername(auth, selected)
-    info = providerinfo(name)
+    info = launchinfo(auth, options.modelconfig, name, requested_model)
     model = acquire(auth, info, requested_model)
     Base.ScopedValues.with(tuimode => LiveTerminal.withprovider(options.tui, name)) do
         launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, provider(outputmode, name))
     end
 end
+launchinfo(::APIKeyAuth, registry::Models.Registry, name, model) = configuredinfo(registry, name, model, ENV)
+launchinfo(::OpenRouterAuth, registry::Models.Registry, name, model) = providerinfo(name)
 
 historyaction(::HistoryInspection, options) = inspectrequest!(options.session, options.auth, options.sessionname, options.args)
 historyaction(::HistoryConflict, options) = invalidinspection()

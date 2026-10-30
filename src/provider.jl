@@ -1,8 +1,21 @@
+struct DirectRoute end
+struct CatalogRoute
+    name::String
+    registry::Models.Registry
+end
+Base.show(io::IO, ::CatalogRoute) = print(io, "Catalog route ([redacted])")
+StructTypes.StructType(::Type{CatalogRoute}) = StructTypes.CustomStruct()
+StructTypes.lower(::CatalogRoute) = "[redacted]"
+
 struct OpenAI
     base::String
     model::String
     key::String
+    extra::Vector{Pair{String, String}}
+    route::Union{DirectRoute, CatalogRoute}
 end
+OpenAI(base, model, key) = OpenAI(base, model, key, Pair{String, String}[], DirectRoute())
+OpenAI(base, model, key, extra) = OpenAI(base, model, key, extra, DirectRoute())
 
 # Keep request cancellation scoped to the calling task without changing provider APIs.
 const requestkey = gensym(:request_context)
@@ -368,7 +381,15 @@ function payload(provider::OpenAI, messages, tools, parameters; streaming=false)
     JSON3.write(data)
 end
 
-headers(provider::OpenAI) = ["Authorization" => "Bearer $(provider.key)", "Content-Type" => "application/json"]
+function mergeheaders(defaults, extra)
+    result = copy(defaults)
+    for (name, value) in extra
+        filter!(item -> lowercase(first(item)) != lowercase(name), result)
+        push!(result, name => value)
+    end
+    result
+end
+headers(provider::OpenAI) = mergeheaders(["Authorization" => "Bearer $(provider.key)", "Content-Type" => "application/json"], provider.extra)
 endpoint(provider::OpenAI) = "$(rstrip(provider.base, '/'))/chat/completions"
 
 function complete(provider::OpenAI, messages, tools; parameters=Dict())

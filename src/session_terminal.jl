@@ -178,13 +178,23 @@ end
 
 function setmodel!(terminal, agent::Agent{P}, history, model::AbstractString) where {P<:Union{OpenAI, OpenAIResponses, Anthropic, Google}}
     isempty(model) && return agent, history, 0
+    selected = modelchange(agent.provider, model, agent.provider.route)
+    setmodel!(terminal, agent, history, model, selected)
+end
+function setmodel!(terminal, agent::Agent{P}, history, model, selected::P) where {P<:Union{OpenAI, OpenAIResponses, Anthropic, Google}}
     lock(agent.lock) do
-        previous = agent.provider
-        agent.provider = P(previous.base, String(model), previous.key)
+        agent.provider = selected
     end
+    append!(terminal.secrets, [selected.key; last.(selected.extra)])
     println(terminal.diagnostics, "Model set: ", redact(terminal, model))
     flush(terminal.diagnostics)
     agent, history, 0
+end
+setmodel!(terminal, agent::Agent, history, model, status::Integer) = (agent, history, status)
+function setmodel!(terminal, agent::Agent, history, model, selected)
+    println(terminal.diagnostics, "Model switching across APIs is unavailable.")
+    flush(terminal.diagnostics)
+    agent, history, 1
 end
 function setmodel!(terminal, agent::Agent, history, model)
     println(terminal.diagnostics, "Model switching is unavailable for this provider.")

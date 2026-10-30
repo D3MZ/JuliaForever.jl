@@ -13,6 +13,23 @@ struct Model
     images::Bool
 end
 
+struct Registry
+    models::Vector{Model}
+    providers::Dict{String, Any}
+end
+struct InvalidConfig end
+struct ValidConfig end
+
+const validation = Dict(true => ValidConfig(), false => InvalidConfig())
+check(value::Bool) = validation[value]
+combine() = ValidConfig()
+combine(::InvalidConfig, rest...) = InvalidConfig()
+combine(::ValidConfig, rest...) = combine(rest...)
+
+Base.show(io::IO, ::Registry) = print(io, "Model registry ([redacted])")
+StructTypes.StructType(::Type{Registry}) = StructTypes.CustomStruct()
+StructTypes.lower(registry::Registry) = (; models=registry.models, providers="[redacted]")
+
 Model(provider, id, name) = Model(provider, id, name, "", 0, 0, false, false)
 StructTypes.StructType(::Type{Model}) = StructTypes.Struct()
 
@@ -46,15 +63,64 @@ const punctuation = Dict(char => Char(index) for (index, char) in enumerate(" _-
 
 catalog() = JSON3.read(read(path), Vector{Model})
 
-function catalog(configpath::AbstractString)
+function load(configpath::AbstractString)
     models = catalog()
-    isfile(configpath) || return models
-    config = JSON3.read(read(configpath), Dict{String, Any})
-    for (provider, settings) in config["providers"]
-        overlay!(models, provider, settings)
+    isfile(configpath) || return Registry(models, Dict{String, Any}())
+    bytes = read(configpath)
+    try
+        config = JSON3.read(bytes, Dict{String, Any})
+        providers = Dict{String, Any}(config["providers"])
+        foldl(applyprovider!, pairs(providers); init=Registry(models, providers))
+    catch
+        InvalidConfig()
     end
-    models
 end
+
+catalog(configpath::AbstractString) = catalog(load(configpath))
+catalog(registry::Registry) = registry.models
+catalog(invalid::InvalidConfig) = invalid
+
+applyprovider!(invalid::InvalidConfig, pair) = invalid
+function applyprovider!(registry::Registry, pair)
+    name, settings = pair
+    applyprovider!(registry, name, settings, validprovider(name, settings, registry.models))
+end
+applyprovider!(registry, name, settings, invalid::InvalidConfig) = invalid
+function applyprovider!(registry, name, settings, ::ValidConfig)
+    overlay!(registry.models, name, settings)
+    registry
+end
+
+validprovider(name, settings, models) = InvalidConfig()
+function validprovider(name, settings::AbstractDict, models)
+    inherited = any(model -> model.provider == name, models)
+    definitions = foldl((result, model) -> combine(result, validdefinition(model, settings, inherited)), get(settings, "models", []); init=ValidConfig())
+    overrides = foldl((result, model) -> combine(result, validmodel(model)), values(get(settings, "modelOverrides", Dict())); init=ValidConfig())
+    combine(validauth(get(settings, "authHeader", nothing)), definitions, overrides)
+end
+validauth(::Nothing) = ValidConfig()
+validauth(::Bool) = ValidConfig()
+validauth(value) = InvalidConfig()
+validdefinition(model, settings, inherited) = InvalidConfig()
+function validdefinition(model::AbstractDict, settings, inherited)
+    combine(validid(get(model, "id", nothing)), validmodel(model), validroute(get(model, "api", get(settings, "api", nothing)), inherited), validroute(get(model, "baseUrl", get(settings, "baseUrl", nothing)), inherited))
+end
+validid(value) = InvalidConfig()
+validid(value::AbstractString) = check(!isempty(value))
+validroute(::Nothing, inherited) = check(inherited)
+validroute(value::AbstractString, inherited) = check(!isempty(value))
+validroute(value, inherited) = InvalidConfig()
+validmodel(model) = InvalidConfig()
+function validmodel(model::AbstractDict)
+    combine(validtokens(get(model, "contextWindow", nothing)), validtokens(get(model, "maxTokens", nothing)), validinput(get(model, "input", nothing)))
+end
+validtokens(::Nothing) = ValidConfig()
+validtokens(::Bool) = InvalidConfig()
+validtokens(value::Integer) = check(value > 0)
+validtokens(value) = InvalidConfig()
+validinput(::Nothing) = ValidConfig()
+validinput(value::AbstractVector) = check(all(item -> item in ("text", "image"), value))
+validinput(value) = InvalidConfig()
 
 function overlay!(models, provider, settings)
     for definition in get(settings, "models", [])

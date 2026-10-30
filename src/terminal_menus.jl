@@ -97,7 +97,7 @@ uicommand!(session, ::Fullscreen, command, terminal, history, input, directory, 
 function uicommand!(session, ::Fullscreen, ::JuliaForever.SelectModel, terminal, history, input, directory, snapshot, draft)
     current = modelname(session.agent.provider)
     provider = JuliaForever.modelconstraint(session.view.provider)
-    models = sort!(JuliaForever.Models.pool(JuliaForever.Models.catalog(), provider); by=model -> JuliaForever.Models.collation(model.id))
+    models = sort!(JuliaForever.Models.pool(JuliaForever.modelcatalog(session.agent.provider), provider); by=model -> JuliaForever.Models.collation(model.id))
     labels = ["Current: " * current, "Enter a model ID…"]
     append!(labels, (model.id * "  " * model.name for model in models))
     index = menu!(session, "Select model", labels)
