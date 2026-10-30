@@ -1,4 +1,4 @@
-mutable struct CLIOptions
+mutable struct CLIOptions{I<:IO}
     codemode
     packages::Vector{String}
     environments::Vector{String}
@@ -15,9 +15,11 @@ mutable struct CLIOptions
     excluded::Vector{Regex}
     tui
     outputmode
+    helpoutput::I
 end
 
-CLIOptions() = CLIOptions(nothing, String[], String[], nothing, nothing, nothing, APIKeyAuth(), SessionCatalog.New(), SessionCatalog.directory(ENV), nothing, String[], ToolSelection.Defaults(), ToolSelection.Inherit(), Regex[], LiveTerminal.FullscreenMode(), TextMode())
+CLIOptions() = CLIOptions(stdout)
+CLIOptions(helpoutput::IO) = CLIOptions(nothing, String[], String[], nothing, nothing, nothing, APIKeyAuth(), SessionCatalog.New(), SessionCatalog.directory(ENV), nothing, String[], ToolSelection.Defaults(), ToolSelection.Inherit(), Regex[], LiveTerminal.FullscreenMode(), TextMode(), helpoutput)
 
 struct CLIReady
     options::CLIOptions
@@ -82,7 +84,7 @@ function clirest!(state, value)
     push!(state.options.args, value)
     CLIRest(state.options)
 end
-clihelp!(state, value) = CLIStopped(help!())
+clihelp!(state, value) = CLIStopped(help!(state.options.helpoutput))
 clicode!(state, value) = (state.options.codemode = CodeMode; state)
 cliexcludeall!(state, value) = (state.options.baseline = ToolSelection.baseline(state.options.baseline, ToolSelection.NoTools()); state)
 cliexcludebuiltin!(state, value) = (state.options.baseline = ToolSelection.baseline(state.options.baseline, ToolSelection.NoBuiltin()); state)
@@ -117,7 +119,7 @@ setabandon!(options, value) = (options.action = historyabandon(options.action, v
 setexport!(options, value) = (options.action = exportaction(options.action, value); nothing)
 
 const clituioption = clivalue(settui!, clituivalue, option -> "--tui-mode requires regular or fullscreen.")
-const climodeoption = clivalue(setmode!, climodevalue, option -> "--mode requires text or json.")
+const climodeoption = clivalue(setmode!, climodevalue, option -> "--mode requires text or json or rpc.")
 const clitoolsoption = clirequired(settools!, nothing)
 const cliexcludeoption = clirequired(setexcluded!, nothing)
 const clinameoption = clivalue(setname!, clinamevalue, option -> "--name requires a non-empty value.")

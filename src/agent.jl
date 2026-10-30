@@ -241,6 +241,53 @@ end
 Base.convert(::Type{Dict{String, Any}}, message::Conversation.RawMessage) = deepcopy(message.value)
 Base.convert(::Type{Dict{String, Any}}, message::Conversation.SkillContext) = Dict{String, Any}("role" => "system", "content" => message.content)
 
+function Base.convert(::Type{Dict{String, Any}}, message::Conversation.BashMessage)
+    value = Dict{String, Any}("role" => "bashExecution", "command" => message.command, "output" => message.output, "cancelled" => Conversation.bashcancelled(message.status), "truncated" => Conversation.bashtruncated(message.extent), "timestamp" => message.timestamp)
+    bashfield!(value, "exitCode", message.exitcode)
+    bashfield!(value, "fullOutputPath", message.file)
+    bashfield!(value, "excludeFromContext", Conversation.bashexcluded(message.context))
+end
+
+bashfield!(value, key, ::Nothing) = value
+bashfield!(value, key, field) = (value[key] = field; value)
+
+function modelmessages(messages)
+    result = Dict{String, Any}[]
+    foreach(message -> modelmessage!(result, message), messages)
+    result
+end
+modelmessage!(messages, value::Conversation.Message) = push!(messages, convert(Dict{String, Any}, value))
+modelmessage!(messages, value::Conversation.BashMessage{Conversation.ExcludedBashContext}) = messages
+function modelmessage!(messages, value::Conversation.BashMessage)
+    push!(messages, Dict{String, Any}("role" => "user", "content" => bashtext(value)))
+end
+function bashtext(message::Conversation.BashMessage)
+    content = isempty(message.output) ? "(no output)" : "```\n$(message.output)\n```"
+    status = bashstatus(message.status, message.exitcode)
+    truncation = bashtruncation(message.extent, message.file)
+    "Ran `$(message.command)`\n$content$status$truncation"
+end
+bashexit(::Nothing) = ""
+const bashcodes = Dict(0 => "")
+bashexit(code::Int) = get(bashcodes, code, "\n\nCommand exited with code $code")
+bashstatus(::Conversation.FinishedBash, code) = bashexit(code)
+bashstatus(::Conversation.CancelledBash, code) = "\n\n(command cancelled)"
+bashtruncation(::Conversation.FullBash, file) = ""
+bashtruncation(::Conversation.TruncatedBash, ::Nothing) = ""
+bashtruncation(::Conversation.TruncatedBash, file::String) = "\n\n[Output truncated. Full output: $file]"
+
+function recordbash!(agent::Agent, message::Conversation.BashMessage)
+    lock(agent.lock) do
+        result, _ = transition!(revision -> Conversation.BashOutput(revision, message), agent)
+        recordbash!(agent, message, result)
+    end
+end
+recordbash!(agent, message, result) = result
+function recordbash!(agent, message, result::Kernel.Applied)
+    push!(agent.messages, convert(Dict{String, Any}, message))
+    nothing
+end
+
 synccontext(current, ::Conversation.Message) = current
 synccontext(current, message::Conversation.SkillContext) = message
 syncmessage!(messages, value, ::Nothing) = (push!(messages, Conversation.RawMessage(deepcopy(value))); nothing)
@@ -649,7 +696,7 @@ finish(message, result::Completion, ::Type{Truncated}) = Truncated(result)
 function modelresponse(agent, effect, parameters, on_event, on_agent_event)
     answer = nothing
     try
-        messages = [convert(Dict{String, Any}, message) for message in effect.effect.messages]
+        messages = modelmessages(effect.effect.messages)
         received = response(agent, messages, parameters, on_event, on_agent_event)
         rememberusage!(received.result)
         answer = received

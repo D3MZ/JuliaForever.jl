@@ -138,6 +138,16 @@ Shell output selection returns whole lines, byte-limited lines, or a partial lin
 
 MCP tool discovery decodes pages, definitions, task support, descriptions, and cursors through typed methods. Collision and repeated-cursor checks remain as data validation, and failures keep their protocol precedence.
 
+The RPC and shared JSON stream changes add 25 branch entries and remove two, bringing the inventory from 1,308 to 1,331. The additions include iteration over history entries and protocol records, input validation, and protection for the active session file. They add no dispatch candidates.
+
+Unconfigured RPC startup adds two collection checks and no dispatch candidates, bringing the inventory to 1,333.
+
+After integrating the newer terminal and skill work, the combined inventory is 1,453 versus 1,429 on that main branch: 26 entries added and two removed. The dispatch inventory is unchanged relative to that branch.
+
+RPC command discovery adds five data and file-search checks, bringing the inventory to 1,458 without adding dispatch candidates.
+
+RPC shell execution adds 22 branch entries for process output, escape decoding, iteration, and revision checks, bringing the inventory to 1,480 with no new dispatch candidates. Context inclusion, cancellation, and truncation are represented by types.
+
 The discriminator rule now includes labels. It identified an unused result-label alternative in find output; the implementation now formats find results directly. Glob character classes dispatch on the matched closing position.
 
 Model reasoning effort is now included in the discriminator rule. Request writing, authorization, and reasoning updates map protocol values at their boundaries; the remaining check validates membership in a model's supported values.
@@ -186,6 +196,8 @@ Directory entry limits now return a limited entry collection when there are furt
 
 MCP call response validation dispatches on field presence and decoded field types, preserving the distinction between absent and invalid values.
 
+The RPC and current main integration has 1,519 branch entries, with none added beyond the parents' multiset union and 33 retired.
+
 MCP initialization maps supported protocol versions once and validates capabilities and server identity through typed methods.
 
 Markdown export adds six branch entries for list numbering and rendering iteration; it adds no dispatch candidates.
@@ -193,6 +205,8 @@ Markdown export adds six branch entries for list numbering and rendering iterati
 Terminal completion adds 22 branch entries for fuzzy scoring, matching, list iteration, and viewport layout; it adds no dispatch candidates.
 
 MCP JSON-RPC routing dispatches on message fields, request IDs, and error values; Boolean IDs and error codes remain invalid.
+
+RPC session-entry inspection adds ten branch entries for history traversal, entry matching, serialization, and revision checks, bringing the inventory from 1,496 to 1,506.
 
 MCP resource-content validation dispatches on URI, text, and blob values; the remaining predicate checks whether all decoded contents are valid.
 
@@ -205,3 +219,13 @@ SQLite transaction cleanup dispatches on whether a commit or rollback returned, 
 Durable log opening selects the appropriate sync operation at the filesystem boundary. Commit cleanup dispatches on the actual completed value and marks the store failed when writing or syncing does not complete.
 
 SQLite open mode is selected at the keyword boundary; existing-only and create paths use separate initialization and retain file safety checks.
+
+Integrating queue modes with RPC session records yields 1,573 branch entries. The combined inventory adds two repeated revision checks beyond the parents' multiset union and retires 17 entries.
+
+RPC queue-mode commands dispatch to the shared queue policies and add no branch or dispatch entries.
+
+RPC thinking controls add nine branch entries, from 1,572 to 1,581, for mapped-level collection, clamping, cycling, and restoration. Provider and history alternatives dispatch on their concrete types.
+
+After reconciling upstream changes, authorization filtering adds one loop, bringing the inventory from 1,577 to 1,578.
+
+Merging upstream shell, history, and extension refactors adds 14 inventory entries and retires 15, for 1,577 total.

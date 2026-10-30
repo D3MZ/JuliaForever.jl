@@ -30,6 +30,42 @@ struct RawMessage <: Message
     value::Dict{String, Any}
 end
 
+abstract type BashContext end
+struct DefaultBashContext <: BashContext end
+struct IncludedBashContext <: BashContext end
+struct ExcludedBashContext <: BashContext end
+abstract type BashStatus end
+struct FinishedBash <: BashStatus end
+struct CancelledBash <: BashStatus end
+abstract type BashExtent end
+struct FullBash <: BashExtent end
+struct TruncatedBash <: BashExtent end
+
+struct BashMessage{C<:BashContext, S<:BashStatus, E<:BashExtent} <: Message
+    command::String
+    output::String
+    exitcode::Union{Nothing, Int}
+    status::S
+    extent::E
+    file::Union{Nothing, String}
+    timestamp::Int
+    context::C
+end
+
+const bashstatuses = Dict(false => FinishedBash(), true => CancelledBash())
+const bashextents = Dict(false => FullBash(), true => TruncatedBash())
+BashMessage(command, output, exitcode, cancelled::Bool, truncated::Bool, file, timestamp, context::BashContext) = BashMessage(command, output, exitcode, bashstatuses[cancelled], bashextents[truncated], file, timestamp, context)
+bashcancelled(::FinishedBash) = false
+bashcancelled(::CancelledBash) = true
+bashtruncated(::FullBash) = false
+bashtruncated(::TruncatedBash) = true
+bashcontext(::Nothing) = DefaultBashContext()
+const bashcontexts = Dict(false => IncludedBashContext(), true => ExcludedBashContext())
+bashcontext(value::Bool) = bashcontexts[value]
+bashexcluded(::DefaultBashContext) = nothing
+bashexcluded(::IncludedBashContext) = false
+bashexcluded(::ExcludedBashContext) = true
+
 struct ToolCall
     id::String
     name::Union{Nothing, String}
@@ -292,6 +328,34 @@ struct SessionName <: K.Event
     name::String
 end
 
+struct BashOutput{M<:BashMessage} <: K.Event
+    revision::Int
+    message::M
+end
+
+abstract type SessionEntry end
+struct ModelEntry <: SessionEntry
+    provider::String
+    model::String
+end
+struct ThinkingEntry <: SessionEntry
+    level::String
+end
+struct MessageEntry <: SessionEntry
+    message::Dict{String, Any}
+end
+struct NameEntry <: SessionEntry
+    name::String
+end
+struct SessionRecord{E<:SessionEntry} <: K.Event
+    revision::Int
+    id::String
+    parent::Union{Nothing, String}
+    timestamp::String
+    entry::E
+end
+const SessionRecordValue = Union{SessionRecord{ModelEntry}, SessionRecord{ThinkingEntry}, SessionRecord{MessageEntry}, SessionRecord{NameEntry}}
+
 sessionname(text::AbstractString) = String(strip(replace(text, r"[\r\n]+" => " ")))
 
 struct ContinueQueued <: K.Event
@@ -420,6 +484,18 @@ function K.step(state::State, event::Dequeue)
 end
 
 function K.step(state::State, event::SessionName)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    K.Applied(update(state), ())
+end
+
+function K.step(state::State, event::BashOutput)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    messages = copy(getfield(state, :messages))
+    push!(messages, event.message)
+    K.Applied(update(state; messages), ())
+end
+
+function K.step(state::State, event::SessionRecord)
     event.revision == state.revision || return K.Rejected(state, :revision)
     K.Applied(update(state), ())
 end

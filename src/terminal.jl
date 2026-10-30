@@ -9,14 +9,22 @@ struct TextMode <: TerminalMode end
 struct JSONMode <: TerminalMode
     provider::String
 end
+struct RPCMode <: TerminalMode
+    provider::String
+    thinking::Union{Nothing, String}
+end
+RPCMode(provider::String) = RPCMode(provider, nothing)
 struct InvalidMode <: TerminalMode end
 
-const terminalmodes = Dict("text" => TextMode(), "json" => JSONMode(""))
+const terminalmodes = Dict("text" => TextMode(), "json" => JSONMode(""), "rpc" => RPCMode(""))
 terminalmode(value) = get(terminalmodes, value, InvalidMode())
 assignmode(::TerminalMode, mode::TerminalMode) = mode
 assignmode(invalid::InvalidMode, ::TerminalMode) = invalid
 provider(mode::TerminalMode, name) = mode
 provider(::JSONMode, name) = JSONMode(name)
+provider(::RPCMode, name) = RPCMode(name)
+thinkingmode(mode::TerminalMode, level) = mode
+thinkingmode(mode::RPCMode, level) = RPCMode(mode.provider, level)
 
 streamstate(value::Bool) = (Unstreamed(), Streamed())[Int(value) + 1]
 linestate(value::Bool) = (LineClosed(), LineOpen())[Int(value) + 1]

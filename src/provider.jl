@@ -23,6 +23,13 @@ end
 OpenAI(base, model, key) = OpenAI(base, model, key, Pair{String, String}[], DirectRoute())
 OpenAI(base, model, key, extra) = OpenAI(base, model, key, extra, DirectRoute())
 
+struct UnconfiguredProvider
+    base::String
+    model::String
+    key::String
+end
+UnconfiguredProvider() = UnconfiguredProvider("", "unknown", "")
+
 # Keep request cancellation scoped to the calling task without changing provider APIs.
 const requestkey = gensym(:request_context)
 requestcontext() = get(task_local_storage(), requestkey, nothing)

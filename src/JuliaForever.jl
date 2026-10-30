@@ -163,14 +163,24 @@ function acquire(auth::OpenRouterAuth, info::NamedTuple, model)
     login!(login, code, info, model)
 end
 
+acquire(auth, info, model, ::TerminalMode) = acquire(auth, info, model)
+function acquire(::APIKeyAuth, info::NamedTuple, model, ::RPCMode)
+    missing = missingmodel(ENV, info, model)
+    missingkey!(missing, keyvalue(ENV, info), info)
+    isempty(missing) || return UnconfiguredProvider()
+    provider(info, ENV, model)
+end
+
 launch(output, status::Integer, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode) = status
 
-function launch(output, model::Union{OpenAI, OpenAIResponses, Anthropic, Google}, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode)
+function launch(output, model::Union{OpenAI, OpenAIResponses, Anthropic, Google, UnconfiguredProvider}, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode)
     tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), PowerShell(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
-    terminal = Terminal(output, stderr, [model.key; last.(model.extra)], mode)
+    terminal = Terminal(output, stderr, terminalkeys(model), mode)
     registry = plugins(terminal, tools, packages, environments)
     Base.invokelatest(terminal!, terminal, model, registry, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
 end
+terminalkeys(model) = [model.key; last.(model.extra)]
+terminalkeys(::UnconfiguredProvider) = String[]
 
 pluginfailure!(terminal::Terminal, name, exception::InterruptException) = failure!(terminal, exception)
 
@@ -223,25 +233,53 @@ end
 registered(terminal, registry, name, ::Bool) = registry
 registered(terminal, registry, name, result::Extensions.Rejected) = pluginfailure!(terminal, name, result)
 
-function help!()
-    println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --export PATH [OUTPUT.html|OUTPUT.json] | jf --history PATH --abandon REASON | jf [options] --login-chatgpt [prompt] | jf --logout-chatgpt | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt] | jf --logout-openrouter\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
-    println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --fork PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
-    println("Tools: --tools (-t) LIST, --exclude-tools (-xt) LIST, --no-builtin-tools (-nbt), --no-tools (-nt).")
-    println("Terminal: --tui-mode fullscreen|regular (default: fullscreen).")
-    println("Output: --mode text|json.")
-    println("Use @PATH to include a text file or image in the initial prompt.")
-    println("Models: --list-models [search] lists models for configured providers; --model accepts provider/model or a model name.")
+function help!(io=stdout)
+    println(io, "jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --export PATH [OUTPUT.html|OUTPUT.json] | jf --history PATH --abandon REASON | jf [options] --login-chatgpt [prompt] | jf --logout-chatgpt | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt] | jf --logout-openrouter\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
+    println(io, "Sessions: --continue (-c), --resume (-r), --session PATH|ID, --fork PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
+    println(io, "Tools: --tools (-t) LIST, --exclude-tools (-xt) LIST, --no-builtin-tools (-nbt), --no-tools (-nt).")
+    println(io, "Terminal: --tui-mode fullscreen|regular (default: fullscreen).")
+    println(io, "Output: --mode text|json|rpc.")
+    println(io, "Use @PATH to include a text file or image in the initial prompt.")
+    println(io, "Models: --list-models [search] lists models for configured providers; --model accepts provider/model or a model name.")
     0
 end
+
+function helpmode(args)
+    stop = something(findfirst(==("--"), args), length(args) + 1)
+    positions = Dict(value => index for (index, value) in enumerate(@view args[1:stop-1]))
+    index = get(positions, "--mode", nothing)
+    helpmode(args, index, stop)
+end
+helpmode(args, ::Nothing, stop) = TextMode()
+helpmode(args, index::Int, stop) = index + 1 < stop ? terminalmode(args[index+1]) : InvalidMode()
+helpstream(::Union{JSONMode, RPCMode}) = stderr
+helpstream(::TerminalMode) = stdout
 
 include("cli_options.jl")
 
 function (@main)(args)
-    clifinal(foldl(cliargument, args; init=CLIReady(CLIOptions())))
+    clifinal(foldl(cliargument, args; init=CLIReady(CLIOptions(helpstream(helpmode(args))))))
 end
 
 selectedmode(action, options, ::TerminalMode) = selectedtools(action, options, options.rules)
-function selectedmode(action, options, ::JSONMode)
+selectedmode(action, options, ::JSONMode) = headlessoutput(action, options)
+selectedmode(action, options, ::RPCMode) = rpcauth(action, options, options.auth)
+rpcauth(action, options, ::APIKeyAuth) = rpcaction(action, options)
+function rpcauth(action, options, ::Union{OpenRouterAuth, ChatGPTAuth})
+    println(stderr, "Interactive login is unavailable in RPC mode.")
+    2
+end
+rpcaction(::Nothing, options) = rpcsession(options, options.session)
+function rpcaction(action, options)
+    println(stderr, "History inspection, abandonment and model listing are unavailable in RPC mode.")
+    2
+end
+rpcsession(options, request::SessionCatalog.Request) = headlessoutput(nothing, options)
+function rpcsession(options, ::SessionCatalog.Picker)
+    println(stderr, "Interactive session selection is unavailable in RPC mode.")
+    2
+end
+function headlessoutput(action, options)
     output = Base.fdio(reinterpret(Int32, Base.Libc.dup(Base.RawFD(1))), true)
     try
         redirect_stdout(first(Base.unwrapcontext(stderr))) do
@@ -252,7 +290,7 @@ function selectedmode(action, options, ::JSONMode)
     end
 end
 function selectedmode(action, options, ::InvalidMode)
-    println(stderr, "--mode requires text or json.")
+    println(stderr, "--mode requires text or json or rpc.")
     2
 end
 selectedtools(action, options, ::ToolSelection.Rule) = selectedprovider(action, options, options.selected)
@@ -332,10 +370,11 @@ function launchprovider(options)
     (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, outputmode, output) = options
     name = providername(auth, selected)
     info = launchinfo(auth, options.modelconfig, name, requested_model, get(options, :catalog_provider, nothing))
-    model = acquire(auth, info, requested_model)
+    model = acquire(auth, info, requested_model, outputmode)
     model = applythinking(model, get(options, :thinking, nothing))
     Base.ScopedValues.with(tuimode => LiveTerminal.withprovider(options.tui, name)) do
-        launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, provider(outputmode, name))
+        mode = thinkingmode(provider(outputmode, name), get(options, :requested_thinking, nothing))
+        launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode)
     end
 end
 applythinking(model, ::Nothing) = model
@@ -553,5 +592,7 @@ readcommand!(terminal, agent, extensions, history, line, input, sessiondir, temp
 readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, command::TerminalCommand) = command!(command, terminal, agent, history, input, sessiondir, extensions)
 
 include("live_json.jl")
+include("headless.jl")
+starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates::Union{AbstractDict, Skills.Resources}, ::RPCMode) = Headless.rpc!(terminal, agent, extensions, store, args, sessiondir, templates)
 
 end

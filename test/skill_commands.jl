@@ -115,7 +115,7 @@ end
         records = JSON3.read.(readlines(output))
         message = only(record.message for record in records if record.type == "message_end" && record.message.role == "user")
         expected = block("hidden", path, "JSON instructions.") * "\n\nuse JSON"
-        @test message.content == expected
+        @test message.content[1].text == expected
         request = JSON3.read(only(readlines(requests)))
         @test last([item.content for item in request if item.role == "user"]) == expected
     end
