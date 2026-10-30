@@ -13,6 +13,10 @@ struct Summary <: Message
     content::String
 end
 
+struct SkillContext <: Message
+    content::String
+end
+
 struct ImageUser <: Message
     content::String
     images::Vector{Image}

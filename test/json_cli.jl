@@ -19,6 +19,14 @@ end
 
 @testset "JSON invocation, provider and session boundaries" begin
     mktempdir() do dir
+        skill = joinpath(dir, ".pi", "skills", "json-check", "SKILL.md")
+        mkpath(dirname(skill))
+        write(skill, "---\nname: json-check\ndescription: JSON mode skill metadata\n---\n")
+        withskill = json_cli(dir, "skills", "hello")
+        @test withskill.status == 0 && withskill.records !== nothing
+        if withskill.records !== nothing
+            @test occursin("JSON mode skill metadata", only(record.assistantMessageEvent.delta for record in withskill.records if record.type == "message_update" && record.assistantMessageEvent.type == "text_delta"))
+        end
         empty = json_cli(dir, "text")
         @test empty.status == 0 && length(empty.records) == 1 && only(empty.records).type == "session"
         invalid = json_cli(dir, "text", "--mode", "rpc", "hello")

@@ -18,6 +18,7 @@ record(value::Kernel.Applied) = (; type="applied", state=record(value.state), ef
 record(value::Kernel.Duplicate) = (; type="duplicate", state=record(value.state))
 record(value::Kernel.Rejected) = (; type="rejected", state=record(value.state), reason=String(value.reason))
 record(value::Conversation.User) = (; type="user", value.content)
+record(value::Conversation.SkillContext) = (; type="skill_context", value.content)
 record(value::Conversation.RawMessage) = (; type="raw_message", value.value)
 record(value::Conversation.ToolCall) = (; type="tool_call", value.id, value.name, value.arguments, value.metadata)
 record(value::Conversation.Assistant) = (; type="assistant", value.content, calls=map(record, value.calls), value.finish, value.done, value.metadata)
