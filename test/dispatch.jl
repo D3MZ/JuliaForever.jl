@@ -78,6 +78,20 @@ end
 @testset "agent lifecycle states" begin
     agent = Agent(nothing, [])
     @test !agent.running && !agent.cancelled
+    @test JuliaForever.startturn!(agent) isa JuliaForever.Running
+    @test JuliaForever.startturn!(agent) === nothing
+    @test respond!(agent, "overlap") == :busy
+    executor = JuliaForever.Execution.Executor(1)
+    try
+        @test respond!(agent, "overlap"; executor, context="unused") == :busy
+    finally
+        close(executor)
+    end
+    JuliaForever.finish!(agent)
+    recorded = Agent(nothing, []; history=JuliaForever.History.Memory())
+    @test JuliaForever.startturn!(recorded) isa JuliaForever.Running
+    @test respond!(recorded, "overlap") == :busy
+    JuliaForever.finish!(recorded)
     @test JuliaForever.begin!(agent)
     @test agent.running && !agent.cancelled
     @test !JuliaForever.begin!(agent)

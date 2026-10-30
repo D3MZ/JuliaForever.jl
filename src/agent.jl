@@ -147,18 +147,23 @@ cancelled(::Union{Idle, Running}) = false
 cancelled(::Cancelled) = true
 cancelled(agent::Agent) = lock(() -> cancelled(agent.turn), agent.lock)
 
-function begin!(agent::Agent)
+begin!(agent::Agent) = began(startturn!(agent))
+begin!(agent::Agent, turn::TurnState) = began(startturn!(agent, turn))
+began(::Nothing) = false
+began(::Running) = true
+
+function startturn!(agent::Agent)
     lock(agent.lock) do
-        begin!(agent, agent.turn)
+        startturn!(agent, agent.turn)
     end
 end
 
-begin!(agent::Agent, ::Union{Running, Cancelled}) = false
+startturn!(agent::Agent, ::Union{Running, Cancelled}) = nothing
 
-function begin!(agent::Agent, ::Idle)
+function startturn!(agent::Agent, ::Idle)
     agent.turn = Running()
     agent.shell = ShellCancellation()
-    true
+    agent.turn
 end
 
 text(value::AbstractString) = String(value)
@@ -487,8 +492,9 @@ respond!(agent::Agent, prompt, executor, context; kwargs...) = respond_execution
 respond!(agent::Agent, prompt, ::Nothing, ::Nothing; kwargs...) = respond!(agent, prompt, agent.history; kwargs...)
 respond!(agent::Agent, prompt, ::History.Store; kwargs...) = respond_recorded!(agent, prompt; kwargs...)
 
-function respond!(agent::Agent, prompt, ::Nothing; on_event, on_agent_event, parameters, tool_execution)
-    begin!(agent) || return :busy
+respond!(agent::Agent, prompt, ::Nothing; on_event, on_agent_event, parameters, tool_execution) = direct_start!(agent, prompt, startturn!(agent); on_event, on_agent_event, parameters, tool_execution)
+direct_start!(agent, prompt, ::Nothing; kwargs...) = :busy
+function direct_start!(agent, prompt, ::Running; on_event, on_agent_event, parameters, tool_execution)
     messages = Dict{String, Any}[]
     event_lock = ReentrantLock()
     callback = on_agent_event
