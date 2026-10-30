@@ -8,6 +8,11 @@ const X = J.Execution
     requests = Any[]
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
         push!(requests, JSON3.read(String(request.body)))
+        if endswith(request.target, "/messages")
+            total = count(request -> request.model == "claude-sonnet-4-5", requests)
+            body = Dict("content" => [Dict("type" => "thinking", "thinking" => "thought", "signature" => "signed"), Dict("type" => "text", "text" => "answer")], "stop_reason" => "end_turn", "usage" => Dict("input_tokens" => total == 1 ? 190000 : 0, "output_tokens" => 0))
+            return HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(body))
+        end
         body = Dict("id" => "r", "status" => "completed", "output" => [Dict("type" => "message", "id" => "m", "role" => "assistant", "status" => "completed", "content" => [Dict("type" => "output_text", "text" => "done", "annotations" => [])])])
         HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(body))
     end
@@ -50,6 +55,20 @@ const X = J.Execution
                     agent = Agent(nothing, Dict{String, J.Tool}(), Dict{String, Any}[Dict("role" => "system", "content" => "base")]; history=J.History.Memory())
                     @test respond!(agent, "hello"; executor=pool, context="context-remote", on_agent_event=E.listen(E.snapshot(changed))).value == X.Rejected(:provider_failure)
                     @test length(requests) == 2
+
+                    anthropic = J.applythinking(Anthropic("http://$(HTTP.server_addr(server))", "claude-sonnet-4-5", "synthetic"), "high")
+                    @test remotecall_fetch(X.install!, pid, "context-remote-accounting", anthropic, [])
+                    try
+                        hooks = E.Registry()
+                        E.register!(hooks, :fixture, E.Plugin(; hooks=(:context_with_system => event -> nothing,)))
+                        listener = E.listen(E.snapshot(hooks))
+                        agent = Agent(nothing, []; history=J.History.Memory())
+                        @test respond!(agent, "hi"; executor=pool, context="context-remote-accounting", on_agent_event=listener).value == "answer"
+                        @test respond!(agent, "next"; executor=pool, context="context-remote-accounting", on_agent_event=listener).value == "answer"
+                        @test requests[4].max_tokens == 5902
+                    finally
+                        remotecall_wait(X.uninstall!, pid, "context-remote-accounting")
+                    end
                 finally
                     close(pool)
                     remotecall_wait(X.uninstall!, pid, "context-remote")

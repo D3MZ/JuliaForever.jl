@@ -64,6 +64,40 @@ function J.stream(p::StreamingProvider, messages, tools; parameters=Dict(), on_e
     J.Completion(popfirst!(p.replies), nothing, "stop", J.Finished(), nothing)
 end
 
+mutable struct CompactProvider
+    requests::Vector{Any}
+    replies::Vector{Completion}
+end
+function J.complete(p::CompactProvider, messages, tools)
+    push!(p.requests, deepcopy(messages))
+    popfirst!(p.replies)
+end
+
+@testset "context hooks stay temporary through compaction and replay" begin
+    reply(text, tokens) = Completion(Dict{String, Any}("role" => "assistant", "content" => text), Usage(tokens, 0, 0, 0, 0, tokens, nothing), "stop", true, nothing)
+    provider = CompactProvider([], [reply("one", 50), reply("two", 81), reply("three", 50), reply("four", 50)])
+    events = Any[]
+    registry = E.Registry()
+    E.register!(registry, :fixture, E.Plugin(; hooks=(:context => event -> (push!(event.messages, Dict("role" => "user", "content" => "temporary")); nothing),)))
+    listener = E.listen(E.snapshot(registry); on_event=event -> push!(events, event))
+    history = J.History.Memory()
+    agent = Agent(provider, Dict{String, J.Tool}(), Dict{String, Any}[Dict("role" => "system", "content" => "base")]; history)
+    @test respond!(agent, "first"; on_agent_event=listener) == "one"
+    @test respond!(agent, "second"; on_agent_event=listener) == "two"
+    summaries = Any[]
+    policy = J.ChangingCompaction(() -> J.UsageCompaction(100, 20, J.RecentTokens(0)))
+    @test respond!(agent, "third"; on_agent_event=listener, auto_compaction=policy, summarize=messages -> (push!(summaries, deepcopy(messages)); "checkpoint")) == "three"
+    @test length(summaries) == 1 && !occursin("temporary", repr(summaries))
+    @test occursin("checkpoint", repr(provider.requests[3])) && occursin("temporary", repr(provider.requests[3]))
+    @test [event.type for event in events if event.type in (:auto_compaction_start, :auto_compaction_end)] == [:auto_compaction_start, :auto_compaction_end]
+    @test !occursin("temporary", repr(J.History.snapshot(history)))
+    restored = Agent(provider, []; history)
+    @test restored.messages == agent.messages
+    @test respond!(restored, "fourth"; on_agent_event=listener) == "four"
+    @test occursin("checkpoint", repr(provider.requests[4])) && occursin("temporary", repr(provider.requests[4]))
+    @test !occursin("temporary", repr(J.History.snapshot(history)))
+end
+
 @testset "streamed continuation and persisted history" begin
     mktempdir() do dir
         call = Dict("id" => "one", "type" => "function", "function" => Dict("name" => "write", "arguments" => "{\"path\":\"a\",\"content\":\"ok\"}"))
