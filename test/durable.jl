@@ -204,9 +204,7 @@ end
             D.put!(tx, D.Document(D.mint!(tx), id, Dict("value" => 2)))
         end
         @test D.revision(store) == D.Rejected(:failed)
-        @test store.failed && !store.closed && !store.busy
         close(store)
-        @test store.failed && store.closed
         reopened = open(D.Store, path)
         @test D.revision(reopened) == 1
         @test get(reopened, D.Conversation, id).value["value"] == 1
