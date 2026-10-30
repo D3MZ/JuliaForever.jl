@@ -121,7 +121,11 @@ function migraterole!(row, message::AbstractDict)
     get(legacyroles, get(message, "role", nothing), ignorerole!)(row, message)
 end
 ignorerole!(row, message) = nothing
-customrole!(row, message) = (row["message"] = merge(Dict{String, Any}(pairs(message)), Dict("role" => "custom")))
+function customrole!(row, message)
+    result = Dict{String, Any}(pairs(message))
+    result["role"] = "custom"
+    row["message"] = result
+end
 const legacyroles = Dict("hookMessage" => customrole!)
 migrate!(header, rows, ::Current) = nothing
 
@@ -130,7 +134,8 @@ ending(text, ::Current) = endswith(text, '\n')
 ending(text, ::SessionVersion) = true
 function rewrite!(path, header, rows, ::SessionVersion)
     open(path, "w") do io
-        for row in (header, rows...)
+        println(io, JSON3.write(header))
+        for row in rows
             println(io, JSON3.write(row))
         end
     end
