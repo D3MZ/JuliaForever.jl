@@ -17,5 +17,6 @@ end
 
 applied!(tools::ToolSet, observation::Conversation.ToolReply) = applied!(tools, observation.result)
 applied!(tools::ToolSet, result::ToolResult) = nothing
+applied!(tools::ToolSet, result::Terminate) = applied!(tools, result.result)
 applied!(tools::ToolSet, result::ToolLoaded) = expose!(tools, result.loaded)
 applied!(tools::ToolSet, result::ToolDiscovery) = expose!(tools, result.loaded)

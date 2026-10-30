@@ -106,4 +106,59 @@ end
     end
 end
 
+@testset "terminating search keeps discovered tools" begin
+    for mode in (:sequential, :parallel), recorded in (false, true)
+        history = recorded ? JuliaForever.History.Memory() : nothing
+        tools = ToolSet([], [Echo()])
+        registry = E.Registry()
+        E.register!(registry, :hook, E.Plugin(; hooks=(:tool_result => (e -> E.Terminate(ToolResult("found"))),)))
+        snapshot = E.snapshot(registry)
+        search = Dict("id" => "search", "type" => "function", "function" => Dict("name" => "tool_search", "arguments" => "{\"query\":\"echo\"}"))
+        provider = Provider(Any[Dict("role" => "assistant", "content" => nothing, "tool_calls" => [search]), Dict("role" => "assistant", "content" => nothing, "tool_calls" => [call("one")]), Dict("role" => "assistant", "content" => "done")], Any[])
+        agent = Agent(provider, tools; history)
+        @test respond!(agent, "find"; on_agent_event=E.listen(snapshot), tool_execution=mode) === nothing
+        @test haskey(agent.tools, "echo")
+        restored = recorded ? Agent(provider, tools; history) : agent
+        @test haskey(restored.tools, "echo")
+        @test respond!(restored, "use"; tool_execution=mode) == "done"
+        @test last([m["content"] for m in restored.messages if m["role"] == "tool"]) == "executed"
+    end
+end
+
+struct EndTool <: JuliaForever.Tool end
+JuliaForever.name(::EndTool) = "end_tool"
+JuliaForever.description(::EndTool) = "end"
+JuliaForever.schema(::EndTool) = Dict("type" => "object")
+JuliaForever.execute(::EndTool, args) = E.Terminate(ToolResult("ended"))
+
+@testset "executor observes terminating batches" begin
+    X = JuliaForever.Execution
+    for recorded in (false, true), queued in (:none, :steer, :followup), mixed in (false, true)
+        history = recorded ? JuliaForever.History.Memory() : nothing
+        ending = Dict("id" => "one", "type" => "function", "function" => Dict("name" => "end_tool", "arguments" => "{}"))
+        provider = Provider(Any[Dict("role" => "assistant", "content" => nothing, "tool_calls" => (mixed ? [ending, call("two")] : [ending])), Dict("role" => "assistant", "content" => "done"), Dict("role" => "assistant", "content" => "done")], Any[])
+        executor = X.Executor(1)
+        @test X.install!("termination-review", provider, [EndTool(), Echo()])
+        try
+            agent = Agent(nothing, [EndTool(), Echo()]; history)
+            result = respond!(agent, "go"; executor, context="termination-review", on_agent_event=e -> begin
+                if e.type == :tool_execution_end && e.tool_call_id == "one"
+                    queued == :steer && steer!(agent, "steer")
+                    queued == :followup && followup!(agent, "followup")
+                end
+            end)
+            @test result.value == (queued == :none && !mixed ? nothing : "done")
+            @test length(provider.requests) == (queued == :none && !mixed ? 1 : queued == :followup && mixed ? 3 : 2)
+            @test [m["content"] for m in agent.messages if m["role"] == "tool"] == (mixed ? ["ended", "executed"] : ["ended"])
+            if recorded
+                restored = Agent(nothing, [EndTool(), Echo()]; history)
+                @test restored.messages == agent.messages
+            end
+        finally
+            X.uninstall!("termination-review")
+            close(executor)
+        end
+    end
+end
+
 end
