@@ -63,12 +63,18 @@ const punctuation = Dict(char => Char(index) for (index, char) in enumerate(" _-
 
 catalog() = JSON3.read(read(path), Vector{Model})
 
+function configjson(bytes)
+    text = replace(String(bytes), Regex("^\ufeff") => "")
+    text = replace(text, r"(\"(?:\\.|[^\"\\])*\")|//[^\n]*" => s"\1")
+    replace(text, r"(\"(?:\\.|[^\"\\])*\")|,(?=\s*[}\]])" => s"\1")
+end
+
 function load(configpath::AbstractString)
     models = catalog()
     isfile(configpath) || return Registry(models, Dict{String, Any}())
     bytes = read(configpath)
     try
-        config = JSON3.read(bytes, Dict{String, Any})
+        config = JSON3.read(configjson(bytes), Dict{String, Any})
         providers = Dict{String, Any}(config["providers"])
         foldl(applyprovider!, pairs(providers); init=Registry(models, providers))
     catch
@@ -112,8 +118,10 @@ validroute(value::AbstractString, inherited) = check(!isempty(value))
 validroute(value, inherited) = InvalidConfig()
 validmodel(model) = InvalidConfig()
 function validmodel(model::AbstractDict)
-    combine(validtokens(get(model, "contextWindow", nothing)), validtokens(get(model, "maxTokens", nothing)), validinput(get(model, "input", nothing)))
+    combine(validtokens(get(model, "contextWindow", nothing)), validtokens(get(model, "maxTokens", nothing)), validinput(get(model, "input", nothing)), validreasoning(get(model, "reasoning", false)))
 end
+validreasoning(value) = InvalidConfig()
+validreasoning(::Bool) = ValidConfig()
 validtokens(::Nothing) = ValidConfig()
 validtokens(::Bool) = InvalidConfig()
 validtokens(value::Integer) = check(value > 0)
