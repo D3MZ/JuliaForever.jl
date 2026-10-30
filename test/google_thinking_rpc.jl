@@ -79,14 +79,13 @@ end
             id = "gemini-3-flash-preview"
             jfagent = joinpath(workspace, "jf-agent")
             jf = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $(joinpath(workspace, "jf-sessions")) --model google/$id`; dir=workspace)
-            actual = exchange(jf, environment(workspace, jfagent, base); modelchange=true)
+            actual = exchange(jf, environment(workspace, jfagent, base))
             captured = copy(requests)
             @test length(captured) == 3
             @test actual.state["data"]["model"]["id"] == id
             @test actual.state["data"]["thinkingLevel"] == "medium"
             @test actual.levels["data"]["levels"] == ["minimal", "low", "medium", "high"]
             @test actual.low["success"] && actual.new["success"] && actual.switched["success"]
-            @test !actual.rejected["success"]
             @test actual.restored["data"]["thinkingLevel"] == "low"
             @test all(r -> r.target == "/google/models/$id:streamGenerateContent?alt=sse" && r.key == "synthetic-google-rpc-key" && isempty(r.authorization), captured)
             @test [r.body["generationConfig"]["thinkingConfig"] for r in captured] == [Dict("includeThoughts" => true, "thinkingLevel" => level) for level in ("MEDIUM", "LOW", "LOW")]
@@ -111,6 +110,39 @@ end
                 @test [result["data"]["thinkingLevel"] for result in (actual.state, actual.newstate, actual.restored)] == [result["data"]["thinkingLevel"] for result in (reference.state, reference.newstate, reference.restored)]
                 @test actual.levels["data"]["levels"] == reference.levels["data"]["levels"]
                 @test all(r -> r.key == "synthetic-google-rpc-key" && isempty(r.authorization), picaptured)
+
+                before = length(requests)
+                switched = exchange(jf, environment(workspace, jfagent, base); modelchange=true)
+                after = length(requests)
+                reference = exchange(pi, environment(workspace, piagent, base); modelchange=true)
+                actualrequests = requests[before+1:after]
+                pirequests = requests[after+1:end]
+                @test switched.rejected["success"] == reference.rejected["success"] == true
+                @test switched.rejected["data"]["id"] == reference.rejected["data"]["id"] == "gemini-3.1-pro-preview"
+                @test switched.newstate["data"]["model"]["id"] == reference.newstate["data"]["model"]["id"] == id
+                @test switched.restored["data"]["model"]["id"] == reference.restored["data"]["model"]["id"] == id
+                @test [r.target for r in actualrequests] == [r.target for r in pirequests]
+                @test [r.body["contents"] for r in actualrequests] == [r.body["contents"] for r in pirequests]
+                @test [r.body["generationConfig"]["thinkingConfig"] for r in actualrequests] == [r.body["generationConfig"]["thinkingConfig"] for r in pirequests]
+
+                autopiagent = joinpath(workspace, "auto-pi-agent")
+                mkpath(autopiagent)
+                write(joinpath(autopiagent, "models.json"), JSON3.write((; providers=(; google=(; baseUrl=base)))))
+                write(joinpath(autopiagent, "settings.json"), JSON3.write((; defaultProvider="google", defaultModel=id)))
+                autofn(agentdir) = [filter(pair -> first(pair) != "OPENAI_API_KEY", environment(workspace, agentdir, base)); "OPENAI_API_KEY" => nothing; "GEMINI_MODEL" => id]
+                jfauto = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $(joinpath(workspace, "jf-auto-sessions"))`; dir=workspace)
+                piauto = Cmd(`node $(joinpath(@__DIR__, "headless_reference.mjs")) $source --mode rpc --session-dir $(joinpath(workspace, "pi-auto-sessions")) --approve`; dir=workspace)
+                automatic = exchange(jfauto, autofn(joinpath(workspace, "auto-jf-agent")); modelchange=true)
+                autoreference = exchange(piauto, autofn(autopiagent); modelchange=true)
+                @test automatic.state["data"]["model"]["id"] == autoreference.state["data"]["model"]["id"] == id
+                @test automatic.rejected["success"] == autoreference.rejected["success"] == true
+                @test automatic.newstate["data"]["model"]["id"] == autoreference.newstate["data"]["model"]["id"] == id
+                @test automatic.restored["data"]["model"]["id"] == autoreference.restored["data"]["model"]["id"] == "gemini-3.1-pro-preview"
+                jfresume = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session $(automatic.recorded["data"]["sessionFile"])`; dir=workspace)
+                piresume = Cmd(`node $(joinpath(@__DIR__, "headless_reference.mjs")) $source --mode rpc --session $(autoreference.recorded["data"]["sessionFile"]) --approve`; dir=workspace)
+                resumed = exchange(jfresume, autofn(joinpath(workspace, "auto-jf-agent")); initialonly=true)
+                piresumed = exchange(piresume, autofn(autopiagent); initialonly=true)
+                @test resumed.state["data"]["model"]["id"] == piresumed.state["data"]["model"]["id"] == "gemini-3.1-pro-preview"
             end
 
             for (suffix, level, wire) in (("high", "high", "HIGH"), ("off", "minimal", "MINIMAL"))

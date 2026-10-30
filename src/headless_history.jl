@@ -78,7 +78,7 @@ function fork!(session, command, tree, choice::J.TreeTerminal.ForkChoice)
 end
 forkresult!(session, agent, history, choice, ::Nothing) = Failure("Could not fork the session")
 function forkresult!(session, agent, history, choice, ::SessionStarted)
-    rebind!(session, agent, history)
+    rebind!(session, agent, history, ResumeBinding())
     lock(session.lock) do
         append!(session.messages, session.stream.initial)
         empty!(session.stream.initial)

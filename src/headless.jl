@@ -80,6 +80,9 @@ struct Unknown <: Command end
 struct Unsupported <: Command end
 struct FailedRun end
 struct SessionStarted end
+abstract type SessionBinding end
+struct NewBinding <: SessionBinding end
+struct ResumeBinding <: SessionBinding end
 abstract type TurnResult end
 struct CompletedTurn <: TurnResult end
 struct FailedTurn <: TurnResult end
@@ -162,8 +165,9 @@ struct Failure <: Reply
 end
 Success() = Success(NamedTuple())
 
-mutable struct Session{A, T, E, S, P, L, R}
+mutable struct Session{A, T, E, S, P, L, R, M}
     agent::A
+    initialprovider::M
     terminal::T
     extensions::E
     store::S
@@ -192,9 +196,11 @@ end
 
 function Session(terminal, agent, extensions, store, templates, directory)
     stream = LiveJSON.Stream(terminal, agent, terminal.mode)
-    thinking = initialthinking!(agent, terminal.mode.thinking)
     registry = modelregistry(agent.provider)
-    session = Session(agent, terminal, extensions, store, templates, registry, directory, ReentrantLock(), Dict{String, Any}[], LiveJSON.id(store[]), sessionname(J.SessionCatalog.sessionname(store[])), stream, thinking, nothing, String[], String[], nothing, Base.Event(), OpenOutput(), AvailableStatistics(), J.ShellCancellation(), Set{Task}(), J.Conversation.BashMessage[], J.Conversation.SessionRecordValue[], nothing)
+    session = Session(agent, agent.provider, terminal, extensions, store, templates, registry, directory, ReentrantLock(), Dict{String, Any}[], LiveJSON.id(store[]), sessionname(J.SessionCatalog.sessionname(store[])), stream, "off", nothing, String[], String[], nothing, Base.Event(), OpenOutput(), AvailableStatistics(), J.ShellCancellation(), Set{Task}(), J.Conversation.BashMessage[], J.Conversation.SessionRecordValue[], nothing)
+    startupmodel!(session, agent, terminal.mode.model, ResumeBinding())
+    session.thinking = initialthinking!(agent, terminal.mode.thinking)
+    session.stream = LiveJSON.Stream(terminal, agent, terminal.mode)
     restore!(session, agent)
     restoreentries!(session)
     session
@@ -310,18 +316,19 @@ newsession!(session, parent::String) = Failure("Parent session tracking is not s
 function newsession!(session, ::Nothing)
     handle!(session, Abort())
     agent, history, status = J.new!(session.terminal, session.agent, session.store[], session.directory, session.extensions, session.templates)
-    newresult!(session, agent, history, get(newstatuses, status, nothing))
+    newresult!(session, agent, history, get(newstatuses, status, nothing), NewBinding())
 end
-newresult!(session, agent, history, ::Nothing) = Failure("Could not start a new session")
-function newresult!(session, agent, history, ::SessionStarted)
-    rebind!(session, agent, history)
+newresult!(session, agent, history, ::Nothing, binding) = Failure("Could not start a new session")
+function newresult!(session, agent, history, ::SessionStarted, binding)
+    rebind!(session, agent, history, binding)
     Success((; data=(; cancelled=false)))
 end
 
-function rebind!(session, agent, history)
+function rebind!(session, agent, history, binding::SessionBinding)
     lock(session.lock) do
         copyqueuemodes!(session.agent, agent)
         session.agent = agent
+        startupmodel!(session, agent, session.terminal.mode.model, binding)
         session.thinking = initialthinking!(agent, session.terminal.mode.thinking)
         session.store[] = history
         session.id = J.LiveJSON.id(history)
@@ -335,6 +342,16 @@ function rebind!(session, agent, history)
         restore!(session, agent)
         restoreentries!(session)
         write!(session, (; type="queue_update", steering=String[], followUp=String[]))
+    end
+    nothing
+end
+
+startupmodel!(session, agent, ::Nothing, ::ResumeBinding) = restoremodel!(session, agent)
+startupmodel!(session, agent, ::Nothing, ::NewBinding) = resetmodel!(session, agent)
+startupmodel!(session, agent, ::String, binding::SessionBinding) = resetmodel!(session, agent)
+function resetmodel!(session, agent)
+    lock(agent.lock) do
+        agent.provider = session.initialprovider
     end
     nothing
 end
@@ -358,7 +375,7 @@ switch!(session, failure::J.ToolFailure) = Failure(J.redact(session.terminal, fa
 switch!(session, rejected::J.History.Rejected) = Failure(string(rejected.reason))
 function switch!(session, selected::J.History.Tree)
     agent, history, status = J.resume!(session.terminal, session.agent, session.store[], selected)
-    newresult!(session, agent, history, get(newstatuses, status, nothing))
+    newresult!(session, agent, history, get(newstatuses, status, nothing), ResumeBinding())
 end
 
 handle!(session, ::CloneSession) = clonechecked!(session, J.sourcecheck!(session.terminal, session.agent, session.store[]))

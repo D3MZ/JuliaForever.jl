@@ -12,6 +12,7 @@ BuiltinModel(data::Dict{String, Any}) = BuiltinModel(String(data["provider"]), S
 JSON3.StructTypes.StructType(::Type{BuiltinModel}) = JSON3.StructTypes.CustomStruct()
 JSON3.StructTypes.lower(model::BuiltinModel) = model.data
 const RPCModel = Union{ModelWire, BuiltinModel}
+const RecordedModel = Union{Nothing, J.Conversation.ModelEntry}
 struct ModelCatalog
     models::Vector{BuiltinModel}
     index::Dict{Tuple{String, String}, BuiltinModel}
@@ -149,6 +150,42 @@ selectedmodel(provider, model) = nothing
 selectedmodel(provider::NativeModelProvider, model) = selectedmodel(provider, model, provider.route)
 selectedmodel(provider, model, route) = J.modelchange(provider, model.id, route)
 selectedmodel(provider::J.OpenAIResponses, model, ::J.DirectRoute) = J.responselevel(provider, model.id, nothing)
+
+restoremodel!(session, agent) = nothing
+function restoremodel!(session, agent::J.Agent{P}) where {P<:NativeModelProvider}
+    entry = foldl(recordedmodel, getfield(agent, :events); init=nothing)::RecordedModel
+    restoremodel!(session, agent, entry)
+end
+recordedmodel(current, event) = current
+recordedmodel(current, event::J.Conversation.SessionRecord{J.Conversation.ModelEntry}) = event.entry
+recordedmodel(current, event::J.Conversation.SessionRecord{J.Conversation.MessageEntry})::RecordedModel = recordedmodel(current, event.entry.message, LiveJSON.role(event.entry.message))
+recordedmodel(current, message, role::LiveJSON.Role) = current
+recordedmodel(current, message, ::LiveJSON.AssistantRole) = recordedmodel(current, get(message, "provider", nothing), get(message, "model", nothing))
+recordedmodel(current, provider::String, model::String) = J.Conversation.ModelEntry(provider, model)
+recordedmodel(current, provider, model) = current
+restoremodel!(session, agent, ::Nothing) = nothing
+function restoremodel!(session, agent, entry::J.Conversation.ModelEntry)
+    current = LiveJSON.providername(session.terminal.mode, agent.provider)
+    valid = J.Models.combine(J.Models.check(entry.provider == current), J.Models.check(entry.model != agent.provider.model))
+    restoremodel!(session, agent, entry, valid)
+end
+restoremodel!(session, agent, entry, ::J.Models.InvalidConfig) = nothing
+function restoremodel!(session, agent, entry, ::J.Models.ValidConfig)
+    model = lookupmodelwire(session.registry, entry.provider, entry.model)
+    restoremodel!(agent, model)
+end
+restoremodel!(agent, ::Nothing) = nothing
+restoremodel!(agent, model::RPCModel) = restoreapi!(agent, model, get(J.modelapis, model.api, nothing))
+restoreapi!(agent, model, api) = nothing
+restoreapi!(agent::J.Agent{P}, model, ::Type{P}) where {P<:NativeModelProvider} = restoreselected!(agent, selectedmodel(agent.provider, model))
+restoreselected!(agent, selected) = nothing
+function restoreselected!(agent::J.Agent{P}, selected::P) where {P<:NativeModelProvider}
+    lock(agent.lock) do
+        agent.provider = selected
+    end
+    nothing
+end
+
 setmodel!(session, model, ::Nothing) = Failure("Model switching is not available for this provider")
 setmodel!(session, model, status::Integer) = Failure("Model selection failed")
 setmodel!(session, model, selected) = Failure("Model switching across APIs is not supported")
