@@ -381,40 +381,40 @@ end
 
 const serverrequests = Dict{String, Function}("ping" => pingrequest, "roots/list" => rootrequest)
 
-function received(client::Client, message)
-    message isa AbstractDict && get(message, "jsonrpc", nothing) == "2.0" || return false
-    if haskey(message, "method")
-        method = message["method"]
-        method isa AbstractString || return false
-        if haskey(message, "id")
-            id = message["id"]
-            (id isa AbstractString || (id isa Integer && !(id isa Bool))) || return false
-            return get(serverrequests, method, missingrequest)(client, id)
-        end
-        get(notificationhandlers, method, ignorenotification!)(client, get(message, "params", nothing))
-        return true
-    end
-    haskey(message, "id") || return false
-    id = message["id"]
-    (id isa AbstractString || (id isa Integer && !(id isa Bool))) || return false
-    (haskey(message, "result") != haskey(message, "error")) || return false
+received(client::Client, message) = false
+received(client::Client, message::AbstractDict) = get(message, "jsonrpc", nothing) == "2.0" && receivemethod(client, message, toolfield(message, "method"))
+receivemethod(client, message, ::Nothing) = receivereply(client, message, toolfield(message, "id"))
+receivemethod(client, message, ::Some) = false
+receivemethod(client, message, method::Some{<:AbstractString}) = receiverequest(client, message, something(method), toolfield(message, "id"))
+
+function receiverequest(client, message, method, ::Nothing)
+    get(notificationhandlers, method, ignorenotification!)(client, get(message, "params", nothing))
+    true
+end
+receiverequest(client, message, method, ::Some) = false
+receiverequest(client, message, method, ::Some{Bool}) = false
+receiverequest(client, message, method, id::Some{<:Union{AbstractString, Integer}}) = get(serverrequests, method, missingrequest)(client, something(id))
+
+receivereply(client, message, id) = false
+receivereply(client, message, ::Some{Bool}) = false
+receivereply(client, message, id::Some{<:Union{AbstractString, Integer}}) = receivefields(client, message, something(id), toolfield(message, "result"), toolfield(message, "error"))
+receivefields(client, message, id, result, failure) = false
+receivefields(client, message, id, ::Some, ::Nothing) = receivereply!(client, message, id)
+receivefields(client, message, id, ::Nothing, ::Some) = receivereply!(client, message, id)
+function receivereply!(client, message, id)
     action = lock(() -> prepare!(client, id, get(client.pending, id, nothing), message), client.lock)
     response!(client, id, action)
     true
 end
 
-function responsevalue(message)
-    if haskey(message, "error")
-        detail = message["error"]
-        if detail isa AbstractDict && get(detail, "code", nothing) isa Integer && !(detail["code"] isa Bool) && get(detail, "message", nothing) isa AbstractString
-            Failure(:rpc, detail["message"], detail)
-        else
-            Failure(:protocol, "Invalid JSON-RPC error")
-        end
-    else
-        message["result"]
-    end
-end
+responsevalue(message) = responsevalue(message, toolfield(message, "error"))
+responsevalue(message, ::Nothing) = message["result"]
+responsevalue(message, detail::Some) = rpcerror(something(detail))
+rpcerror(detail) = Failure(:protocol, "Invalid JSON-RPC error")
+rpcerror(detail::AbstractDict) = rpcerror(detail, get(detail, "code", nothing), get(detail, "message", nothing))
+rpcerror(detail, code, message) = Failure(:protocol, "Invalid JSON-RPC error")
+rpcerror(detail, code::Bool, message::AbstractString) = Failure(:protocol, "Invalid JSON-RPC error")
+rpcerror(detail, code::Integer, message::AbstractString) = Failure(:rpc, message, detail)
 
 prepare!(client, id, ::Nothing, message) = nothing
 prepare!(client, id, pending::Pending, message) = prepare!(client, id, pending, message, pending.progress)
@@ -683,10 +683,20 @@ end
 
 initialize!(client::Client, result) = invalid!(client)
 
-function initialize!(client::Client, result::AbstractDict)
-    get(result, "protocolVersion", nothing) in versions && get(result, "capabilities", nothing) isa AbstractDict && get(result["capabilities"], "tools", Dict()) isa AbstractDict && get(result, "serverInfo", nothing) isa AbstractDict && get(result["serverInfo"], "name", nothing) isa AbstractString && get(result["serverInfo"], "version", nothing) isa AbstractString || return invalid!(client)
+const supportedversions = Dict(version => version for version in versions)
+initialize!(client::Client, result::AbstractDict) = initversion!(client, result, get(supportedversions, get(result, "protocolVersion", nothing), nothing))
+initversion!(client, result, ::Nothing) = invalid!(client)
+initversion!(client, result, version::String) = initcapabilities!(client, result, version, get(result, "capabilities", nothing))
+initcapabilities!(client, result, version, capabilities) = invalid!(client)
+initcapabilities!(client, result, version, capabilities::AbstractDict) = inittools!(client, result, version, get(capabilities, "tools", Dict()))
+inittools!(client, result, version, tools) = invalid!(client)
+inittools!(client, result, version, ::AbstractDict) = initserver!(client, result, version, get(result, "serverInfo", nothing))
+initserver!(client, result, version, server) = invalid!(client)
+initserver!(client, result, version, server::AbstractDict) = initidentity!(client, result, version, get(server, "name", nothing), get(server, "version", nothing))
+initidentity!(client, result, version, name, serverversion) = invalid!(client)
+function initidentity!(client, result, version, name::AbstractString, serverversion::AbstractString)
     client.server = result
-    protocol!(client.process, result["protocolVersion"])
+    protocol!(client.process, version)
     initialized!(client, send(client, Dict("jsonrpc" => "2.0", "method" => "notifications/initialized")))
 end
 
@@ -983,10 +993,12 @@ end
 resources(client::Client; timeout=client.timeout) = listall(client, Resources(); timeout)
 templates(client::Client; timeout=client.timeout) = listall(client, Templates(); timeout)
 
-stringvalue(value) = false
-stringvalue(::AbstractString) = true
 validcontent(value) = false
-validcontent(value::AbstractDict) = stringvalue(get(value, "uri", nothing)) && (stringvalue(get(value, "text", nothing)) || stringvalue(get(value, "blob", nothing)))
+validcontent(value::AbstractDict) = validcontent(get(value, "uri", nothing), get(value, "text", nothing), get(value, "blob", nothing))
+validcontent(uri, text, blob) = false
+validcontent(uri::AbstractString, text::AbstractString, blob) = true
+validcontent(uri::AbstractString, text, blob::AbstractString) = true
+validcontent(uri::AbstractString, text::AbstractString, blob::AbstractString) = true
 readresponse(failure::Failure) = failure
 readresponse(value) = Failure(:protocol, "Invalid MCP resources/read result")
 readresponse(value::AbstractDict) = readcontents(value, get(value, "contents", nothing))

@@ -94,7 +94,7 @@ end
 validprovider(name, settings, models) = InvalidConfig()
 function validprovider(name, settings::AbstractDict, models)
     inherited = any(model -> model.provider == name, models)
-    definitions = foldl((result, model) -> combine(result, validdefinition(model, settings, inherited)), get(settings, "models", []); init=ValidConfig())
+    definitions = foldl((result, entry) -> combine(result, validdefinition(last(entry), settings, inherited | (first(entry) > 1))), enumerate(get(settings, "models", [])); init=ValidConfig())
     overrides = foldl((result, model) -> combine(result, validmodel(model)), values(get(settings, "modelOverrides", Dict())); init=ValidConfig())
     combine(validauth(get(settings, "authHeader", nothing)), definitions, overrides)
 end

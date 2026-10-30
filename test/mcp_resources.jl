@@ -34,6 +34,7 @@ resource_server(mode, marker) = `$(Base.julia_cmd()) --startup-file=no --project
                 @test ResourceMCP.templates(client)[1]["name"] == "docs://{id}"
                 @test ResourceMCP.read(client, "docs://intro")["contents"][1]["text"] == "hello: docs://intro"
                 @test ResourceMCP.read(client, "docs://image")["contents"][1]["blob"] == "aGVsbG8="
+                @test ResourceMCP.read(client, "docs://both")["contents"][1]["text"] == "visible"
                 failure = ResourceMCP.read(client, "docs://missing")
                 @test failure isa ResourceMCP.Failure && failure.kind == :rpc && failure.data["code"] == -32002
                 failure = ResourceMCP.read(client, "docs://invalid")

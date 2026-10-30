@@ -278,7 +278,17 @@ loginprovider(::APIKeyAuth, selected, options) = resolveprovider(options, option
 loginprovider(::APIKeyAuth, ::Nothing, options) = defaultchatgpt(options, stdin)
 defaultchatgpt(options, input::IO) = resolveprovider(options, options.requested_model)
 defaultchatgpt(options, input::Base.TTY) = defaultchatgpt(options, options.requested_model)
-defaultchatgpt(options, ::Nothing) = fallbackchatgpt(options)
+defaultchatgpt(options, ::Nothing) = defaultconfiguredchatgpt(options, modelconfig(ENV))
+defaultconfiguredchatgpt(options, ::Models.InvalidConfig) = fallbackchatgpt(options)
+defaultconfiguredchatgpt(options, registry::Models.Registry) = defaultconfiguredchatgpt(options, registry, get(registry.providers, "openai", nothing))
+defaultconfiguredchatgpt(options, registry, ::Nothing) = fallbackchatgpt(options)
+defaultconfiguredchatgpt(options, registry, settings::AbstractDict) = configureddefault(options, registry, configuredkey("openai", settings, providerinfo("openai"), ENV))
+configureddefault(options, registry, ::Nothing) = configuredfallback(options, registry, get(ENV, "JF_PROVIDER", nothing))
+configureddefault(options, registry, key::AbstractString) = configureddefaultkey(options, registry, envvalue(key))
+configureddefaultkey(options, registry, ::Nothing) = configuredfallback(options, registry, get(ENV, "JF_PROVIDER", nothing))
+configureddefaultkey(options, registry, key::AbstractString) = resolveprovider(options, options.requested_model, registry)
+configuredfallback(options, registry, ::Nothing) = launchchatgpt(options, ResumeChatGPT())
+configuredfallback(options, registry, selected::AbstractString) = resolveprovider(options, options.requested_model, registry)
 defaultchatgpt(options, text::AbstractString) = configuredchatgpt(options, text, modelconfig(ENV))
 configuredchatgpt(options, text, ::Models.InvalidConfig) = invalidmodelconfig()
 function configuredchatgpt(options, text, registry::Models.Registry)
@@ -289,7 +299,7 @@ configuredchatgpt(options, registry, result::Models.Resolution) = fallbackchatgp
 configuredchatgpt(options, registry, result::Models.Resolved) = configuredchatgpt(options, registry, result, get(registry.providers, result.model.provider, nothing))
 configuredchatgpt(options, registry, result, ::Nothing) = fallbackchatgpt(options)
 function configuredchatgpt(options, registry, result, settings::AbstractDict)
-    builtin = providerinfo(result.model.provider)
+    builtin = catalogbuiltin(result.model.provider)
     key = configuredkey(result.model.provider, settings, builtin, ENV)
     configuredchatgpt(options, registry, result, key, builtin)
 end
@@ -316,14 +326,15 @@ end
 function launchprovider(options)
     (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, outputmode, output) = options
     name = providername(auth, selected)
-    info = launchinfo(auth, options.modelconfig, name, requested_model)
+    info = launchinfo(auth, options.modelconfig, name, requested_model, get(options, :catalog_provider, nothing))
     model = acquire(auth, info, requested_model)
     Base.ScopedValues.with(tuimode => LiveTerminal.withprovider(options.tui, name)) do
         launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, provider(outputmode, name))
     end
 end
-launchinfo(::APIKeyAuth, registry::Models.Registry, name, model) = configuredinfo(registry, name, model, ENV)
-launchinfo(::OpenRouterAuth, registry::Models.Registry, name, model) = providerinfo(name)
+launchinfo(::APIKeyAuth, registry::Models.Registry, name, model, ::Nothing) = configuredinfo(registry, name, model, ENV)
+launchinfo(::APIKeyAuth, registry::Models.Registry, name, model, provider::AbstractString) = configuredinfo(registry, name, model, ENV, provider)
+launchinfo(::OpenRouterAuth, registry::Models.Registry, name, model, provider) = providerinfo(name)
 
 historyaction(::HistoryInspection, options) = inspectrequest!(options.session, options.auth, options.sessionname, options.args)
 historyaction(::HistoryConflict, options) = invalidinspection()
