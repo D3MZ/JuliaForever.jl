@@ -29,6 +29,12 @@ struct ShellCancelled <: ShellOutcome end
 struct ShellStopFailed <: ShellOutcome end
 struct Signalled end
 
+struct WindowsJob
+    handle::Ptr{Cvoid}
+    started::UInt64
+end
+WindowsJob(handle::Ptr{Cvoid}) = WindowsJob(handle, time_ns())
+
 struct ShellTail
     text::String
     notice::String
@@ -78,12 +84,13 @@ keepchunks!(file, report::ShellReport) = removeoutput(file, report.file)
 
 mutable struct ShellRun
     process::Base.Process
+    job::Union{Nothing, WindowsJob}
     lock::ReentrantLock
     outcome::Union{Nothing, ShellOutcome}
     done::Channel{ShellOutcome}
 end
 
-ShellRun(process::Base.Process) = ShellRun(process, ReentrantLock(), nothing, Channel{ShellOutcome}(1))
+ShellRun(process::Base.Process, job=nothing) = ShellRun(process, job, ReentrantLock(), nothing, Channel{ShellOutcome}(1))
 
 mutable struct ShellCancellation
     lock::ReentrantLock
@@ -160,12 +167,12 @@ function stop(process::Base.Process)
     end
 end
 
-stop(process::Base.Process, ::ShellComplete) = ShellComplete()
-
-function stop(process::Base.Process, requested::Union{ShellTimeout, ShellCancelled})
-    result = Sys.iswindows() ? ShellStopFailed() : stop(process)
+function stop(process::Base.Process, job, requested::Union{ShellTimeout, ShellCancelled})
+    result = stop(process, job)
     stop(requested, result)
 end
+stop(process::Base.Process, ::Nothing) = Sys.iswindows() ? ShellStopFailed() : stop(process)
+stop(process::Base.Process, job, ::ShellComplete) = ShellComplete()
 
 stop(requested::ShellOutcome, ::Signalled) = requested
 stop(requested::ShellOutcome, result::Union{ShellComplete, ShellStopFailed}) = result
@@ -179,7 +186,7 @@ end
 signal!(run::ShellRun, outcome::ShellOutcome, previous::ShellOutcome) = nothing
 
 function signal!(run::ShellRun, outcome::ShellOutcome, ::Nothing)
-    result = stop(run.process, outcome)
+    result = stop(run.process, run.job, outcome)
     run.outcome = result
     put!(run.done, result)
     nothing
@@ -188,7 +195,9 @@ end
 cancellation(::Nothing) = ShellCancellation()
 cancellation(cancel::ShellCancellation) = cancel
 deadline(run::ShellRun, ::Nothing) = nothing
-deadline(run::ShellRun, timeout::Real) = Timer(_ -> signal!(run, ShellTimeout()), timeout)
+duration(::Nothing, timeout) = timeout
+duration(job::WindowsJob, timeout) = max(0.0, timeout - (time_ns() - job.started) / 1e9)
+deadline(run::ShellRun, timeout::Real) = Timer(_ -> signal!(run, ShellTimeout()), duration(run.job, timeout))
 waitfor(::Nothing, outcome::ShellOutcome) = nothing
 waitfor(task::Task, ::ShellStopFailed) = nothing
 waitfor(task::Task, outcome::ShellOutcome) = wait(task)
@@ -495,15 +504,9 @@ function timeoutcheck(timeout)
     nothing
 end
 
-windowsupport(timeout, cancel) = Sys.iswindows() ? windowoptions(timeout, cancel) : nothing
-windowoptions(::Nothing, ::Nothing) = nothing
-windowoptions(::Nothing, cancel) = ToolFailure("Cancellation is not supported on Windows")
-windowoptions(timeout, cancel) = ToolFailure("Timeout is not supported on Windows")
-
 execute(tool::Union{Bash, PowerShell}, args, cancel, timeout, on_update, failure::ToolFailure) = failure
-execute(tool::Union{Bash, PowerShell}, args, cancel, timeout, on_update, ::Nothing) = shelloptions(tool, args, cancel, timeout, on_update, windowsupport(timeout, cancel))
-shelloptions(tool, args, cancel, timeout, on_update, failure::ToolFailure) = failure
-function shelloptions(tool, args, cancel, timeout, on_update, ::Nothing)
+execute(tool::Union{Bash, PowerShell}, args, cancel, timeout, on_update, ::Nothing) = shelloptions(tool, args, cancel, timeout, on_update)
+function shelloptions(tool, args, cancel, timeout, on_update)
     !isdir(tool.cwd) && return ToolFailure("Working directory does not exist: $(tool.cwd)\nCannot execute $(shellname(tool)) commands.")
     shell(tool, args, cancel, timeout, config(tool), on_update)
 end
@@ -519,6 +522,20 @@ function startshell!(runs::Set{ShellRun}, command, io)
     shellrun
 end
 
+shellgate(tool::Union{Bash, PowerShell}, env, cancel, timeout, command) = nothing
+cleanupgate(::Nothing) = nothing
+cleanupgate(file::String) = rm(file; force=true)
+
+@static if Sys.iswindows()
+    include("system_windows.jl")
+else
+    shellcommand(tool::Union{Bash, PowerShell}, command, cancel, timeout, gate) = shellcommand(tool, command)
+    startshell!(runs, command, io, cancel, timeout, gate) = startshell!(runs, command, io)
+end
+
+closejob(::Nothing) = nothing
+waitjob(outcome::ShellOutcome, ::Nothing) = outcome
+
 shellrun!(::Nothing, token, timeout, on_update, file, io, saved, keep) = ToolFailure("Command aborted")
 function shellrun!(shellrun::ShellRun, token, timeout, on_update, file, io, saved, keep)
     watcher = nothing
@@ -530,36 +547,50 @@ function shellrun!(shellrun::ShellRun, token, timeout, on_update, file, io, save
             signal!(shellrun, ShellComplete())
         end
         timer = deadline(shellrun, timeout)
-        outcome = waitoutput(shellrun, watcher, on_update, file, saved)
+        outcome = waitjob(waitoutput(shellrun, watcher, on_update, file, saved), shellrun.job)
         flush(io)
         finishreport!(on_update, outcome, io, file, process)
         output, keep[] = tail(io, file)
         shellresult(outcome, output, timeout, process)
     finally
         cleanup!(timer)
-        cleanup!(token, shellrun, watcher)
+        try
+            cleanup!(token, shellrun, watcher)
+        finally
+            closejob(shellrun.job)
+        end
     end
 end
 
 function shell(tool::Union{Bash, PowerShell}, args, cancel, timeout, settings::Tuple, on_update)
-    executable, arguments = settings
     env = copy(ENV)
     for key in ("PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL")
         delete!(env, key)
     end
-    command = Cmd(Cmd([executable; arguments; shellcommand(tool, args.command)]); dir=tool.cwd, detach=!Sys.iswindows(), env)
-    file, io = mktemp(; cleanup=false)
-    keep = Ref{Union{Nothing, String}}(nothing)
-    saved = Ref{Union{Nothing, String}}(nothing)
-    token = cancellation(cancel)
+    gate = shellgate(tool, env, cancel, timeout, args.command)
+    shell(tool, args, cancel, timeout, settings, on_update, env, gate)
+end
+
+shell(tool, args, cancel, timeout, settings, on_update, env, failure::ToolFailure) = failure
+function shell(tool, args, cancel, timeout, settings, on_update, env, gate)
+    executable, arguments = settings
     try
-        shellrun = lock(token.lock) do
-            startshell!(token.runs, command, io)
+        command = Cmd(Cmd([executable; arguments; shellcommand(tool, args.command, cancel, timeout, gate)]); dir=tool.cwd, detach=!Sys.iswindows(), env)
+        file, io = mktemp(; cleanup=false)
+        keep = Ref{Union{Nothing, String}}(nothing)
+        saved = Ref{Union{Nothing, String}}(nothing)
+        token = cancellation(cancel)
+        try
+            shellrun = lock(token.lock) do
+                startshell!(token.runs, command, io, cancel, timeout, gate)
+            end
+            shellrun!(shellrun, token, timeout, on_update, file, io, saved, keep)
+        finally
+            close(io)
+            cleanupoutput(file, keep[], saved[])
         end
-        shellrun!(shellrun, token, timeout, on_update, file, io, saved, keep)
     finally
-        close(io)
-        cleanupoutput(file, keep[], saved[])
+        cleanupgate(gate)
     end
 end
 

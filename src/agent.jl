@@ -350,7 +350,7 @@ definition(tool) = Dict("type" => "function", "function" => Dict("name" => name(
 
 invoke(tool::Tool, args, ::ShellCancellation, update) = execute(tool, args)
 invoke(tool::ToolSearch, args, ::ShellCancellation, update) = search(tool, args)
-invoke(tool::Union{Bash, PowerShell}, args, cancel::ShellCancellation, update) = Sys.iswindows() ? execute(tool, args; on_update=update) : execute(tool, args; cancel, on_update=update)
+invoke(tool::Union{Bash, PowerShell}, args, cancel::ShellCancellation, update) = execute(tool, args; cancel, on_update=update)
 
 function prepare(agent::Agent, call, callback)
     tool, args = try
