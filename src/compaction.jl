@@ -123,26 +123,27 @@ function compactcommit!(agent, text, result::Kernel.Applied)
     text
 end
 
-"Usage-backed automatic compaction threshold for a model's context window."
-struct AutoCompaction
+"Usage-backed automatic compaction policy for a model's context window."
+abstract type AutoCompaction end
+struct UsageCompaction <: AutoCompaction
     context_window::Int
     reserve_tokens::Int
-    enabled::Val
+end
+struct DisabledCompaction <: AutoCompaction
+    context_window::Int
+    reserve_tokens::Int
 end
 
-const autocompactionstates = Dict(true => Val(true), false => Val(false))
-AutoCompaction(context_window, reserve_tokens=16384; enabled=true) = AutoCompaction(context_window, reserve_tokens, autocompactionstates[enabled])
+const autocompactiontypes = Dict(true => UsageCompaction, false => DisabledCompaction)
+AutoCompaction(context_window, reserve_tokens=16384; enabled=true) = autocompactiontypes[enabled](context_window, reserve_tokens)
 
 contexttokens(usage::Usage) = iszero(usage.total) ? usage.input + usage.output + usage.cache_read + usage.cache_write : usage.total
 
 "Compact at a caller's safe turn boundary when reported usage exceeds the threshold."
 autocompact!(agent::Agent, usage, settings::AutoCompaction) = autocompact!(agent, usage, settings, Summarizer(agent.provider))
 autocompact!(agent::Agent, ::Nothing, settings::AutoCompaction, summarize) = nothing
-function autocompact!(agent::Agent, usage::Usage, settings::AutoCompaction, summarize)
-    autocompact!(agent, usage, settings, summarize, settings.enabled)
-end
-autocompact!(agent, usage, settings, summarize, ::Val{false}) = nothing
-function autocompact!(agent, usage, settings, summarize, ::Val{true})
+autocompact!(agent::Agent, usage::Usage, settings::DisabledCompaction, summarize) = nothing
+function autocompact!(agent::Agent, usage::Usage, settings::UsageCompaction, summarize)
     tokens = contexttokens(usage)
     tokens > 0 && settings.context_window > 0 && tokens > settings.context_window - settings.reserve_tokens || return nothing
     compact!(agent, summarize)
@@ -157,8 +158,6 @@ end
 
 finishauto!(agent, result, usage, ::Nothing, summarize, callback) = nothing
 finishauto!(agent, result, usage, settings::AutoCompaction, summarize, callback) = nothing
-function finishauto!(agent, result::AbstractString, usage, settings::AutoCompaction, summarize, callback)
-    compacted = autocompact!(agent, usage, settings, summarize)
-    compacted === nothing || emit(callback, (; type=:auto_compaction_end, result=compacted))
-    nothing
-end
+finishauto!(agent, result::AbstractString, usage, settings::AutoCompaction, summarize, callback) = finishauto!(callback, autocompact!(agent, usage, settings, summarize))
+finishauto!(callback, ::Nothing) = nothing
+finishauto!(callback, compacted) = (emit(callback, (; type=:auto_compaction_end, result=compacted)); nothing)

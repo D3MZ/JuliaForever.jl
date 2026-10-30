@@ -8,9 +8,13 @@
             provider = CompactProvider(answer(n), Any[])
             agent = compactagent(provider; history)
             calls = Ref(0)
-            result = respond!(agent, "next"; auto_compaction=JuliaForever.AutoCompaction(100,20), summarize=_ -> (calls[] += 1; "saved"))
+            events = []
+            result = respond!(agent, "next"; on_agent_event=event -> push!(events, event), auto_compaction=JuliaForever.AutoCompaction(100,20), summarize=_ -> (calls[] += 1; "saved"))
             @test result == "done"
             @test calls[] == (n == 81 ? 1 : 0)
+            compactions = [event for event in events if event.type == :auto_compaction_end]
+            @test length(compactions) == (n == 81 ? 1 : 0)
+            n == 81 && @test only(compactions).result == "saved"
             expected = deepcopy(agent.messages)
             close(history)
             history = open(CompactHistory.SQLite, path)

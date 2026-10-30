@@ -2,9 +2,9 @@
 
 The audit covers Julia source in `src/`. `test/branch_scan.jl` uses JuliaSyntax to list source locations for conditionals, short-circuit expressions, loops, exception handlers, comprehension filters, `ifelse`, and calls that may take predicates. The predicate list can include calls whose first argument is a search value rather than a function. The inventory is a static review aid; it cannot see branches produced by arbitrary macro expansion or dynamic code.
 
-At revision `b1a598e`, the inventory contained 1,268 points, including 73 `for` loops, 36 exception handlers, and 29 possible predicate calls under the current scanner. The integrated tree has 1,235 points. Counts include nested expressions, so they are not counts of independent decisions. `test/branch-baseline.txt` ratchets the normalized inventory, so added, removed, or changed entries require review and an explicit baseline update. It does not detect changes confined to branch bodies or moves of identical entries.
+At revision `b1a598e`, the inventory contained 1,268 points, including 73 `for` loops, 36 exception handlers, and 29 possible predicate calls under the current scanner. The integrated tree has 1,241 points. Counts include nested expressions, so they are not counts of independent decisions. `test/branch-baseline.txt` ratchets the normalized inventory, so added, removed, or changed entries require review and an explicit baseline update. It does not detect changes confined to branch bodies or moves of identical entries.
 
-The dispatch check is a separate heuristic. With the expanded rules it reports 253 candidates in the integrated tree. The exact multiset is in `test/dispatch-baseline.txt`; tests fail if it grows or changes without updating the baseline. Compatibility properties for terminal state and MCP shutdown account for some matches.
+The dispatch check is a separate heuristic. With the expanded rules it reports 244 candidates in the integrated tree. The exact multiset is in `test/dispatch-baseline.txt`; tests fail if it grows or changes without updating the baseline. Compatibility properties for terminal state and MCP shutdown account for some matches.
 
 The string-status rule found 12 previously unrecognized checks in the provider-merge checkout. Eleven were removed through typed decoding; the remaining OAuth query-key comparison is not a behavioral status. The check also finds status-field and selection comparisons when they return or assign a Boolean instead of controlling a branch directly. A later pass extended this to `isa`, `isnothing`, `ismissing`, and Boolean or missing-value comparisons outside branch conditions; it exposed two additional checks, both replaced with dispatch. It also catches comparisons of `typeof(...)` outside branch conditions; this revealed no additional current candidates. The dynamic `Val(...)` and `Val{...}()` rule found four value-based type tags in the terminal editor; those were replaced with domain outcomes or ordinary numeric checks.
 
@@ -33,3 +33,7 @@ CLI history actions and provider selection now dispatch on typed outcomes. Durab
 Continuation adds four branch entries for queue availability and revision checks, with no new dispatch candidates; role decoding dispatches on the resulting domain types.
 
 Before-tool hooks add two branch entries for the hook error boundary and an empty block reason, with no new dispatch candidates; hook selection uses a registration lookup.
+
+Durable replay dispatches on decoded records and rejection outcomes. The `Val` check also recognizes Boolean constants and annotations; compaction uses enabled and disabled policy types. Tool selection added 19 branch entries and removed one. Skill prompt visibility dispatches on invocation type.
+
+The subsequent merge with tool selection, MCP roots, and the dispatch changes adds no entries beyond its parents' multiset union; 18 branch entries and 13 dispatch candidates were retired.
