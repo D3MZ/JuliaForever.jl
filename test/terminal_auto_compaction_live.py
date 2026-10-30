@@ -71,16 +71,18 @@ try:
                 wait(name, lambda s: "> queued" in s, "restored queued prompt")
             (directory / "gate").touch()
             if cancelled:
-                wait(name, lambda s: "Auto-compaction cancelled." in s and "| ready" in s, "cancelled compaction")
+                frame = wait(name, lambda s: "Auto-compaction cancelled." in s and "| ready" in s, "cancelled compaction")
+                assert "[summary] checkpoint" not in frame, frame
+                assert [call["operation"] for call in calls(directory / "requests")] == ["respond", "respond", "summarize"]
                 run("send-keys", "-t", name, "Enter")
             else:
                 wait(name, lambda s: "[summary] checkpoint" in s and "Auto-compaction complete." in s, "compacted transcript", timeout=6)
             wait(name, lambda s: "reply:queued" in s and "| ready" in s, "queued response")
             messages = calls(directory / "requests")[-1]["messages"]
             contents = json.dumps(messages)
-            assert ("checkpoint" in contents) is not cancelled, contents
+            assert "checkpoint" in contents, contents
             if cancelled:
-                assert "reply:first" in contents and "reply:second" in contents, contents
+                assert [call["operation"] for call in calls(directory / "requests")] == ["respond", "respond", "summarize", "summarize", "respond"]
             stop(name)
     print("interactive auto-compaction queue and cancellation passed")
 finally:

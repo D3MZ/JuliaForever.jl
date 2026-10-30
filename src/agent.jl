@@ -742,9 +742,11 @@ Supplying `executor` and `context` selects the executor-backed path, including f
 function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=nothing, executor=nothing, context=nothing, auto_compaction=nothing, summarize=Summarizer(agent.provider))
     tool_execution = defaultmode(tool_execution, executor)
     used = Ref{Union{Nothing, Usage}}(nothing)
-    result = task_local_storage(:jf_compaction_usage, used) do
-        task_local_storage(:jf_overflow_recovery, recovery(auto_compaction, summarize, agent.provider)) do
-            respond!(agent, prompt, executor, context; on_event, on_agent_event, parameters, tool_execution)
+    result = task_local_storage(:jf_pre_compaction, (auto_compaction, summarize)) do
+        task_local_storage(:jf_compaction_usage, used) do
+            task_local_storage(:jf_overflow_recovery, recovery(auto_compaction, summarize, agent.provider)) do
+                respond!(agent, prompt, executor, context; on_event, on_agent_event, parameters, tool_execution)
+            end
         end
     end
     finishauto!(agent, result, used[], auto_compaction, summarize, on_agent_event)
@@ -766,17 +768,18 @@ function direct_start!(agent, prompt, ::Running; on_event, on_agent_event, param
     on_agent_event = EventSink(ReentrantLock(), on_agent_event)
     run = (; agent, on_event, callback=on_agent_event, parameters, tool_execution, messages)
     try
-        emit(on_agent_event, (; type=:agent_start))
-        emit(on_agent_event, (; type=:turn_start))
-        direct_begin!(run, prompt)
-    finally
+        precompact!(agent, on_agent_event)
         try
+            emit(on_agent_event, (; type=:agent_start))
+            emit(on_agent_event, (; type=:turn_start))
+            direct_begin!(run, prompt)
+        finally
             interrupt!(agent, agent.state.phase)
             sync!(agent)
             emit(on_agent_event, (; type=:agent_end, messages=deepcopy(messages)))
-        finally
-            finish!(agent)
         end
+    finally
+        finish!(agent)
     end
 end
 

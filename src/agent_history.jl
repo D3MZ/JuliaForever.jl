@@ -196,16 +196,17 @@ function recorded_start!(agent, prompt, ::Running; on_event, on_agent_event, par
     on_agent_event = EventSink(ReentrantLock(), on_agent_event)
     run = (; agent, on_event, callback=on_agent_event, parameters, messages, tool_execution)
     try
-        emit(on_agent_event, (; type=:agent_start))
-        emit(on_agent_event, (; type=:turn_start))
-        recorded_begin!(run, prompt, agent.fault)
-    finally
+        precompact!(agent, on_agent_event)
         try
+            emit(on_agent_event, (; type=:agent_start))
+            emit(on_agent_event, (; type=:turn_start))
+            recorded_begin!(run, prompt, agent.fault)
+        finally
             interrupted!(agent)
             emit(on_agent_event, (; type=:agent_end, messages=deepcopy(messages)))
-        finally
-            finish!(agent)
         end
+    finally
+        finish!(agent)
     end
 end
 
