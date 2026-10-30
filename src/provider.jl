@@ -375,6 +375,7 @@ const chathandlers = Dict("tool" => chattool!, "user" => chatuser!)
 
 function chatmessage(message)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(message))
+    delete!(data, "anthropic_usage_anchor")
     for key in ("is_error", "anthropic_content", "anthropic_origin", "google_parts", "google_origin", "response_output")
         delete!(data, key)
     end

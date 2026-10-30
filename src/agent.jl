@@ -460,6 +460,9 @@ end
 response(message::Completion) = (; message=message.message, result=message, started=Unannounced())
 response(message) = (; message, result=nothing, started=Unannounced())
 
+const contextkey = gensym(:context_messages)
+withcontext(f, messages) = task_local_storage(f, contextkey, messages)
+
 register!(agent::Agent, ::Nothing) = nothing
 
 function register!(agent::Agent, context::HTTP.RequestContext)
@@ -711,7 +714,9 @@ function modelresponse(agent, effect, parameters, on_event, on_agent_event)
     answer = nothing
     try
         messages = modelmessages(effect.effect.messages)
-        received = response(agent, messages, parameters, on_event, on_agent_event)
+        received = withcontext(effect.effect.messages) do
+            response(agent, messages, parameters, on_event, on_agent_event)
+        end
         rememberusage!(received.result)
         answer = received
     finally

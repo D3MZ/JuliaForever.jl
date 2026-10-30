@@ -266,8 +266,8 @@ struct State
     phase::Phase
     order::Vector{String}
     calls::Vector{ToolCall}
-    steering::Vector{String}
-    followups::Vector{String}
+    steering::Vector{Union{String, ImageUser}}
+    followups::Vector{Union{String, ImageUser}}
     mode::Driving
     cancellation::Cancellation
     flushed::Int
@@ -280,7 +280,7 @@ struct State
 end
 
 State(kernel, revision, messages, phase, order, calls, steering, followups, automatic, cancelled, flushed) = State(kernel, revision, messages, phase, order, calls, steering, followups, driving(automatic), cancellation(cancelled), flushed, OneAtATime(), OneAtATime())
-State(id::AbstractString; automatic=true, messages=Message[]) = State(K.State(id), 0, deepcopy(Message[messages...]), Ready, String[], ToolCall[], String[], String[], automatic, false, 0)
+State(id::AbstractString; automatic=true, messages=Message[]) = State(K.State(id), 0, deepcopy(Message[messages...]), Ready, String[], ToolCall[], Union{String, ImageUser}[], Union{String, ImageUser}[], automatic, false, 0)
 
 function Base.getproperty(state::State, name::Symbol)
     name === :automatic && return automatic(getfield(state, :mode))
@@ -321,6 +321,23 @@ struct Followup <: K.Event
     revision::Int
     text::String
 end
+
+struct ImageSteer <: K.Event
+    revision::Int
+    text::String
+    images::Vector{Image}
+    ImageSteer(revision, text, images) = new(revision, text, copy(images))
+end
+
+struct ImageFollowup <: K.Event
+    revision::Int
+    text::String
+    images::Vector{Image}
+    ImageFollowup(revision, text, images) = new(revision, text, copy(images))
+end
+
+Steer(revision, prompt::ImagePrompt) = ImageSteer(revision, prompt.text, prompt.images)
+Followup(revision, prompt::ImagePrompt) = ImageFollowup(revision, prompt.text, prompt.images)
 
 struct SteeringMode <: K.Event
     revision::Int
@@ -414,16 +431,16 @@ end
 
 function drain(messages, queue, ::OneAtATime)
     remaining = copy(queue)
-    isempty(remaining) || push!(messages, User(popfirst!(remaining)))
+    isempty(remaining) || push!(messages, user(popfirst!(remaining)))
     remaining
 end
 
 function drain(messages, queue, ::AllAtOnce)
-    append!(messages, User.(queue))
-    String[]
+    append!(messages, user.(queue))
+    empty(queue)
 end
 
-function model(state, kernel::K.State, messages::Vector{Message}, steering::Vector{String})
+function model(state, kernel::K.State, messages::Vector{Message}, steering::Vector{Union{String, ImageUser}})
     steering = drain(messages, steering, state.steeringmode)
     kernel, effect = plan(kernel, ModelRequest(messages))
     kernel, effect, steering
@@ -442,6 +459,9 @@ function K.step(state::State, event::Union{Input, ImageInput}, ::Union{ReadyPhas
     input(state, messages, getfield(state, :mode))
 end
 
+user(text::String) = User(text)
+user(message::ImageUser) = message
+user(event::Union{ImageSteer, ImageFollowup}) = ImageUser(event.text, event.images)
 user(event::Input) = User(event.text)
 user(event::ImageInput) = ImageUser(event.text, event.images)
 
@@ -467,17 +487,29 @@ resumequeued(state, ::Union{ReadyPhase, CompletePhase, IncompletePhase, Cancelle
 resume(state, ::Phase) = K.Rejected(state, :phase)
 resume(state, ::Union{ReadyPhase, CompletePhase, IncompletePhase, CancelledPhase}) = K.Applied(update(state; phase=ReadyModel, cancelled=false), ())
 
-function K.step(state::State, event::Steer)
+queued(event::Union{Steer, Followup}) = event.text
+queued(event::Union{ImageSteer, ImageFollowup}) = user(event)
+queuetext(text::String) = text
+queuetext(message::ImageUser) = message.content
+
+abstract type QueueContent end
+struct TextOnly <: QueueContent end
+struct ContainsImages <: QueueContent end
+queuecontent(content::QueueContent, ::String) = content
+queuecontent(::QueueContent, ::ImageUser) = ContainsImages()
+queuecontent(state::State) = foldl(queuecontent, Iterators.flatten((state.steering, state.followups)); init=TextOnly())
+
+function K.step(state::State, event::Union{Steer, ImageSteer})
     event.revision == state.revision || return K.Rejected(state, :revision)
     steering = copy(getfield(state, :steering))
-    push!(steering, event.text)
+    push!(steering, queued(event))
     K.Applied(update(state; steering), ())
 end
 
-function K.step(state::State, event::Followup)
+function K.step(state::State, event::Union{Followup, ImageFollowup})
     event.revision == state.revision || return K.Rejected(state, :revision)
     followups = copy(getfield(state, :followups))
-    push!(followups, event.text)
+    push!(followups, queued(event))
     K.Applied(update(state; followups), ())
 end
 
@@ -493,7 +525,7 @@ end
 
 function K.step(state::State, event::Dequeue)
     event.revision == state.revision || return K.Rejected(state, :revision)
-    K.Applied(update(state; steering=String[], followups=String[]), ())
+    K.Applied(update(state; steering=empty(getfield(state, :steering)), followups=empty(getfield(state, :followups))), ())
 end
 
 function K.step(state::State, event::SessionName)

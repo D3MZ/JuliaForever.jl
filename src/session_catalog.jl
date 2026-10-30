@@ -319,7 +319,9 @@ queueable(state::C.State) = queueable(state, state.phase)
 queueable(state, ::C.Phase) = H.Rejected(:incomplete_turn)
 queueable(state, ::Union{C.ReadyModelPhase, C.ReadyDecisionPhase}) = isempty(state.kernel.pending) ? nothing : H.Rejected(:uncertain_effect)
 queuedtarget(tree, leaf, state, rejected::H.Rejected) = rejected
-queuedtarget(tree, leaf, state::C.State, ::Nothing) = (; batches=H.path(tree, leaf), state)
+queuedtarget(tree, leaf, state::C.State, ::Nothing) = queuedtarget(tree, leaf, state, C.queuecontent(state))
+queuedtarget(tree, leaf, state, ::C.ContainsImages) = H.Rejected(:queued_images)
+queuedtarget(tree, leaf, state, ::C.TextOnly) = (; batches=H.path(tree, leaf), state)
 
 append_event!(tree, state::C.State, event::K.Event) = append_event!(tree, event, K.step(state, event))
 append_event!(tree, event::K.Event, rejected::K.Rejected) = H.Rejected(:invalid_record)

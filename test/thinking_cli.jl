@@ -109,7 +109,7 @@ isdefined(Main, :models_process) || include_string(Main, first(split(read(joinpa
                     @test !any(item -> get(item, "type", nothing) == "configuration_update", body["input"])
                 end
             end
-            for model in ("openai/gpt-5.2:minimal", "anthropic/claude-sonnet-4-20250514:high", "openai/unknown:high", "unmatched-synthetic:high")
+            for model in ("openai/gpt-5.2:minimal", "anthropic/claude-opus-4-6:high", "openai/unknown:high", "unmatched-synthetic:high")
                 result = models_process(base, workspace, ["--model", model, "hello"])
                 @test result.status == 2
                 @test occursin("Thinking", result.diagnostics)

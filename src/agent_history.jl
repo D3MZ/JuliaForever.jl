@@ -279,7 +279,9 @@ end
 
 function recorded_step!(run, effect, ::Union{Idle, Running})
     request = modelmessages(effect.effect.messages)
-    answer = response(run.agent, request, run.parameters, run.on_event, run.callback)
+    answer = withcontext(effect.effect.messages) do
+        response(run.agent, request, run.parameters, run.on_event, run.callback)
+    end
     rememberusage!(answer.result)
     recorded_answer!(run, effect, answer, run.agent.fault)
 end

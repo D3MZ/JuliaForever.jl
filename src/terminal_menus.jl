@@ -173,10 +173,11 @@ function treeitems!(session, ::JuliaForever.ForkCommand, history, input, directo
         JuliaForever.TreeTerminal.forkitem!(items, item, JuliaForever.History.treeevent(item.batch), branches)
     end
     isempty(items) && println(session.terminal.diagnostics, "No messages to fork from.")
-    labels = String[JuliaForever.TreeTerminal.clean(JuliaForever.redact(session.terminal, item.text)) for item in items]
+    labels = String[JuliaForever.TreeTerminal.forklabel(item, text -> JuliaForever.redact(session.terminal, text)) for item in items]
     selected = menu!(session, "Fork session", labels)
     iszero(selected) && return session.agent, history, 0
     forkchoice!(session, history, directory, draft, tree, items[selected])
 end
 forkchoice!(session, history, directory, draft, tree, choice::JuliaForever.TreeTerminal.InputFork) = JuliaForever.fork!(session.terminal, session.agent, history, directory, draft, tree, choice)
+forkchoice!(session, history, directory, draft, tree, choice::JuliaForever.TreeTerminal.ImageFork) = JuliaForever.fork!(session.terminal, session.agent, history, directory, draft, tree, choice)
 forkchoice!(session, history, directory, draft, tree, choice::JuliaForever.TreeTerminal.QueuedFork) = JuliaForever.fork!(session.terminal, session.agent, history, directory, draft, choice, JuliaForever.attempt(() -> JuliaForever.SessionCatalog.queuedpath(tree, choice.node)))

@@ -23,9 +23,17 @@ addeffort!(entries, level, effort::AbstractString, ::J.Models.InvalidConfig) = n
 addeffort!(entries, level, effort::AbstractString, ::J.Models.ValidConfig) = (push!(entries, level => String(effort)); nothing)
 
 const responsechoices = Dict{String, Union{FixedThinking, ReasoningChoices}}(name => reasoningchoices(levels) for (name, levels) in J.responselevels)
+const googlechoices = Dict{String, Union{FixedThinking, ReasoningChoices}}(name => reasoningchoices(delete!(copy(levels), "off")) for (name, levels) in J.googlelevels)
 const emptychoices = Dict{String, Union{FixedThinking, ReasoningChoices}}()
-const thinkingcatalogs = Dict("openai" => responsechoices)
+const thinkingcatalogs = Dict("openai" => responsechoices, "google" => googlechoices)
 thinkingchoices(provider) = FixedThinking()
+thinkingchoices(provider::J.Google) = googlethinkingchoices(provider.route, provider.model)
+googlethinkingchoices(::J.DirectRoute, model) = get(googlechoices, model, FixedThinking())
+googlethinkingchoices(route::J.CatalogRoute, model) = catalogchoices(get(route.registry.providers, route.name, nothing), route.name, model)
+const anthropicchoices = ReasoningChoices(["off", "minimal", "low", "medium", "high"], Dict(level => level for level in ["off", "minimal", "low", "medium", "high"]), J.DirectThinking())
+thinkingchoices(provider::J.Anthropic) = anthropicchoicesfor(provider, provider.route, J.anthropicvalidity(provider, provider.model, "high"))
+anthropicchoicesfor(provider, route, validity) = FixedThinking()
+anthropicchoicesfor(provider, ::J.DirectRoute, ::J.Models.ValidConfig) = anthropicchoices
 thinkingchoices(provider::J.OpenAIResponses) = permittedchoices(provider, thinkingchoices(provider.route, provider.model))
 thinkingchoices(::J.DirectRoute, model) = get(responsechoices, model, FixedThinking())
 thinkingchoices(route::J.CatalogRoute, model) = catalogchoices(get(route.registry.providers, route.name, nothing), route.name, model)

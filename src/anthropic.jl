@@ -1,7 +1,16 @@
 module AnthropicAPI
 
 using HTTP, JSON3, SHA
-import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, provider, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, provider, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute, contextkey
+import ..Conversation
+
+abstract type ThinkingMode end
+struct DefaultThinking <: ThinkingMode end
+struct BudgetThinking <: ThinkingMode
+    level::String
+    budget::Int
+end
+struct OffThinking <: ThinkingMode end
 
 struct Anthropic
     base::String
@@ -9,14 +18,18 @@ struct Anthropic
     key::String
     extra::Vector{Pair{String, String}}
     route::Union{DirectRoute, CatalogRoute}
+    thinking::ThinkingMode
 end
+Anthropic(base, model, key, extra, route) = Anthropic(base, model, key, extra, route, DefaultThinking())
 Anthropic(base, model, key) = Anthropic(base, model, key, Pair{String, String}[], DirectRoute())
 Anthropic(base, model, key, extra) = Anthropic(base, model, key, extra, DirectRoute())
 
 Base.show(io::IO, provider::Anthropic) = print(io, "Anthropic(", repr(provider.model), ", [redacted])")
 JSON3.StructTypes.StructType(::Type{Anthropic}) = JSON3.StructTypes.CustomStruct()
 JSON3.StructTypes.lower(provider::Anthropic) = (; model=provider.model, credentials="[redacted]")
-headers(provider::Anthropic) = mergeheaders(vcat(isempty(provider.key) ? Pair{String, String}[] : ["x-api-key" => provider.key], ["anthropic-version" => "2023-06-01", "content-type" => "application/json"]), provider.extra)
+thinkingheaders(::ThinkingMode) = Pair{String, String}[]
+thinkingheaders(::BudgetThinking) = ["anthropic-beta" => "interleaved-thinking-2025-05-14"]
+headers(provider::Anthropic) = mergeheaders(vcat(isempty(provider.key) ? Pair{String, String}[] : ["x-api-key" => provider.key], ["anthropic-version" => "2023-06-01", "content-type" => "application/json"], thinkingheaders(provider.thinking)), provider.extra)
 endpoint(provider::Anthropic) = "$(rstrip(provider.base, '/'))/v1/messages"
 origin(provider::Anthropic) = bytes2hex(sha256(provider.base)) * ":" * provider.model
 
@@ -129,13 +142,112 @@ function payload(provider::Anthropic, input, tools, parameters; streaming=false)
     data["model"] = provider.model
     data["messages"] = transcript.messages
     data["stream"] = streaming
-    get!(data, "max_tokens", 4096)
+    thinking!(data, provider.thinking, input, tools)
     isempty(transcript.system) || (data["system"] = join(transcript.system, "\n\n"))
     delete!(data, "tools")
     if !isempty(tools)
         data["tools"] = [Dict("name" => fn["name"], "description" => fn["description"], "input_schema" => fn["parameters"]) for fn in (definition(tool)["function"] for tool in values(tools))]
     end
     JSON3.write(data)
+end
+
+thinking!(data, ::DefaultThinking, input, tools) = get!(data, "max_tokens", 4096)
+function thinking!(data, ::OffThinking, input, tools)
+    data["max_tokens"] = min(get(data, "max_tokens", 64000), ceiling(input, tools))
+    data["thinking"] = Dict("type" => "disabled")
+end
+function thinking!(data, mode::BudgetThinking, input, tools)
+    limit = ceiling(input, tools)
+    base = min(get(data, "max_tokens", 64000), limit)
+    maximum = min(base + mode.budget, 64000, limit)
+    budget = min(mode.budget, max(0, maximum - 1024))
+    data["max_tokens"] = maximum
+    data["thinking"] = Dict("type" => "enabled", "budget_tokens" => iszero(budget) ? 1024 : budget, "display" => "summarized")
+    delete!(data, "temperature")
+end
+function ceiling(input, tools)
+    estimates = parentmodule(@__MODULE__).ContextEstimates
+    messages = [Conversation.RawMessage(Dict{String, Any}(string(key) => value for (key, value) in pairs(message))) for message in input]
+    anchor = contextanchor(input, get(task_local_storage(), contextkey, nothing))
+    max(1, 200000 - contextestimate(estimates, messages, tools, anchor) - 4096)
+end
+
+struct ContextAnchor
+    index::Int
+    usage::Usage
+    tools::String
+end
+contextestimate(estimates, messages, tools, ::Nothing) = estimates.estimate(messages; tools=values(tools)).total
+function contextestimate(estimates, messages, tools, anchor::ContextAnchor)
+    measured = estimates.estimate(messages, anchor.index => anchor.usage).total
+    # A changed tool set may add context not covered by the reported usage.
+    measured + (anchor.tools == tooldigest(tools) ? 0 : estimates.declared(values(tools)))
+end
+
+const contextfields = ("role", "content", "images", "tool_calls", "tool_call_id", "is_error", "image", "anthropic_content", "anthropic_origin", "reasoning_content", "reasoning", "reasoning_text", "sections", "toolsAdded", "toolsRemoved")
+canonical(value) = value
+canonical(value::NamedTuple) = canonical(Dict(pairs(value)))
+canonical(value::Tuple) = map(canonical, value)
+canonical(value::AbstractVector) = map(canonical, value)
+function canonical(value::AbstractDict)
+    fields = sort!(collect(pairs(value)); by=pair -> string(first(pair)))
+    [(string(key), canonical(item)) for (key, item) in fields]
+end
+function contextmessage(message)
+    data = Dict{String, Any}(string(key) => value for (key, value) in pairs(message))
+    [(key, canonical(get(data, key, nothing))) for key in contextfields]
+end
+digest(text::AbstractString) = bytes2hex(sha256(Vector{UInt8}(codeunits(text))))
+contextdigest(input::AbstractVector) = digest(JSON3.write(contextmessage.(input)))
+function tooldigest(tools)
+    definitions = [definition(tool)["function"] for tool in values(tools)]
+    sort!(definitions; by=tool -> tool["name"])
+    digest(JSON3.write(canonical(definitions)))
+end
+
+# Only native assistant messages can supply a recorded measurement.
+messageanchor(message::Conversation.Message) = nothing
+messageanchor(message::Conversation.Assistant) = get(message.metadata, "anthropic_usage_anchor", nothing)
+lastanchor(previous, index, value) = previous
+lastanchor(previous, index, value::AbstractDict) = index
+contextanchor(input, ::Nothing) = nothing
+function contextanchor(input, messages::AbstractVector)
+    last = foldl(1:min(length(input), length(messages)); init=nothing) do previous, index
+        lastanchor(previous, index, messageanchor(messages[index]))
+    end
+    prefixanchor(input, messages, last)
+end
+prefixanchor(input, messages, ::Nothing) = nothing
+function prefixanchor(input, messages, last::Int)
+    ctx = SHA2_256_CTX()
+    SHA.update!(ctx, UInt8[0x5b])
+    selected = nothing
+    for index in 1:last
+        index > 1 && SHA.update!(ctx, UInt8[0x2c])
+        SHA.update!(ctx, Vector{UInt8}(codeunits(JSON3.write(contextmessage(input[index])))))
+        selected = selectanchor(selected, index, ctx, messageanchor(messages[index]))
+    end
+    selected
+end
+selectanchor(previous, index, ctx, value) = previous
+selectanchor(previous, index, ctx, value::AbstractDict) = selectanchor(previous, index, ctx, get(value, "tokens", nothing), get(value, "digest", nothing), get(value, "tools", nothing))
+selectanchor(previous, index, ctx, tokens, expected, toolhash) = previous
+function selectanchor(previous, index, ctx, tokens::Int, expected::AbstractString, toolhash::AbstractString)
+    tokens > 0 && expected == prefixdigest(ctx) || return previous
+    ContextAnchor(index, Usage(tokens, 0, 0, 0, 0, tokens, nothing), toolhash)
+end
+function prefixdigest(ctx::SHA2_256_CTX)
+    snapshot = copy(ctx)
+    SHA.update!(snapshot, UInt8[0x5d])
+    bytes2hex(SHA.digest!(snapshot))
+end
+
+remembercontext!(answer, input, tools) = remembercontext!(answer, input, tools, get(task_local_storage(), contextkey, nothing), getfield(answer, :status), answer.usage)
+remembercontext!(answer, input, tools, context, status, usage) = answer
+function remembercontext!(answer, input, tools, context::AbstractVector, ::Finished, usage::Usage)
+    tokens = parentmodule(@__MODULE__).ContextEstimates.reported(usage)
+    tokens > 0 && (answer.message["anthropic_usage_anchor"] = Dict("tokens" => tokens, "digest" => contextdigest([input; [answer.message]]), "tools" => tooldigest(tools)))
+    answer
 end
 
 function usage(data::AbstractDict)
@@ -250,7 +362,7 @@ outcome(blocks, used, mapped, failure) = Completion(content(blocks), used, mappe
 requestcontext(::Anthropic) = HTTP.RequestContext()
 
 function complete(provider::Anthropic, input, tools; parameters=Dict())
-    complete(provider, payload(provider, input, tools, parameters))
+    remembercontext!(complete(provider, payload(provider, input, tools, parameters)), input, tools)
 end
 function complete(provider::Anthropic, body::AbstractString)
     response = HTTP.post(endpoint(provider), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
@@ -418,7 +530,7 @@ receive!(state::State, ::Phase, ::Ignore, callback) = nothing
 receive!(state::State, ::Phase, ::Event, callback) = (state.failure = "Anthropic stream contained an unexpected event")
 
 function stream(provider::Anthropic, input, tools; parameters=Dict(), on_event=identity)
-    stream(provider, payload(provider, input, tools, parameters; streaming=true), on_event)
+    remembercontext!(stream(provider, payload(provider, input, tools, parameters; streaming=true), on_event), input, tools)
 end
 function stream(provider::Anthropic, body::AbstractString, on_event)
     state = State()
