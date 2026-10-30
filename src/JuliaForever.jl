@@ -29,6 +29,7 @@ include("search.jl")
 include("codemode.jl")
 include("terminal.jl")
 include("tree_terminal.jl")
+include("session_terminal.jl")
 include("mcp.jl")
 
 function configured(env, login)
@@ -162,12 +163,12 @@ function (@main)(args)
     codemode && push!(tools, CodeMode(tools))
     terminal = Terminal(stdout, stderr, [model.key])
     history = SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr)
-    runsession!(history, terminal, model, tools, args)
+    runsession!(history, terminal, model, tools, args, sessiondir)
 end
 
-runsession!(::SessionCatalog.Cancelled, terminal, model, tools, args) = 0
+runsession!(::SessionCatalog.Cancelled, terminal, model, tools, args, sessiondir) = 0
 
-function runsession!(invalid::SessionCatalog.Invalid, terminal, model, tools, args)
+function runsession!(invalid::SessionCatalog.Invalid, terminal, model, tools, args, sessiondir)
     println(terminal.diagnostics, invalid.message)
     2
 end
@@ -179,7 +180,7 @@ function sessionfault!(terminal, fault, history)
     status
 end
 
-function runsession!(history, terminal, model, tools, args)
+function runsession!(history, terminal, model, tools, args, sessiondir)
     history isa History.Rejected && return result!(terminal, history)
     try
         snapshot = isnothing(history) ? nothing : History.snapshot(history)
@@ -204,8 +205,8 @@ function runsession!(history, terminal, model, tools, args)
                 eof(stdin) && break
                 line = readline(stdin)
                 line == "/exit" && break
-                if line == "/tree"
-                    agent, history, result = tree!(terminal, agent, history, stdin)
+                if haskey(terminalcommands, line)
+                    agent, history, result = command!(terminalcommands[line], terminal, agent, history, stdin, sessiondir)
                     status = max(status, result)
                     continue
                 end
