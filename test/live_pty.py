@@ -150,7 +150,7 @@ with tempfile.TemporaryDirectory(prefix="jf-live-pty-") as directory:
         key("C-c")
         send("steer")
         more.set()
-        wait_for(lambda: "First response " + "x" * 70 in screen() and "> steer" in screen(), "streaming or resize overwrote the draft", 8)
+        wait_for(lambda: "First response" + "x" * 70 in screen().replace("\n", "") and "> steer" in screen(), "streaming or resize overwrote the draft", 8)
         run("resize-window", "-t", "live", "-x", "72", "-y", "24")
         key("Enter")
         wait_for(lambda: "Steering: steer" in screen(), "steering was not queued during the request", 8)
