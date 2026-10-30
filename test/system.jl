@@ -54,3 +54,4 @@ end
 
 include("system_cancel.jl")
 include("system_agent_cancel.jl")
+include("system_stream.jl")
