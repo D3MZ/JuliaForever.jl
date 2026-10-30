@@ -14,7 +14,8 @@ end
 inlineproblem(bytes) = length(bytes) <= inlinebytes ? nothing : inlinemessage
 dimensionproblem(width, height) = 0 < width <= imagewidth && 0 < height <= imagewidth ? nothing : "Image dimensions exceed the supported limit"
 
-imageproblem(::MIME"image/gif", bytes) = gifsize(bytes, inlineproblem(bytes))
+imageproblem(::MIME"image/gif", bytes) = gifresult(gifsize(bytes, inlineproblem(bytes)))
+readproblem(::MIME"image/gif", bytes) = gifreadresult(gifsize(bytes, inlineproblem(bytes)))
 gifsize(bytes, problem::String) = problem
 function gifsize(bytes, ::Nothing)
     length(bytes) >= 13 || return "image/gif structure is not supported"
@@ -25,7 +26,7 @@ gifdimensions(bytes, width, height, problem::String) = problem
 function gifdimensions(bytes, width, height, ::Nothing)
     flags = bytes[11]
     colors = iszero(flags & 0x80) ? 0 : 3 * (1 << (Int(flags & 0x07) + 1))
-    gifproblem(bytes, 14 + colors)
+    gifproblem(bytes, 14 + colors, div(colors, 3))
 end
 
 abstract type GIFRecord end
@@ -40,6 +41,7 @@ struct GIFEmpty <: GIFFrame end
 struct GIFStatic <: GIFFrame
     width::Int
     height::Int
+    colors::Int
 end
 abstract type GIFStatus end
 struct GIFReading <: GIFStatus end
@@ -52,14 +54,15 @@ mutable struct GIFScan
     position::Int
     frame::GIFFrame
     status::GIFStatus
+    colors::Int
 end
 
-function gifproblem(bytes, position)
-    scan = GIFScan(bytes, position, GIFEmpty(), GIFReading())
+function gifproblem(bytes, position, colors)
+    scan = GIFScan(bytes, position, GIFEmpty(), GIFReading(), colors)
     for record in scan
         gifrecord!(scan, record)
     end
-    gifresult(scan.status)
+    scan
 end
 Base.iterate(scan::GIFScan) = gifiterate(scan, scan.status)
 Base.iterate(scan::GIFScan, ::Nothing) = gifiterate(scan, scan.status)
@@ -72,6 +75,12 @@ function gifiterate(scan, ::GIFReading)
 end
 gifresult(::GIFReading) = "image/gif structure is not supported"
 gifresult(result::GIFDone) = result.problem
+gifresult(result::String) = result
+gifresult(scan::GIFScan) = gifresult(scan.status)
+gifreadresult(result::String) = result
+gifreadresult(scan::GIFScan) = gifreadresult(gifresult(scan.status), scan.frame)
+gifreadresult(problem::String, frame) = problem
+gifreadresult(::Nothing, frame::GIFStatic) = iszero(frame.colors) ? "image/gif color table is missing" : nothing
 gifinvalid!(scan) = (scan.status = GIFDone("image/gif structure is not supported"))
 gifrecord!(scan, ::GIFInvalid) = gifinvalid!(scan)
 gifrecord!(scan, ::GIFTrailer) = giftrailer!(scan, scan.frame)
@@ -99,7 +108,7 @@ function gifframe!(scan, width, height, ::Nothing)
     scan.position += 9 + colors
     scan.position <= length(scan.bytes) || return gifinvalid!(scan)
     scan.position += 1
-    scan.frame = GIFStatic(width, height)
+    scan.frame = GIFStatic(width, height, max(scan.colors, div(colors, 3)))
     gifsubblocks!(scan)
 end
 

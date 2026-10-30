@@ -39,6 +39,33 @@ end
     end
 end
 
+@testset "GIF reads require a color table" begin
+    original = read(joinpath(fixtures, "static.gif"))
+    palette = original[14:19]
+    without = [original[1:13]; original[20:end]]
+    without[11] &= 0x7f
+    image = findfirst(==(0x2c), without)
+    flags = image + 9
+    localonly = [without[1:flags]; palette; without[flags+1:end]]
+    localonly[flags] |= 0x80
+    mktempdir() do root
+        for (file, bytes) in (("missing.gif", without), ("local.gif", localonly))
+            write(joinpath(root, file), bytes)
+        end
+        missing = execute(Read(root), (; path="missing.gif"))
+        @test missing.iserror && isnothing(missing.image)
+        @test isequal(result("missing.gif", without).image, Image("image/gif", base64encode(without)))
+        @test isequal(execute(Read(root), (; path="local.gif")).image, Image("image/gif", base64encode(localonly)))
+        if haskey(ENV, "PI_SOURCE")
+            source = ENV["PI_SOURCE"]
+            reference = JSON3.read(read(`node --conditions=source --experimental-strip-types $(joinpath(@__DIR__, "image_formats_pi.mjs")) $source $root missing.gif local.gif`, String))
+            @test length(reference[1].read) == 1 && occursin("omitted", reference[1].read[1].text)
+            @test reference[1].content[1].data == base64encode(without)
+            @test reference[2].read[2].data == base64encode(localonly)
+        end
+    end
+end
+
 @testset "bounded GIF and WebP tool results" begin
     files = (static..., animated..., wide...)
     reference = if haskey(ENV, "PI_SOURCE")
