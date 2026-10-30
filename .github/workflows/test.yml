@@ -25,6 +25,10 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+      - name: Keep Julia depot stable across HOME changes
+        env:
+          DEPOT: ${{ runner.temp }}/julia-depot
+        run: printf 'JULIA_DEPOT_PATH=%s\n' "$DEPOT" >> "$GITHUB_ENV"
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.12'
