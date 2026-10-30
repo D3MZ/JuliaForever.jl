@@ -39,6 +39,13 @@ function dispatchpresence(expression)
     key in dispatchpresencefields
 end
 
+function dispatchindexdefault(expression)
+    expression isa Expr && expression.head == :call && length(expression.args) >= 3 || return false
+    dispatchcallee(first(expression.args)) === :something || return false
+    value = expression.args[2]
+    value isa Expr && value.head == :call && dispatchcallee(first(value.args)) in (:findfirst, :findlast, :findnext, :findprev)
+end
+
 function dispatchpredicate(expression, predicates=DispatchPredicates())
     (dispatchcallee(expression) in (:isnothing, :ismissing, :cancelled) || dispatchcallee(expression) in predicates.booleans) && return true
     expression isa Expr && expression.head == :call && first(expression.args) === :! && length(expression.args) == 2 && return dispatchpredicate(last(expression.args), predicates)
@@ -68,6 +75,7 @@ dispatchdynamic(value) = value isa Bool || !(value isa Union{Number, AbstractStr
 function dispatchprobe(expression)
     expression isa Expr || return false
     dispatchpresence(expression) && return true
+    dispatchindexdefault(expression) && return true
     if expression.head == :curly && length(expression.args) == 2 && dispatchcallee(first(expression.args)) === :Val && last(expression.args) isa Bool
         return true
     end
@@ -90,6 +98,7 @@ function dispatchcheck(expression, direct)
     direct && expression isa Symbol && expression ∉ (:true, :false, :nothing) && return true
     expression isa Expr || return false
     dispatchpresence(expression) && return true
+    dispatchindexdefault(expression) && return true
     direct && expression.head in (:., :ref) && return true
     expression.head == :. && last(expression.args) == QuoteNode(:iserror) && return true
     expression.head == :call || return false

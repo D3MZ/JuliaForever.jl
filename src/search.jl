@@ -405,15 +405,25 @@ function binaryprefix(bytes, nul)
         retained == capacity && (capacity *= 3)
         stop = min(length(bytes), position + capacity - retained)
         nul <= stop && return consumed
-        lastline = something(findprev(==(0x0a), bytes, stop), 0)
-        lastline > position && (consumed = lastline)
+        consumed = lineprefix(consumed, position, findprev(==(0x0a), bytes, stop))
         position = stop
     end
     consumed
 end
+lineprefix(consumed, position, ::Nothing) = consumed
+lineprefix(consumed, position, lastline::Int) = lastline > position ? lastline : consumed
 
 binarycontent!(bytes, ::SearchDirectory, nul) = resize!(bytes, binaryprefix(bytes, nul))
 binarycontent!(bytes, ::SearchFile, nul) = replace!(bytes, 0x00 => 0x0a)
+function searchcontent(bytes, root, ::Nothing)
+    raw = String(bytes)
+    raw, raw
+end
+function searchcontent(bytes, root, nul::Int)
+    original = String(copy(bytes))
+    binarycontent!(bytes, root, nul)
+    original, String(bytes)
+end
 
 function execute(tool::Grep, args)
     root = searchpath(tool, get(args, :path, "."))
@@ -441,15 +451,7 @@ function execute(tool::Grep, args)
         relative = searchrelative(rootentry, target)
         selectglob(filter, target) || return true
         bytes = read(target)
-        nul = something(findfirst(==(0x00), bytes), length(bytes) + 1)
-        if nul > length(bytes)
-            raw = String(bytes)
-            originalraw = raw
-        else
-            originalraw = String(copy(bytes))
-            binarycontent!(bytes, rootentry, nul)
-            raw = String(bytes)
-        end
+        originalraw, raw = searchcontent(bytes, rootentry, findfirst(==(0x00), bytes))
         isempty(raw) && return true
         rawlines = split(replace(raw, "\r\n" => "\n"), '\n'; keepempty=true)
         original_lines = Ref{Union{Nothing,Vector{SubString{String}}}}(nothing)

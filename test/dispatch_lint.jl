@@ -18,6 +18,9 @@ include("dispatch_checks.jl")
     @test length(dispatchchecks(Meta.parse("f(data) = Base.haskey(data, :iserror) && fail(data)"))) == 1
     @test length(dispatchchecks(Meta.parse("f(data) = (present = haskey(data, \"status\"); use(present))"))) == 1
     @test isempty(dispatchchecks(Meta.parse("f(data) = haskey(data, \"content\") ? data[\"content\"] : \"\"")))
+    @test length(dispatchchecks(Meta.parse("f(xs) = something(findfirst(iszero, xs), length(xs) + 1)"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(xs, start) = something(findnext(iszero, xs, start), 0)"))) == 1
+    @test isempty(dispatchchecks(Meta.parse("f(x) = something(x, 0)")))
     @test length(dispatchchecks(Meta.parse("f(xs) = [x for x in xs if x isa Int]"))) == 1
     @test length(dispatchchecks(Meta.parse("f(xs) = filter(x -> x isa Int, xs)"))) == 1
     @test length(dispatchchecks(Meta.parse("f(xs) = Base.filter(x -> x isa Int, xs)"))) == 1
