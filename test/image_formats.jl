@@ -364,13 +364,53 @@ end
             mktempdir() do root
                 write(joinpath(root, file), bytes)
                 for value in (execute(Read(root), (; path=file)), result(file, bytes))
-                    if count == 16
+                    if count == 16 || file == "many.gif"
                         @test !value.iserror && isequal(value.image, Image(mime, base64encode(bytes)))
                     else
                         @test value.iserror && isnothing(value.image)
                     end
                 end
             end
+        end
+    end
+    distinct = [gif[1:19]; repeat(gif[20:end-1], 17); gif[end:end]]
+    for index in 0:16
+        distinct[29 + index * (length(gif) - 20)] = UInt8(index)
+    end
+    @test result("distinct.gif", distinct).iserror
+    tasks = [Threads.@spawn !result("many.gif", [gif[1:19]; repeat(gif[20:end-1], 17); gif[end:end]]).iserror for _ in 1:8]
+    @test all(fetch, tasks)
+    manygif = [gif[1:19]; repeat(gif[20:end-1], 17); gif[end:end]]
+    corrupt = copy(manygif)
+    corrupt[20 + 16 * (length(gif) - 20) + 18] = 0xff
+    mktempdir() do root
+        for (file, bytes) in (("many.gif", manygif), ("corrupt.gif", corrupt))
+            write(joinpath(root, file), bytes)
+            values = (execute(Read(root), (; path=file)), result(file, bytes))
+            if file == "many.gif"
+                @test all(value -> !value.iserror && value.image.data == base64encode(bytes), values)
+            else
+                @test all(value -> value.iserror && isnothing(value.image), values)
+            end
+        end
+        manywebp = [webp[1:44]; repeat(webp[45:124], 17)]
+        size = length(manywebp) - 8
+        manywebp[5:8] .= UInt8[(size >> shift) & 0xff for shift in (0, 8, 16, 24)]
+        manywebp[25:30] .= UInt8[0xcf, 0x07, 0x00, 0xcf, 0x07, 0x00]
+        damagedwebp = copy(manywebp)
+        damagedwebp[45 + 16 * 80 + 33:45 + 16 * 80 + 40] .= 0xff
+        for (file, bytes) in (("many.webp", manywebp), ("corrupt.webp", damagedwebp))
+            write(joinpath(root, file), bytes)
+            @test execute(Read(root), (; path=file)).iserror && result(file, bytes).iserror
+        end
+        if haskey(ENV, "PI_SOURCE")
+            source = ENV["PI_SOURCE"]
+            files = ("many.gif", "corrupt.gif", "many.webp", "corrupt.webp")
+            reference = JSON3.read(read(`node $(joinpath(@__DIR__, "image_formats_pi.mjs")) $source $root $files`, String))
+            @test all(item -> length(item.read) == 2 && item.read[2].type == "image", reference[1:2])
+            @test all(item -> length(item.read) == 1 && occursin("omitted", item.read[1].text), reference[3:4])
+            @test all(reference[index].content[1].data == base64encode(read(joinpath(root, file))) for (index, file) in enumerate(files))
+            @test all(reference[index].read[2].data == reference[index].content[1].data for index in 1:2)
         end
     end
 end

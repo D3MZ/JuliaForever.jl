@@ -38,10 +38,15 @@ struct GIFImage <: GIFRecord end
 struct GIFInvalid <: GIFRecord end
 const gifrecords = Dict{UInt8, GIFRecord}(0x3b => GIFTrailer(), 0x21 => GIFExtension(), 0x2c => GIFImage())
 
+abstract type GIFData end
+struct GIFUnique <: GIFData end
+struct GIFRepeated <: GIFData end
+
 struct GIFFrame
     width::Int
     height::Int
     colors::Int
+    data::GIFData
 end
 abstract type GIFStatus end
 struct GIFReading <: GIFStatus end
@@ -54,12 +59,13 @@ mutable struct GIFScan
     position::Int
     frames::Vector{GIFFrame}
     pixels::Int
+    seen::Set{Vector{UInt8}}
     status::GIFStatus
     colors::Int
 end
 
 function gifproblem(bytes, position, colors)
-    scan = GIFScan(bytes, position, GIFFrame[], 0, GIFReading(), colors)
+    scan = GIFScan(bytes, position, GIFFrame[], 0, Set{Vector{UInt8}}(), GIFReading(), colors)
     for record in scan
         gifrecord!(scan, record)
     end
@@ -101,15 +107,32 @@ function gifframe!(scan)
 end
 gifframe!(scan, width, height, problem::String) = (scan.status = GIFDone(problem))
 function gifframe!(scan, width, height, ::Nothing)
-    scan.pixels += width * height
-    scan.pixels <= animationpixels || return (scan.status = GIFDone(animationmessage))
-    flags = scan.bytes[scan.position + 8]
+    start = scan.position
+    flags = scan.bytes[start + 8]
     colors = iszero(flags & 0x80) ? 0 : 3 * (1 << (Int(flags & 0x07) + 1))
     scan.position += 9 + colors
     scan.position <= length(scan.bytes) || return gifinvalid!(scan)
     scan.position += 1
-    push!(scan.frames, GIFFrame(width, height, max(scan.colors, div(colors, 3))))
     gifsubblocks!(scan)
+    gifframe!(scan, width, height, max(scan.colors, div(colors, 3)), start, scan.status)
+end
+
+gifframe!(scan, width, height, colors, start, ::GIFDone) = nothing
+function gifframe!(scan, width, height, colors, start, ::GIFReading)
+    data = scan.bytes[start:scan.position-1]
+    kind = gifdata!(scan.seen, data)
+    gifbudget!(scan, width, height, kind)
+    push!(scan.frames, GIFFrame(width, height, colors, kind))
+end
+function gifdata!(seen, data)
+    data in seen && return GIFRepeated()
+    push!(seen, data)
+    GIFUnique()
+end
+gifbudget!(scan, width, height, ::GIFRepeated) = nothing
+function gifbudget!(scan, width, height, ::GIFUnique)
+    scan.pixels += width * height
+    scan.pixels <= animationpixels || (scan.status = GIFDone(animationmessage))
 end
 
 function gifsubblocks!(scan)
@@ -168,9 +191,22 @@ function gifdecoded!(decoder, ::GIFImage)
     ccall((:DGifGetImageDesc, libgif), Cint, (Ptr{Cvoid},), decoder.file) == 1 || return gifinvalid!(decoder)
     decoder.index += 1
     frame = decoder.frames[decoder.index]
+    gifdecoded!(decoder, frame, frame.data)
+end
+
+function gifdecoded!(decoder, frame, ::GIFUnique)
     resize!(decoder.row, frame.width)
     for _ in 1:frame.height
         ccall((:DGifGetLine, libgif), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), decoder.file, decoder.row, frame.width) == 1 || return gifinvalid!(decoder)
+    end
+    nothing
+end
+
+function gifdecoded!(decoder, frame, ::GIFRepeated)
+    code, block = Ref{Cint}(0), Ref{Ptr{UInt8}}(C_NULL)
+    ccall((:DGifGetCode, libgif), Cint, (Ptr{Cvoid}, Ref{Cint}, Ref{Ptr{UInt8}}), decoder.file, code, block) == 1 || return gifinvalid!(decoder)
+    while block[] != C_NULL
+        ccall((:DGifGetCodeNext, libgif), Cint, (Ptr{Cvoid}, Ref{Ptr{UInt8}}), decoder.file, block) == 1 || return gifinvalid!(decoder)
     end
     nothing
 end
