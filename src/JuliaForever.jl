@@ -329,13 +329,13 @@ end
 runsession!(::SessionCatalog.Cancelled, terminal, model, extensions, args) = 0
 
 function runsession!(invalid::SessionCatalog.Invalid, terminal, model, extensions, args)
-    println(terminal.diagnostics, invalid.message)
+    println(terminal.diagnostics, redact(terminal, invalid.message))
     2
 end
 
 function sessionfault!(terminal, fault, history)
     status = result!(terminal, fault)
-    println(terminal.diagnostics, "History file: ", SessionCatalog.path(history))
+    println(terminal.diagnostics, "History file: ", redact(terminal, SessionCatalog.path(history)))
     flush(terminal.diagnostics)
     status
 end

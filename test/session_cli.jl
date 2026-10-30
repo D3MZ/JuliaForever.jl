@@ -1,15 +1,37 @@
 using Test, JuliaForever, JSON3
 
-function session_process(requests, workspace, directory, args; input="", fail=false)
+function session_process(requests, workspace, directory, args; input="", fail=false, key="session-test-secret")
     project = dirname(@__DIR__)
     script = joinpath(@__DIR__, "session_cli_process.jl")
     cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project $script $args`; dir=workspace)
-    cmd = addenv(cmd, "JF_SESSION_REQUESTS" => requests, "JF_SESSION_FAIL" => (fail ? "1" : nothing), "JF_SESSION_DIR" => directory, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "session-test-secret", "JF_INSTRUCTIONS_DIR" => nothing)
+    cmd = addenv(cmd, "JF_SESSION_REQUESTS" => requests, "JF_SESSION_FAIL" => (fail ? "1" : nothing), "JF_SESSION_DIR" => directory, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => key, "JF_INSTRUCTIONS_DIR" => nothing)
     mktempdir() do dir
         stdinpath, output, diagnostics = joinpath.((dir,), ("stdin", "output", "diagnostics"))
         write(stdinpath, input)
         process = run(pipeline(ignorestatus(cmd); stdin=stdinpath, stdout=output, stderr=diagnostics))
         (; status=process.exitcode, output=read(output, String), diagnostics=read(diagnostics, String))
+    end
+end
+
+@testset "session diagnostics redact provider credentials" begin
+    for key in ("session-test-secret", join(("synthetic", "\"", "\\", "\$", "secret")))
+        mktempdir() do root
+            workspace = joinpath(root, "project")
+            sessions = joinpath(root, "sessions-" * key)
+            requests = joinpath(root, "requests.jsonl")
+            mkpath(workspace)
+            escaped = chop(repr(key); head=1, tail=1)
+            crashed = session_process(requests, workspace, sessions, ["interrupted"]; fail=true, key)
+            @test crashed.status == 17
+            blocked = session_process(requests, workspace, sessions, ["--continue", "not retried"]; key)
+            @test blocked.status == 1 && occursin("History file:", blocked.diagnostics)
+            @test occursin("[redacted]", blocked.diagnostics)
+            @test !occursin(key, blocked.diagnostics) && !occursin(escaped, blocked.diagnostics)
+            invalid = session_process(requests, workspace, sessions, ["--session", joinpath(root, "missing-" * key), "not sent"]; key)
+            @test invalid.status == 2
+            @test occursin("[redacted]", invalid.diagnostics)
+            @test !occursin(key, invalid.diagnostics) && !occursin(escaped, invalid.diagnostics)
+        end
     end
 end
 
