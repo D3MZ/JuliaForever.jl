@@ -256,6 +256,14 @@ function complete(provider::OpenAI, data::AbstractDict)
     chatcompletion(choice["message"], used, chatfinish(finish))
 end
 
+receivechat!(process, failure, marker, text, ::InvalidResponse) = nothing
+function receivechat!(process, failure, marker, text, previous)
+    text == "[DONE]" && return (marker[] = true; nothing)
+    receivechat!(process, failure, decode(text))
+end
+receivechat!(process, failure, data::InvalidResponse) = (failure[] = data; nothing)
+receivechat!(process, failure, data) = process(data)
+
 function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=identity)
     message = Dict{String, Any}("role" => "assistant", "content" => nothing)
     calls = Dict{Any, Dict{String, Any}}()
@@ -264,17 +272,7 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
     finish = Ref{Union{Nothing, String}}(nothing)
     failure = Ref{Union{Nothing, String, InvalidResponse}}(nothing)
     marker = Ref(false)
-    HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, context=requestcontext(), sse_callback=event -> begin
-        failure[] isa InvalidResponse && return
-        if event.data == "[DONE]"
-            marker[] = true
-            return
-        end
-        data = decode(event.data)
-        if data isa InvalidResponse
-            failure[] = data
-            return
-        end
+    process = data -> begin
         on_event((; type=:provider, data))
         if haskey(data, "error")
             failure[] = JSON3.write(data["error"])
@@ -315,7 +313,8 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
             output["function"]["arguments"] *= arguments
             on_event((; type=:tool_call, index, id, name, arguments))
         end
-    end)
+    end
+    HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, context=requestcontext(), sse_callback=event -> receivechat!(process, failure, marker, event.data, failure[]))
     isempty(order) || (message["tool_calls"] = [calls[index] for index in order])
     status = chatfinish(finish[])
     finishfailure!(failure, status, failure[])
