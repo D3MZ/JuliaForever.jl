@@ -90,6 +90,7 @@ jobs:
           git apply "$GITHUB_WORKSPACE/scripts/coverage-baseline-boundary.patch"
           git apply "$GITHUB_WORKSPACE/scripts/coverage-baseline-platform.patch"
           git apply "$GITHUB_WORKSPACE/scripts/coverage-baseline-mcp.patch"
+          git apply "$GITHUB_WORKSPACE/scripts/coverage-baseline-prompt.patch"
           julia --startup-file=no --project=. -e 'using Pkg; Pkg.instantiate(); using JuliaForever; Pkg.test(; coverage=true, julia_args=`--startup-file=no --threads=4`)'
           cp Manifest.toml "$GITHUB_WORKSPACE/Manifest.toml"
           python3 scripts/coverage.py --output "$GITHUB_WORKSPACE/coverage/baseline.json" | tee -a "$GITHUB_STEP_SUMMARY"

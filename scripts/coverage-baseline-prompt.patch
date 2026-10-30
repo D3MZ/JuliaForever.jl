@@ -1,0 +1,12 @@
+diff --git a/test/prompt_differential.jl b/test/prompt_differential.jl
+index 03b90aa..64bbb7d 100644
+--- a/test/prompt_differential.jl
++++ b/test/prompt_differential.jl
+@@ -10,6 +10,7 @@ using Test, JSON3
+         globalprompts = joinpath(agentdir, "prompts")
+         projectprompts = joinpath(cwd, ".pi", "prompts")
+         mkpath.((globalprompts, projectprompts))
++        cwd = cd(pwd, cwd)
+         write(joinpath(globalprompts, "review.md"), "---\ndescription: Review changes\nargument-hint: '[focus]'\n---\nReview \$1 | \${2:-everything} | \$@")
+         write(joinpath(globalprompts, "same.md"), "global \$1")
+         write(joinpath(projectprompts, "same.md"), "project \$1")
