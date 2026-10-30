@@ -159,8 +159,8 @@ function restoreprompts!(session, agent)
 end
 restoreprompts!(session, previous, agent) = previous === agent ? nothing : restoreprompts!(session, agent)
 
-maketerminal(session, terminal, ::Regular) = JuliaForever.Terminal(output(session, terminal.output), Output(session), terminal.secrets)
-maketerminal(session, terminal, ::Fullscreen) = JuliaForever.Terminal(ScreenOutput(session, AssistantText()), ScreenOutput(session, DiagnosticText()), terminal.secrets)
+maketerminal(session, terminal, ::Regular) = JuliaForever.Terminal(output(session, terminal.output), Output(session), terminal.secrets, terminal.mode)
+maketerminal(session, terminal, ::Fullscreen) = JuliaForever.Terminal(ScreenOutput(session, AssistantText()), ScreenOutput(session, DiagnosticText()), terminal.secrets, terminal.mode)
 include("terminal_completion_ui.jl")
 output(session, stream::IO) = stream
 output(session, stream::Base.TTY) = output(session.physical, session, stream)

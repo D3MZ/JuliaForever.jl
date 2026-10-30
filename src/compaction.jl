@@ -22,6 +22,53 @@ function lastuser(messages)
     index
 end
 
+abstract type CompactionRetention end
+struct LastTurn <: CompactionRetention end
+struct RecentTokens <: CompactionRetention
+    count::Int
+end
+
+recentunits(::Conversation.Message) = 0
+recentunits(message::Conversation.User) = ContextEstimates.units(message.content)
+recentunits(message::Conversation.ImageUser) = ContextEstimates.units(message.content) + sum(ContextEstimates.units, message.images; init=0)
+recentunits(message::Conversation.Assistant) = ContextEstimates.assistantunits(message.content, message.calls, message.metadata)
+recentunits(message::Conversation.ToolMessage) = ContextEstimates.units(message.content) + ContextEstimates.attached(message.image)
+recentunits(message::Conversation.BashMessage) = recentunits(message, message.context)
+recentunits(message::Conversation.BashMessage, ::Conversation.ExcludedBashContext) = 0
+recentunits(message::Conversation.BashMessage, ::Conversation.BashContext) = ContextEstimates.units(message.command) + ContextEstimates.units(message.output)
+recentunits(message::Conversation.RawMessage) = get(recentroles, get(message.value, "role", ""), recentother)(message.value)
+recentother(message) = 0
+recentuser(message) = ContextEstimates.units(get(message, "content", nothing)) + ContextEstimates.imageunits(get(message, "images", nothing))
+recentassistant(message) = ContextEstimates.assistantunits(get(message, "content", nothing), get(message, "tool_calls", ()), message)
+recenttool(message) = ContextEstimates.units(get(message, "content", nothing)) + ContextEstimates.attached(get(message, "image", nothing))
+const recentroles = Dict("user" => recentuser, "assistant" => recentassistant, "tool" => recenttool)
+
+cutpoint!(points, index, ::Conversation.Message) = nothing
+cutpoint!(points, index, ::Union{Conversation.User, Conversation.ImageUser, Conversation.Assistant}) = (push!(points, index); nothing)
+cutpoint!(points, index, message::Conversation.BashMessage) = cutpoint!(points, index, message.context)
+cutpoint!(points, index, ::Conversation.BashContext) = (push!(points, index); nothing)
+cutpoint!(points, index, ::Conversation.ExcludedBashContext) = nothing
+cutpoint!(points, index, message::Conversation.RawMessage) = get(cutroles, get(message.value, "role", ""), ignorecut!)(points, index)
+ignorecut!(points, index) = nothing
+addcut!(points, index) = (push!(points, index); nothing)
+const cutroles = Dict("user" => addcut!, "assistant" => addcut!)
+
+function recentcut(messages, keep)
+    points = Int[]
+    for (index, message) in enumerate(messages)
+        cutpoint!(points, index, message)
+    end
+    isempty(points) && return nothing
+    total = 0
+    for index in reverse(eachindex(messages))
+        tokens = cld(recentunits(messages[index]), 4)
+        iszero(tokens) && continue
+        total += tokens
+        total >= keep && return points[min(searchsortedfirst(points, index), length(points))]
+    end
+    first(points)
+end
+
 systemmessage!(system, other, message) = push!(system, message)
 othermessage!(system, other, message) = push!(other, message)
 const systemroles = Dict("system" => systemmessage!)
@@ -43,6 +90,11 @@ end
 
 compactionplan(agent, rejected::History.Rejected) = rejected
 compactionplan(agent, ::Nothing) = compactionplan(agent, nothing, fault(agent.state))
+compactionplan(agent, result, ::LastTurn) = compactionplan(agent, result)
+compactionplan(agent, rejected::History.Rejected, ::RecentTokens) = rejected
+compactionplan(agent, ::Nothing, keep::RecentTokens) = compactionrecent(agent, fault(agent.state), keep)
+compactionrecent(agent, rejected::History.Rejected, keep) = rejected
+compactionrecent(agent, ::Nothing, keep) = compactionplan(agent, agent.state.messages, recentcut(agent.state.messages, keep.count))
 
 function compactionplan(agent, ::Nothing, ::Nothing)
     messages = agent.state.messages
@@ -124,7 +176,7 @@ function compact!(agent, summarize, ::Nothing)
     compact!(agent, summarize, plan)
 end
 
-compact!(agent, summarize, plan::CompactionPlan) = compactsummary!(agent, plan, summarized(summarize, deepcopy(plan.summarized)))
+compact!(agent, summarize, plan::CompactionPlan) = compactsummary!(agent, plan, recoverycall!(agent, summarize, deepcopy(plan.summarized)))
 compactsummary!(agent, plan, outcome::SummaryOutcome) = compactsummary!(agent, plan, outcome.value, outcome.info)
 compactsummary!(agent, plan, rejected::History.Rejected) = rejected
 compactsummary!(agent, plan, rejected::History.Rejected, info) = compactfailed!(agent, rejected, info)
@@ -162,10 +214,12 @@ end
 
 "Usage-backed automatic compaction policy for a model's context window."
 abstract type AutoCompaction end
-struct UsageCompaction <: AutoCompaction
+struct UsageCompaction{R<:CompactionRetention} <: AutoCompaction
     context_window::Int
     reserve_tokens::Int
+    retention::R
 end
+UsageCompaction(context_window, reserve_tokens) = UsageCompaction(context_window, reserve_tokens, LastTurn())
 struct DisabledCompaction <: AutoCompaction
     context_window::Int
     reserve_tokens::Int
@@ -178,26 +232,63 @@ contexttokens(usage::Usage) = iszero(usage.total) ? usage.input + usage.output +
 
 "Compact at a caller's safe turn boundary when reported usage exceeds the threshold."
 autocompact!(agent::Agent, usage, settings::AutoCompaction) = autocompact!(agent, usage, settings, Summarizer(agent.provider))
-autocompact!(agent::Agent, ::Nothing, settings::AutoCompaction, summarize) = nothing
-autocompact!(agent::Agent, usage::Usage, settings::DisabledCompaction, summarize) = nothing
-function autocompact!(agent::Agent, usage::Usage, settings::UsageCompaction, summarize)
+autocompact!(agent::Agent, usage, settings::AutoCompaction, summarize) = autocompact!(agent, usage, settings, summarize, nothing)
+autocompact!(agent::Agent, ::Nothing, settings::AutoCompaction, summarize, callback) = nothing
+autocompact!(agent::Agent, usage::Usage, settings::DisabledCompaction, summarize, callback) = nothing
+function autocompact!(agent::Agent, usage::Usage, settings::UsageCompaction, summarize, callback)
     tokens = contexttokens(usage)
     tokens > 0 && settings.context_window > 0 && tokens > settings.context_window - settings.reserve_tokens || return nothing
-    compact!(agent, summarize)
+    autostart!(agent, summarize, callback, settings.retention, startturn!(agent))
 end
+
+autostart!(agent, summarize, callback, retention, ::Nothing) = :busy
+function autostart!(agent, summarize, callback, retention, ::Running)
+    try
+        autoplan!(agent, summarize, callback, retention, sync!(agent))
+    finally
+        finish!(agent)
+    end
+end
+autoplan!(agent, summarize, callback, retention, rejected::History.Rejected) = rejected
+function autoplan!(agent, summarize, callback, retention, ::Nothing)
+    plan = lock(() -> compactionplan(agent, agent.fault, retention), agent.lock)
+    autoplan!(agent, summarize, callback, retention, plan)
+end
+function autoplan!(agent, summarize, callback, retention, plan::CompactionPlan)
+    emit(callback, (; type=:auto_compaction_start, reason=:threshold))
+    result = autoperform!(agent, summarize, plan, turnstate(agent))
+    emit(callback, (; type=:auto_compaction_end, reason=:threshold, result))
+    result
+end
+autoperform!(agent, summarize, plan, ::Cancelled) = :cancelled
+function autoperform!(agent, summarize, plan, ::Union{Idle, Running})
+    depth = length(current_exceptions())
+    try
+        compact!(agent, summarize, plan)
+    finally
+        for failure in autofailures(current_exceptions(), depth, turnstate(agent))
+            return failure
+        end
+    end
+end
+autofailures(exceptions, depth, turn) = length(exceptions) > depth ? autofailures(last(exceptions).exception, turn) : ()
+autofailures(::HTTP.CanceledError, ::Cancelled) = (:cancelled,)
+autofailures(::Union{HTTP.HTTPError, SystemError, Base.IOError}, turn) = (History.Rejected(:summary_failed),)
+autofailures(exception, turn) = ()
 
 abstract type RecoveryAttempt end
 struct AvailableRecovery <: RecoveryAttempt end
 struct AttemptedRecovery <: RecoveryAttempt end
 
-mutable struct OverflowRecovery{F, P}
+mutable struct OverflowRecovery{F, P, R<:CompactionRetention}
     summarize::F
     provider::P
+    retention::R
     attempt::RecoveryAttempt
 end
 
 recovery(settings, summarize, provider) = nothing
-recovery(::UsageCompaction, summarize, provider) = OverflowRecovery(summarize, provider, AvailableRecovery())
+recovery(settings::UsageCompaction, summarize, provider) = OverflowRecovery(summarize, provider, settings.retention, AvailableRecovery())
 
 abstract type OverflowSignal end
 struct NoOverflow <: OverflowSignal end
@@ -250,13 +341,13 @@ function recover!(run, result, recovery, ::Overflow, ::AvailableRecovery)
     run.agent.provider === recovery.provider || return result
     recovery.attempt = AttemptedRecovery()
     plan = lock(run.agent.lock) do
-        recoveryplan(run.agent, sync!(run.agent))
+        recoveryplan(run.agent, sync!(run.agent), recovery.retention)
     end
     recover!(run, result, recovery, plan)
 end
 
-recoveryplan(agent, rejected::History.Rejected) = rejected
-recoveryplan(agent, ::Nothing) = compactionplan(agent, agent.fault)
+recoveryplan(agent, rejected::History.Rejected, retention) = rejected
+recoveryplan(agent, ::Nothing, retention) = compactionplan(agent, agent.fault, retention)
 recover!(run, result, recovery, rejected::History.Rejected) = recoverycancel!(run, result, turnstate(run.agent))
 
 function recover!(run, result, recovery, plan::CompactionPlan)
@@ -333,6 +424,4 @@ end
 
 finishauto!(agent, result, usage, ::Nothing, summarize, callback) = nothing
 finishauto!(agent, result, usage, settings::AutoCompaction, summarize, callback) = nothing
-finishauto!(agent, result::AbstractString, usage, settings::AutoCompaction, summarize, callback) = finishauto!(callback, autocompact!(agent, usage, settings, summarize))
-finishauto!(callback, ::Nothing) = nothing
-finishauto!(callback, compacted) = (emit(callback, (; type=:auto_compaction_end, result=compacted)); nothing)
+finishauto!(agent, result::AbstractString, usage, settings::AutoCompaction, summarize, callback) = (autocompact!(agent, usage, settings, summarize, callback); nothing)

@@ -427,9 +427,18 @@ function toolend!(session, block::ToolBlock, event)
     block.status = toolstatus(event.result)
     nothing
 end
+autocompactionend!(session, event) = autocompacted!(session, event.result)
+autocompacted!(session, result) = nothing
+function autocompacted!(session, result::AbstractString)
+    lock(session.agent.lock) do
+        load!(session.view, session.agent, session.terminal)
+    end
+    record!(session.view, DiagnosticText(), "Auto-compaction complete.\n")
+    nothing
+end
 toolstatus(::JuliaForever.ToolSuccess) = "ok"
 toolstatus(::JuliaForever.ToolFailure) = "error"
-const screenevents = Dict(:message_start => messagestart!, :tool_execution_start => toolstart!, :tool_execution_update => toolupdate!, :tool_execution_end => toolend!)
+const screenevents = Dict(:message_start => messagestart!, :tool_execution_start => toolstart!, :tool_execution_update => toolupdate!, :tool_execution_end => toolend!, :auto_compaction_end => autocompactionend!)
 
 JuliaForever.render!(terminal::JuliaForever.Terminal{O, E}, event::JuliaForever.ToolStarted) where {O<:ScreenOutput, E<:ScreenOutput} = nothing
 JuliaForever.render!(terminal::JuliaForever.Terminal{O, E}, event::JuliaForever.ToolUpdated) where {O<:ScreenOutput, E<:ScreenOutput} = nothing

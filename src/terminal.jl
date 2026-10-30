@@ -5,7 +5,10 @@ abstract type TerminalLine end
 struct LineClosed <: TerminalLine end
 struct LineOpen <: TerminalLine end
 abstract type TerminalMode end
-struct TextMode <: TerminalMode end
+struct TextMode <: TerminalMode
+    provider::String
+end
+TextMode() = TextMode("")
 struct JSONMode <: TerminalMode
     provider::String
 end
@@ -23,6 +26,7 @@ terminalmode(value) = get(terminalmodes, value, InvalidMode())
 assignmode(::TerminalMode, mode::TerminalMode) = mode
 assignmode(invalid::InvalidMode, ::TerminalMode) = invalid
 provider(mode::TerminalMode, name) = mode
+provider(::TextMode, name) = TextMode(name)
 provider(::JSONMode, name) = JSONMode(name)
 provider(::RPCMode, name) = RPCMode(name)
 thinkingmode(mode::TerminalMode, level) = mode
@@ -111,8 +115,12 @@ struct ToolEnded <: TerminalEvent
     name::Any
     result::Any
 end
+struct AutoCompactionStarted <: TerminalEvent end
+struct AutoCompactionEnded <: TerminalEvent
+    result::Any
+end
 
-const terminaleventtypes = Dict(:message_end => AssistantEnded, :tool_execution_start => ToolStarted, :tool_execution_end => ToolEnded, :tool_execution_update => ToolUpdated)
+const terminaleventtypes = Dict(:message_end => AssistantEnded, :tool_execution_start => ToolStarted, :tool_execution_end => ToolEnded, :tool_execution_update => ToolUpdated, :auto_compaction_start => AutoCompactionStarted, :auto_compaction_end => AutoCompactionEnded)
 const terminalroles = Dict("assistant" => AssistantEnded)
 terminalevent(event) = terminalevent(get(terminaleventtypes, event.type, nothing), event)
 terminalevent(::Nothing, event) = nothing
@@ -120,6 +128,8 @@ terminalevent(::Type{AssistantEnded}, event) = terminalassistant(get(terminalrol
 terminalevent(::Type{ToolStarted}, event) = ToolStarted(event.tool_name)
 terminalevent(::Type{ToolUpdated}, event) = ToolUpdated(event.tool_name, event.partial_result)
 terminalevent(::Type{ToolEnded}, event) = ToolEnded(event.tool_name, event.result)
+terminalevent(::Type{AutoCompactionStarted}, event) = AutoCompactionStarted()
+terminalevent(::Type{AutoCompactionEnded}, event) = AutoCompactionEnded(event.result)
 terminalassistant(::Nothing, message) = nothing
 terminalassistant(::Type{AssistantEnded}, message) = AssistantEnded(get(message, "content", nothing))
 
@@ -151,6 +161,29 @@ function render!(terminal::Terminal, event::ToolEnded)
     name = redact(terminal, something(event.name, "unknown"))
     result = status(terminal, event.result)
     println(terminal.diagnostics, "[tool] ", name, ": ", result)
+    flush(terminal.diagnostics)
+end
+
+function render!(terminal::Terminal, ::AutoCompactionStarted)
+    println(terminal.diagnostics, "Auto-compaction started.")
+    flush(terminal.diagnostics)
+end
+render!(terminal::Terminal, event::AutoCompactionEnded) = autocompactionmessage!(terminal, event.result)
+function autocompactionmessage!(terminal, ::AbstractString)
+    println(terminal.diagnostics, "Auto-compaction complete.")
+    flush(terminal.diagnostics)
+end
+const autocompactionmessages = Dict(:cancelled => "Auto-compaction cancelled.")
+function autocompactionmessage!(terminal, result::Symbol)
+    println(terminal.diagnostics, get(autocompactionmessages, result, "Auto-compaction failed: $(redact(terminal, result))."))
+    flush(terminal.diagnostics)
+end
+function autocompactionmessage!(terminal, result::History.Rejected)
+    println(terminal.diagnostics, "Auto-compaction failed: ", result.reason, ".")
+    flush(terminal.diagnostics)
+end
+function autocompactionmessage!(terminal, result)
+    println(terminal.diagnostics, "Auto-compaction failed: ", redact(terminal, result), ".")
     flush(terminal.diagnostics)
 end
 
@@ -374,11 +407,22 @@ function run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::Nothing, on_
     runmode!(terminal, agent, prompt, snapshot, on_agent_event, terminal.mode)
 end
 
-function runmode!(terminal::Terminal, agent::Agent, prompt, snapshot, on_agent_event, ::TextMode)
+function runmode!(terminal::Terminal, agent::Agent, prompt, snapshot, on_agent_event, mode::TextMode)
+    policy = attempt(() -> terminalcompaction(agent.provider, mode.provider, ENV, pwd()))
+    runtext!(terminal, agent, prompt, snapshot, on_agent_event, policy)
+end
+
+function runtext!(terminal, agent, prompt, snapshot, on_agent_event, failure::Union{Models.InvalidConfig, ToolFailure})
+    println(terminal.diagnostics, "Invalid or unreadable compaction settings.")
+    flush(terminal.diagnostics)
+    2
+end
+
+function runtext!(terminal, agent, prompt, snapshot, on_agent_event, policy::Union{Nothing, AutoCompaction})
     callback = observer(terminal, snapshot, on_agent_event)
     result = try
         request!(terminal) do
-            respond!(agent, prompt; on_event=event -> streamrender!(terminal, event), on_agent_event=callback)
+            respond!(agent, prompt; on_event=event -> streamrender!(terminal, event), on_agent_event=callback, auto_compaction=policy)
         end
     finally
         failures!(terminal, callback)

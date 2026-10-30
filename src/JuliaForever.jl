@@ -86,6 +86,7 @@ end
 struct HistoryConflict end
 include("cli_models.jl")
 include("model_config.jl")
+include("terminal_compaction.jl")
 include("chatgpt_cli.jl")
 include("history_export.jl")
 include("openrouter_credentials.jl")

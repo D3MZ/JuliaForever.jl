@@ -4,6 +4,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 from tmux_exit import wait_for_exit
 
@@ -15,6 +16,14 @@ def run(*args, check=True, env=None):
 
 def screen(name):
     return run("capture-pane", "-p", "-J", "-t", name).stdout
+
+def raw(name):
+    terminal = run("display-message", "-p", "-t", name, "#{pane_tty}").stdout.strip()
+    fd = os.open(terminal, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+    try:
+        return not termios.tcgetattr(fd)[3] & termios.ICANON
+    finally:
+        os.close(fd)
 
 def wait(name, predicate, label, timeout=90):
     deadline = time.monotonic() + timeout
@@ -59,7 +68,7 @@ try:
         run("send-keys", "-t", "branch", "-l", "reply:first")
         wait("branch", lambda s: "assistant: reply:first" in s, "tree search")
         run("send-keys", "-t", "branch", "Enter")
-        wait("branch", lambda s: "reply:first" in s and "reply:second" not in s and "Session tree" not in s and "| ready" in s, "branch selection")
+        wait("branch", lambda s: "reply:first" in s and "reply:second" not in s and "Session tree" not in s and "| ready" in s and raw("branch"), "branch selection")
         send("branch", "/session")
         summary = wait("branch", lambda s: "Session Info" in s and "Total: 225" in s, "session statistics")
         assert "User: 2" in summary and "Assistant: 2" in summary and "$0.015" in summary, summary
