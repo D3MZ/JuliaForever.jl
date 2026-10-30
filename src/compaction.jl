@@ -118,9 +118,13 @@ end
 compactionplan(agent, system, summarized, retained, rejected::History.Rejected) = rejected
 compactionplan(agent, system, summarized, retained, ::Nothing) = CompactionPlan(agent.state.revision, deepcopy(agent.messages), system, summarized, retained)
 
-struct Summarizer{P}
+struct Summarizer{P, I}
     provider::P
+    instructions::I
 end
+Summarizer(provider) = Summarizer(provider, nothing)
+summaryinstructions(::Nothing) = ""
+summaryinstructions(text::AbstractString) = isempty(text) ? "" : "Additional focus: " * text * "\n\n"
 
 struct SummaryOutcome{T}
     value::T
@@ -133,7 +137,7 @@ const summaryprompt = "Summarize this conversation so another assistant can cont
 summarized(summarizer, messages) = SummaryOutcome(summarizer(messages), nothing)
 function summarized(summarizer::Summarizer, messages)
     transcript = modelmessages(messages)
-    request = Dict{String, Any}[Dict("role" => "user", "content" => summaryprompt * JSON3.write(transcript))]
+    request = Dict{String, Any}[Dict("role" => "user", "content" => summaryprompt * summaryinstructions(summarizer.instructions) * JSON3.write(transcript))]
     info = responseinfo(summarizer.provider, round(Int, 1000time()))
     result = price(summarizer.provider, complete(summarizer.provider, request, Dict{String, Tool}()))
     SummaryOutcome(summaryresponse(result), summaryinfo(info, result))

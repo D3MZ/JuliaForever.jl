@@ -9,6 +9,8 @@ using Test, JuliaForever, JSON3
         output = joinpath(root, "output")
         diagnostics = joinpath(root, "diagnostics")
         mkpath(workspace)
+        mkpath(joinpath(root, "agent"))
+        write(joinpath(root, "agent", "settings.json"), JSON3.write((; compaction=(; keepRecentTokens=5))))
         skilldir = joinpath(workspace, ".pi", "skills", "example")
         mkpath(skilldir)
         write(joinpath(skilldir, "SKILL.md"), "---\nname: example\ndescription: local skill metadata\n---\nprivate body\n")

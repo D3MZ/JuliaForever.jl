@@ -1,7 +1,10 @@
 abstract type TerminalCommand end
 struct TreeCommand <: TerminalCommand end
 struct ResumeCommand <: TerminalCommand end
-struct CompactCommand <: TerminalCommand end
+struct CompactCommand{I} <: TerminalCommand
+    instructions::I
+end
+CompactCommand() = CompactCommand(nothing)
 struct ReloadCommand <: TerminalCommand end
 struct NewCommand <: TerminalCommand end
 struct CloneCommand <: TerminalCommand end
@@ -25,9 +28,14 @@ const terminalcommands = Dict{String, TerminalCommand}("/compact" => CompactComm
 const namepattern = r"\A/name(?: +([\s\S]*))?\z"
 const modelpattern = r"\A/model +([^\r\n]+)\z"
 const exportpattern = r"\A/export +([^\r\n]*)\z"
+const compactpattern = r"\A/compact ([\s\S]*)\z"
 terminalcommand(text) = terminalcommand(get(terminalcommands, text, nothing), text)
 terminalcommand(command::TerminalCommand, text) = command
-terminalcommand(::Nothing, text) = modelcommand(exportcommand(namecommand(match(namepattern, text)), text), text)
+terminalcommand(::Nothing, text) = compactcommand(modelcommand(exportcommand(namecommand(match(namepattern, text)), text), text), text)
+compactcommand(command::TerminalCommand, text) = command
+compactcommand(::Nothing, text) = compactcommand(match(compactpattern, text))
+compactcommand(::Nothing) = nothing
+compactcommand(found::RegexMatch) = CompactCommand(String(strip(found[1])))
 exportcommand(command::TerminalCommand, text) = command
 exportcommand(::Nothing, text) = exportcommand(match(exportpattern, text))
 exportcommand(::Nothing) = nothing
@@ -44,35 +52,45 @@ namecommand(name::String) = isempty(name) ? ShowName() : SetName(name)
 
 command!(::ReloadCommand, terminal, agent, history, input, directory, snapshot) = reload!(terminal, agent, history, () -> Skills.render(Skills.load(pwd()), Skills.reader(values(agent.tools))))
 
-command!(::CompactCommand, terminal, agent, history, input, directory, snapshot) = (agent, history, compactresult!(terminal, textcompact!(terminal, agent, history)))
+command!(command::CompactCommand, terminal, agent, history, input, directory, snapshot) = (agent, history, compactresult!(terminal, textcompact!(terminal, agent, history, command)))
 
-textcompact!(terminal, agent, ::Nothing) = compact!(agent)
-textcompact!(terminal, agent, ::History.Store) = textcompactstart!(terminal, agent, startturn!(agent))
-textcompactstart!(terminal, agent, ::Nothing) = :busy
-function textcompactstart!(terminal, agent, ::Running)
+textcompact!(terminal, agent, history, command) = textcompactstart!(terminal, agent, history, command, startturn!(agent))
+textcompactstart!(terminal, agent, history, command, ::Nothing) = :busy
+function textcompactstart!(terminal, agent, history, command, ::Running)
     try
-        textcompactready!(terminal, agent, sync!(agent))
+        textcompactready!(terminal, agent, history, command, sync!(agent))
     finally
         finish!(agent)
     end
 end
-textcompactready!(terminal, agent, rejected::History.Rejected) = rejected
-function textcompactready!(terminal, agent, ::Nothing)
+textcompactready!(terminal, agent, history, command, rejected::History.Rejected) = rejected
+textcompactready!(terminal, agent, history, command, ::Nothing) = textcompactpolicy!(terminal, agent, history, command, manualretention(agent.provider, terminal.mode.provider))
+textcompactpolicy!(terminal, agent, history, command, rejected::History.Rejected) = rejected
+function textcompactpolicy!(terminal, agent, history, command, retention::CompactionRetention)
+    recorder = textrecorder(terminal, agent, history)
+    plan = lock(() -> compactionplan(agent, agent.fault, retention), agent.lock)
+    textcompactplan!(agent, recorder, command, plan)
+end
+textrecorder(terminal, agent, ::Nothing) = nothing
+function textrecorder(terminal, agent, ::History.Store)
     stream = LiveJSON.Stream(terminal, agent, JSONMode(terminal.mode.provider), devnull)
     recorder = LiveJSON.Recorder(agent)
     LiveJSON.backfill!(recorder, stream, LiveJSON.recordpresence(recorder.entries))
-    plan = lock(() -> compactionplan(agent, agent.fault), agent.lock)
-    textcompactplan!(agent, recorder, plan)
+    recorder
 end
-textcompactplan!(agent, recorder, rejected::History.Rejected) = rejected
-function textcompactplan!(agent, recorder, plan::CompactionPlan)
+textcompactplan!(agent, recorder, command, rejected::History.Rejected) = rejected
+function textcompactplan!(agent, recorder, command, plan::CompactionPlan)
     tokens = compactiontokens(agent)
-    result = compact!(agent, Summarizer(agent.provider), plan)
+    result = compact!(agent, Summarizer(agent.provider, command.instructions), plan)
     info, after = lock(agent.lock) do
         (latestcompactioninfo(result, getfield(agent, :events)), sum(pretoken, agent.state.messages; init=0))
     end
-    entry = LiveJSON.compactionentry((; result, plan, tokens_before=tokens, estimated_after=after, info), recorder.entries)
-    outcome(LiveJSON.savecompaction!(recorder, entry), result)
+    outcome(textcompactrecord!(recorder, (; result, plan, tokens_before=tokens, estimated_after=after, info)), result)
+end
+textcompactrecord!(::Nothing, event) = nothing
+function textcompactrecord!(recorder, event)
+    entry = LiveJSON.compactionentry(event, recorder.entries)
+    LiveJSON.savecompaction!(recorder, entry)
 end
 
 function compactresult!(terminal, summary::AbstractString)
