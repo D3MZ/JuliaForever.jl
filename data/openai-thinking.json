@@ -1,0 +1,281 @@
+{
+  "gpt-5": {
+    "off": null,
+    "minimal": "minimal",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": null,
+    "max": null
+  },
+  "gpt-5-mini": {
+    "off": null,
+    "minimal": "minimal",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": null,
+    "max": null
+  },
+  "gpt-5-nano": {
+    "off": null,
+    "minimal": "minimal",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": null,
+    "max": null
+  },
+  "gpt-5-pro": {
+    "off": null,
+    "minimal": null,
+    "low": null,
+    "medium": null,
+    "high": "high",
+    "xhigh": null,
+    "max": null
+  },
+  "gpt-5.1": {
+    "off": "none",
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": null,
+    "max": null
+  },
+  "gpt-5.2": {
+    "off": "none",
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": null
+  },
+  "gpt-5.2-pro": {
+    "off": null,
+    "minimal": null,
+    "low": null,
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": null
+  },
+  "gpt-5.3-codex": {
+    "off": "none",
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": null
+  },
+  "gpt-5.3-codex-spark": {
+    "off": null,
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": null
+  },
+  "gpt-5.4": {
+    "off": "none",
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": null
+  },
+  "gpt-5.4-mini": {
+    "off": "none",
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": null
+  },
+  "gpt-5.4-nano": {
+    "off": "none",
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": null
+  },
+  "gpt-5.4-pro": {
+    "off": null,
+    "minimal": null,
+    "low": null,
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": null
+  },
+  "gpt-5.5": {
+    "off": "none",
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": null
+  },
+  "gpt-5.5-pro": {
+    "off": null,
+    "minimal": null,
+    "low": null,
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": null
+  },
+  "gpt-5.6-luna": {
+    "off": "none",
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "max"
+  },
+  "gpt-5.6-sol": {
+    "off": "none",
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "max"
+  },
+  "gpt-5.6-terra": {
+    "off": "none",
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "max"
+  },
+  "gpt-6-astra": {
+    "off": null,
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "max"
+  },
+  "gpt-6-luna": {
+    "off": "none",
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "max"
+  },
+  "gpt-6-sol": {
+    "off": "none",
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "max"
+  },
+  "gpt-6.1-sol": {
+    "off": null,
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "max"
+  },
+  "gpt-daybreak-blue-latest": {
+    "off": "none",
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "max"
+  },
+  "gpt-daybreak-red-latest": {
+    "off": "none",
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "max"
+  },
+  "gpt-realtime-2.1": {
+    "off": null,
+    "minimal": "minimal",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": null
+  },
+  "o1": {
+    "off": null,
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": null,
+    "max": null
+  },
+  "o1-pro": {
+    "off": null,
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": null,
+    "max": null
+  },
+  "o3": {
+    "off": null,
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": null,
+    "max": null
+  },
+  "o3-mini": {
+    "off": null,
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": null,
+    "max": null
+  },
+  "o3-pro": {
+    "off": null,
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": null,
+    "max": null
+  },
+  "o4-mini": {
+    "off": null,
+    "minimal": null,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": null,
+    "max": null
+  }
+}

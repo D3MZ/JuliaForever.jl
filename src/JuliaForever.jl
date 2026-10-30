@@ -328,10 +328,15 @@ function launchprovider(options)
     name = providername(auth, selected)
     info = launchinfo(auth, options.modelconfig, name, requested_model, get(options, :catalog_provider, nothing))
     model = acquire(auth, info, requested_model)
+    model = applythinking(model, get(options, :thinking, nothing))
     Base.ScopedValues.with(tuimode => LiveTerminal.withprovider(options.tui, name)) do
         launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, provider(outputmode, name))
     end
 end
+applythinking(model, ::Nothing) = model
+applythinking(model::Integer, thinking) = model
+applythinking(model::OpenAIResponses, thinking::AbstractString) = OpenAIResponses(model.base, model.model, model.key, model.extra, model.route, thinking)
+applythinking(model, thinking) = unsupportedthinking()
 launchinfo(::APIKeyAuth, registry::Models.Registry, name, model, ::Nothing) = configuredinfo(registry, name, model, ENV)
 launchinfo(::APIKeyAuth, registry::Models.Registry, name, model, provider::AbstractString) = configuredinfo(registry, name, model, ENV, provider)
 launchinfo(::OpenRouterAuth, registry::Models.Registry, name, model, provider) = providerinfo(name)

@@ -4,7 +4,9 @@ struct OpenAIResponses
     key::String
     extra::Vector{Pair{String, String}}
     route::Union{DirectRoute, CatalogRoute}
+    thinking::Union{Nothing, String}
 end
+OpenAIResponses(base, model, key, extra, route) = OpenAIResponses(base, model, key, extra, route, nothing)
 OpenAIResponses(base, model, key) = OpenAIResponses(base, model, key, Pair{String, String}[], DirectRoute())
 OpenAIResponses(base, model, key, extra) = OpenAIResponses(base, model, key, extra, DirectRoute())
 
@@ -47,9 +49,13 @@ end
 inputcontent!(items, role, ::Nothing) = nothing
 inputcontent!(items, role, content) = push!(items, Dict("role" => role, "content" => content))
 
+applythinking!(data, ::Nothing) = nothing
+applythinking!(data, effort::AbstractString) = (data["reasoning"] = effort == "none" ? Dict("effort" => effort) : Dict("effort" => effort, "summary" => "auto"))
+
 function payload(provider::OpenAIResponses, messages, tools, parameters; streaming=false)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(parameters))
     data["model"] = provider.model
+    applythinking!(data, provider.thinking)
     data["input"] = input(messages)
     data["stream"] = streaming
     get!(data, "store", false)
