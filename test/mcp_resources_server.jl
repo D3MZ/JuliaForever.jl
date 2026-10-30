@@ -36,6 +36,8 @@ for line in eachline(stdin)
     elseif method == "resources/templates/list"
         if mode == "no_templates"
             fault(message["id"], -32601, "Method not found")
+        elseif mode == "failed_templates"
+            fault(message["id"], -32602, "Invalid parameters")
         else
             reply(message["id"], Dict("resourceTemplates" => [Dict("uriTemplate" => "docs://{id}", "description" => "A page")], "nextCursor" => ""))
         end

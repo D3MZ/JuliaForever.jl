@@ -1066,7 +1066,7 @@ collectlisting!(items, failures, server, failure::Failure) = push!(failures, Dic
 fallback(list::Listing, result, empty) = result
 fallback(::Templates, failure::Failure, empty) = fallback(failure, failure.data, empty)
 fallback(failure::Failure, data, empty) = failure
-fallback(failure::Failure, data::AbstractDict, empty) = get(data, "code", nothing) == -32601 ? empty : failure
+fallback(failure::Failure, data::AbstractDict, empty) = get(Dict(-32601 => empty), get(data, "code", nothing), failure)
 
 apptype(value) = false
 apptype(value::AbstractString) = occursin(r";\s*profile\s*=\s*\"?mcp-app\"?"i, value)

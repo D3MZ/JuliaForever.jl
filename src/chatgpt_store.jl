@@ -196,10 +196,13 @@ end
 
 renew(store::Store, session::Session, ::InvalidResponse; received) = Rejected(:response)
 
+expirecredential!(store, session) = saveunlocked(store, Account(session.client, session.identity))
+retaincredential!(store, session) = nothing
+const credentialfailures = Dict(code => expirecredential! for code in ("invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused"))
+
 function renew(store::Store, session::Session, failure::OAuthError; received)
-    unusable = ("invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused")
-    if 400 <= failure.status < 500 && failure.code in unusable
-        saveunlocked(store, Account(session.client, session.identity))
+    if 400 <= failure.status < 500
+        get(credentialfailures, failure.code, retaincredential!)(store, session)
     end
     failure
 end
