@@ -62,7 +62,8 @@ struct Failed <: TaskStatus
 end
 struct Cancelled <: TaskStatus end
 
-Running(cancelled::Bool) = cancelled ? Cancelling() : Active()
+const runningstates = Dict(false => Active(), true => Cancelling())
+Running(cancelled::Bool) = runningstates[cancelled]
 cancelled(::Active) = false
 cancelled(::Cancelling) = true
 
