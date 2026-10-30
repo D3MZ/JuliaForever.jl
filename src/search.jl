@@ -101,19 +101,32 @@ posix(path) = Sys.iswindows() ? replace(path, '\\' => '/') : path
 
 abstract type IgnoreRule end
 
-struct GitRule <: IgnoreRule
+struct GitRule{P} <: IgnoreRule
     base::String
-    regex::Regex
-    directory::Bool
-    negate::Bool
+    pattern::P
 end
 
-struct FileRule <: IgnoreRule
+struct FileRule{P} <: IgnoreRule
     base::String
-    regex::Regex
-    directory::Bool
-    negate::Bool
+    pattern::P
 end
+
+struct DirectoryPattern
+    regex::Regex
+end
+struct IgnorePattern{P}
+    pattern::P
+end
+struct IncludePattern{P}
+    pattern::P
+end
+const ignorescopes = Dict(true => DirectoryPattern, false => identity)
+const ignoreactions = Dict(true => IncludePattern, false => IgnorePattern)
+
+matchesignore(pattern::Regex, relative, directory) = occursin(pattern, relative)
+matchesignore(pattern::DirectoryPattern, relative, directory) = directory && occursin(pattern.regex, relative)
+ignorevalue(previous, pattern::IgnorePattern, relative, directory) = matchesignore(pattern.pattern, relative, directory) ? true : previous
+ignorevalue(previous, pattern::IncludePattern, relative, directory) = matchesignore(pattern.pattern, relative, directory) ? false : previous
 
 function cleargit!(rules)
     kept = 0
@@ -131,15 +144,16 @@ function rules(file, ::Type{T}; base=dirname(file)) where {T <: IgnoreRule}
     for line in eachline(file)
         line = rstrip(line)
         (isempty(line) || startswith(line, '#')) && continue
-        negate = startswith(line, '!')
-        negate && (line = chopprefix(line, "!"))
+        action = ignoreactions[startswith(line, '!')]
+        line = chopprefix(line, "!")
         isempty(line) && continue
-        directory = endswith(line, '/')
-        directory && (line = chop(line))
+        scope = ignorescopes[endswith(line, '/')]
+        line = chopsuffix(line, "/")
         anchored = startswith(line, '/')
-        anchored && (line = chopprefix(line, "/"))
+        line = chopprefix(line, "/")
         isempty(line) && continue
-        push!(result, T(base, glob(line; anywhere=!anchored && !occursin('/', line)), directory, negate))
+        pattern = scope(glob(line; anywhere=!anchored && !occursin('/', line)))
+        push!(result, T(base, action(pattern)))
     end
     result
 end
@@ -147,10 +161,9 @@ end
 function ignored(rules, target, directory)
     value = false
     for rule in rules
-        rule.directory && !directory && continue
         relative = posix(relpath(target, rule.base))
         startswith(relative, "../") && continue
-        occursin(rule.regex, relative) && (value = !rule.negate)
+        value = ignorevalue(value, rule.pattern, relative, directory)
     end
     value
 end

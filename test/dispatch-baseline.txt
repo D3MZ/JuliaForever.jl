@@ -38,8 +38,6 @@ durable.jl	:(name === :failed)
 durable.jl	:(name === :failed)
 durable.jl	:(previous.kind == kind)
 durable.jl	:(visible(state, conversation, at))
-durable.jl	:adopted
-durable.jl	:created
 execution.jl	:(cancelled(cancellation))
 execution.jl	:(cancelled(handle.cancellation))
 execution_conversation.jl	:(name === :detailed)
@@ -76,13 +74,8 @@ provider.jl	:(get(data, "is_byok", false))
 provider.jl	:(key == "error")
 provider.jl	:(key isa AbstractString)
 provider.jl	:(name === :done)
-provider.jl	:(pending[])
-provider.jl	:(timedwait((()->begin                   isready(callback.result)               end), timeout; pollint = 0.01) == :ok)
 provider.jl	:complete
-provider.jl	:denied
 provider.jl	:streaming
-provider.jl	:success
-provider.jl	:success
 scheduler.jl	:(name === :cancelled)
 scheduler.jl	:(same(record.state["spec"], spec))
 scheduler.jl	:(same(state["checkpoint"], next))
@@ -90,9 +83,7 @@ scheduler.jl	:(typeof(a))
 scheduler.jl	:(typeof(b))
 scheduler.jl	:(view.kind == name(handler))
 scheduler.jl	:cancelled
-search.jl	:(rule.directory)
 search.jl	:(selectglob(filter, target))
-search.jl	:anchored
 search.jl	:anchored
 search.jl	:anywhere
 search.jl	:directory
@@ -101,10 +92,8 @@ search.jl	:directory
 search.jl	:directory
 search.jl	:directory
 search.jl	:directory
-search.jl	:directory
 search.jl	:isdirectory
 search.jl	:matched
-search.jl	:negate
 search.jl	:smartcase
 search.jl	:windows
 search.jl	:windows

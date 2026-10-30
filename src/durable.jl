@@ -415,27 +415,31 @@ function recover(io, state, bytes, ends, start::Int)
     state
 end
 
+function syncnew!(io, path)
+    sync(io)
+    syncdir(path)
+end
+syncexisting!(io, path) = nothing
+const syncstores = Dict(true => syncnew!, false => syncexisting!)
+
 function Base.open(::Type{Store}, path::AbstractString)
     @static if !Sys.isunix()
         return Rejected(:unsupported_platform)
     end
-    created = !isfile(path)
+    prepare = syncstores[!isfile(path)]
     io = open(path, "a+")
     result = nothing
     try
-        result = opened(io, path, created, claim(io))
+        result = opened(io, path, prepare, claim(io))
     finally
         release(io, result)
     end
     result
 end
 
-opened(io, path, created, result) = result
-function opened(io, path, created, ::Nothing)
-    if created
-        sync(io)
-        syncdir(path)
-    end
+opened(io, path, prepare, result) = result
+function opened(io, path, prepare, ::Nothing)
+    prepare(io, path)
     recovered(io, recover(io))
 end
 recovered(io, rejected::Rejected) = rejected
@@ -655,12 +659,14 @@ committedchecked!(store::Store, tx::Transaction, value, rejected::Rejected) = re
 committedchecked!(store::Store, tx::Transaction, value, ::Nothing) = commit!(store, tx, value, forkcheck(tx.state, tx.writes))
 
 commit!(::Store, ::Transaction, value, result::Rejected) = result
+finishcommit!(store, ::Nothing) = setfield!(store, :health, Broken())
+finishcommit!(store, ::Some) = nothing
 function commit!(store::Store, tx::Transaction, value, ::Nothing)
     value = deepcopy(value)
     isempty(tx.writes) && return value
     seq = store.state.seq + 1
     encoded = JSON3.write((; seq, nextid=store.nextid, writes=encode.(tx.writes))) * "\n"
-    adopted = false
+    committed = nothing
     try
         seekend(store.io)
         write(store.io, encoded)
@@ -668,11 +674,11 @@ function commit!(store::Store, tx::Transaction, value, ::Nothing)
         tx.state.seq = seq
         tx.state.nextid = store.nextid
         store.state = tx.state
-        adopted = true
+        committed = Some(value)
     finally
-        adopted || setfield!(store, :health, Broken())
+        finishcommit!(store, committed)
     end
-    value
+    something(committed)
 end
 
 include("durable_policy.jl")

@@ -56,14 +56,35 @@ end
 adapter(model::Models.Model) = get(modeladapters, (model.provider, model.api), model.provider)
 resolveprovider(options, result::Models.Resolved) = resolveprovider(options, result.model, result.thinking)
 resolveprovider(options, model::Models.Model, ::Nothing) = launchprovider(merge(options, (; selected=adapter(model), requested_model=model.id, catalog_provider=model.provider)))
-resolveprovider(options, model::Models.Model, thinking::AbstractString) = unsupportedthinking()
+const responsepath = joinpath(@__DIR__, "..", "data", "openai-thinking.json")
+Base.include_dependency(responsepath)
+const responselevels = JSON3.read(read(responsepath), Dict{String, Any})
+supportedthinking(::DirectThinking, effort) = Models.ValidConfig()
+supportedthinking(::UpdateThinking, effort) = Models.ValidConfig()
+resolveprovider(options, model::Models.Model, thinking::AbstractString) = selectthinking(options, model, thinking, get(responselevels, model.id, nothing))
+selectthinking(options, model, thinking, ::Nothing) = unsupportedthinking()
+function selectthinking(options, model, thinking, levels::AbstractDict)
+    effort = get(levels, thinking, nothing)
+    selected = get(options.modelconfig.providers, model.provider, nothing)
+    configuredthinking(options, model, effort, selected, thinkingwire(levels))
+end
+configuredthinking(options, model, effort, selected::AbstractDict, wire) = unsupportedthinking()
+configuredthinking(options, model, effort, ::Nothing, wire) = selectthinking(options, model, effort, Models.combine(Models.check(model.provider == "openai" && model.api == "openai-responses" && model.reasoning), supportedthinking(wire, effort)))
+selectthinking(options, model, effort, ::Models.InvalidConfig) = unsupportedthinking()
+selectthinking(options, model, ::Nothing, ::Models.ValidConfig) = unsupportedthinking()
+function selectthinking(options, model, effort::AbstractString, ::Models.ValidConfig)
+    launchprovider(merge(options, (; selected=adapter(model), requested_model=model.id, catalog_provider=model.provider, thinking=String(effort))))
+end
 
 function resolveprovider(options, result::Models.Ambiguous)
     choices = sort([model.provider * "/" * model.id for model in result.models]; by=Models.collation)
     println(stderr, "Model is ambiguous: ", join(choices, ", "), ". Use --provider or provider/model.")
     2
 end
-resolveprovider(options, result::Models.Unmatched) = resolveprovider(options, result.target)
+resolveprovider(options, result::Models.Unmatched) = resolveunmatched(options, result.target, Models.suffix(options.requested_model))
+resolveunmatched(options, target, ::Nothing) = resolveprovider(options, target)
+resolveunmatched(options, ::Nothing, ::Models.Suffix) = unsupportedthinking()
+resolveunmatched(options, target::Models.Target, ::Models.Suffix) = resolveprovider(options, target)
 resolveprovider(options, target::Models.Target) = resolveprovider(options, target, target.thinking)
 function resolveprovider(options, target::Models.Target, ::Nothing)
     selected = something(options.selected, target.provider)
@@ -71,6 +92,6 @@ function resolveprovider(options, target::Models.Target, ::Nothing)
 end
 resolveprovider(options, target::Models.Target, thinking::AbstractString) = unsupportedthinking()
 function unsupportedthinking()
-    println(stderr, "Thinking-level model suffixes are not yet supported by the CLI.")
+    println(stderr, "Thinking level is unsupported for this model or provider.")
     2
 end
