@@ -85,7 +85,12 @@ end
 struct CodeCallDone <: CodeEvent
     message
 end
-struct CodeReply <: CodeEvent
+abstract type CodeReply <: CodeEvent end
+struct CodeReturned <: CodeReply
+    value
+    writes
+end
+struct CodeErrored <: CodeReply
     message
 end
 struct CodeTransportError <: CodeEvent
@@ -102,7 +107,9 @@ codeevent(::Type{Nothing}, event) = nothing
 codeevent(::Type{CodeText}, event) = CodeText(event.text)
 codeevent(::Type{CodeCall}, event) = CodeCall(event)
 codeevent(::Type{CodeCallDone}, event) = CodeCallDone(event)
-codeevent(::Type{CodeReply}, event) = CodeReply(event)
+codeevent(::Type{CodeReply}, event) = codeevent((CodeErrored, CodeReturned)[Int(event.ok) + 1], event)
+codeevent(::Type{CodeReturned}, event) = CodeReturned(event.value, event.writes)
+codeevent(::Type{CodeErrored}, event) = CodeErrored(event.message)
 codeevent(::Type{CodeTransportError}, event) = CodeTransportError(event.message)
 codeevent(::Type{CodeClosed}, event) = CodeClosed()
 
@@ -150,8 +157,13 @@ function handlecode!(context, event::CodeCall)
 end
 
 codeoutcome(::Nothing, result, failure) = result, failure
-codeoutcome(event::CodeReply, result, failure) = event.message, failure
+codeoutcome(event::CodeReply, result, failure) = event, failure
 codeoutcome(value::Tuple, result, failure) = result, value
+
+codecomplete(result, failure::Tuple, output, calls, stdout, stderr, pid) = CodeFailure(nothing, output, calls, Dict{String, Any}(), failure[1], failure[2], stdout, stderr, pid)
+codecomplete(result, ::Nothing, output, calls, stdout, stderr, pid) = codecomplete(result, output, calls, stdout, stderr, pid)
+codecomplete(result::CodeErrored, output, calls, stdout, stderr, pid) = CodeFailure(nothing, output, calls, Dict{String, Any}(), :script, String(result.message), stdout, stderr, pid)
+codecomplete(result::CodeReturned, output, calls, stdout, stderr, pid) = CodeSuccess(result.value, output, calls, Dict{String, Any}(String(key) => value for (key, value) in pairs(result.writes)), nothing, "", stdout, stderr, pid)
 
 function codefailure(cancel, timedout, started, timeout)
     cancel.cancelled[] && return (:cancelled, "Execution cancelled")
@@ -271,12 +283,7 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
         end
         stdout = isfile(stdoutfile) ? read(stdoutfile, String) : ""
         stderr = isfile(stderrfile) ? read(stderrfile, String) : ""
-        if !isnothing(failure)
-            return CodeFailure(nothing, output, calls, Dict{String, Any}(), failure[1], failure[2], stdout, stderr, pid)
-        elseif !result.ok
-            return CodeFailure(nothing, output, calls, Dict{String, Any}(), :script, String(result.message), stdout, stderr, pid)
-        end
-        CodeSuccess(result.value, output, calls, Dict{String, Any}(String(key) => value for (key, value) in pairs(result.writes)), nothing, "", stdout, stderr, pid)
+        codecomplete(result, failure, output, calls, stdout, stderr, pid)
     end
 end
 
