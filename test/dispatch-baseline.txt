@@ -5,7 +5,6 @@ agent.jl	:(name === :cancelled)
 agent.jl	:(name === :events)
 agent.jl	:(name === :running)
 agent.jl	:(requestcancelled((last(exceptions)).exception, turnstate(agent)))
-agent_history.jl	:complete
 chatgpt_store.jl	:(code == Base.Libc.EAGAIN)
 codemode.jl	:(cancel.cancelled[])
 codemode.jl	:(cancel.cancelled[])
