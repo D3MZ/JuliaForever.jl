@@ -201,6 +201,7 @@ include("session_export.jl")
 include("terminal_export.jl")
 include("session_info.jl")
 include("search.jl")
+include("search_bom.jl")
 include("tool_search.jl")
 include("codemode.jl")
 include("codemode_cleanup.jl")
@@ -245,7 +246,9 @@ if haskey(ENV, "PI_SOURCE")
     mktempdir() do oracle
         withenv("PI_CODING_AGENT_DIR" => oracle) do
             include("search_differential.jl")
+            include("search_crlf_differential.jl")
             include("search_bytes_differential.jl")
+            include("search_bom_differential.jl")
         end
     end
 end

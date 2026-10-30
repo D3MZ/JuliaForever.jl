@@ -1,3 +1,12 @@
+@testset "grep matches CRLF without normalizing" begin
+    mktempdir() do dir
+        write(joinpath(dir, "mixed.txt"), "before\r\nneedle\r\nneedle\nafter\r\n")
+        grepper = Grep(dir)
+        @test execute(grepper, (; pattern="needle\$", path="mixed.txt", context=1)).text == "mixed.txt-2- needle\nmixed.txt:3: needle\nmixed.txt-4- after"
+        @test execute(grepper, (; pattern="needle\r", path="mixed.txt", literal=true)).text == "mixed.txt:2: needle"
+    end
+end
+
 @testset "repository boundary retains file ignores" begin
     mktempdir() do dir
         path = joinpath(dir, "ignore")
