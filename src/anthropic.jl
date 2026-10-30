@@ -174,11 +174,19 @@ function add!(message::AbstractDict, calls::AbstractVector, block::Call)
     push!(calls, Dict("id" => data["id"], "type" => "function", "function" => Dict("name" => data["name"], "arguments" => JSON3.write(data["input"]))))
 end
 
-valid(::Block) = true
-valid(::Unknown) = false
-valid(block::Call) = !isempty(block.data["id"]) && !isempty(block.data["name"]) && validinput(block.data["input"])
-validinput(::AbstractDict) = true
-validinput(input) = false
+const invalidcontent = "Anthropic response contained an unsupported or invalid content block"
+blockfailures(blocks) = foldl(blockcheck, blocks; init=nothing)
+blockcheck(detail::String, block) = detail
+blockcheck(::Nothing, block::Block) = blockfailure(block)
+blockfailure(::Block) = nothing
+blockfailure(::Unknown) = invalidcontent
+function blockfailure(block::Call)
+    isempty(block.data["id"]) && return invalidcontent
+    isempty(block.data["name"]) && return invalidcontent
+    inputfailure(block.data["input"])
+end
+inputfailure(::AbstractDict) = nothing
+inputfailure(input) = invalidcontent
 ids!(ids, ::Block) = nothing
 ids!(ids, call::Call) = push!(ids, call.data["id"])
 function callids(blocks)
@@ -201,8 +209,10 @@ function result(blocks, reason, used, failure, ::Nothing)
     Completion(content(blocks), used, nothing, false, failure)
 end
 
-function result(blocks, reason, used, failure, mapped::Finish)
-    failure = all(valid, blocks) && uniqueids(blocks) && consistent(blocks, mapped) ? failure : something(failure, "Anthropic response contained an unsupported or invalid content block")
+result(blocks, reason, used, failure, mapped::Finish) = checkedresult(blocks, used, failure, mapped, blockfailures(blocks))
+checkedresult(blocks, used, failure, mapped, detail::String) = outcome(blocks, used, finishname(mapped), something(failure, detail))
+function checkedresult(blocks, used, failure, mapped, ::Nothing)
+    failure = uniqueids(blocks) && consistent(blocks, mapped) ? failure : something(failure, invalidcontent)
     outcome(blocks, used, finishname(mapped), failure)
 end
 
