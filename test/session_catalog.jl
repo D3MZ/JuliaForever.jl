@@ -34,16 +34,17 @@ end
         cwd = joinpath(root, "project")
         mkpath(cwd)
         session = Catalog.new(root, cwd)
+        deferred = session.store
         initial = JuliaForever.Conversation.State("test"; automatic=false)
         @test H.append!(session, 0, Any[H.encode_initial(initial)]) == 1
         @test H.append!(session, 1, Any[H.encode(JuliaForever.Conversation.Input(0, "first prompt"))]) == 2
-        SQLite.execute(session.store.db, "PRAGMA journal_mode=WAL")
+        SQLite.execute(deferred.store.db, "PRAGMA journal_mode=WAL")
         @test H.append!(session, 2, Any[H.encode(JuliaForever.Conversation.Input(1, "more"))]) == 3
-        wal = session.path * "-wal"
+        wal = deferred.path * "-wal"
         @test isfile(wal)
         info = only(Catalog.list(root, cwd))
         @test info.title == "first prompt"
-        @test info.modified == max(stat(session.path).mtime, stat(wal).mtime)
+        @test info.modified == max(stat(deferred.path).mtime, stat(wal).mtime)
         @test isempty(Catalog.list(root, joinpath(root, "other")))
         close(session)
     end

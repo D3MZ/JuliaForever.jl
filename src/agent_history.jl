@@ -14,7 +14,7 @@ function openagent(provider, tools, messages, initial, history::History.Store)
     end
     isempty(messages) || return History.Rejected(:history_exists)
     batches = snapshot.batches
-    length(batches) == snapshot.revision || return History.Rejected(:invalid_record)
+    History.consistent(history, snapshot) || return History.Rejected(:invalid_record)
     all(batch -> length(batch) == 1, batches) || return History.Rejected(:invalid_record)
     initial = History.decode_initial(only(first(batches)))
     initial isa History.Rejected && return initial

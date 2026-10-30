@@ -26,6 +26,7 @@ include("logs.jl")
 include("search.jl")
 include("codemode.jl")
 include("terminal.jl")
+include("tree_terminal.jl")
 include("mcp.jl")
 
 function configured(env, login)
@@ -201,6 +202,11 @@ function runsession!(history, terminal, model, tools, args)
                 eof(stdin) && break
                 line = readline(stdin)
                 line == "/exit" && break
+                if line == "/tree"
+                    agent, history, result = tree!(terminal, agent, history, stdin)
+                    status = max(status, result)
+                    continue
+                end
                 status = max(status, run!(terminal, agent, line))
             end
             return status

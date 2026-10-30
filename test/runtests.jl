@@ -62,6 +62,8 @@ include("terminal_http.jl")
 include("terminal_history.jl")
 include("session_catalog.jl")
 include("session_cli.jl")
+include("tree_history.jl")
+include("tree_cli.jl")
 
 include("provider.jl")
 include("provider_stream.jl")

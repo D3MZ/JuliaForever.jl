@@ -42,6 +42,8 @@ struct Snapshot
     batches::Vector{Vector{Any}}
 end
 
+consistent(::Store, snapshot::Snapshot) = length(snapshot.batches) == snapshot.revision
+
 function Base.getproperty(snapshot::Snapshot, name::Symbol)
     value = getfield(snapshot, name)
     name === :batches ? deepcopy(value) : value
@@ -182,5 +184,6 @@ function append!(history::Journal, revision::Integer, batch::Vector)
 end
 
 include("conversation_codec.jl")
+include("tree_history.jl")
 
 end

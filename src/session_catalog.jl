@@ -54,7 +54,7 @@ mutable struct Deferred <: H.Store
 end
 
 Deferred(path) = Deferred(path, H.Memory(), ReentrantLock())
-new(dir, cwd) = Deferred(joinpath(dir, filename(cwd, bytes2hex(rand(UInt8, 16)))))
+new(dir, cwd) = H.Tree(Deferred(joinpath(dir, filename(cwd, bytes2hex(rand(UInt8, 16))))))
 
 function H.snapshot(history::Deferred)
     lock(history.lock) do
@@ -95,6 +95,7 @@ closehistory(::H.Memory) = nothing
 closehistory(store::H.SQLite) = close(store)
 path(history::Deferred) = history.path
 path(history::H.SQLite) = history.db.file
+path(history::H.Tree) = path(history.store)
 
 function Base.close(history::Deferred)
     lock(history.lock) do
@@ -114,6 +115,16 @@ function firstprompt(snapshot::H.Snapshot)
     end
 end
 
+firstprompt(::H.Rejected) = nothing
+
+function firstprompt(entries::Vector)
+    foldl(entries[2:end]; init=nothing) do text, entry
+        foldl(entry.batch; init=text) do value, record
+            firstprompt(value, H.decode_event(record))
+        end
+    end
+end
+
 info(path, id, ::Nothing) = nothing
 function modified(path)
     time = stat(path).mtime
@@ -124,10 +135,11 @@ end
 info(path, id, title::String) = Info(path, id, title, modified(path))
 info(path, id, ::H.Rejected) = nothing
 info(path, id, snapshot::H.Snapshot) = info(path, id, firstprompt(snapshot))
+info(path, id, tree::H.Tree) = info(path, id, firstprompt(H.entries(tree)))
 
 function info(path, id, store::H.SQLite)
     try
-        info(path, id, H.snapshot(store))
+        info(path, id, H.Tree(store))
     finally
         close(store)
     end
@@ -154,10 +166,24 @@ function collectinfo!(items, dir, file, found::RegexMatch)
     pushinfo!(items, info(path, String(found.captures[1]), open(H.SQLite, path; create=false)))
 end
 
-openinfo(info::Info) = open(H.SQLite, info.path; create=false)
+wrap(rejected::H.Rejected) = rejected
+wrap(store::H.SQLite) = wrap(store, H.Tree(store))
+wrap(store::H.SQLite, tree::H.Tree) = tree
+wrap(store::H.SQLite, rejected::H.Rejected) = (close(store); rejected)
+
+istree(record) = false
+istree(record::Dict) = get(record, "format", "") == H.treeformat
+istree(batch::Vector) = any(istree, batch)
+
+adapt(rejected::H.Rejected) = rejected
+adapt(store::H.SQLite) = adapt(store, H.snapshot(store))
+adapt(store::H.SQLite, rejected::H.Rejected) = (close(store); rejected)
+adapt(store::H.SQLite, snapshot::H.Snapshot) = any(istree, snapshot.batches) ? wrap(store) : store
+
+openinfo(info::Info) = wrap(open(H.SQLite, info.path; create=false))
 choose(::New, dir, cwd, input, output) = new(dir, cwd)
-choose(::Ephemeral, dir, cwd, input, output) = nothing
-choose(request::Explicit, dir, cwd, input, output) = open(H.SQLite, request.path)
+choose(::Ephemeral, dir, cwd, input, output) = H.Tree(H.Memory())
+choose(request::Explicit, dir, cwd, input, output) = adapt(open(H.SQLite, request.path))
 choose(::Conflict, dir, cwd, input, output) = Invalid("Choose only one session option.")
 
 choose(::Recent, dir, cwd, input, output) = recent(list(dir, cwd), dir, cwd)
@@ -165,7 +191,7 @@ recent(items, dir, cwd) = isempty(items) ? new(dir, cwd) : openinfo(first(items)
 
 function choose(request::Target, dir, cwd, input, output)
     path = expanduser(request.value)
-    isfile(path) && return open(H.SQLite, path; create=false)
+    isfile(path) && return wrap(open(H.SQLite, path; create=false))
     matches = filter(item -> occursin(lowercase(request.value), item.id), list(dir, cwd))
     named(matches, request.value)
 end

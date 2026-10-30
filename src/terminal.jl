@@ -86,7 +86,7 @@ function historyagent(f, terminal::Terminal, path)
         println(terminal.diagnostics, "Recovery requires an existing history file.")
         return 2
     end
-    history = open(History.SQLite, path; create=false)
+    history = SessionCatalog.adapt(open(History.SQLite, path; create=false))
     history isa History.Rejected && return result!(terminal, history)
     try
         snapshot = History.snapshot(history)

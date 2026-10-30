@@ -1,6 +1,6 @@
 # Session history
 
-`JuliaForever.Sessions` is a native Julia session-tree foundation. It is independent of `Durable` and is not yet connected to `Agent` or the command line. The CLI separately saves SQLite-backed sessions and provides recent, picker and explicit-path selection; see [terminal](terminal.md). Pi and Node are not runtime dependencies; the v3 JSONL framing is used for the selected interoperability tests and is not a requirement on future native storage.
+`JuliaForever.Sessions` is a native Julia session-tree foundation using Pi's JSONL framing. It is independent of `Durable` and is not connected to `Agent` or the command line. The CLI instead uses `History.Tree` over SQLite for session selection and branching; see [terminal](terminal.md) and [histories](history.md). Pi and Node are not runtime dependencies; the v3 JSONL framing is used for selected interoperability tests and is not a requirement on native storage.
 
 ```julia
 using JuliaForever
