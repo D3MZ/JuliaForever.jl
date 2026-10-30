@@ -257,8 +257,11 @@ function readresult(content::String, args)
     limit = get(args, :limit, length(lines))
     stop = min(length(lines), offset + limit - 1)
     content = join(lines[offset:stop], '\n')
-    output = truncate(content, lines, offset, args.path)
-    !isnothing(output) && return ToolResult(output)
+    readresult(truncate(content, lines, offset, args.path), content, lines, stop, args)
+end
+
+readresult(output::String, content, lines, stop, args) = ToolResult(output)
+function readresult(::Nothing, content, lines, stop, args)
     remaining = length(lines) - stop
     remaining > 0 && haskey(args, :limit) && return ToolResult("$content\n\n[$remaining more lines in file. Use offset=$(stop + 1) to continue.]")
     ToolResult(content)
@@ -361,20 +364,50 @@ function edit(destination, args)
             duplicate(edit.fuzzy, comparable) && return ToolFailure("Edit text must match exactly once")
         end
     end
-    usedfuzzy = any(edit -> isnothing(findfirst(edit.old, originalcontent)), requested)
-    base = usedfuzzy ? comparable : originalcontent
-    edits = NamedTuple{(:range, :text), Tuple{UnitRange{Int}, String}}[]
-    for edit in requested
-        match = findfirst(edit.old, base)
-        isnothing(match) && !isempty(edit.fuzzy) && (match = findfirst(edit.fuzzy, base))
-        isnothing(match) && return ToolFailure("Edit text must match exactly once")
-        push!(edits, (; range=match, text=edit.text))
-    end
+    strategy = foldl(editstrategy, requested; init=ExactEdit(originalcontent, comparable))
+    base = editbase(strategy)
+    edits = foldl((matches, edit) -> editmatches(matches, edit, base), requested; init=NamedTuple{(:range, :text), Tuple{UnitRange{Int}, String}}[])
+    context = (; destination, bom, ending, args, strategy)
+    editprepared(context, edits)
+end
+
+struct ExactEdit
+    original::String
+    comparable::String
+end
+struct FuzzyEdit
+    original::String
+    comparable::String
+end
+editstrategy(strategy::FuzzyEdit, edit) = strategy
+editstrategy(strategy::ExactEdit, edit::NamedTuple) = editstrategy(strategy, findfirst(edit.old, strategy.original))
+editstrategy(strategy::ExactEdit, match::UnitRange) = strategy
+editstrategy(strategy::ExactEdit, ::Nothing) = FuzzyEdit(strategy.original, strategy.comparable)
+editbase(strategy::ExactEdit) = strategy.original
+editbase(strategy::FuzzyEdit) = strategy.comparable
+
+editmatches(failure::ToolFailure, edit, base) = failure
+editmatches(matches::Vector, edit, base) = editmatch!(matches, edit, editmatch(edit, base, findfirst(edit.old, base)))
+editmatch(edit, base, match::UnitRange) = match
+function editmatch(edit, base, ::Nothing)
+    isempty(edit.fuzzy) && return nothing
+    findfirst(edit.fuzzy, base)
+end
+editmatch!(matches, edit, ::Nothing) = ToolFailure("Edit text must match exactly once")
+editmatch!(matches, edit, match::UnitRange) = push!(matches, (; range=match, text=edit.text))
+
+editprepared(context, failure::ToolFailure) = failure
+function editprepared(context, edits::Vector)
     sort!(edits; by=x -> first(x.range))
     all(i -> last(edits[i-1].range) < first(edits[i].range), 2:length(edits)) || return ToolFailure("Edit ranges overlap")
-    content = usedfuzzy ? overlay(originalcontent, base, edits) : apply(base, edits)
-    isnothing(content) && return ToolFailure("Edit lines could not be preserved")
-    content == originalcontent && return ToolFailure("No changes made")
-    write(destination, bom * replace(content, "\n" => ending))
-    ToolResult("Successfully replaced $(length(edits)) block(s) in $(args.path).")
+    content = editapply(context.strategy, edits)
+    editwrite(context, edits, content)
+end
+editapply(strategy::ExactEdit, edits) = apply(strategy.original, edits)
+editapply(strategy::FuzzyEdit, edits) = overlay(strategy.original, strategy.comparable, edits)
+editwrite(context, edits, ::Nothing) = ToolFailure("Edit lines could not be preserved")
+function editwrite(context, edits, content::String)
+    content == context.strategy.original && return ToolFailure("No changes made")
+    write(context.destination, context.bom * replace(content, "\n" => context.ending))
+    ToolResult("Successfully replaced $(length(edits)) block(s) in $(context.args.path).")
 end

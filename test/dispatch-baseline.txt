@@ -215,16 +215,9 @@ terminal_live.jl	:(continuation!(state, mode))
 terminal_live.jl	:(matches(item, mode))
 tools.jl	:(duplicate(edit.fuzzy, comparable))
 tools.jl	:(duplicate(edit.old, originalcontent))
-tools.jl	:(isnothing(content))
 tools.jl	:(isnothing(findfirst(edit.old, originalcontent)))
-tools.jl	:(isnothing(findfirst(edit.old, originalcontent)))
-tools.jl	:(isnothing(match))
-tools.jl	:(isnothing(match))
-tools.jl	:(isnothing(output))
 tools.jl	:(isopen(signal))
 tools.jl	:(kind == codeunits("IDAT"))
 tools.jl	:(kind == codeunits("acTL"))
 tools.jl	:(name === :iserror)
 tools.jl	:iserror
-tools.jl	:usedfuzzy
-tools.jl	:usedfuzzy
