@@ -76,7 +76,7 @@ function add!(transcript::Transcript, data, ::Nothing)
     appendtext!(blocks, text)
     for call in get(data, "tool_calls", [])
         fn = call["function"]
-        push!(blocks, Dict("type" => "tool_use", "id" => call["id"], "name" => fn["name"], "input" => JSON3.read(fn["arguments"], Dict{String, Any})))
+        push!(blocks, Dict("type" => "tool_use", "id" => call["id"], "name" => fn["name"], "input" => JSON3.read(codeunits(fn["arguments"]), Dict{String, Any})))
     end
     add!(transcript, data, blocks)
 end
