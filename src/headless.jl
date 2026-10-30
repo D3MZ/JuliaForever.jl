@@ -381,14 +381,66 @@ copyqueuemode!(agent, setter, mode::T, current::T) where {T<:J.Conversation.Queu
 copyqueuemode!(agent, setter, mode::J.Conversation.QueueMode, current::J.Conversation.QueueMode) = setter(agent, deliverymodes[J.Conversation.queuecode(mode)])
 
 function handle!(session, command::SwitchSession)
-    request = J.SessionCatalog.Target(command.path)
-    selected = J.attempt(() -> J.SessionCatalog.choose(request, session.directory, pwd(), stdin, session.terminal.diagnostics, text -> J.redact(session.terminal, text)))
-    switch!(session, selected)
+    switch!(session, selectsession(session, command.path))
 end
+selectsession(session, path) = J.attempt(() -> J.SessionCatalog.choose(J.SessionCatalog.Target(path), session.directory, pwd(), stdin, session.terminal.diagnostics, text -> J.redact(session.terminal, text)))
 switch!(session, invalid::J.SessionCatalog.Invalid) = Failure(invalid.message)
 switch!(session, failure::J.ToolFailure) = Failure(J.redact(session.terminal, failure.text))
 switch!(session, rejected::J.History.Rejected) = Failure(string(rejected.reason))
 function switch!(session, selected::J.History.Tree)
+    pending = Ref{Union{Nothing, J.History.Tree}}(selected)
+    try
+        switchchecked!(session, pending, J.sourcecheck!(session.terminal, session.agent, session.store[]))
+    finally
+        J.release!(session.store[], pending[])
+    end
+end
+
+function switchchecked!(session, pending, blocked::Union{J.PendingInputs, J.History.Rejected})
+    J.sourcestatus!(session.terminal, blocked)
+    Failure("Could not start a new session")
+end
+function switchchecked!(session, pending, ::Nothing)
+    task = lock(() -> session.task, session.lock)
+    switchactive!(session, pending, task)
+end
+switchactive!(session, pending, ::Nothing) = switchresume!(session, pending)
+function switchactive!(session, pending, ::Task)
+    checked = J.attempt(() -> targethistory!(session, pending[], sessionfile(session.store[])))
+    switchtarget!(session, pending, checked)
+end
+targethistory!(session, selected, ::Nothing) = targetsnapshot!(session, selected, J.History.snapshot(selected))
+function targethistory!(session, selected, source::String)
+    samefile(source, J.SessionCatalog.path(selected)) && return nothing
+    targetsnapshot!(session, selected, J.History.snapshot(selected))
+end
+targetsnapshot!(session, selected, rejected::J.History.Rejected) = rejected
+targetsnapshot!(session, selected, snapshot::J.History.Snapshot) = targetbatches!(session, selected, snapshot.batches, get(snapshot.batches, 1, nothing))
+targetbatches!(session, selected, batches, ::Nothing) = nothing
+function targetbatches!(session, selected, batches, initial::Vector)
+    state = foldl(J.History.treestate, @view(batches[2:end]); init=J.History.firststate(initial))
+    targetstate!(session, selected, state)
+end
+targetstate!(session, selected, rejected::J.History.Rejected) = rejected
+targetstate!(session, selected, state::J.Conversation.State) = targetready!(session, selected, state, J.fault(state))
+targetready!(session, selected, state, rejected::J.History.Rejected) = rejected
+targetready!(session, selected, state, ::Nothing) = J.checkqueues!(session.terminal, state, selected)
+switchtarget!(session, pending, blocked::Union{J.PendingInputs, J.History.Rejected}) = switchchecked!(session, pending, blocked)
+switchtarget!(session, pending, failure::J.ToolFailure) = Failure(J.redact(session.terminal, failure.text))
+function switchtarget!(session, pending, ::Nothing)
+    selected = pending[]
+    path = J.SessionCatalog.path(selected)
+    pending[] = nothing
+    try
+        handle!(session, Abort())
+    finally
+        close(selected)
+    end
+    switch!(session, selectsession(session, path))
+end
+function switchresume!(session, pending)
+    selected = pending[]
+    pending[] = nothing
     agent, history, status = J.resume!(session.terminal, session.agent, session.store[], selected, session.templates)
     newresult!(session, agent, history, get(newstatuses, status, nothing), ResumeBinding())
 end

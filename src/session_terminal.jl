@@ -422,8 +422,17 @@ end
 
 resume!(terminal::Terminal, agent::Agent, history, input::IO, directory::AbstractString) = resume!(terminal, agent, history, input, directory, nothing)
 function resume!(terminal::Terminal, agent::Agent, history, input::IO, directory::AbstractString, resources)
-    resumepick!(terminal, agent, history, input, directory, resources, sourcecheck!(terminal, agent, history))
+    resumepick!(terminal, agent, history, input, directory, resources, resumecheck!(terminal, agent, history))
 end
+
+function resumecheck!(terminal::Terminal, agent::Agent, history)
+    lock(agent.lock) do
+        resumecheck!(agent.turn, sourcecheck!(terminal, agent, history, agent.fault))
+    end
+end
+resumecheck!(turn::TurnState, blocked::Union{PendingInputs, History.Rejected}) = blocked
+resumecheck!(::Idle, ::Nothing) = nothing
+resumecheck!(::Union{Running, Cancelled}, ::Nothing) = History.Rejected(:busy)
 
 function sourcecheck!(terminal::Terminal, agent::Agent, history)
     lock(agent.lock) do
@@ -455,7 +464,7 @@ resume!(terminal::Terminal, agent::Agent, history, selected, resources) = resume
 function resume!(terminal::Terminal, agent::Agent, history, selected::History.Tree, resources::Union{Nothing, Skills.Resources})
     pending = Ref{Union{Nothing, History.Tree}}(selected)
     try
-        resumeactive!(terminal, agent, history, selected, pending, resources, sourcecheck!(terminal, agent, history))
+        resumeactive!(terminal, agent, history, selected, pending, resources, resumecheck!(terminal, agent, history))
     finally
         release!(history, pending[])
     end
@@ -493,7 +502,7 @@ end
 resumeloaded!(terminal, agent, history, selected, restored, pending, resources, failure::ToolFailure) = resume!(terminal, agent, history, failure)
 function resumeloaded!(terminal, agent, history, selected, restored, pending, resources, skills::Vector{Skills.Skill})
     lock(agent.lock) do
-        resumesource!(terminal, agent, history, selected, restored, pending, resources, skills, sourcecheck!(terminal, agent, history, agent.fault))
+        resumesource!(terminal, agent, history, selected, restored, pending, resources, skills, resumecheck!(agent.turn, sourcecheck!(terminal, agent, history, agent.fault)))
     end
 end
 resumesource!(terminal, agent, history, selected, restored, pending, resources, skills, blocked::Union{PendingInputs, History.Rejected}) = resumefinal!(terminal, agent, history, selected, restored, pending, resources, skills, blocked)

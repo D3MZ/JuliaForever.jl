@@ -22,7 +22,7 @@ Base.close(store::Store) = (store.closes += 1; nothing)
                 path = joinpath(root, ".pi", "skills", "example", "SKILL.md")
                 mkpath(dirname(path))
                 write(path, "---\nname: example\ndescription: test skill\n---\nprivate instructions\n")
-                for kind in (:queue, :fault)
+                for kind in (:queue, :fault, :running)
                     store = Store(H.Memory(), () -> nothing, 0)
                     target = H.Tree(store)
                     seed = Agent(Provider(), []; history=target)
@@ -36,10 +36,12 @@ Base.close(store::Store) = (store.closes += 1; nothing)
                         signalled[] = true
                         if kind == :queue
                             steer!(active, "queued")
-                        else
+                        elseif kind == :fault
                             lock(active.lock) do
                                 active.fault = H.Rejected(:incomplete_turn)
                             end
+                        else
+                            JuliaForever.startturn!(active)
                         end
                         nothing
                     end
