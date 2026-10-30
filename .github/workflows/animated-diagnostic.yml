@@ -1,0 +1,38 @@
+name: Animated repeated-frame diagnostic
+on:
+  push:
+    branches: ['codex/animated-dedup-diagnostic-20261030']
+permissions:
+  contents: read
+jobs:
+  image:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '25'
+      - name: Prepare pinned Pi
+        run: |
+          git clone --filter=blob:none https://github.com/earendil-works/pi.git "$RUNNER_TEMP/pi-source"
+          git -C "$RUNNER_TEMP/pi-source" checkout --detach e7a0df27c09d11bf4161d3605246cbf57a129cb2
+          npm install --prefix "$RUNNER_TEMP/pi-deps" --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.4.0
+          node -e "require('fs').symlinkSync(process.argv[1], process.argv[2], 'junction')" "$RUNNER_TEMP/pi-deps/node_modules" "$RUNNER_TEMP/pi-source/node_modules"
+      - name: Install dependencies
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
+      - name: Image differential and integration tests
+        env:
+          PI_SOURCE: ${{ runner.temp }}/pi-source
+          JULIA_NUM_THREADS: 4
+        run: julia --project=. -e 'include("test/image_formats.jl"); include("test/image_stream.jl"); include("test/image_switch_rpc.jl")'
