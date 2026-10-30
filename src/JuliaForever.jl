@@ -219,7 +219,7 @@ function help!()
 end
 
 function (@main)(args)
-    codemode = false
+    codemode = nothing
     packages = String[]
     environments = String[]
     action = nothing
@@ -241,7 +241,7 @@ function (@main)(args)
         elseif first(args) in ("--help", "-h")
             return help!()
         elseif first(args) == "--codemode"
-            codemode = true
+            codemode = CodeMode
             args = args[2:end]
         elseif first(args) == "--mode"
             if length(args) < 2 || startswith(args[2], "-")
@@ -434,12 +434,12 @@ initial(extensions, snapshot::History.Snapshot) = iszero(snapshot.revision) ? in
 selection(result::ToolFailure) = SessionCatalog.Invalid(result.text)
 selection(result) = result
 
-function terminal!(terminal::Terminal, model, registry::Extensions.Registry, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
-    if codemode
-        mode = CodeMode(Extensions.tools(Extensions.snapshot(registry)))
-        result = Extensions.register!(registry, gensym(:codemode), Extensions.Plugin(; tools=(mode,)))
-        return terminal!(terminal, model, registered(terminal, registry, "codemode", result), false, session, sessiondir, args, sessionname, baseline, rules, excluded)
-    end
+function terminal!(terminal::Terminal, model, registry::Extensions.Registry, ::Type{CodeMode}, session, sessiondir, args, sessionname, baseline, rules, excluded)
+    mode = CodeMode(Extensions.tools(Extensions.snapshot(registry)))
+    result = Extensions.register!(registry, gensym(:codemode), Extensions.Plugin(; tools=(mode,)))
+    terminal!(terminal, model, registered(terminal, registry, "codemode", result), nothing, session, sessiondir, args, sessionname, baseline, rules, excluded)
+end
+function terminal!(terminal::Terminal, model, registry::Extensions.Registry, ::Nothing, session, sessiondir, args, sessionname, baseline, rules, excluded)
     extensions = ToolSelection.select(Extensions.snapshot(registry), baseline, rules, excluded)
     history = selection(attempt(() -> SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr, text -> redact(terminal, text))))
     runsession!(history, terminal, model, extensions, args, sessiondir, sessionname)
