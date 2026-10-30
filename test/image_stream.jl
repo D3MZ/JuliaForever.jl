@@ -37,6 +37,11 @@ using Test, JuliaForever, Base64
                 @test result.image.mime == "image/png"
                 @test base64decode(result.image.data) == image
             end
+            for file in ("animated.gif", "animated.webp")
+                bytes = read(joinpath(@__DIR__, "fixtures", file))
+                streamed = frompipe(bytes)
+                @test !streamed.iserror && base64decode(streamed.image.data) == bytes
+            end
             boundary = [image; zeros(UInt8, 10 * 1024 * 1024 - length(image))]
             result = frompipe(boundary)
             @test result isa ToolResult
