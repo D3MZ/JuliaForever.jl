@@ -196,7 +196,7 @@ modelkey!(session, state, ::Busy) = :ok
 function modelkey!(session, state, ::Available)
     session.draft = LineEdit.input_string(state)
     LineEdit.replace_line(state, "/model")
-    LineEdit.commit_line(state)
+    TerminalEditor.commitcommand!(state)
     session.visibility = Hidden()
     :done
 end
