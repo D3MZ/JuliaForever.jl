@@ -244,7 +244,7 @@ Base.propertynames(::Completion, private::Bool=false) = (:message, :usage, :fini
 completionevent(result::Completion) = completionevent(getfield(result, :status))
 JSON3.StructTypes.names(::Type{Completion}) = ((:status, :done),)
 
-incomplete(failure::Union{InvalidResponse, ProviderStatus, UnsupportedImage}) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, failure)
+incomplete(failure::Union{InvalidResponse, ProviderStatus, UnsupportedImage}) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, Unfinished(), failure)
 
 abstract type ChatFinish end
 struct ChatAccepted <: ChatFinish
@@ -259,9 +259,9 @@ chatfinish(::Nothing) = ChatMissing()
 chatfinish(reason) = ChatMissing()
 chatfinish(reason::AbstractString) = get(chatfinishes, reason, ChatRejected)(String(reason))
 
-chatcompletion(message, used, ::ChatMissing) = Completion(message, used, nothing, false, providererror(:openai_compatible, nothing))
-chatcompletion(message, used, status::ChatAccepted) = Completion(message, used, status.reason, true, nothing)
-chatcompletion(message, used, status::ChatRejected) = Completion(message, used, safefinish(status.reason), false, providererror(:openai_compatible, status.reason))
+chatcompletion(message, used, ::ChatMissing) = Completion(message, used, nothing, Unfinished(), providererror(:openai_compatible, nothing))
+chatcompletion(message, used, status::ChatAccepted) = Completion(message, used, status.reason, Finished(), nothing)
+chatcompletion(message, used, status::ChatRejected) = Completion(message, used, safefinish(status.reason), Unfinished(), providererror(:openai_compatible, status.reason))
 
 finishfailure!(failure, ::Union{ChatMissing, ChatAccepted}, previous) = nothing
 finishfailure!(failure, status::ChatRejected, ::Nothing) = (failure[] = providererror(:openai_compatible, status.reason))

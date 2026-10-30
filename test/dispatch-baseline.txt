@@ -25,7 +25,6 @@ codemode.jl	:(isnothing(timer))
 codemode.jl	:(isnothing(writer))
 codemode.jl	:(name === :ok)
 codemode.jl	:(timedout[])
-codemode.jl	:ok
 codemode_worker.jl	:(connected[])
 codemode_worker.jl	:(isnothing(channel))
 codemode_worker.jl	:(isnothing(id))

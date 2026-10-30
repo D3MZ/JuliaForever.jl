@@ -220,18 +220,18 @@ imageproblem(::MIME"image/jpeg", bytes) = nothing
 
 function readimage(io, format::Union{MIME"image/png", MIME"image/jpeg"}, bytes)
     append!(bytes, read(io, imagelimit + 1 - length(bytes)))
-    length(bytes) <= imagelimit || return ToolResult("Image exceeds the 10 MiB limit", true)
+    length(bytes) <= imagelimit || return ToolFailure("Image exceeds the 10 MiB limit")
     imagefile(format, bytes, imageproblem(format, bytes))
 end
 
-readimage(io, ::MIME, bytes) = ToolResult("Image format is not supported", true)
+readimage(io, ::MIME, bytes) = ToolFailure("Image format is not supported")
 
 function imagefile(format::MIME, bytes, ::Nothing)
     mime = string(format)
-    ToolResult("Read image file [$mime]", false, Image(mime, base64encode(bytes)))
+    ToolSuccess("Read image file [$mime]", Image(mime, base64encode(bytes)))
 end
 
-imagefile(::MIME, bytes, problem::String) = ToolResult(problem, true)
+imagefile(::MIME, bytes, problem::String) = ToolFailure(problem)
 
 function readfile(io)
     if !eof(io) && peek(io, UInt8) in imageheads
