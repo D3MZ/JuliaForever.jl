@@ -77,6 +77,8 @@ function offered(tools::ToolSet)
 end
 Base.length(tools::ToolSet) = length(offered(tools))
 Base.getindex(tools::ToolSet, key::AbstractString) = Dict(offered(tools))[String(key)]
+Base.get(tools::ToolSet, key, default) = get(Dict(offered(tools)), key, default)
+Base.get(f::Union{Function, Type}, tools::ToolSet, key) = get(f, Dict(offered(tools)), key)
 Base.IteratorSize(::Type{ToolSet}) = Base.SizeUnknown()
 Base.IteratorSize(::Type{Base.ValueIterator{ToolSet}}) = Base.SizeUnknown()
 Base.IteratorSize(::Type{Base.KeySet{String, ToolSet}}) = Base.SizeUnknown()

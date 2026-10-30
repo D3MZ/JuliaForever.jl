@@ -39,9 +39,11 @@
         for case in failures
             @testset "$(case.name)" begin
                 write(file, case.original)
+                modified = stat(file).mtime
                 result = execute(editor, (; path="a.txt", edits=case.edits))
                 @test result.iserror
                 @test read(file, String) == case.original
+                @test stat(file).mtime == modified
             end
         end
     end

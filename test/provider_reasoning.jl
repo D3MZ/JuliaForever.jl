@@ -6,8 +6,9 @@ using Test, JuliaForever, HTTP, JSON3
         [Dict("reasoning_content" => "first", "reasoning" => "duplicate", "reasoning_text" => "duplicate")],
         [Dict("reasoning_content" => nothing, "reasoning" => "", "reasoning_text" => "fallback")],
         [Dict("content" => "without reasoning")],
+        Any[nothing, Dict("reasoning_content" => 3, "reasoning" => ["invalid"], "reasoning_text" => "typed fallback", "content" => false), Dict("content" => "safe")],
     ]
-    expected = [("reasoning_text", "α😀 B C D"), ("reasoning_content", "first"), ("reasoning_text", "fallback"), (nothing, nothing)]
+    expected = [("reasoning_text", "α😀 B C D"), ("reasoning_content", "first"), ("reasoning_text", "fallback"), (nothing, nothing), ("reasoning_text", "typed fallback")]
     bodies = Channel{String}(length(streams))
     for chunks in streams
         body = join(sse(Dict("choices" => [Dict("index" => 0, "delta" => delta, "finish_reason" => nothing)])) for delta in chunks) * sse((; choices=[(; index=0, delta=(;), finish_reason="stop")])) * "data: [DONE]\n\n"
@@ -26,6 +27,11 @@ using Test, JuliaForever, HTTP, JSON3
             @test [key for key in ("reasoning_content", "reasoning", "reasoning_text") if haskey(result.message, key)] == (isnothing(field) ? [] : [field])
             native = JuliaForever.Conversation.Assistant(get(result.message, "content", nothing), JuliaForever.Conversation.ToolCall[], result.finish, result.done; metadata=result.message)
             @test ContextEstimates.tokens(native) == ContextEstimates.tokens(something(result.message["content"], "") * something(text, ""))
+            if index == 5
+                @test result.message["content"] == "safe"
+                @test [event.text for event in events if event.type == :text] == ["safe"]
+                @test [event.field for event in events if event.type == :thinking] == ["reasoning_text"]
+            end
             if index == 1
                 thinking = [event for event in events if event.type == :thinking]
                 @test [event.field for event in thinking] == ["reasoning_text", "reasoning_content", "reasoning", "reasoning_text"]

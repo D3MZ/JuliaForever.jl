@@ -43,6 +43,17 @@ toolnames(tools) = [JuliaForever.name(tool) for tool in values(tools)]
 
 @testset "deferred tool exposure" begin
     standalone = catalog()
+    @test haskey(standalone, "alpha")
+    @test !haskey(standalone, "github_get_issue")
+    @test JuliaForever.name(get(standalone, "alpha", nothing)) == "alpha"
+    @test get(standalone, "missing", nothing) === nothing
+    @test get(standalone, :alpha, :fallback) === :fallback
+    fallbackcalls = Ref(0)
+    fallback() = (fallbackcalls[] += 1; :fallback)
+    @test JuliaForever.name(get(fallback, standalone, "alpha")) == "alpha"
+    @test get(fallback, standalone, "missing") === :fallback
+    @test fallbackcalls[] == 1
+    @test "alpha" in keys(standalone)
     @test execute(standalone["tool_search"], (; query="issue")).text == "Loaded 1 tool. They are available from your next call:\n- github_get_issue: Get a GitHub issue"
     @test toolnames(standalone) == ["alpha", "omega", "tool_search", "github_get_issue"]
     @test execute(standalone["tool_search"], (; query="issue")).text == "No matching tools found."

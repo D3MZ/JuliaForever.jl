@@ -267,6 +267,14 @@ end
 
 sessionname(text::AbstractString) = String(strip(replace(text, r"[\r\n]+" => " ")))
 
+struct ContinueQueued <: K.Event
+    revision::Int
+end
+
+struct Continue <: K.Event
+    revision::Int
+end
+
 struct Advance <: K.Event
     revision::Int
 end
@@ -331,6 +339,21 @@ function input(state, messages, ::Automatic)
     updated = update(state; kernel, messages, steering, phase=WaitingModel, cancelled=false)
     K.Applied(updated, (effect,))
 end
+
+function K.step(state::State, event::Continue)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    resume(state, state.phase)
+end
+
+function K.step(state::State, event::ContinueQueued)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    resumequeued(state, state.phase)
+end
+resumequeued(state, ::Phase) = K.Rejected(state, :phase)
+resumequeued(state, ::Union{ReadyPhase, CompletePhase, IncompletePhase, CancelledPhase}) = K.Applied(update(state; phase=ReadyDecision, cancelled=false), ())
+
+resume(state, ::Phase) = K.Rejected(state, :phase)
+resume(state, ::Union{ReadyPhase, CompletePhase, IncompletePhase, CancelledPhase}) = K.Applied(update(state; phase=ReadyModel, cancelled=false), ())
 
 function K.step(state::State, event::Steer)
     event.revision == state.revision || return K.Rejected(state, :revision)

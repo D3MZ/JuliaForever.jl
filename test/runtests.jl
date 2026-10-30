@@ -66,6 +66,7 @@ end
 end
 
 include("agent_core.jl")
+include("continuation_slice.jl")
 include("extensions.jl")
 include("queue.jl")
 include("tool_faults.jl")
@@ -172,6 +173,7 @@ if haskey(ENV, "PI_SOURCE")
     include("mcp_roots_differential.jl")
 end
 include("scheduler.jl")
+include("json_content.jl")
 if haskey(ENV, "PI_SOURCE")
     include("durable_forks_differential.jl")
     include("session_differential.jl")
@@ -187,3 +189,4 @@ if haskey(ENV, "PI_SOURCE")
 end
 
 include("extension_interception.jl")
+include("before_tool.jl")
