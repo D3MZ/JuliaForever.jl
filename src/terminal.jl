@@ -194,10 +194,10 @@ function checkqueues!(terminal::Terminal, state::Conversation.State, history)
     isempty(state.steering) && isempty(state.followups) && return nothing
     println(terminal.diagnostics, "History has unprocessed queued messages. No new prompt was sent.")
     for text in state.steering
-        println(terminal.diagnostics, "Unprocessed steering: ", repr(redact(terminal, text)))
+        println(terminal.diagnostics, "Unprocessed steering: ", repr(redact(terminal, Conversation.queuetext(text))))
     end
     for text in state.followups
-        println(terminal.diagnostics, "Unprocessed follow-up: ", repr(redact(terminal, text)))
+        println(terminal.diagnostics, "Unprocessed follow-up: ", repr(redact(terminal, Conversation.queuetext(text))))
     end
     println(terminal.diagnostics, queueplace(history))
     flush(terminal.diagnostics)

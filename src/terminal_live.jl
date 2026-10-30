@@ -72,7 +72,7 @@ function collect!(queue::DeferredQueue, queued::NamedTuple)
     drain!(queue.steering, queued.steering)
     drain!(queue.followups, queued.followups)
     empty!(queue.display)
-    [queued.steering; queued.followups]
+    JuliaForever.Conversation.queuetext.([queued.steering; queued.followups])
 end
 
 function Base.empty!(queue::DeferredQueue)
@@ -182,8 +182,8 @@ end
 
 function queuelines(session)
     queued = queues(session)
-    [ ["Steering: " * replace(text, '\n' => ' ') for text in queued.steering];
-      ["Follow-up: " * replace(text, '\n' => ' ') for text in queued.followups];
+    [ ["Steering: " * replace(JuliaForever.Conversation.queuetext(text), '\n' => ' ') for text in queued.steering];
+      ["Follow-up: " * replace(JuliaForever.Conversation.queuetext(text), '\n' => ' ') for text in queued.followups];
       [label(item) for item in session.deferred.display] ]
 end
 
