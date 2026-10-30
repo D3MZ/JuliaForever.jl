@@ -2,8 +2,8 @@ name: Pinned Pi search
 on: [push]
 jobs:
   focused:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: windows-latest
+    timeout-minutes: 40
     env:
       JULIA_NUM_THREADS: 4
       PI_OFFLINE: '1'
@@ -15,8 +15,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '25'
-      - run: sudo apt-get update && sudo apt-get install -y ripgrep fd-find
-      - run: |
+      - shell: bash
+        run: choco install ripgrep fd --no-progress -y
+      - shell: bash
+        run: |
           echo "JULIA_DEPOT_PATH=$RUNNER_TEMP/julia-depot" >> "$GITHUB_ENV"
           echo "PI_SOURCE=$RUNNER_TEMP/pi-source" >> "$GITHUB_ENV"
           echo "PI_CODING_AGENT_DIR=$RUNNER_TEMP/pi-agent" >> "$GITHUB_ENV"
@@ -25,4 +27,5 @@ jobs:
           git -C "$PI_SOURCE" checkout --detach e7a0df27c09d11bf4161d3605246cbf57a129cb2
           npm install --prefix "$RUNNER_TEMP/pi-deps" --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.4.0
           node -e "require('fs').symlinkSync(process.argv[1], process.argv[2], 'junction')" "$RUNNER_TEMP/pi-deps/node_modules" "$PI_SOURCE/node_modules"
-      - run: julia --startup-file=no --project=. -e 'using Pkg; Pkg.instantiate(); using Test, JuliaForever, JSON3; include("test/search.jl"); include("test/search_differential.jl")'
+      - shell: bash
+        run: julia --startup-file=no --project=. -e 'using Pkg; Pkg.instantiate(); using Test, JuliaForever, JSON3; include("test/search.jl"); include("test/search_differential.jl")'
