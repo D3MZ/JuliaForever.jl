@@ -255,6 +255,29 @@ end
     end
 end
 
+@testset "Responses reasoning reconciliation boundaries" begin
+    model = OpenAIResponses("http://localhost/v1", "fixture", "synthetic")
+    reasoning = response_reasoning()
+    decoded = JuliaForever.reasoning(reasoning)
+    @test decoded isa JuliaForever.ReasoningOutput
+    @test decoded.id == "rs_1" && decoded.encrypted == "synthetic-encrypted"
+
+    function encrypted(done, item)
+        state = JuliaForever.ResponseStream(identity)
+        done === nothing || (state.finished[0] = done)
+        result = JuliaForever.finish(model, state, response_done([item]))
+        get(result.message["response_output"][1], "encrypted_content", nothing)
+    end
+    missing = Dict("type" => "reasoning", "id" => "rs_1")
+    @test encrypted(reasoning, copy(missing)) == "synthetic-encrypted"
+    @test encrypted(nothing, copy(missing)) === nothing
+    @test encrypted(merge(reasoning, Dict("id" => "other")), copy(missing)) === nothing
+    @test encrypted(merge(reasoning, Dict("type" => "message")), copy(missing)) === nothing
+    @test encrypted(reasoning, merge(missing, Dict("encrypted_content" => "kept"))) == "kept"
+    @test encrypted(merge(reasoning, Dict("encrypted_content" => nothing)), copy(missing)) === nothing
+    @test encrypted(reasoning, Dict("type" => "message", "id" => "rs_1")) === nothing
+end
+
 @testset "Responses message conversion" begin
     messages = Any[
         Dict("role" => "user", "content" => "hello"),

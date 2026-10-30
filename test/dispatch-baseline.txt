@@ -153,11 +153,6 @@ provider.jl	:streaming
 provider.jl	:success
 provider.jl	:success
 responses.jl	:(get(call, key, nothing) isa AbstractString)
-responses.jl	:(get(done, "type", nothing) == "reasoning")
-responses.jl	:(get(item, "type", nothing) == "reasoning")
-responses.jl	:(isnothing(done))
-responses.jl	:(isnothing(get(done, "encrypted_content", nothing)))
-responses.jl	:(isnothing(get(item, "encrypted_content", nothing)))
 scheduler.jl	:(key !== nothing)
 scheduler.jl	:(name === :cancelled)
 scheduler.jl	:(typeof(a))

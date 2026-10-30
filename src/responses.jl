@@ -63,8 +63,18 @@ function usage(::OpenAIResponses, data)
     Usage(max(0, raw_input - cache_read - cache_write), output, cache_read, cache_write, reasoning, get(data, "total_tokens", raw_input + output), nothing)
 end
 
-const outputtypes = Dict("message" => Conversation.Assistant, "function_call" => Conversation.ToolCall)
+struct ReasoningOutput
+    id
+    encrypted
+end
+
+const outputtypes = Dict("message" => Conversation.Assistant, "function_call" => Conversation.ToolCall, "reasoning" => ReasoningOutput)
 const partfields = Dict("output_text" => "text", "refusal" => "refusal")
+
+reasoning(::Nothing) = nothing
+reasoning(item) = reasoning(get(outputtypes, get(item, "type", nothing), nothing), item)
+reasoning(type, item) = nothing
+reasoning(::Type{ReasoningOutput}, item) = ReasoningOutput(get(item, "id", nothing), get(item, "encrypted_content", nothing))
 
 function message(output)
     result = Dict{String, Any}("role" => "assistant", "content" => nothing, "response_output" => output)
@@ -77,6 +87,7 @@ function message(output)
 end
 
 output!(result, calls, ::Nothing, item) = nothing
+output!(result, calls, ::Type{ReasoningOutput}, item) = nothing
 
 function output!(result, calls, ::Type{Conversation.Assistant}, item)
     for part in get(item, "content", [])
@@ -318,10 +329,7 @@ function finish(provider::OpenAIResponses, state::ResponseStream, data)
         data["output"] = [finished[index] for index in sort!(collect(keys(finished)))]
     end
     for (index, item) in enumerate(data["output"])
-        done = get(finished, index - 1, nothing)
-        if get(item, "type", nothing) == "reasoning" && !isnothing(done) && get(done, "type", nothing) == "reasoning" && get(item, "id", nothing) == get(done, "id", nothing) && isnothing(get(item, "encrypted_content", nothing)) && !isnothing(get(done, "encrypted_content", nothing))
-            item["encrypted_content"] = done["encrypted_content"]
-        end
+        recover_reasoning!(item, get(finished, index - 1, nothing))
     end
     failure = reconcile!(state, data, state.failure)
     result = completion(provider, data; failure)
@@ -329,6 +337,18 @@ function finish(provider::OpenAIResponses, state::ResponseStream, data)
     emitfinish(state.callback, result.finish)
     result
 end
+
+recover_reasoning!(item, done) = recover_reasoning!(item, done, get(outputtypes, get(item, "type", nothing), nothing))
+recover_reasoning!(item, done, type) = nothing
+recover_reasoning!(item, done, ::Type{ReasoningOutput}) = recover_reasoning!(item, reasoning(done))
+recover_reasoning!(item, ::Nothing) = nothing
+function recover_reasoning!(item, source::ReasoningOutput)
+    get(item, "id", nothing) == source.id || return nothing
+    copyencrypted!(item, get(item, "encrypted_content", nothing), source.encrypted)
+end
+copyencrypted!(item, current, encrypted) = nothing
+copyencrypted!(item, ::Nothing, ::Nothing) = nothing
+copyencrypted!(item, ::Nothing, encrypted) = (item["encrypted_content"] = encrypted; nothing)
 
 emitusage(callback, ::Nothing) = nothing
 emitusage(callback, usage) = callback((; type=:usage, usage))
