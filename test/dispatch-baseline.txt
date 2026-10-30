@@ -2,6 +2,7 @@ JuliaForever.jl	:(haslogin(auth))
 JuliaForever.jl	:(result.status == 0)
 JuliaForever.jl	:codemode
 agent.jl	:(Kernel.same(recorded, agent.messages))
+agent.jl	:(Kernel.same(value, convert(Dict{String, Any}, previous)))
 agent.jl	:(name === :cancelled)
 agent.jl	:(name === :events)
 agent.jl	:(name === :running)
@@ -169,6 +170,10 @@ search.jl	:truncatedlines
 search.jl	:truncatedlines
 search.jl	:windows
 search.jl	:windows
+session_terminal.jl	:(Kernel.same(agent.messages, plan.original))
+session_terminal.jl	:(Kernel.same(original, message.value))
+session_terminal.jl	:(Kernel.same(projected, agent.messages))
+session_terminal.jl	:(Kernel.same(projected, plan.original))
 session_terminal.jl	:(history === selected)
 session_terminal.jl	:(history === selected)
 sessions.jl	:(entryid isa AbstractString)
