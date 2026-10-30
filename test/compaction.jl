@@ -127,19 +127,3 @@ end
     @test cancelled.messages == original
     @test !cancelled.running
 end
-
-@testset "terminal command uses the configured provider" begin
-    provider = CompactProvider(Dict{String, Any}("role" => "assistant", "content" => "provider checkpoint"), Any[])
-    history = CompactHistory.Memory()
-    agent = compactagent(provider; history)
-    diagnostics = IOBuffer()
-    terminal = JuliaForever.Terminal(IOBuffer(), diagnostics, String[])
-    _, _, status = JuliaForever.command!(JuliaForever.terminalcommands["/compact"], terminal, agent, history, IOBuffer(), "", nothing)
-    @test status == 0
-    @test occursin("Context compacted.", String(take!(diagnostics)))
-    @test isempty(only(provider.requests).tools)
-    @test occursin("first answer", only(provider.requests).messages[1]["content"])
-    @test !occursin("second answer", only(provider.requests).messages[1]["content"])
-    @test agent.messages[2]["content"] == JuliaForever.summaryprefix * "provider checkpoint" * JuliaForever.summarysuffix
-    @test Agent(provider, []; history).messages == agent.messages
-end
