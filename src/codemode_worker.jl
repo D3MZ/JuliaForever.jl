@@ -15,6 +15,7 @@ const serial = Ref(0)
 const connected = Ref(true)
 const data = Dict{String, Any}(String(key) => value for (key, value) in pairs(request.store))
 const writes = Dict{String, Any}()
+const deletes = Set{String}()
 
 function send(message)
     lock(writelock) do
@@ -56,6 +57,15 @@ function store(key::AbstractString, value)
     lock(storelock) do
         data[key] = copy
         writes[key] = copy
+        delete!(deletes, key)
+    end
+    nothing
+end
+function forget!(key::AbstractString)
+    lock(storelock) do
+        delete!(data, key)
+        delete!(writes, key)
+        push!(deletes, key)
     end
     nothing
 end
@@ -80,7 +90,7 @@ Threads.@spawn begin
 end
 
 program = Module(:CodeProgram)
-for (key, value) in ((:tools, Tools()), (:ALL_TOOLS, request.tools), (:text, text), (:load, load), (:store, store))
+for (key, value) in ((:tools, Tools()), (:ALL_TOOLS, request.tools), (:text, text), (:load, load), (:store, store), (:forget!, forget!))
     Core.eval(program, Expr(:const, Expr(:(=), key, QuoteNode(value))))
 end
 
@@ -88,10 +98,10 @@ try
     value = Base.include_string(program, request.code, "codemode.jl")
     flush(stdout)
     flush(stderr)
-    changed = lock(storelock) do
-        copy(writes)
+    changed, removed = lock(storelock) do
+        copy(writes), collect(deletes)
     end
-    send((; type="result", ok=true, value, writes=changed))
+    send((; type="result", ok=true, value, writes=changed, deletes=removed))
 catch exception
     flush(stdout)
     flush(stderr)
