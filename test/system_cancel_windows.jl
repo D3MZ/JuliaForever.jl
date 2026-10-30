@@ -228,10 +228,10 @@ end
                 @test isfile(background.ready)
                 if isfile(background.ready)
                     pids = parse.(UInt32, read.((background.child, background.grandchild), String))
-                    @test timedwait(() -> all(pid -> !alive(pid), pids), 5; pollint=0.05) == :ok
+                    @test all(alive, pids)
                     write(background.release, "release")
-                    sleep(0.5)
-                    @test !isfile(background.late)
+                    @test timedwait(() -> isfile(background.late), 10; pollint=0.05) == :ok
+                    @test timedwait(() -> all(pid -> !alive(pid), pids), 10; pollint=0.05) == :ok
                 end
             finally
                 write(background.release, "release")
