@@ -25,3 +25,5 @@ The merge with the session, image, provider, extension, and context work changes
 MCP content and chat message roles use handlers instead of added tag checks. The separate terminal Channel queue is not included in this merge.
 
 The code-mode store deletion merge changes one existing loop inventory entry: the worker now exposes the `forget!` helper alongside `store` and `load`. It adds no new branch point.
+
+The provider-error integration removes the `isnothing(finish)` dispatch candidate; no new dispatch candidate is added. Its branch inventory replaces that finish-reason check with a numeric 400–599 range check at the provider error boundary. Unrecognized provider details are mapped to a fixed error category, and raw provider callback events remain unfiltered.

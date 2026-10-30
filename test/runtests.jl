@@ -87,6 +87,7 @@ include("provider_anthropic.jl")
 include("provider_google.jl")
 include("provider_image_boundary.jl")
 include("provider_invalid.jl")
+include("provider_error_common.jl")
 include("estimates.jl")
 
 if haskey(ENV, "PI_SOURCE")

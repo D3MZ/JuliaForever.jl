@@ -1,4 +1,4 @@
-import ..JuliaForever: Tool, ToolResult, ToolFailure, Completion, Usage, InvalidResponse, ProviderStatus, UnsupportedImage, name, execute, complete, conversation_reply, attempt
+import ..JuliaForever: Tool, ToolResult, ToolFailure, Completion, Usage, InvalidResponse, ProviderStatus, ProviderError, UnsupportedImage, name, execute, complete, conversation_reply, attempt
 import ..Conversation
 import ..Kernel
 using JSON3
@@ -55,7 +55,7 @@ end
 struct ModelResult{O <: Kernel.Observation}
     observation::O
     usage::Union{Nothing, Usage}
-    error::Union{Nothing, String, InvalidResponse, ProviderStatus, UnsupportedImage}
+    error::Union{Nothing, String, InvalidResponse, ProviderStatus, ProviderError, UnsupportedImage}
 end
 
 struct Turn{T}

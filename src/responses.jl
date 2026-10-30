@@ -112,8 +112,9 @@ function valid(call)
 end
 
 completion(provider::OpenAIResponses, data::InvalidResponse; failure=nothing) = incomplete(data)
-detail(value::AbstractString) = value
-detail(value) = JSON3.write(value)
+const responsestatuses = Dict(status => status for status in ("failed", "incomplete", "cancelled", "canceled", "queued", "in_progress"))
+responsestatus(status) = nothing
+responsestatus(status::AbstractString) = get(responsestatuses, status, nothing)
 
 function completion(provider::OpenAIResponses, data; failure=nothing)
     output = get(data, "output", [])
@@ -121,7 +122,7 @@ function completion(provider::OpenAIResponses, data; failure=nothing)
     status = get(data, "status", nothing)
     if isnothing(failure) && status != "completed"
         reason = something(get(data, "error", nothing), get(data, "incomplete_details", nothing), status, "missing status")
-        failure = "Responses $(status): $(detail(reason))"
+        failure = providererror(:openai_responses, reason)
     end
     calls = [item for item in output if get(item, "type", nothing) == "function_call"]
     if isnothing(failure) && any(call -> !valid(call), calls)
@@ -131,7 +132,7 @@ function completion(provider::OpenAIResponses, data; failure=nothing)
     end
     raw_usage = get(data, "usage", nothing)
     used = usage(provider, raw_usage)
-    finish = status == "completed" ? (haskey(msg, "tool_calls") ? "tool_calls" : "stop") : status
+    finish = status == "completed" ? (haskey(msg, "tool_calls") ? "tool_calls" : "stop") : responsestatus(status)
     Completion(msg, used, finish, status == "completed" && isnothing(failure), failure)
 end
 
@@ -166,7 +167,7 @@ struct ResponseEnded <: ResponseEvent
     response::Any
 end
 struct ResponseError <: ResponseEvent
-    message::String
+    failure::ProviderError
 end
 
 const responseevents = Dict(
@@ -185,14 +186,14 @@ responseevent(::Type{OutputAdded}, data) = OutputAdded(get(data, "output_index",
 responseevent(::Type{ArgumentDelta}, data) = ArgumentDelta(get(data, "output_index", nothing), get(data, "item_id", nothing), data)
 responseevent(::Type{OutputDone}, data) = OutputDone(get(data, "output_index", nothing), data["item"])
 responseevent(::Type{ResponseEnded}, data) = ResponseEnded(data["response"])
-responseevent(::Type{ResponseError}, data) = ResponseError(JSON3.write(data))
+responseevent(::Type{ResponseError}, data) = ResponseError(providererror(:openai_responses, data))
 
 mutable struct ResponseStream{F}
     partial::Dict{String, Any}
     active::Dict{Any, Any}
     finished::Dict{Any, Any}
     terminal::Any
-    failure::Union{Nothing, String, InvalidResponse}
+    failure::Union{Nothing, String, InvalidResponse, ProviderError}
     callback::F
 end
 
@@ -279,7 +280,7 @@ function record!(stream::ResponseStream, index, item)
 end
 
 handle!(stream::ResponseStream, event::ResponseEnded) = (stream.terminal = event.response; nothing)
-handle!(stream::ResponseStream, event::ResponseError) = (stream.failure = event.message; nothing)
+handle!(stream::ResponseStream, event::ResponseError) = (stream.failure = event.failure; nothing)
 
 function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), on_event=identity)
     state = ResponseStream(on_event)

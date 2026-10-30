@@ -16,6 +16,48 @@ imagecheck(::Nothing) = nothing
 imagecheck(image) = UnsupportedImage()
 images(input) = foldl(imagecheck, input; init=nothing)
 
+"A provider-reported failure without its untrusted message or request details."
+struct ProviderError
+    provider::Symbol
+    kind::Symbol
+    status::Union{Nothing, Int}
+end
+
+JSON3.StructTypes.StructType(::Type{ProviderError}) = JSON3.StructTypes.CustomStruct()
+JSON3.StructTypes.lower(failure::ProviderError) = (; provider=String(failure.provider), kind=String(failure.kind), status=failure.status)
+
+const failurekinds = Dict(
+    "invalid_request_error" => :invalid_request, "authentication_error" => :authentication,
+    "billing_error" => :billing, "permission_error" => :permission, "not_found_error" => :not_found,
+    "conflict_error" => :conflict, "request_too_large" => :request_too_large,
+    "rate_limit_error" => :rate_limit, "rate_limit_exceeded" => :rate_limit,
+    "RESOURCE_EXHAUSTED" => :resource_exhausted, "UNAVAILABLE" => :unavailable,
+    "api_error" => :server, "server_error" => :server, "timeout_error" => :timeout,
+    "overloaded_error" => :overloaded, "max_output_tokens" => :max_output_tokens,
+    "content_filter" => :content_filter, "SAFETY" => :safety, "RECITATION" => :recitation,
+    "refusal" => :refusal, "failed" => :failed, "incomplete" => :incomplete,
+)
+
+failurekind(value) = :unknown
+failurematch(value) = nothing
+failurematch(value::AbstractString) = get(failurekinds, value, nothing)
+failurekind(value::AbstractString) = something(failurematch(value), :unknown)
+failurekind(data::AbstractDict) = firstfailure(failurematch(get(data, "type", nothing)), failurematch(get(data, "status", nothing)), failurematch(get(data, "code", nothing)), failurematch(get(data, "reason", nothing)))
+firstfailure() = :unknown
+firstfailure(::Nothing, rest...) = firstfailure(rest...)
+firstfailure(found::Symbol, rest...) = found
+failurestatus(value) = nothing
+failurestatus(value::Integer) = 400 <= value <= 599 ? Int(value) : nothing
+failurestatus(data::AbstractDict) = failurestatus(get(data, "code", nothing))
+providererror(provider::Symbol, data) = ProviderError(provider, failurekind(data), failurestatus(data))
+
+const finishreasons = Dict(reason => reason for reason in ("stop", "end", "length", "tool_calls", "function_call", "content_filter", "failed", "incomplete"))
+safefinish(value) = nothing
+safefinish(value::AbstractString) = get(finishreasons, value, nothing)
+reportfinish!(callback, ::Nothing) = nothing
+reportfinish!(callback, reason) = callback((; type=:finish, reason))
+
+
 StructTypes.StructType(::Type{OpenAI}) = StructTypes.CustomStruct()
 StructTypes.lower(provider::OpenAI) = (; model=provider.model, credentials="[redacted]")
 
@@ -143,7 +185,7 @@ struct Completion
     usage::Union{Nothing, Usage}
     finish::Union{Nothing, String}
     done::Bool
-    error::Union{Nothing, String, InvalidResponse, ProviderStatus, UnsupportedImage}
+    error::Union{Nothing, String, InvalidResponse, ProviderStatus, ProviderError, UnsupportedImage}
 end
 
 incomplete(failure::Union{InvalidResponse, ProviderStatus, UnsupportedImage}) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, failure)
@@ -218,7 +260,7 @@ end
 recordfinish!(finish, callback, ::Nothing) = nothing
 function recordfinish!(finish, callback, reason)
     finish[] = reason
-    callback((; type=:finish, reason))
+    reportfinish!(callback, safefinish(reason))
 end
 
 appendtext(::Nothing, text) = text
@@ -253,11 +295,12 @@ complete(provider::OpenAI, failure::InvalidResponse) = incomplete(failure)
 
 function complete(provider::OpenAI, data::AbstractDict)
     choice = first(data["choices"])
-    finish = get(choice, "finish_reason", nothing)
+    reason = get(choice, "finish_reason", nothing)
+    finish = safefinish(reason)
     raw_usage = get(data, "usage", nothing)
     used = usage(raw_usage)
     done = finish in ("stop", "end", "length", "tool_calls", "function_call")
-    failure = done ? nothing : "Provider finish_reason: $(isnothing(finish) ? "missing" : finish)"
+    failure = done ? nothing : providererror(:openai_compatible, reason)
     Completion(choice["message"], used, finish, done, failure)
 end
 
@@ -267,7 +310,7 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
     order = Any[]
     reported_usage = Ref{Union{Nothing, Usage}}(nothing)
     finish = Ref{Union{Nothing, String}}(nothing)
-    failure = Ref{Union{Nothing, String, InvalidResponse}}(nothing)
+    failure = Ref{Union{Nothing, String, InvalidResponse, ProviderError}}(nothing)
     marker = Ref(false)
     reasoningfield = Ref{Union{Nothing, String}}(nothing)
     response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, sse_callback=event -> begin
@@ -283,7 +326,7 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
         end
         on_event((; type=:provider, data))
         if haskey(data, "error")
-            failure[] = JSON3.write(data["error"])
+            failure[] = providererror(:openai_compatible, data["error"])
             return
         end
         recordusage!(reported_usage, on_event, get(data, "usage", nothing))
@@ -332,9 +375,9 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
     end
     isempty(order) || (message["tool_calls"] = [calls[index] for index in order])
     if !(failure[] isa InvalidResponse) && !isnothing(finish[]) && !(finish[] in ("stop", "end", "length", "tool_calls", "function_call"))
-        failure[] = "Provider finish_reason: $(finish[])"
+        failure[] = something(failure[], providererror(:openai_compatible, finish[]))
     end
-    result = Completion(message, reported_usage[], finish[], marker[] && !isnothing(finish[]) && isnothing(failure[]), failure[])
+    result = Completion(message, reported_usage[], safefinish(finish[]), marker[] && !isnothing(finish[]) && isnothing(failure[]), failure[])
     on_event((; type=result.done ? :done : :incomplete, result))
     result
 end

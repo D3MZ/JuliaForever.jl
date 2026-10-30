@@ -71,7 +71,7 @@ function result!(terminal::Terminal, ::Truncated)
     1
 end
 
-function result!(terminal::Terminal, result::Completion, ::Union{Nothing, String})
+function result!(terminal::Terminal, result::Completion, ::Union{Nothing, String, ProviderError})
     detail = result.finish == "content_filter" ? "content was filtered" : result.finish == "failed" ? "the provider reported failure" : result.finish == "incomplete" ? "the provider reported incomplete output" : "the provider stream did not finish"
     println(terminal.diagnostics, "Response incomplete: ", detail)
     flush(terminal.diagnostics)

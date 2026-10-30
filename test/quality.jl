@@ -29,4 +29,6 @@ end
     JET.@test_call target_modules=(JuliaForever,) execute(Write(pwd()), (; path="a.txt", content="hello"))
     JET.@test_call target_modules=(JuliaForever,) execute(Read(pwd()), (; path="a.txt", offset=1, limit=2))
     JET.@test_call target_modules=(JuliaForever,) execute(Edit(pwd()), (; path="a.txt", edits=[(; oldText="a", newText="b")]))
+    JET.@test_call target_modules=(JuliaForever,) JuliaForever.providererror(:openai_compatible, Dict{String, Any}("type" => "server_error", "code" => 503))
+    JET.@test_call target_modules=(JuliaForever,) JuliaForever.providererror(:openai_compatible, "content_filter")
 end
