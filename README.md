@@ -17,7 +17,7 @@ julia --project=. -m JuliaForever 'Create a hello.txt file'
 
 To install the `jf` command from the checkout, run `julia -e 'using Pkg; Pkg.Apps.add(path=pwd())'` and put the Julia depot's `bin` directory on your `PATH`. Julia's app support is experimental. Run `jf` without a prompt for a session; `/exit` ends it. On a supported terminal, Enter sends and Ctrl+J inserts a line. See [terminal](docs/terminal.md) for input and platform limitations.
 
-Sessions are saved automatically. Use `jf --continue` for the most recent session, `jf --resume` to choose one, or `jf --session PATH|ID` to open a specific session. `--no-session` makes a run ephemeral. `--history session.sqlite` still records and resumes an explicitly chosen history file. See [terminal recovery](docs/terminal.md) before continuing an interrupted turn.
+Sessions are saved automatically. Use `jf --continue` for the most recent session, `jf --resume` to choose one, or `jf --session PATH|ID` to open a specific session. `--no-session` makes a run ephemeral. `--history session.sqlite` still records and resumes an explicitly chosen history file. Resume from the original project directory with the intended tool and plugin options: the saved context is not regenerated, and explicit paths can open histories from a different project. See [terminal sessions and recovery](docs/terminal.md) for details.
 
 ## Test
 
