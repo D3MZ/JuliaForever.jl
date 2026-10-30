@@ -93,8 +93,8 @@ end
 casecandidate(db, path, id, prefix, paths, forms, recorded) = nothing
 function casecandidate(db, path, id, prefix, paths, forms, recorded::String)
     directory = abspath(recorded)
-    any(form -> caseequal(directory, form), forms) || return nothing
     project(directory) == prefix || return nothing
+    any(form -> caseequal(caseform(directory), form), forms) || return nothing
     sameproject(first(paths), directory) || return nothing
     caseinfo(path, id, historyrows(db, historyquery))
 end
@@ -128,7 +128,7 @@ end
 function listcase(dir, paths)
     items = list(dir, projectpattern(paths))
     isdir(dir) || return items
-    forms = abspath.(paths)
+    forms = caseform.(paths)
     direct = Set(project.(paths))
     for file in readdir(dir)
         casefile!(items, dir, file, match(sessionfile, file), paths, forms, direct)

@@ -26,9 +26,13 @@ end
 @testset "Windows short aliases discover sessions" begin
     if Sys.iswindows()
         mktempdir(get(ENV, "JF_ALIAS_TEST_ROOT", tempdir())) do root
-            long = joinpath(root, "Julia Forever long project directory")
+            parent = joinpath(root, "Julia Forever long parent directory")
+            long = joinpath(parent, "Julia Forever long project directory")
             mkpath(long)
-            short = JuliaForever.SessionCatalog.winpath(long, JuliaForever.SessionCatalog.shortpath)
+            catalog = JuliaForever.SessionCatalog
+            parent_short = catalog.winpath(parent, catalog.shortpath)
+            long = joinpath(parent_short, basename(long))
+            short = catalog.winpath(long, catalog.shortpath)
             if short != long
                 sessions, requests = joinpath(root, "sessions"), joinpath(root, "requests.jsonl")
                 @test session_process(requests, long, sessions, ["long original"]).status == 0

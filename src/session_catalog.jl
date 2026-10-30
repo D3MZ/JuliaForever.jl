@@ -65,6 +65,7 @@ end
     shortpath(input, output) = ccall((:GetShortPathNameW, "kernel32"), stdcall, UInt32, (Ptr{UInt16}, Ptr{UInt16}, UInt32), input, output, length(output))
     spellings(cwd) = unique((abspath(cwd), winpath(cwd, longpath), winpath(cwd, shortpath)))
     projectlist(dir, cwd, paths) = listcase(dir, paths)
+    caseform(path) = winpath(path, longpath)
     function caseequal(a, b)
         left, right = transcode(UInt16, a), transcode(UInt16, b)
         ccall((:CompareStringOrdinal, "kernel32"), stdcall, Cint, (Ptr{UInt16}, Cint, Ptr{UInt16}, Cint, Cint), left, length(left), right, length(right), 1) == 2
@@ -73,6 +74,7 @@ else
     spellings(cwd) = (abspath(cwd),)
     projectlist(dir, cwd, paths) = list(dir, projectpattern(paths))
     caseequal(a, b) = lowercase(a) == lowercase(b)
+    caseform(path) = abspath(path)
 end
 
 mutable struct Deferred <: H.Store
