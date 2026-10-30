@@ -1,7 +1,7 @@
 module MCP
 
 using JSON3, Base64
-import HTTP
+import HTTP, JSON
 import ..JuliaForever: Tool, ToolResult, ToolFailure, tooltype, Image, imagelimit, imageformat, imageproblem, name, description, schema, execute
 
 struct Failure
@@ -161,9 +161,15 @@ function httpheaders(transport::HttpTransport)
     headers
 end
 
+include("mcp_sse_json.jl")
+
 function ssemessage!(client::Client, data, event, id)
     (isempty(data) || !(event in ("", "message"))) && return false
-    value = JSON3.read(codeunits(join(data, "\n")), Dict{String, Any})
+    ssereply(client, sseparse(data), id)
+end
+ssereply(client, invalid::InvalidSSE, id) = false
+function ssereply(client, value::AbstractDict, id)
+    value = ssevalid(value)
     received(client, value) || return false
     get(value, "id", nothing) == id && !haskey(value, "method")
 end
@@ -172,8 +178,7 @@ struct ServerStream end
 function servermessage!(client::Client, data, event)
     (isempty(data) || !(event in ("", "message"))) && return nothing
     try
-        value = JSON3.read(codeunits(join(data, "\n")), Dict{String, Any})
-        received(client, value)
+        received(client, ssevalid(sseparse(data)))
     catch
     end
     nothing
