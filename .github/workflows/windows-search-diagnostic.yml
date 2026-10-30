@@ -1,0 +1,36 @@
+name: Windows search diagnostic
+on:
+  push:
+    branches: [codex/windows-search-parity-20261030]
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '25'
+      - name: Prepare Pi and search tools
+        run: |
+          python scripts/install_search_tools.py "$RUNNER_TEMP/search-tools" "$RUNNER_OS" "$RUNNER_ARCH"
+          echo "$RUNNER_TEMP/search-tools" >> "$GITHUB_PATH"
+          git clone --filter=blob:none https://github.com/earendil-works/pi.git "$RUNNER_TEMP/pi-source"
+          git -C "$RUNNER_TEMP/pi-source" checkout --detach e7a0df27c09d11bf4161d3605246cbf57a129cb2
+          npm install --prefix "$RUNNER_TEMP/pi-deps" --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.4.0
+          node -e "require('fs').symlinkSync(process.argv[1], process.argv[2], 'junction')" "$RUNNER_TEMP/pi-deps/node_modules" "$RUNNER_TEMP/pi-source/node_modules"
+      - name: Instantiate
+        run: julia --startup-file=no --project=. -e 'using Pkg; Pkg.instantiate()'
+      - name: Differential diagnostic
+        env:
+          PI_SOURCE: ${{ runner.temp }}/pi-source
+          JF_RED_DIAGNOSTIC: '1'
+        run: julia --startup-file=no --project=. -e 'using Test, JuliaForever, JSON3; include("test/search_windows_differential.jl")'
