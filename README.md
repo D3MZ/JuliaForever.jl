@@ -10,7 +10,9 @@ An opt-in [context estimate](docs/context-estimates.md) combines a caller-select
 
 ## Run from a checkout
 
-Julia 1.12 or newer runs the package and its native tests. Node.js is needed only for differential tests that run the original Pi implementation. Set `OPENAI_API_KEY` and `OPENAI_MODEL`, and optionally `OPENAI_BASE_URL` (default `https://api.openai.com/v1`). Set `JF_PROVIDER=openai-responses` to use the Responses API.
+Julia 1.12 or newer runs the package and its native tests. Node.js is needed only for differential tests that run the original Pi implementation. On macOS or Linux, run `jf` and choose Continue with ChatGPT to connect an eligible ChatGPT plan. The browser sign-in registers Julia Forever and requests permission to use the plan. Use `jf --login-chatgpt` to add or reauthorize an account and `jf --logout-chatgpt` to sign out. This flow has synthetic test coverage but has not yet been verified with a real account. See [ChatGPT sign-in](docs/chatgpt-auth.md).
+
+For API-key billing, set `OPENAI_API_KEY` and `OPENAI_MODEL`, and optionally `OPENAI_BASE_URL` (default `https://api.openai.com/v1`). Set `JF_PROVIDER=openai-responses` to use the Responses API.
 
 For Anthropic set `JF_PROVIDER=anthropic`, `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`; for Google set `JF_PROVIDER=google`, `GEMINI_API_KEY` and `GEMINI_MODEL`.
 
@@ -23,7 +25,7 @@ julia --project=. -m JuliaForever 'Create a hello.txt file'
 
 To install the `jf` command from the checkout, run `julia -e 'using Pkg; Pkg.Apps.add(path=pwd())'` and put the Julia depot's `bin` directory on your `PATH`. Julia's app support is experimental. Run `jf` without a prompt for a session; `/exit` ends it. On a supported terminal, Enter sends, Ctrl+J inserts a line, Alt+Enter queues a follow-up, and Escape interrupts an active request. See [terminal](docs/terminal.md) for input and platform limitations.
 
-Use `jf --mode json 'prompt'` to stream structured message and tool events as JSONL; see [JSON mode](docs/json-mode.md).
+Use `jf --mode json 'prompt'` to stream structured message and tool events as JSONL; see [JSON mode](docs/json-mode.md). Export a saved session with `jf --export session.sqlite` for HTML, or specify an `.html` or `.json` destination; see [history export](docs/logs.md).
 
 By default the CLI enables `read`, `bash`, `edit`, and `write`, plus explicitly loaded plugin tools. Use `--tools`, `--exclude-tools`, `--no-builtin-tools`, or `--no-tools` to choose the available tools; see [terminal tools](docs/terminal.md).
 

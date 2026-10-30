@@ -14,6 +14,7 @@ include("file_arguments.jl")
 include("system.jl")
 include("provider.jl")
 include("models.jl")
+include("chatgpt.jl")
 include("kernel.jl")
 include("conversation.jl")
 include("durable.jl")
@@ -28,6 +29,7 @@ include("compaction.jl")
 include("responses.jl")
 include("anthropic.jl")
 include("google.jl")
+include("chatgpt_plan.jl")
 include("sessions.jl")
 include("session_catalog.jl")
 include("execution.jl")
@@ -81,6 +83,8 @@ struct HistoryAbandonment
 end
 struct HistoryConflict end
 include("cli_models.jl")
+include("chatgpt_cli.jl")
+include("history_export.jl")
 
 historyinspect(::Nothing) = HistoryInspection()
 historyinspect(action::HistoryInspection) = action
@@ -215,7 +219,7 @@ registered(terminal, registry, name, ::Bool) = registry
 registered(terminal, registry, name, result::Extensions.Rejected) = pluginfailure!(terminal, name, result)
 
 function help!()
-    println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
+    println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --export PATH [OUTPUT.html|OUTPUT.json] | jf --history PATH --abandon REASON | jf [options] --login-chatgpt [prompt] | jf --logout-chatgpt | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
     println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --fork PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
     println("Tools: --tools (-t) LIST, --exclude-tools (-xt) LIST, --no-builtin-tools (-nbt), --no-tools (-nt).")
     println("Terminal: --tui-mode fullscreen|regular (default: fullscreen).")
@@ -262,6 +266,19 @@ end
 historyaction(::Nothing, options) = loginprovider(options.auth, options.selected, options)
 historyaction(action::ModelListing, options) = listmodels!(options.output, action.query, ENV)
 loginprovider(::APIKeyAuth, selected, options) = resolveprovider(options, options.requested_model)
+loginprovider(::APIKeyAuth, ::Nothing, options) = defaultchatgpt(options, stdin)
+defaultchatgpt(options, input::IO) = resolveprovider(options, options.requested_model)
+function defaultchatgpt(options, input::Base.TTY)
+    if !haskey(ENV, "JF_PROVIDER") && isempty(something(keyvalue(ENV, providerinfos["openai"]), ""))
+        return launchchatgpt(options, ResumeChatGPT())
+    end
+    resolveprovider(options, options.requested_model)
+end
+loginprovider(::ChatGPTAuth, ::Nothing, options) = launchchatgpt(options, ChooseChatGPT())
+function loginprovider(::ChatGPTAuth, selected::AbstractString, options)
+    println(stderr, "--login-chatgpt cannot be combined with --provider.")
+    2
+end
 loginprovider(::OpenRouterAuth, ::Nothing, options) = resolveprovider(options, options.requested_model)
 loginprovider(::OpenRouterAuth, selected::AbstractString, options) = loginprovider(options, get(loginproviders, selected, nothing))
 loginprovider(options, ::NamedTuple) = resolveprovider(options, options.requested_model)

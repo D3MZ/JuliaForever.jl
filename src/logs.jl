@@ -89,4 +89,52 @@ end
 
 html(history; project=record, title="Julia Forever history") = sprint(io -> html(io, history; project, title))
 
+
+function conversationhtml(io::IO, messages; title="Julia Forever conversation")
+    heading = escape(title)
+    print(io, "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>", heading, "</title><style>body{font:16px system-ui,sans-serif;line-height:1.55;max-width:72rem;margin:2rem auto;padding:0 1rem;color:#1b1b1b}article{border-top:1px solid #ddd;padding:1rem 0}h2{font-size:1rem;margin:0 0 .5rem}pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font:inherit}details{margin:.5rem 0;padding:.6rem;background:#f4f4f4}summary{cursor:pointer;font-weight:600}</style></head><body><main><h1>", heading, "</h1>\n")
+    for message in messages
+        conversationmessage(io, get(message, "role", ""), message)
+    end
+    print(io, "</main></body></html>\n")
+    nothing
+end
+
+conversationmessage(io, role, message) = nothing
+function conversationmessage(io, role::AbstractString, message)
+    label = get(Dict("user" => "User", "assistant" => "Assistant", "tool" => "Tool result"), role, nothing)
+    conversationmessage(io, label, message, role)
+end
+conversationmessage(io, ::Nothing, message, role) = nothing
+function conversationmessage(io, label::AbstractString, message, role)
+    print(io, "<article><h2>", escape(label), "</h2>")
+    conversationcontent(io, get(message, "content", nothing))
+    foreach(image -> conversationimage(io, image), get(message, "images", []))
+    conversationimage(io, get(message, "image", nothing))
+    for call in get(message, "tool_calls", [])
+        conversationcall(io, call)
+    end
+    print(io, "</article>\n")
+    nothing
+end
+conversationcontent(io, ::Nothing) = nothing
+conversationcontent(io, text::AbstractString) = print(io, "<pre>", escape(text), "</pre>")
+conversationcontent(io, content) = print(io, "<pre>", escape(JSON3.write(content)), "</pre>")
+conversationimage(io, image) = nothing
+conversationimage(io, image::AbstractDict) = conversationimage(io, get(image, "mime", nothing), get(image, "data", nothing))
+conversationimage(io, mime, data) = nothing
+function conversationimage(io, mime::AbstractString, data::AbstractString)
+    mime in ("image/png", "image/jpeg") || return nothing
+    print(io, "<p><img alt=\"Attached image\" style=\"max-width:100%;height:auto\" src=\"data:", escape(mime), ";base64,", escape(data), "\"></p>")
+    nothing
+end
+
+function conversationcall(io, call)
+    fn = get(call, "function", Dict())
+    name = string(get(fn, "name", "tool"))
+    arguments = string(get(fn, "arguments", ""))
+    print(io, "<details><summary>", escape(name), "</summary><pre>", escape(arguments), "</pre></details>")
+    nothing
+end
+
 end
