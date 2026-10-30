@@ -244,17 +244,17 @@ description(::Edit) = "Replace unique, non-overlapping text in a file."
 
 definition(tool) = Dict("type" => "function", "function" => Dict("name" => name(tool), "description" => description(tool), "parameters" => schema(tool)))
 
-invoke(tool::Tool, args, ::ShellCancellation) = execute(tool, args)
-invoke(tool::Union{Bash, PowerShell}, args, cancel::ShellCancellation) = Sys.iswindows() ? execute(tool, args) : execute(tool, args; cancel)
+invoke(tool::Tool, args, ::ShellCancellation, update) = execute(tool, args)
+invoke(tool::Union{Bash, PowerShell}, args, cancel::ShellCancellation, update) = Sys.iswindows() ? execute(tool, args; on_update=update) : execute(tool, args; cancel, on_update=update)
 
-function invoke(agent, call)
+function invoke(agent, call, update)
     tool, args = try
         tool = call["function"]
         agent.tools[tool["name"]], JSON3.read(tool["arguments"])
     catch exception
         return ToolFailure(sprint(showerror, exception))
     end
-    attempt(() -> invoke(tool, args, agent.shell))
+    attempt(() -> invoke(tool, args, agent.shell, update))
 end
 
 emit(::Nothing, event) = nothing
@@ -405,15 +405,16 @@ function toolstart(call, on_agent_event)
     emit(on_agent_event, (; type=:tool_execution_start, tool_call_id=call["id"], tool_name=info.name, args=info.args))
 end
 
-invoke(agent, call, ::Conversation.ToolRequest, ::Union{Idle, Running}) = invoke(agent, call)
-invoke(agent, call, ::Conversation.SkipRequest, ::Union{Idle, Running}) = ToolFailure("Tool call \"$(callinfo(call).name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.")
-invoke(agent, call, ::Union{Conversation.ToolRequest, Conversation.SkipRequest}, ::Cancelled) = ToolFailure("Operation cancelled")
+invoke(agent, call, ::Conversation.ToolRequest, ::Union{Idle, Running}, update) = invoke(agent, call, update)
+invoke(agent, call, ::Conversation.SkipRequest, ::Union{Idle, Running}, update) = ToolFailure("Tool call \"$(callinfo(call).name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.")
+invoke(agent, call, ::Union{Conversation.ToolRequest, Conversation.SkipRequest}, ::Cancelled, update) = ToolFailure("Operation cancelled")
 
 function toolresult(agent, call, request, on_agent_event)
     info = callinfo(call)
     id = call["id"]
     turn = lock(() -> agent.turn, agent.lock)
-    result = invoke(agent, call, request, turn)
+    update = partial_result -> emit(on_agent_event, (; type=:tool_execution_update, tool_call_id=id, tool_name=info.name, args=info.args, partial_result))
+    result = invoke(agent, call, request, turn, update)
     emit(on_agent_event, (; type=:tool_execution_end, tool_call_id=id, tool_name=info.name, result, iserror=result.iserror))
     result
 end
