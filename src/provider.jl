@@ -303,7 +303,11 @@ details(data) = data
 upstream(::Nothing) = 0
 upstream(data) = get(data, "upstream_inference_cost", 0)
 usagecost(::Nothing, data) = nothing
-usagecost(cost, data) = Float64(get(data, "is_byok", false) ? cost + upstream(get(data, "cost_details", nothing)) : cost)
+usagecost(cost, data) = usagecost(cost, data, get(data, "is_byok", false))
+plaincost(cost, data) = cost
+byokcost(cost, data) = cost + upstream(get(data, "cost_details", nothing))
+const costcalculators = Dict(false => plaincost, true => byokcost)
+usagecost(cost, data, byok::Bool) = Float64(costcalculators[byok](cost, data))
 
 function usage(data)
     prompt = get(data, "prompt_tokens", 0)
