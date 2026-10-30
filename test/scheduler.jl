@@ -483,6 +483,12 @@ Base.run(::JoinHandler, phase::TestPhase, input, ::D.Invocation) = phase.value =
         invalid = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [99999])
         @test D.step!(scheduler, invalid, JoinHandler()).reason == :task_missing
         @test get(scheduler, invalid).status isa D.Running
+        missingfirst = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [99999, invalid + 1])
+        @test missingfirst == invalid + 1
+        @test D.step!(scheduler, missingfirst, JoinHandler()).reason == :task_missing
+        cyclefirst = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [missingfirst + 1, 99999])
+        @test cyclefirst == missingfirst + 1
+        @test D.step!(scheduler, cyclefirst, JoinHandler()).reason == :wait_cycle
         close(scheduler)
     end
 end
