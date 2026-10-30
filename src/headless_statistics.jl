@@ -22,6 +22,26 @@ function recordprice!(session, usage::J.Usage, ::Nothing)
 end
 
 statistics(session, ::UnavailableStatistics) = Failure("Complete session usage and pricing are unavailable")
+function statistics(session, ::RestoredStatistics)
+    totals = lock(session.agent.lock) do
+        J.SessionInfo.counts(session.agent, session.store[])
+    end
+    restoredstatistics(session, totals)
+end
+restoredstatistics(session, rejected::J.History.Rejected) = Failure("Could not read session statistics: " * String(rejected.reason))
+restoredstatistics(session, totals::J.SessionInfo.Counts) = restoredstatistics(session, totals, totals.usage)
+restoredstatistics(session, totals, ::J.SessionInfo.UnknownUsage) = Failure("Complete session usage and pricing are unavailable")
+restoredstatistics(session, totals, usage::J.SessionInfo.KnownUsage) = restoredstatistics(session, totals, usage, usage.cost)
+restoredstatistics(session, totals, usage, ::Nothing) = Failure("Complete session usage and pricing are unavailable")
+function restoredstatistics(session, totals, usage, cost::Float64)
+    data = Dict{String, Any}(
+        "sessionId" => session.id, "userMessages" => totals.user, "assistantMessages" => totals.assistant,
+        "toolCalls" => totals.calls, "toolResults" => totals.results, "totalMessages" => totals.total,
+        "tokens" => (; input=usage.input, output=usage.output, cacheRead=usage.cache_read, cacheWrite=usage.cache_write, total=usage.input + usage.output + usage.cache_read + usage.cache_write),
+        "cost" => cost,
+    )
+    Success((; data=optional!(data, "sessionFile", sessionfile(session.store[]))))
+end
 const statisticsroles = Dict("user" => LiveJSON.UserRole(), "assistant" => LiveJSON.AssistantRole(), "toolResult" => LiveJSON.ToolRole())
 function statistics(session, ::AvailableStatistics)
     totals = Statistics()

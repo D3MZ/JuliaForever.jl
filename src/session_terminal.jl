@@ -7,6 +7,7 @@ struct NewCommand <: TerminalCommand end
 struct CloneCommand <: TerminalCommand end
 struct ForkCommand <: TerminalCommand end
 struct ExitCommand <: TerminalCommand end
+struct SessionCommand <: TerminalCommand end
 struct ExportCommand{P} <: TerminalCommand
     path::P
 end
@@ -20,7 +21,7 @@ struct SetModel <: TerminalCommand
     model::String
 end
 
-const terminalcommands = Dict{String, TerminalCommand}("/compact" => CompactCommand(), "/reload" => ReloadCommand(), "/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand(), "/clone" => CloneCommand(), "/fork" => ForkCommand(), "/exit" => ExitCommand(), "/model" => SelectModel(), "/export" => ExportCommand())
+const terminalcommands = Dict{String, TerminalCommand}("/compact" => CompactCommand(), "/reload" => ReloadCommand(), "/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand(), "/clone" => CloneCommand(), "/fork" => ForkCommand(), "/exit" => ExitCommand(), "/model" => SelectModel(), "/export" => ExportCommand(), "/session" => SessionCommand())
 const namepattern = r"\A/name(?: +([\s\S]*))?\z"
 const modelpattern = r"\A/model +([^\r\n]+)\z"
 const exportpattern = r"\A/export +([^\r\n]*)\z"

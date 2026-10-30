@@ -115,7 +115,12 @@ pack(x::C.ImageUser) = node("user_images", x.content, packall(x.images))
 pack(x::C.RawMessage) = node("raw", packvalue(x.value))
 pack(x::C.BashMessage) = node("bash_message", x.command, x.output, x.exitcode, C.bashcancelled(x.status), C.bashtruncated(x.extent), x.file, x.timestamp, C.bashexcluded(x.context))
 pack(x::C.ToolCall) = node("tool_call", x.id, x.name, x.arguments, packvalue(x.metadata))
-pack(x::C.Assistant) = node("assistant", x.content, packall(x.calls), x.finish, x.done, packvalue(x.metadata))
+pack(x::C.Assistant) = pack(x, x.info)
+pack(x::C.Assistant, ::Nothing) = node("assistant", x.content, packall(x.calls), x.finish, x.done, packvalue(x.metadata))
+pack(x::C.Assistant, info::C.ResponseInfo) = node("assistant", x.content, packall(x.calls), x.finish, x.done, packvalue(x.metadata), pack(info))
+pack(x::C.ResponseInfo) = node("response_info", packusage(x.usage), x.api, x.provider, x.model, x.timestamp)
+packusage(::Nothing) = nothing
+packusage(x::Usage) = node("usage", x.input, x.output, x.cache_read, x.cache_write, x.reasoning, x.total, x.cost)
 pack(x::C.ToolMessage) = pack(x, x.image)
 pack(x::C.ToolMessage, ::Nothing) = node("tool_message", x.id, x.content, x.iserror)
 pack(x::C.ToolMessage, image::C.Image) = node("tool_message", x.id, x.content, x.iserror, pack(image))
@@ -170,7 +175,7 @@ unpacked(items::Vector, item) = Rejected(:invalid_record)
 unpacked(items::Vector{T}, item::T) where T = push!(items, item)
 
 const nodetypes = Dict(
-    "user" => C.User, "user_images" => C.ImageUser, "summary" => C.Summary, "skill_context" => C.SkillContext, "raw" => C.RawMessage, "bash_message" => C.BashMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant,
+    "user" => C.User, "user_images" => C.ImageUser, "summary" => C.Summary, "skill_context" => C.SkillContext, "raw" => C.RawMessage, "bash_message" => C.BashMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant, "response_info" => C.ResponseInfo, "usage" => Usage,
     "tool_message" => C.ToolMessage, "model_request" => C.ModelRequest, "tool_request" => C.ToolRequest,
     "skip_request" => C.SkipRequest, "model_reply" => C.ModelReply, "tool_reply" => C.ToolReply,
     "tool_search_reply" => ToolLoaded, "tool_discovery_reply" => ToolDiscovery,
@@ -190,7 +195,11 @@ unpack(::Type{C.ImageUser}, f::Vector) = C.ImageUser(f[1], unpackall(f[2], C.Ima
 unpack(::Type{C.RawMessage}, f::Vector) = C.RawMessage(unvalue(f[1]))
 unpack(::Type{C.BashMessage}, f::Vector) = C.BashMessage(f[1], f[2], f[3], f[4], f[5], f[6], f[7], C.bashcontext(f[8]))
 unpack(::Type{C.ToolCall}, f::Vector) = C.ToolCall(f[1], f[2], f[3], unvalue(f[4]))
-unpack(::Type{C.Assistant}, f::Vector) = C.Assistant(f[1], unpackall(f[2], C.ToolCall), f[3], f[4], unvalue(f[5]))
+unpack(::Type{C.Assistant}, f::Vector) = C.Assistant(f[1], unpackall(f[2], C.ToolCall), f[3], f[4]; metadata=unvalue(f[5]), info=unpackinfo(get(f, 6, nothing)))
+unpackinfo(::Nothing) = nothing
+unpackinfo(value) = unpack(value)
+unpack(::Type{C.ResponseInfo}, f::Vector) = C.ResponseInfo(unpackinfo(f[1]), f[2], f[3], f[4], f[5])
+unpack(::Type{Usage}, f::Vector) = Usage(f[1], f[2], f[3], f[4], f[5], f[6], f[7])
 unpackimage(::Nothing) = nothing
 unpackimage(value) = unpack(value)
 unpack(::Type{C.ToolMessage}, f::Vector) = C.ToolMessage(f[1], f[2], f[3], unpackimage(get(f, 4, nothing)))

@@ -91,7 +91,7 @@ function exporthtml!(messages, value::Conversation.BashMessage)
 end
 
 function writeexport(io::IO, ::ExportJSONL, data::ExportSnapshot)
-    header = (; type="session", version=3, id=data.id, timestamp=data.timestamp, cwd=data.cwd, juliaForever=(; usage="unavailable", messageTimestamps="export time"))
+    header = (; type="session", version=3, id=data.id, timestamp=data.timestamp, cwd=data.cwd, juliaForever=(; usage="unavailable values are zero", messageTimestamps="recorded when available; otherwise export time"))
     JSON3.write(io, header)
     write(io, '\n')
     entries = Dict{String, Any}[]
@@ -126,9 +126,12 @@ function exportentry!(entries, names, data, message::Conversation.Assistant)
         names[call.id] = something(call.name, "")
     end
     reason = exportreason(message, raw, getfield(message, :status), message.finish)
-    value = Dict{String, Any}("role" => "assistant", "content" => LiveJSON.fallbackcontent(raw), "api" => "unknown", "provider" => "unknown", "model" => "unknown", "usage" => LiveJSON.usage(nothing), "stopReason" => reason, "timestamp" => data.stamp)
+    fields = exportfields(message.info, data.stamp)
+    value = Dict{String, Any}("role" => "assistant", "content" => LiveJSON.fallbackcontent(raw), "api" => fields.api, "provider" => fields.provider, "model" => fields.model, "usage" => LiveJSON.usage(fields.usage), "stopReason" => reason, "timestamp" => fields.timestamp)
     exportentry!(entries, value, data.timestamp)
 end
+exportfields(::Nothing, stamp) = (; api="unknown", provider="unknown", model="unknown", usage=nothing, timestamp=stamp)
+exportfields(info::Conversation.ResponseInfo, stamp) = (; api=something(info.api, "unknown"), provider=something(info.provider, "unknown"), model=something(info.model, "unknown"), usage=info.usage, timestamp=something(info.timestamp, stamp))
 exportreason(message, raw, ::Finished, ::Nothing) = isempty(message.calls) ? "stop" : "toolUse"
 function exportreason(message, raw, status, finish)
     completion = Completion(raw, nothing, finish, status, nothing)

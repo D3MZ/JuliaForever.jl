@@ -386,8 +386,8 @@ function send!(session, state, mode, text, ::Busy, ::JuliaForever.ReloadCommand)
     :ok
 end
 send!(session, state, mode, text, ::Busy, command::JuliaForever.TerminalCommand) = command!(session, state)
-send!(session, state, mode, text, ::Available, command::Union{JuliaForever.ShowName, JuliaForever.SetName, JuliaForever.ExportCommand}) = (waittask(session.task); inline!(session, state, command))
-send!(session, state, mode, text, ::Busy, command::Union{JuliaForever.ShowName, JuliaForever.SetName, JuliaForever.ExportCommand}) = inline!(session, state, command)
+send!(session, state, mode, text, ::Available, command::Union{JuliaForever.ShowName, JuliaForever.SetName, JuliaForever.ExportCommand, JuliaForever.SessionCommand}) = (waittask(session.task); inline!(session, state, command))
+send!(session, state, mode, text, ::Busy, command::Union{JuliaForever.ShowName, JuliaForever.SetName, JuliaForever.ExportCommand, JuliaForever.SessionCommand}) = inline!(session, state, command)
 
 function inline!(session, state, command)
     TerminalEditor.remember!(session.editor)

@@ -18,6 +18,7 @@ const builtins = Item[
     Item("resume", "Resume a different session"),
     Item("reload", "Reload skills"),
     Item("export", "Export the session as HTML or JSONL"),
+    Item("session", "Show session information and statistics"),
     Item("exit", "Exit the session"),
 ]
 

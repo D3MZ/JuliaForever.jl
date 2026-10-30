@@ -500,10 +500,12 @@ end
 
 function response(agent, messages, parameters, ::Nothing, on_agent_event)
     partial = Dict{String, Any}("role" => "assistant", "content" => nothing)
-    request!(agent, partial, Ref{MessagePresentation}(Unannounced())) do
+    info = responseinfo(agent.provider, round(Int, 1000time()))
+    result = request!(agent, partial, Ref{MessagePresentation}(Unannounced())) do
         message = isempty(parameters) ? complete(agent.provider, messages, agent.tools) : complete(agent.provider, messages, agent.tools; parameters)
         response(message)
     end
+    merge(result, (; info))
 end
 
 providercomplete!(callback, result) = nothing
@@ -516,11 +518,13 @@ function response(agent, messages, parameters, on_event, on_agent_event)
         on_event(event)
         publish!(partial, calls, started, on_agent_event, agentupdate(event))
     end
-    request!(agent, partial, started) do
+    info = responseinfo(agent.provider, round(Int, 1000time()))
+    answer = request!(agent, partial, started) do
         result = stream(agent.provider, messages, agent.tools; parameters, on_event=callback)
         providercomplete!(on_event, result)
         (; message=result.message, result, started=started[])
     end
+    merge(answer, (; info))
 end
 
 function callinfo(call)
@@ -683,12 +687,22 @@ end
 function conversation_reply(answer)
     message = answer.message
     calls = Conversation.ToolCall[convert(Conversation.ToolCall, call) for call in get(message, "tool_calls", [])]
-    conversation_reply(message, calls, answer.result)
+    reply = conversation_reply(message, calls, answer.result)
+    responseinfo(reply, get(answer, :info, nothing), answer.result)
 end
 
 conversation_reply(message, calls, ::Nothing) = Conversation.ModelReply(Conversation.Assistant(get(message, "content", nothing), calls, nothing, true; metadata=message))
 conversation_reply(message, calls, result::Completion) = Conversation.ModelReply(Conversation.Assistant(get(message, "content", nothing), calls, result.finish, getfield(result, :status); metadata=message))
 conversation_reply(message, calls, result) = Conversation.ModelReply(Conversation.Assistant(get(message, "content", nothing), calls, result.finish, result.done; metadata=message))
+
+responseinfo(reply::Conversation.ModelReply, ::Nothing, result) = reply
+responseinfo(reply::Conversation.ModelReply, ::Nothing, result::Completion) = responseinfo(reply, Conversation.ResponseInfo(result.usage, nothing, nothing, nothing, nothing))
+responseinfo(reply::Conversation.ModelReply, info::Conversation.ResponseInfo, result) = responseinfo(reply, info)
+responseinfo(reply::Conversation.ModelReply, info::Conversation.ResponseInfo, result::Completion) = responseinfo(reply, Conversation.ResponseInfo(result.usage, info.api, info.provider, info.model, info.timestamp))
+function responseinfo(reply::Conversation.ModelReply, info::Conversation.ResponseInfo)
+    message = reply.message
+    Conversation.ModelReply(Conversation.Assistant(message.content, message.calls, message.finish, getfield(message, :status), message.metadata, info))
+end
 
 finish(message, result) = message["content"]
 const finishresults = Dict("length" => Truncated)

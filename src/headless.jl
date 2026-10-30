@@ -93,6 +93,7 @@ struct ClosedOutput <: OutputState end
 abstract type StatisticsState end
 struct AvailableStatistics <: StatisticsState end
 struct UnavailableStatistics <: StatisticsState end
+struct RestoredStatistics <: StatisticsState end
 const newstatuses = Dict(0 => SessionStarted())
 
 const unsupportedcommands = (
@@ -186,7 +187,7 @@ mutable struct Session{A, T, E, S, P, L, R, M}
     task::Union{Nothing, Task}
     started::Base.Event
     outputstate::Union{OpenOutput, ClosedOutput}
-    statistics::Union{AvailableStatistics, UnavailableStatistics}
+    statistics::Union{AvailableStatistics, UnavailableStatistics, RestoredStatistics}
     bashcancel::J.ShellCancellation
     bashtasks::Set{Task}
     pendingbash::Vector{J.Conversation.BashMessage}

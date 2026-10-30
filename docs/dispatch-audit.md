@@ -252,6 +252,8 @@ Terminal Markdown rendering adds 50 branch entries for parsing, wrapping, table 
 
 Session export adds eight branch entries for format selection, message conversion, and output iteration; it adds no dispatch candidates.
 
+Session statistics add five branch entries for history traversal and cache display; response metadata and unavailable usage are handled by dispatch, with no new dispatch candidates.
+
 SQLite open mode is selected at the keyword boundary; existing-only and create paths use separate initialization and retain file safety checks.
 
 Integrating queue modes with RPC session records yields 1,573 branch entries. The combined inventory adds two repeated revision checks beyond the parents' multiset union and retires 17 entries.
