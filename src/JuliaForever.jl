@@ -315,6 +315,9 @@ end
 initial(extensions, ::Nothing) = initial(extensions)
 initial(extensions, snapshot::History.Snapshot) = iszero(snapshot.revision) ? initial(extensions) : Dict{String, Any}[]
 
+selection(result::ToolFailure) = SessionCatalog.Invalid(result.text)
+selection(result) = result
+
 function terminal!(terminal::Terminal, model, registry::Extensions.Registry, codemode, session, sessiondir, args)
     if codemode
         mode = CodeMode(Extensions.tools(Extensions.snapshot(registry)))
@@ -322,7 +325,7 @@ function terminal!(terminal::Terminal, model, registry::Extensions.Registry, cod
         return terminal!(terminal, model, registered(terminal, registry, "codemode", result), false, session, sessiondir, args)
     end
     extensions = Extensions.snapshot(registry)
-    history = SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr, text -> redact(terminal, text))
+    history = selection(attempt(() -> SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr, text -> redact(terminal, text))))
     runsession!(history, terminal, model, extensions, args)
 end
 
