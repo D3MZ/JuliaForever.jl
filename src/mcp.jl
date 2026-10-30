@@ -185,9 +185,11 @@ end
 function httpfailure!(client::Client, message, failure::Failure)
     haskey(message, "id") || return false
     channel = lock(() -> pop!(client.pending, message["id"], nothing), client.lock)
-    isnothing(channel) || put!(channel, failure)
+    deliver!(channel, failure)
     true
 end
+deliver!(::Nothing, value) = nothing
+deliver!(channel::Channel, value) = put!(channel, value)
 
 function send(client::Client, message, transport::HttpTransport)
     haskey(message, "id") && haskey(message, "method") && (@async httprequest(client, transport, message); return nothing)
@@ -313,7 +315,11 @@ function received(client::Client, message)
     (id isa AbstractString || (id isa Integer && !(id isa Bool))) || return false
     (haskey(message, "result") != haskey(message, "error")) || return false
     channel = lock(() -> pop!(client.pending, id, nothing), client.lock)
-    isnothing(channel) && return true
+    received(client, message, channel)
+end
+
+received(client, message, ::Nothing) = true
+function received(client, message, channel::Channel)
     if haskey(message, "error")
         detail = message["error"]
         if detail isa AbstractDict && get(detail, "code", nothing) isa Integer && !(detail["code"] isa Bool) && get(detail, "message", nothing) isa AbstractString
@@ -399,8 +405,10 @@ end
 cancelhttp!(::Base.Process, client, id) = nothing
 function cancelhttp!(transport::HttpTransport, client, id)
     context = lock(() -> get(transport.requests, id, nothing), client.lock)
-    isnothing(context) || HTTP.cancel!(context)
+    cancelhttp!(context)
 end
+cancelhttp!(::Nothing) = true
+cancelhttp!(context::HTTP.RequestContext) = HTTP.cancel!(context)
 
 cancelrequest!(client::Client, id, ::Connection) = nothing
 cancelrequest!(client::Client, id, ::Open) = transmitted!(client, send(client, Dict("jsonrpc" => "2.0", "method" => "notifications/cancelled", "params" => Dict("requestId" => id, "reason" => "Request timed out"))))

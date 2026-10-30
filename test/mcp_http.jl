@@ -21,6 +21,10 @@ try
     url = "http://127.0.0.1:$(HTTP.port(server))/mcp"
     client = MCP.connect(url; timeout=30)
     @test client isa MCP.Client
+    late = typemax(Int)
+    @test MCP.received(client, Dict("jsonrpc" => "2.0", "id" => late, "result" => Dict()))
+    @test MCP.httpfailure!(client, Dict("id" => late), MCP.Failure(:transport, "late"))
+    @test MCP.cancelhttp!(client.process, client, late) === true
     @test length(MCP.tools(client)) == 1
     @test MCP.call(client, "echo", Dict())["content"][1]["text"] == "ok"
     adapted = JuliaForever.execute(only(MCP.tools(client)), (;))
