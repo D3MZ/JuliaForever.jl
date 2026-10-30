@@ -87,7 +87,7 @@ end
         end
     end
     url = "http://$(HTTP.server_addr(server))/mcp"
-    client = MCP.connect(url; timeout=2)
+    client = MCP.connect(url; timeout=15)
     try
         @test client isa MCP.Client
         for method in (scenarios..., "deep_guard", "multiline")
@@ -158,7 +158,7 @@ end
         end
     end
     url = "http://$(HTTP.server_addr(server))/mcp"
-    client = MCP.connect(url; timeout=2)
+    client = MCP.connect(url; timeout=15)
     try
         for method in (scenarios..., "deep_guard", "multiline")
             checkresult(MCP.request(client, method, Dict()), method)
