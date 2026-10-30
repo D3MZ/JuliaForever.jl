@@ -26,14 +26,25 @@ function contextreasoning(route::CatalogRoute, provider)
 end
 contextreasoning(::Nothing, provider) = get(contextmetadata(provider), "reasoning", false)
 contextreasoning(model::Models.Model, provider) = model.reasoning
-contextinstruction(provider) = instructionroles[(contextreasoning(provider), get(contextcompat(provider), "supportsDeveloperRole", true))]
+contextdeveloper(provider) = get(contextcompat(provider), "supportsDeveloperRole", true)
+contextdeveloper(provider::OpenAI) = contextdeveloper(provider, get(contextcompat(provider), "supportsDeveloperRole", nothing))
+contextdeveloper(provider, supported::Bool) = supported
+const nonstandardproviders = Set(["zai", "zai-coding-cn", "together", "moonshotai", "moonshotai-cn", "cloudflare-workers-ai", "cloudflare-ai-gateway", "nvidia", "ant-ling", "cerebras", "deepseek", "xai", "opencode"])
+const nonstandardhosts = ("api.z.ai", "open.bigmodel.cn", "api.together.ai", "api.together.xyz", "api.moonshot.", "api.cloudflare.com", "gateway.ai.cloudflare.com", "integrate.api.nvidia.com", "api.ant-ling.com", "cerebras.ai", "api.x.ai", "chutes.ai", "opencode.ai")
+chatrouter(name, base) = name == "openrouter" || occursin("openrouter.ai", base)
+function contextdeveloper(provider::OpenAI, ::Nothing)
+    name = contextprovider(provider.route, "openai")
+    base = provider.base
+    (chatrouter(name, base) && (startswith(provider.model, "openai/") || startswith(provider.model, "anthropic/"))) || (!chatrouter(name, base) && name ∉ nonstandardproviders && !any(host -> occursin(host, base), nonstandardhosts) && !occursin("deepseek.com", lowercase(base)))
+end
+contextinstruction(provider) = instructionroles[(contextreasoning(provider), contextdeveloper(provider))]
 
 providercontext(::Union{OpenAI, OpenAIResponses, Anthropic, Google, ChatGPT.Plan, ManagedChatGPT}, messages, system) = collapsedcontext(messages, system)
 contextdeclarations(tools) = OrderedDict{String, Tool}(String(key) => declaration(tool) for (key, tool) in pairs(tools))
 providerprepared(provider::Union{OpenAI, OpenAIResponses, Anthropic}, messages, system, tools) = providerprepared(contextpolicy(provider), provider, messages, system, contextdeclarations(tools))
 providerprepared(provider::Google, messages, system, tools) = RequestView(collapsedcontext(messages, system), contextdeclarations(tools))
 providerprepared(::CollapsedContext, provider, messages, system, tools) = RequestView(collapsedcontext(messages, system), tools)
-function providerprepared(::CollapsedContext, provider::OpenAIResponses, messages, system, tools)
+function providerprepared(::CollapsedContext, provider::Union{OpenAI, OpenAIResponses}, messages, system, tools)
     result = collapsedcontext(messages, system)
     leadinginstruction!(result, contextinstruction(provider), contexthead(result))
     RequestView(result, tools)

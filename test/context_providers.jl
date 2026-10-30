@@ -131,7 +131,8 @@ end
     try
         mktempdir() do dir
             path = joinpath(dir, "models.json")
-            write(path, JSON3.write(Dict("providers" => Dict("openai" => Dict("modelOverrides" => Dict("gpt-5.4" => Dict("reasoning" => false))), "openrouter" => Dict("modelOverrides" => Dict("openai/gpt-5.4" => Dict("reasoning" => false)))))))
+            routerconfig = Dict("models" => [Dict("id" => "custom-reasoner", "reasoning" => true)], "modelOverrides" => Dict("openai/gpt-5.4" => Dict("reasoning" => false)))
+            write(path, JSON3.write(Dict("providers" => Dict("openai" => Dict("modelOverrides" => Dict("gpt-5.4" => Dict("reasoning" => false))), "openrouter" => routerconfig))))
             models = J.Models.load(path)
             route = J.CatalogRoute("openai", models)
             registry = E.Registry()
@@ -147,10 +148,17 @@ end
             provider = OpenAI(base, "openai/gpt-5.4", "synthetic-key", Pair{String, String}[], router)
             agent = Agent(provider, snapshot, Dict{String, Any}[Dict("role" => "system", "content" => "base", "timestamp" => 0)])
             @test respond!(agent, "hello"; on_agent_event=E.listen(snapshot)) == "done"
+            for id in ("openai/gpt-5", "qwen/qwen3-32b", "custom-reasoner")
+                provider = OpenAI(base, id, "synthetic-key", Pair{String, String}[], router)
+                agent = Agent(provider, snapshot, Dict{String, Any}[Dict("role" => "system", "content" => "base", "timestamp" => 0)])
+                @test respond!(agent, "hello"; on_agent_event=E.listen(snapshot)) == "done"
+            end
             roles = [[String(item.role) for item in request.input] for request in requests[1:2]]
             @test roles == [["developer", "system", "user", "system", "developer", "system"], ["developer", "user"]]
             chatroles = [String(item.role) for item in requests[3].messages]
             @test chatroles == ["system", "user", "system"]
+            collapsedroles = [[String(item.role) for item in request.messages] for request in requests[4:6]]
+            @test collapsedroles == [["developer", "user"], ["system", "user"], ["system", "user"]]
             if haskey(ENV, "PI_SOURCE")
                 source = ENV["PI_SOURCE"]
                 @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
@@ -160,6 +168,10 @@ end
                 end
                 reference = JSON3.read(read(`node --conditions=source --experimental-strip-types $(joinpath(@__DIR__, "context_providers_pi.mjs")) $source reasoning_completions`, String))
                 @test chatroles == [String(item.role) for item in reference.openai.messages]
+                for (index, mode) in enumerate(("reasoning_chat_collapsed", "reasoning_chat_system", "reasoning_chat_custom"))
+                    reference = JSON3.read(read(`node --conditions=source --experimental-strip-types $(joinpath(@__DIR__, "context_providers_pi.mjs")) $source $mode`, String))
+                    @test collapsedroles[index] == [String(item.role) for item in reference.openai.messages]
+                end
             end
         end
     finally
