@@ -322,7 +322,7 @@ function terminal!(terminal::Terminal, model, registry::Extensions.Registry, cod
         return terminal!(terminal, model, registered(terminal, registry, "codemode", result), false, session, sessiondir, args)
     end
     extensions = Extensions.snapshot(registry)
-    history = SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr)
+    history = SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr, text -> redact(terminal, text))
     runsession!(history, terminal, model, extensions, args)
 end
 

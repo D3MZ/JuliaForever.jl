@@ -155,6 +155,7 @@ function collectinfo!(items, dir, file, found::RegexMatch)
 end
 
 openinfo(info::Info) = open(H.SQLite, info.path; create=false)
+choose(request::Request, dir, cwd, input, output, redact) = choose(request, dir, cwd, input, output)
 choose(::New, dir, cwd, input, output) = new(dir, cwd)
 choose(::Ephemeral, dir, cwd, input, output) = nothing
 choose(request::Explicit, dir, cwd, input, output) = open(H.SQLite, request.path)
@@ -175,14 +176,14 @@ function named(items, value)
     openinfo(only(items))
 end
 
-function choose(::Picker, dir, cwd, input, output)
+function choose(::Picker, dir, cwd, input, output, redact=identity)
     items = list(dir, cwd)
     if isempty(items)
         println(output, "No sessions for this project.")
         return Cancelled()
     end
     for (index, item) in enumerate(items)
-        title = strip(replace(item.title, r"[\x00-\x1f\x7f]" => " "))
+        title = strip(replace(redact(item.title), r"[\x00-\x1f\x7f]" => " "))
         println(output, "[", index, "] ", item.id, "  ", first(title, min(length(title), 100)))
     end
     pick(items, input, output)

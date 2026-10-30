@@ -35,6 +35,26 @@ end
     end
 end
 
+@testset "session picker redacts provider credentials" begin
+    mktempdir() do root
+        workspace = joinpath(root, "project")
+        sessions = joinpath(root, "sessions")
+        requests = joinpath(root, "requests.jsonl")
+        key = "SYNTHETIC_API_ABC"
+        mkpath(workspace)
+        created = session_process(requests, workspace, sessions, ["before " * key * " after"]; key)
+        @test created.status == 0
+        longtitle = repeat("z", 96) * key * " tail"
+        @test session_process(requests, workspace, sessions, [longtitle]; key).status == 0
+        picked = session_process(requests, workspace, sessions, ["--resume"]; input="q\n", key)
+        @test picked.status == 0
+        @test occursin("before [redacted] after", picked.diagnostics)
+        @test occursin(repeat("z", 96), picked.diagnostics)
+        @test !occursin(key, picked.diagnostics)
+        @test !occursin(first(key, 4), picked.diagnostics)
+    end
+end
+
 @testset "sessions preserve plugin context" begin
     mktempdir() do root
         workspace = joinpath(root, "project")
