@@ -654,18 +654,24 @@ end
 
 K.step(state::State, event::K.Observe{ToolReply}) = observe(state, event, observe(state, event, WaitingTools))
 
+function observationindex(observations)
+    indexed = Dict{String, K.Observation}()
+    for observation in observations
+        get!(indexed, observation.id, observation.observation)
+    end
+    indexed
+end
+
 function observe(state::State, event::K.Observe{ToolReply}, result::K.Applied)
     kernel = result.state
     messages = copy(getfield(state, :messages))
-    observations = kernel.observations
+    observations = observationindex(kernel.observations)
     order = getfield(state, :order)
     calls = getfield(state, :calls)
     flushed = state.flushed
-    while flushed < length(order)
+    while flushed < length(order) && haskey(observations, order[flushed + 1])
         id = order[flushed + 1]
-        index = findfirst(item -> item.id == id, observations)
-        index === nothing && break
-        observation = observations[index].observation
+        observation = observations[id]
         call = calls[flushed + 1]
         push!(messages, ToolMessage(call, observation))
         flushed += 1
