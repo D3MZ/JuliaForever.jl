@@ -22,15 +22,14 @@ end
 
 Base.show(io::IO, provider::OpenAI) = print(io, "OpenAI(", repr(provider.base), ", ", repr(provider.model), ", [redacted])")
 
-function provider(env=ENV)
-    selected = get(env, "JF_PROVIDER", "openai")
-    selected == "openai" && return OpenAI(get(env, "OPENAI_BASE_URL", "https://api.openai.com/v1"), env["OPENAI_MODEL"], env["OPENAI_API_KEY"])
-    selected == "openai-responses" && return OpenAIResponses(get(env, "OPENAI_BASE_URL", "https://api.openai.com/v1"), env["OPENAI_MODEL"], env["OPENAI_API_KEY"])
-    selected == "openrouter" && return OpenAI(get(env, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"), env["OPENROUTER_MODEL"], env["OPENROUTER_API_KEY"])
-    selected == "anthropic" && return Anthropic(get(env, "ANTHROPIC_BASE_URL", "https://api.anthropic.com"), env["ANTHROPIC_MODEL"], env["ANTHROPIC_API_KEY"])
-    selected == "google" && return Google(get(env, "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"), env["GEMINI_MODEL"], env["GEMINI_API_KEY"])
-    nothing
-end
+openai(env) = OpenAI(get(env, "OPENAI_BASE_URL", "https://api.openai.com/v1"), env["OPENAI_MODEL"], env["OPENAI_API_KEY"])
+responses(env) = OpenAIResponses(get(env, "OPENAI_BASE_URL", "https://api.openai.com/v1"), env["OPENAI_MODEL"], env["OPENAI_API_KEY"])
+openrouter(env) = OpenAI(get(env, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"), env["OPENROUTER_MODEL"], env["OPENROUTER_API_KEY"])
+anthropic(env) = Anthropic(get(env, "ANTHROPIC_BASE_URL", "https://api.anthropic.com"), env["ANTHROPIC_MODEL"], env["ANTHROPIC_API_KEY"])
+google(env) = Google(get(env, "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"), env["GEMINI_MODEL"], env["GEMINI_API_KEY"])
+unknownprovider(env) = nothing
+const providers = Dict("openai" => openai, "openai-responses" => responses, "openrouter" => openrouter, "anthropic" => anthropic, "google" => google)
+provider(env=ENV) = get(providers, get(env, "JF_PROVIDER", "openai"), unknownprovider)(env)
 
 struct OpenRouterLogin
     url::String
@@ -124,6 +123,29 @@ end
 
 incomplete(failure::InvalidResponse) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, failure)
 
+abstract type ChatFinish end
+struct ChatAccepted <: ChatFinish
+    reason::String
+end
+struct ChatRejected <: ChatFinish
+    reason::String
+end
+struct ChatMissing <: ChatFinish end
+const chatfinishes = Dict("stop" => ChatAccepted, "end" => ChatAccepted, "length" => ChatAccepted, "tool_calls" => ChatAccepted, "function_call" => ChatAccepted)
+chatfinish(::Nothing) = ChatMissing()
+chatfinish(reason) = get(chatfinishes, reason, ChatRejected)(reason)
+
+chatcompletion(message, used, ::ChatMissing) = Completion(message, used, nothing, false, "Provider finish_reason: missing")
+chatcompletion(message, used, status::ChatAccepted) = Completion(message, used, status.reason, true, nothing)
+chatcompletion(message, used, status::ChatRejected) = Completion(message, used, status.reason, false, "Provider finish_reason: $(status.reason)")
+
+finishfailure!(failure, ::Union{ChatMissing, ChatAccepted}, previous) = nothing
+finishfailure!(failure, ::ChatRejected, ::InvalidResponse) = nothing
+finishfailure!(failure, status::ChatRejected, previous) = (failure[] = "Provider finish_reason: $(status.reason)")
+finishdone(::ChatMissing, marker, failure) = false
+finishdone(::Union{ChatAccepted, ChatRejected}, marker, ::Nothing) = marker
+finishdone(::Union{ChatAccepted, ChatRejected}, marker, failure) = false
+
 usage(::Nothing) = nothing
 details(::Nothing) = Dict()
 details(data) = data
@@ -202,9 +224,7 @@ function complete(provider::OpenAI, data::AbstractDict)
     finish = get(choice, "finish_reason", nothing)
     raw_usage = get(data, "usage", nothing)
     used = usage(raw_usage)
-    done = finish in ("stop", "end", "length", "tool_calls", "function_call")
-    failure = done ? nothing : "Provider finish_reason: $(isnothing(finish) ? "missing" : finish)"
-    Completion(choice["message"], used, finish, done, failure)
+    chatcompletion(choice["message"], used, chatfinish(finish))
 end
 
 function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=identity)
@@ -268,10 +288,9 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
         end
     end)
     isempty(order) || (message["tool_calls"] = [calls[index] for index in order])
-    if !(failure[] isa InvalidResponse) && !isnothing(finish[]) && !(finish[] in ("stop", "end", "length", "tool_calls", "function_call"))
-        failure[] = "Provider finish_reason: $(finish[])"
-    end
-    result = Completion(message, reported_usage[], finish[], marker[] && !isnothing(finish[]) && isnothing(failure[]), failure[])
+    status = chatfinish(finish[])
+    finishfailure!(failure, status, failure[])
+    result = Completion(message, reported_usage[], finish[], finishdone(status, marker[], failure[]), failure[])
     on_event((; type=result.done ? :done : :incomplete, result))
     result
 end

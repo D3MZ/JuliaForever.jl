@@ -33,8 +33,14 @@ include("dispatch_checks.jl")
     @test length(dispatchchecks(Meta.parse("f(state) = state in (:queued, :running) ? 1 : 0"))) == 1
     @test length(dispatchchecks(Meta.parse("f(value) = value in (:queued, :running) ? 1 : 0"))) == 1
     @test length(dispatchchecks(Meta.parse("f(kind) = kind == \"tool\" ? 1 : 0"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(value) = value == \"stop\" ? 1 : 0"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(value) = value in (\"queued\", \"running\") ? 1 : 0"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(value) = value == \"stop\""))) == 1
+    @test length(dispatchchecks(Meta.parse("f(selected) = selected == \"future-provider\" ? 1 : 0"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(event) = event.status == \"custom\""))) == 1
     @test dispatchchecks(Meta.parseall("f() = if timedwait(() -> true, 1) == :ok; 1; end")) == dispatchchecks(Meta.parseall("\n\nf() = if timedwait(() -> true, 1) == :ok; 1; end"))
     @test isempty(dispatchchecks(Meta.parse("f(x::Int) = x > 0 ? 1 : 0")))
+    @test isempty(dispatchchecks(Meta.parse("f(x) = x == \"hello\"")))
     @test isempty(dispatchchecks(Meta.parse("f(xs) = filter(x -> x > 0, xs)")))
     @test isempty(dispatchchecks(Meta.parse("f(x) = (; iserror=x.iserror)")))
     @test dispatchdifference(["a", "a", "b"], ["a", "b"]) == ["a"]

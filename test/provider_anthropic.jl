@@ -1,5 +1,30 @@
 using HTTP, JSON3
 
+@testset "Anthropic finish reasons" begin
+    reason = Ref("end_turn")
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        data = Dict("content" => [Dict("type" => "text", "text" => "partial")], "stop_reason" => reason[])
+        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(data))
+    end
+    try
+        model = Anthropic("http://$(HTTP.server_addr(server))", "claude-fixture", "synthetic")
+        for (value, expected) in (("end_turn", "stop"), ("max_tokens", "length"))
+            reason[] = value
+            result = JuliaForever.complete(model, [], Dict())
+            @test result.done && result.finish == expected
+        end
+        reason[] = "tool_use"
+        result = JuliaForever.complete(model, [], Dict())
+        @test !result.done && occursin("invalid content", result.error)
+        reason[] = "unknown"
+        result = JuliaForever.complete(model, [], Dict())
+        @test !result.done && occursin("unknown", result.error)
+    finally
+        close(server)
+        wait(server)
+    end
+end
+
 anthropicsse(event) = "event: " * event["type"] * "\ndata: " * JSON3.write(event) * "\n\n"
 
 @testset "Anthropic messages" begin

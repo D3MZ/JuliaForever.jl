@@ -250,13 +250,13 @@ function recorded_loop!(run, effect)
     result = Ref{Any}()
     while !isempty(pending)
         next = recorded_step!(run, pop!(pending), turnstate(run.agent))
-        recorded_schedule!(pending, result, next)
+        schedule_pending!(pending, result, next)
     end
     result[]
 end
 
-recorded_schedule!(pending, result, next::Kernel.Pending) = push!(pending, next)
-recorded_schedule!(pending, result, value) = (result[] = value)
+schedule_pending!(pending, result, next::Kernel.Pending) = push!(pending, next)
+schedule_pending!(pending, result, value) = (result[] = value)
 
 function recorded_step!(run, effect, ::Cancelled)
     result, _ = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("cancelled before dispatch")), run.agent)

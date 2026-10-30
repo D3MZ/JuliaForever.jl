@@ -118,9 +118,16 @@ function usage(data::AbstractDict)
 end
 usage(::Nothing) = nothing
 
-const finishes = Dict("end_turn" => "stop", "stop_sequence" => "stop", "pause_turn" => "stop", "max_tokens" => "length", "tool_use" => "tool_calls")
+abstract type Finish end
+struct End <: Finish end
+struct Limit <: Finish end
+struct ToolUse <: Finish end
+const finishes = Dict("end_turn" => End(), "stop_sequence" => End(), "pause_turn" => End(), "max_tokens" => Limit(), "tool_use" => ToolUse())
 finish(::Nothing) = nothing
 finish(reason) = get(finishes, reason, nothing)
+finishname(::End) = "stop"
+finishname(::Limit) = "length"
+finishname(::ToolUse) = "tool_calls"
 
 abstract type Block end
 struct Text <: Block
@@ -177,7 +184,8 @@ function callids(blocks)
     ids
 end
 uniqueids(blocks) = allunique(callids(blocks))
-consistent(blocks, mapped) = isempty(callids(blocks)) != (mapped == "tool_calls")
+consistent(blocks, ::Union{End, Limit}) = isempty(callids(blocks))
+consistent(blocks, ::ToolUse) = !isempty(callids(blocks))
 
 function result(blocks, reason, used, failure)
     mapped = finish(reason)
@@ -190,9 +198,9 @@ function result(blocks, reason, used, failure, ::Nothing)
     Completion(content(blocks), used, nothing, false, failure)
 end
 
-function result(blocks, reason, used, failure, mapped::AbstractString)
+function result(blocks, reason, used, failure, mapped::Finish)
     failure = all(valid, blocks) && uniqueids(blocks) && consistent(blocks, mapped) ? failure : something(failure, "Anthropic response contained an unsupported or invalid content block")
-    outcome(blocks, used, mapped, failure)
+    outcome(blocks, used, finishname(mapped), failure)
 end
 
 outcome(blocks, used, mapped, ::Nothing) = Completion(content(blocks), used, mapped, true, nothing)
@@ -357,7 +365,7 @@ function receive!(state::State, ::Running, event::Delta, callback)
     report!(callback, reason)
 end
 report!(callback, ::Nothing) = nothing
-report!(callback, reason) = callback((; type=:finish, reason))
+report!(callback, reason::Finish) = callback((; type=:finish, reason=finishname(reason)))
 receive!(state::State, ::Running, ::Stop, callback) = (state.phase = Stopped())
 receive!(state::State, ::Phase, event::Failure, callback) = (state.failure = JSON3.write(event.data["error"]))
 receive!(state::State, ::Phase, ::Ignore, callback) = nothing
