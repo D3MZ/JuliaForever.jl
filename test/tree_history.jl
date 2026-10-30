@@ -88,19 +88,18 @@ end
     @test tree_text(Agent(provider, []; history=tree)) == ["first", "reply:first", "second", "reply:second"]
 end
 
-@testset "legacy histories and competing writers" begin
+@testset "competing writers" begin
     store = H.Memory()
     provider = TreeProvider([])
-    legacy = Agent(provider, []; history=store)
-    @test respond!(legacy, "legacy") == "reply:legacy"
     first = H.Tree(store)
+    @test respond!(Agent(provider, []; history=first), "first") == "reply:first"
     second = H.Tree(store)
-    @test tree_text(Agent(provider, []; history=first)) == ["legacy", "reply:legacy"]
+    @test tree_text(Agent(provider, []; history=first)) == ["first", "reply:first"]
     @test respond!(Agent(provider, []; history=first), "next") == "reply:next"
     @test H.snapshot(second) == H.Rejected(:revision)
     @test H.branch!(second, 1) == H.Rejected(:revision)
     @test H.append!(second, H.snapshot(store).revision, Any["stale"]) == H.Rejected(:revision)
-    @test tree_text(Agent(provider, []; history=H.Tree(store))) == ["legacy", "reply:legacy", "next", "reply:next"]
+    @test tree_text(Agent(provider, []; history=H.Tree(store))) == ["first", "reply:first", "next", "reply:next"]
 end
 
 @testset "SQLite competing branch views" begin

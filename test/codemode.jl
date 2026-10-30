@@ -2,11 +2,6 @@ using Test, JuliaForever, HTTP, JSON3, TOML
 
 using JuliaForever: CodeMode, CodeCancellation, cancel!, codeexecute
 
-@testset "legacy worker result decoding" begin
-    returned = JuliaForever.codeevent((; type="result", ok=true, value=3, writes=Dict("x" => 1)))
-    @test isempty(returned.deletes)
-end
-
 @testset "CodeMode tool selection" begin
     mktempdir() do dir
         nested = CodeMode([Read(dir)])

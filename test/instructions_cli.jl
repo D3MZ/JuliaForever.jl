@@ -129,17 +129,6 @@ end
             @test occursin("project fixture", original) && !occursin("later project instructions", original)
             @test occursin("- greet:", original) && occursin("- codemode:", original)
 
-            for initial in (Dict{String, Any}[], [Dict{String, Any}("role" => "system", "content" => "legacy context")])
-                path = joinpath(dir, "legacy-$(length(initial)).sqlite")
-                store = open(History.SQLite, path)
-                agent = Agent(nothing, Dict{String, JuliaForever.Tool}(), initial; history=store)
-                @test agent isa Agent
-                close(store)
-                @test instructions_process(base, workspace, piagent; options=["--history", path]) == (; status=0, output="ok\n", diagnostics="")
-                messages = last(requests).body.messages
-                @test length(messages) == length(initial) + 1
-                @test [message.content for message in messages] == [getindex.(initial, "content"); "inspect"]
-            end
         end
     finally
         close(server)

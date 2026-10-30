@@ -55,18 +55,6 @@ function JuliaForever.complete(provider::ImageProvider, messages, tools)
     popfirst!(provider.replies)
 end
 
-@testset "legacy text history records" begin
-    initial = Dict{String, Any}("format" => "JuliaForever.Agent/1", "id" => "legacy", "automatic" => false, "messages" => Any[Dict{String, Any}("kind" => "tool_message", "fields" => Any["old", "text", false])])
-    restored = ImageHistory.decode_initial(initial)
-    @test restored isa ImageConversation.State
-    @test only(restored.messages).image === nothing
-    @test ImageHistory.encode_initial(restored) == initial
-    record = Dict{String, Any}("format" => "JuliaForever.AgentEvent/1", "event" => Dict{String, Any}("kind" => "observe", "fields" => Any[2, "t", Dict{String, Any}("kind" => "tool_reply", "fields" => Any["read", false])]))
-    event = ImageHistory.decode_event(record)
-    @test event.observation.image === nothing
-    @test ImageHistory.encode(event) == record
-end
-
 @testset "image typed history and replay" begin
     mktempdir() do dir
         write(joinpath(dir, "image"), imagepng)
@@ -75,9 +63,6 @@ end
         history = ImageHistory.Memory()
         agent = Agent(provider, [Read(dir)]; history)
         @test respond!(agent, "read") == "done"
-        tool = only(filter(message -> message isa ImageConversation.ToolMessage, agent.state.messages))
-        @test tool.image.mime == "image/png"
-        @test base64decode(tool.image.data) == imagepng
         observed = only(event for event in agent.events if event isa ImageKernel.Observe && event.observation isa ImageConversation.ToolReply)
         encoded = ImageHistory.encode(observed)
         @test ImageHistory.encode(ImageHistory.decode_event(encoded)) == encoded

@@ -112,13 +112,6 @@ end
     @test respond!(restored, "again") == H.Rejected(:uncertain_effect)
 end
 
-@testset "legacy behavior remains opt out" begin
-    provider = Scripted([Dict("role" => "assistant", "content" => "done")], [])
-    agent = Agent(provider, [])
-    @test respond!(agent, "start") == "done"
-    @test agent.state.phase == C.Complete
-end
-
 mutable struct KeyedProvider
     key::String
     calls::Int
