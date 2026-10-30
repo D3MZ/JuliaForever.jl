@@ -142,6 +142,12 @@ include("codemode_compat.jl")
 include("mcp.jl")
 include("mcp_image.jl")
 include("mcp_resources.jl")
+module MCPHTTPTests
+include("mcp_http.jl")
+end
+module MCPHTTPSSETests
+include("mcp_http_sse.jl")
+end
 if haskey(ENV, "PI_SOURCE")
     include("mcp_differential.jl")
     include("mcp_resources_differential.jl")
