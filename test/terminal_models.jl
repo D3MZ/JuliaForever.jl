@@ -5,6 +5,7 @@ function models_process(base, workspace, args; provider="openrouter", openai_mod
     cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever $args`; dir=workspace)
     cmd = addenv(cmd, "HOME" => workspace, "PI_CODING_AGENT_DIR" => joinpath(workspace, "pi-agent"), "JF_PROVIDER" => provider, "OPENAI_BASE_URL" => "$base/openai", "OPENAI_MODEL" => openai_model, "OPENAI_API_KEY" => openai_key, "OPENROUTER_BASE_URL" => "$base/router", "OPENROUTER_MODEL" => router_model, "OPENROUTER_API_KEY" => router_key, "ANTHROPIC_BASE_URL" => "$base/anthropic", "ANTHROPIC_MODEL" => anthropic_model, "ANTHROPIC_API_KEY" => "synthetic-anthropic-secret", "GEMINI_BASE_URL" => "$base/google", "GEMINI_MODEL" => google_model, "GEMINI_API_KEY" => "synthetic-google-secret", "JF_SESSION_DIR" => joinpath(workspace, "sessions"), "JF_INSTRUCTIONS_DIR" => workspace, "JF_TEST_PLUGIN" => nothing, "JF_TEST_EVENTS" => nothing)
     mktempdir() do dir
+        cmd = addenv(cmd, "JF_OPENROUTER_DIR" => joinpath(dir, "router"))
         stdinpath, stdoutpath, stderrpath = joinpath.((dir,), ("stdin", "stdout", "stderr"))
         write(stdinpath, input)
         process = run(pipeline(ignorestatus(cmd); stdin=stdinpath, stdout=stdoutpath, stderr=stderrpath))

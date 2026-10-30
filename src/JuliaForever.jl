@@ -85,6 +85,7 @@ struct HistoryConflict end
 include("cli_models.jl")
 include("chatgpt_cli.jl")
 include("history_export.jl")
+include("openrouter_credentials.jl")
 
 historyinspect(::Nothing) = HistoryInspection()
 historyinspect(action::HistoryInspection) = action
@@ -126,7 +127,10 @@ end
 
 authenticated(failure::InvalidResponse, base, model) = failure!(Terminal(stdout, stderr, String[]), failure)
 authenticated(failure::ProviderStatus, base, model) = failure!(Terminal(stdout, stderr, String[]), failure)
-authenticated(key::AbstractString, base, model) = OpenAI(base, model, key)
+function authenticated(key::AbstractString, base, model)
+    reportremembered(rememberopenrouter(key, ENV))
+    OpenAI(base, model, key)
+end
 
 function login!(login::OpenRouterLogin, ::Nothing, info, model)
     println(stderr, "OpenRouter authorization was denied or timed out.")
@@ -219,7 +223,7 @@ registered(terminal, registry, name, ::Bool) = registry
 registered(terminal, registry, name, result::Extensions.Rejected) = pluginfailure!(terminal, name, result)
 
 function help!()
-    println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --export PATH [OUTPUT.html|OUTPUT.json] | jf --history PATH --abandon REASON | jf [options] --login-chatgpt [prompt] | jf --logout-chatgpt | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
+    println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --export PATH [OUTPUT.html|OUTPUT.json] | jf --history PATH --abandon REASON | jf [options] --login-chatgpt [prompt] | jf --logout-chatgpt | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt] | jf --logout-openrouter\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
     println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --fork PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
     println("Tools: --tools (-t) LIST, --exclude-tools (-xt) LIST, --no-builtin-tools (-nbt), --no-tools (-nt).")
     println("Terminal: --tui-mode fullscreen|regular (default: fullscreen).")
