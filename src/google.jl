@@ -1,7 +1,7 @@
 module GoogleAPI
 
 using HTTP, JSON3, Random, SHA
-import ..JuliaForever: complete, stream, payload, headers, endpoint, definition, decode, InvalidResponse, Completion, Usage
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, endpoint, definition, decode, InvalidResponse, Completion, Usage
 
 struct Google
     base::String
@@ -276,8 +276,10 @@ outcome(message, state, finish, failure) = Completion(message, state.used, finis
 
 httpfailure(status) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, "Google HTTP $status")
 
+requestcontext(::Google) = HTTP.RequestContext()
+
 function complete(provider::Google, input, tools; parameters=Dict())
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, input, tools, parameters); redirect=false, retry=false, cookies=false, status_exception=false)
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, input, tools, parameters); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
     200 <= response.status < 300 || return httpfailure(response.status)
     state = State()
     receive!(state, decode(String(response.body)), identity)
@@ -285,7 +287,7 @@ function complete(provider::Google, input, tools; parameters=Dict())
 end
 function stream(provider::Google, input, tools; parameters=Dict(), on_event=identity)
     state = State()
-    response = HTTP.post(endpoint(provider, stream), headers(provider), payload(provider, input, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, sse_callback=raw -> receive!(state, decode(raw.data), on_event))
+    response = HTTP.post(endpoint(provider, stream), headers(provider), payload(provider, input, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=raw -> receive!(state, decode(raw.data), on_event))
     if !(200 <= response.status < 300)
         answer = httpfailure(response.status)
         on_event((; type=:incomplete, result=answer))

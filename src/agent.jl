@@ -88,7 +88,7 @@ function followup!(agent::Agent, prompt)
     outcome(result, nothing)
 end
 
-"Cancel in-flight Unix shell calls in the in-process driver and request cancellation at the next boundary for other work."
+"Cancel native provider requests and in-flight Unix shell calls; other work stops at the next boundary."
 function cancel!(agent::Agent)
     handle = nothing
     shell = nothing
@@ -101,9 +101,12 @@ function cancel!(agent::Agent)
         end
     finally
         cancel!(shell)
-        Execution.cancel!(handle)
+        cancelhandle!(handle)
     end
 end
+
+cancelhandle!(handle) = Execution.cancel!(handle)
+cancelhandle!(context::HTTP.RequestContext) = HTTP.cancel!(context)
 
 cancel!(f, agent::Agent, ::Idle) = false
 
@@ -284,20 +287,61 @@ end
 response(message::Completion) = (; message=message.message, result=message, started=false)
 response(message) = (; message, result=nothing, started=false)
 
+register!(agent::Agent, ::Nothing) = nothing
+
+function register!(agent::Agent, context::HTTP.RequestContext)
+    turn, failure = lock(agent.lock) do
+        agent.handle = context
+        agent.turn, agent.fault
+    end
+    register!(context, turn, failure)
+end
+
+register!(context::HTTP.RequestContext, ::Union{Idle, Running}, ::Nothing) = nothing
+register!(context::HTTP.RequestContext, ::Union{Idle, Running}, ::History.Rejected) = HTTP.cancel!(context)
+register!(context::HTTP.RequestContext, ::Cancelled, failure) = HTTP.cancel!(context)
+unregister!(agent::Agent, ::Nothing) = nothing
+unregister!(agent::Agent, context::HTTP.RequestContext) = lock(() -> (agent.handle = nothing), agent.lock)
+
+requestcancelled(::HTTP.CanceledError, ::Cancelled) = true
+requestcancelled(exception, turn) = false
+
+function request!(f, agent::Agent, partial, started)
+    context = requestcontext(agent.provider)
+    register!(agent, context)
+    depth = length(current_exceptions())
+    try
+        task_local_storage(f, requestkey, context)
+    finally
+        unregister!(agent, context)
+        exceptions = current_exceptions()
+        if length(exceptions) > depth && requestcancelled(last(exceptions).exception, turnstate(agent))
+            result = Completion(deepcopy(partial), nothing, "cancelled", false, "cancelled")
+            return (; message=result.message, result, started=started[])
+        end
+    end
+end
+
 function response(agent, messages, parameters, ::Nothing, on_agent_event)
-    message = isempty(parameters) ? complete(agent.provider, messages, agent.tools) : complete(agent.provider, messages, agent.tools; parameters)
-    response(message)
+    partial = Dict{String, Any}("role" => "assistant", "content" => nothing)
+    request!(agent, partial, Ref(false)) do
+        message = isempty(parameters) ? complete(agent.provider, messages, agent.tools) : complete(agent.provider, messages, agent.tools; parameters)
+        response(message)
+    end
 end
 
 function response(agent, messages, parameters, on_event, on_agent_event)
     partial = Dict{String, Any}("role" => "assistant", "content" => nothing)
     calls = Dict{Any, Any}()
     started = Ref(false)
-    result = stream(agent.provider, messages, agent.tools; parameters, on_event=event -> begin
+    callback = event -> begin
         on_event(event)
         publish!(partial, calls, started, on_agent_event, agentupdate(event))
-    end)
-    (; message=result.message, result, started=started[])
+    end
+    request!(agent, partial, started) do
+        result = stream(agent.provider, messages, agent.tools; parameters, on_event=callback)
+        (; message=result.message, result, started=started[])
+    end
 end
 
 function callinfo(call)

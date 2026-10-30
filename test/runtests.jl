@@ -69,6 +69,7 @@ include("tree_cli.jl")
 
 include("provider.jl")
 include("provider_stream.jl")
+include("provider_cancel.jl")
 include("openrouter_callback.jl")
 include("provider_responses.jl")
 include("provider_anthropic.jl")

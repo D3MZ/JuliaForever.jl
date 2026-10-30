@@ -4,6 +4,12 @@ struct OpenAI
     key::String
 end
 
+# Keep request cancellation scoped to the calling task without changing provider APIs.
+const requestkey = gensym(:request_context)
+requestcontext() = get(task_local_storage(), requestkey, nothing)
+requestcontext(provider) = nothing
+requestcontext(::OpenAI) = HTTP.RequestContext()
+
 struct InvalidResponse end
 
 function decode(text)
@@ -236,7 +242,7 @@ headers(provider::OpenAI) = ["Authorization" => "Bearer $(provider.key)", "Conte
 endpoint(provider::OpenAI) = "$(rstrip(provider.base, '/'))/chat/completions"
 
 function complete(provider::OpenAI, messages, tools; parameters=Dict())
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false)
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false, context=requestcontext())
     complete(provider, decode(String(response.body)))
 end
 
@@ -258,7 +264,7 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
     finish = Ref{Union{Nothing, String}}(nothing)
     failure = Ref{Union{Nothing, String, InvalidResponse}}(nothing)
     marker = Ref(false)
-    HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, sse_callback=event -> begin
+    HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, context=requestcontext(), sse_callback=event -> begin
         failure[] isa InvalidResponse && return
         if event.data == "[DONE]"
             marker[] = true

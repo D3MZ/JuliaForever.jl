@@ -1,7 +1,7 @@
 module AnthropicAPI
 
 using HTTP, JSON3, SHA
-import ..JuliaForever: complete, stream, payload, headers, endpoint, provider, definition, decode, incomplete, InvalidResponse, Completion, Usage
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, endpoint, provider, definition, decode, incomplete, InvalidResponse, Completion, Usage
 
 struct Anthropic
     base::String
@@ -206,8 +206,10 @@ end
 outcome(blocks, used, mapped, ::Nothing) = Completion(content(blocks), used, mapped, true, nothing)
 outcome(blocks, used, mapped, failure) = Completion(content(blocks), used, mapped, false, failure)
 
+requestcontext(::Anthropic) = HTTP.RequestContext()
+
 function complete(provider::Anthropic, input, tools; parameters=Dict())
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, input, tools, parameters); redirect=false, retry=false, cookies=false, status_exception=false)
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, input, tools, parameters); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
     200 <= response.status < 300 || return incomplete("Anthropic HTTP $(response.status)")
     tagged(completion(decode(String(response.body))), provider)
 end
@@ -373,7 +375,7 @@ receive!(state::State, ::Phase, ::Event, callback) = (state.failure = "Anthropic
 
 function stream(provider::Anthropic, input, tools; parameters=Dict(), on_event=identity)
     state = State()
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, input, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, sse_callback=raw -> receive!(state, decode(raw.data), on_event))
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, input, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=raw -> receive!(state, decode(raw.data), on_event))
     if !(200 <= response.status < 300)
         answer = incomplete("Anthropic HTTP $(response.status)")
         on_event((; type=:incomplete, result=answer))

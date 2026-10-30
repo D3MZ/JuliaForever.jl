@@ -155,8 +155,10 @@ function completion(provider::OpenAIResponses, data; failure=nothing)
     Completion(msg, used, finish, responsecomplete(status, failure), failure)
 end
 
+requestcontext(::OpenAIResponses) = HTTP.RequestContext()
+
 function complete(provider::OpenAIResponses, messages, tools; parameters=Dict())
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false)
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false, context=requestcontext())
     completion(provider, decode(String(response.body)))
 end
 
@@ -302,7 +304,7 @@ handle!(stream::ResponseStream, event::ResponseError) = (stream.failure = event.
 
 function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), on_event=identity)
     state = ResponseStream(on_event)
-    HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, sse_callback=event -> receive!(state, event.data))
+    HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, context=requestcontext(), sse_callback=event -> receive!(state, event.data))
     result = finish(provider, state, state.terminal)
     on_event((; type=completionevent(result), result))
     result
