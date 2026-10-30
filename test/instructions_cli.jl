@@ -5,7 +5,7 @@ function instructions_process(base, workspace, piagent; provider="openai", agent
     session = "--history" in options ? String[] : ["--no-session"]
     args = [session; options; isnothing(input) ? ["inspect"] : String[]]
     cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever $args`; dir=workspace)
-    cmd = addenv(cmd, "JF_PROVIDER" => provider, "OPENAI_BASE_URL" => base, "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic-secret", "PI_CODING_AGENT_DIR" => piagent, "JF_INSTRUCTIONS_DIR" => agentdir)
+    cmd = addenv(cmd, "HOME" => piagent, "JF_PROVIDER" => provider, "OPENAI_BASE_URL" => base, "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic-secret", "PI_CODING_AGENT_DIR" => piagent, "JF_INSTRUCTIONS_DIR" => agentdir)
     mktempdir() do dir
         stdinpath, output, diagnostics = joinpath.((dir,), ("stdin", "output", "diagnostics"))
         write(stdinpath, something(input, ""))

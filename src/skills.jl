@@ -41,8 +41,6 @@ invocation(value) = Automatic()
 invocation(value::Bool) = (Automatic(), Explicit())[1 + value]
 disabled(::Automatic) = false
 disabled(::Explicit) = true
-visible(::Automatic) = true
-visible(::Explicit) = false
 
 skill(path, fields) = nothing
 skill(path, fields::AbstractDict) = skill(path, fields, get(fields, "description", nothing))
@@ -139,7 +137,10 @@ end
 escape(text) = replace(text, "&" => "&amp;", "<" => "&lt;", ">" => "&gt;", "\"" => "&quot;", "'" => "&apos;")
 
 function render(skills)
-    available = filter(skill -> visible(skill.invocation), skills)
+    available = Any[]
+    for skill in skills
+        available!(available, skill, skill.invocation)
+    end
     isempty(available) && return nothing
     lines = ["<skills>", "The following skills provide specialized instructions for specific tasks.", "Use the read tool to load a skill's file when the task matches its description.", "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.", "", "<available_skills>"]
     for skill in available
@@ -148,6 +149,9 @@ function render(skills)
     append!(lines, ["</available_skills>", "</skills>"])
     join(lines, "\n")
 end
+
+available!(available, skill, ::Automatic) = push!(available, skill)
+available!(available, skill, ::Explicit) = nothing
 
 appendprompt!(messages, ::Nothing) = nothing
 appendprompt!(messages, content::AbstractString) = push!(messages, Dict("role" => "system", "content" => content))
