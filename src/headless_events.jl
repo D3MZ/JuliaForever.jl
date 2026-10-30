@@ -1,7 +1,7 @@
 function restore!(session, agent)
     messages = getfield(agent.state, :messages)
     length(messages) <= length(getfield(agent.initial, :messages)) && return session
-    session.statistics = UnavailableStatistics()
+    session.statistics = RestoredStatistics()
     for value in messages
         restore!(session, value)
     end
@@ -27,8 +27,24 @@ function restore!(session, value::J.Conversation.Assistant)
     end
     result = J.Completion(raw, nothing, value.finish, getfield(value, :status), nothing)
     message = Dict{String, Any}("role" => "assistant", "content" => LiveJSON.fallbackcontent(raw), "stopReason" => LiveJSON.reason(result, raw))
+    restoreinfo!(session, message, value.info)
     session.lastcontent = value.content
     push!(session.messages, message)
+end
+
+restoreinfo!(session, message, ::Nothing) = (session.statistics = UnavailableStatistics(); nothing)
+function restoreinfo!(session, message, info::J.Conversation.ResponseInfo)
+    optional!(message, "api", info.api)
+    optional!(message, "provider", info.provider)
+    optional!(message, "model", info.model)
+    optional!(message, "timestamp", info.timestamp)
+    restoreusage!(session, message, info.usage)
+end
+restoreusage!(session, message, ::Nothing) = (session.statistics = UnavailableStatistics(); nothing)
+function restoreusage!(session, message, usage::J.Usage)
+    message["usage"] = LiveJSON.usage(usage)
+    recordprice!(session, usage)
+    nothing
 end
 
 struct ProviderObserver{S}

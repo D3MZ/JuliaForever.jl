@@ -29,6 +29,7 @@ include("compaction.jl")
 include("responses.jl")
 include("anthropic.jl")
 include("google.jl")
+include("response_info.jl")
 include("chatgpt_plan.jl")
 include("sessions.jl")
 include("session_catalog.jl")
@@ -593,6 +594,7 @@ readcommand!(terminal, agent, extensions, history, line, input, sessiondir, temp
 
 include("live_json.jl")
 include("session_export.jl")
+include("session_info.jl")
 include("headless.jl")
 starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates::Union{AbstractDict, Skills.Resources}, ::RPCMode) = Headless.rpc!(terminal, agent, extensions, store, args, sessiondir, templates)
 

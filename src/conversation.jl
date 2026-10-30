@@ -1,7 +1,7 @@
 module Conversation
 
 import ..Kernel as K
-import ..JuliaForever: Image, ToolResult, tooltype, content, loaded, CompletionStatus, Finished, Unfinished, completionstatus, finished, JSON3
+import ..JuliaForever: Image, ToolResult, tooltype, content, loaded, CompletionStatus, Finished, Unfinished, completionstatus, finished, Usage, JSON3
 
 abstract type Message end
 
@@ -79,22 +79,35 @@ end
 
 ToolCall(id, name, arguments; metadata=Dict{String, Any}()) = ToolCall(id, name, arguments, metadata)
 
+struct ResponseInfo
+    usage::Union{Nothing, Usage}
+    api::Union{Nothing, String}
+    provider::Union{Nothing, String}
+    model::Union{Nothing, String}
+    timestamp::Union{Nothing, Int}
+end
+Base.isequal(a::ResponseInfo, b::ResponseInfo) = K.same((a.usage, a.api, a.provider, a.model, a.timestamp), (b.usage, b.api, b.provider, b.model, b.timestamp))
+Base.hash(value::ResponseInfo, h::UInt) = hash((value.usage, value.api, value.provider, value.model, value.timestamp), hash(ResponseInfo, h))
+
 struct Assistant <: Message
     content::Union{Nothing, String}
     calls::Vector{ToolCall}
     finish::Union{Nothing, String}
     status::CompletionStatus
     metadata::Dict{String, Any}
+    info::Union{Nothing, ResponseInfo}
 
-    function Assistant(content, calls, finish, status::CompletionStatus, metadata::AbstractDict)
-        new(content, deepcopy(calls), finish, status, deepcopy(Dict{String, Any}(metadata)))
+    function Assistant(content, calls, finish, status::CompletionStatus, metadata::AbstractDict, info::Union{Nothing, ResponseInfo})
+        new(content, deepcopy(calls), finish, status, deepcopy(Dict{String, Any}(metadata)), info)
     end
 end
 
-Assistant(content, calls, finish, done, metadata::AbstractDict) = Assistant(content, calls, finish, completionstatus(convert(Bool, done)), metadata)
-Assistant(content, calls, finish, done; metadata=Dict{String, Any}()) = Assistant(content, calls, finish, done, metadata)
+Assistant(content, calls, finish, status::CompletionStatus, metadata::AbstractDict) = Assistant(content, calls, finish, status, metadata, nothing)
+Assistant(content, calls, finish, done, metadata::AbstractDict) = Assistant(content, calls, finish, completionstatus(convert(Bool, done)), metadata, nothing)
+Assistant(content, calls, finish, status::CompletionStatus; metadata=Dict{String, Any}(), info=nothing) = Assistant(content, calls, finish, status, metadata, info)
+Assistant(content, calls, finish, done; metadata=Dict{String, Any}(), info=nothing) = Assistant(content, calls, finish, completionstatus(convert(Bool, done)), metadata, info)
 Base.getproperty(message::Assistant, name::Symbol) = name === :done ? finished(getfield(message, :status)) : getfield(message, name)
-Base.propertynames(::Assistant, private::Bool=false) = (:content, :calls, :finish, :done, :metadata, :status)
+Base.propertynames(::Assistant, private::Bool=false) = (:content, :calls, :finish, :done, :metadata, :status, :info)
 JSON3.StructTypes.names(::Type{Assistant}) = ((:status, :done),)
 
 struct ToolMessage <: Message
@@ -149,13 +162,13 @@ struct Abandoned <: K.Observation
 end
 
 Base.isequal(a::ToolCall, b::ToolCall) = K.same((a.id, a.name, a.arguments, a.metadata), (b.id, b.name, b.arguments, b.metadata))
-Base.isequal(a::Assistant, b::Assistant) = K.same((a.content, a.calls, a.finish, a.done, a.metadata), (b.content, b.calls, b.finish, b.done, b.metadata))
+Base.isequal(a::Assistant, b::Assistant) = K.same((a.content, a.calls, a.finish, a.done, a.metadata, a.info), (b.content, b.calls, b.finish, b.done, b.metadata, b.info))
 Base.isequal(a::ModelReply, b::ModelReply) = isequal(a.message, b.message)
 Base.isequal(a::ToolReply, b::ToolReply) = isequal((a.text, a.iserror, a.image, loaded(a.result)), (b.text, b.iserror, b.image, loaded(b.result)))
 Base.isequal(a::ModelFailure, b::ModelFailure) = isequal(a.reason, b.reason)
 Base.isequal(a::Abandoned, b::Abandoned) = isequal(a.reason, b.reason)
 Base.hash(value::ToolCall, h::UInt) = hash((value.id, value.name, value.arguments, value.metadata), hash(ToolCall, h))
-Base.hash(value::Assistant, h::UInt) = hash((value.content, value.calls, value.finish, value.done, value.metadata), hash(Assistant, h))
+Base.hash(value::Assistant, h::UInt) = hash((value.content, value.calls, value.finish, value.done, value.metadata, value.info), hash(Assistant, h))
 Base.hash(value::ModelReply, h::UInt) = hash(value.message, hash(ModelReply, h))
 Base.hash(value::ToolReply, h::UInt) = hash((value.text, value.iserror, value.image, loaded(value.result)), hash(ToolReply, h))
 Base.hash(value::ModelFailure, h::UInt) = hash(value.reason, hash(ModelFailure, h))
