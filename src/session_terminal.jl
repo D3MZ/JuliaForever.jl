@@ -2,13 +2,15 @@ abstract type TerminalCommand end
 struct TreeCommand <: TerminalCommand end
 struct ResumeCommand <: TerminalCommand end
 struct NewCommand <: TerminalCommand end
+struct CloneCommand <: TerminalCommand end
+struct ForkCommand <: TerminalCommand end
 struct ExitCommand <: TerminalCommand end
 struct ShowName <: TerminalCommand end
 struct SetName <: TerminalCommand
     name::String
 end
 
-const terminalcommands = Dict{String, TerminalCommand}("/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand(), "/exit" => ExitCommand())
+const terminalcommands = Dict{String, TerminalCommand}("/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand(), "/clone" => CloneCommand(), "/fork" => ForkCommand(), "/exit" => ExitCommand())
 const namepattern = r"\A/name(?: +([\s\S]*))?\z"
 terminalcommand(text) = terminalcommand(get(terminalcommands, text, nothing), text)
 terminalcommand(command::TerminalCommand, text) = command
@@ -20,6 +22,10 @@ namecommand(name::String) = isempty(name) ? ShowName() : SetName(name)
 command!(::TreeCommand, terminal, agent, history, input, directory, snapshot) = tree!(terminal, agent, history, input, snapshot)
 command!(::ResumeCommand, terminal, agent, history, input, directory, snapshot) = resume!(terminal, agent, history, input, directory)
 command!(::NewCommand, terminal, agent, history, input, directory, snapshot) = new!(terminal, agent, history, directory, snapshot)
+command!(::CloneCommand, terminal, agent, history, input, directory, snapshot) = clone!(terminal, agent, history, directory)
+command!(::ForkCommand, terminal, agent, history, input, directory, snapshot) = forkcommand!(terminal, agent, history, input, directory, snapshot, identity)
+command!(command::TerminalCommand, terminal, agent, history, input, directory, snapshot, draft::Ref{String}) = command!(command, terminal, agent, history, input, directory, snapshot)
+command!(::ForkCommand, terminal, agent, history, input, directory, snapshot, draft::Ref{String}) = fork!(terminal, agent, history, input, directory, draft)
 command!(::ShowName, terminal, agent, history, input, directory, snapshot) = showname!(terminal, agent, history, SessionCatalog.sessionname(history))
 command!(command::SetName, terminal, agent, history, input, directory, snapshot) = setname!(terminal, agent, history, command.name, name!(agent, command.name))
 
@@ -87,6 +93,119 @@ function newfinal!(terminal, agent, history, selected, replacement, pending, ::N
     println(terminal.diagnostics, "New session started.")
     flush(terminal.diagnostics)
     replacement, selected, 0
+end
+
+sessiontree(history::History.Tree) = history
+sessiontree(history::History.SQLite) = History.Tree(history)
+sessiontree(history) = History.Rejected(:invalid_record)
+
+clone!(terminal, agent, history, directory) = clonechecked!(terminal, agent, history, directory, sourcecheck!(terminal, agent, history))
+clonechecked!(terminal, agent, history, directory, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
+clonechecked!(terminal, agent, history, directory, ::Nothing) = clone!(terminal, agent, history, directory, attempt(() -> sessiontree(history)))
+clone!(terminal, agent, history, directory, failure::ToolFailure) = resume!(terminal, agent, history, failure)
+clone!(terminal, agent, history, directory, rejected::History.Rejected) = (agent, history, result!(terminal, rejected))
+clone!(terminal, agent, history, directory, tree::History.Tree) = clone!(terminal, agent, history, directory, tree, attempt(() -> History.snapshot(tree)))
+clone!(terminal, agent, history, directory, tree, failure::ToolFailure) = resume!(terminal, agent, history, failure)
+clone!(terminal, agent, history, directory, tree, rejected::History.Rejected) = (agent, history, result!(terminal, rejected))
+function clone!(terminal, agent, history, directory, tree, snapshot::History.Snapshot)
+    if length(snapshot.batches) <= 1
+        println(terminal.diagnostics, "Nothing to clone yet.")
+        flush(terminal.diagnostics)
+        return agent, history, 0
+    end
+    clone!(terminal, agent, history, directory, tree, cloneable(tree))
+end
+cloneable(::History.Tree) = nothing
+cloneable(tree::History.Tree{<:SessionCatalog.Deferred}) = cloneable(tree.store.store)
+cloneable(::History.Memory) = SessionCatalog.Invalid("This session has not been saved yet. Send a message before cloning it.")
+cloneable(::History.SQLite) = nothing
+function clone!(terminal, agent, history, directory, tree, invalid::SessionCatalog.Invalid)
+    println(terminal.diagnostics, invalid.message)
+    flush(terminal.diagnostics)
+    agent, history, 1
+end
+function clone!(terminal, agent, history, directory, tree, ::Nothing)
+    selected = attempt(() -> SessionCatalog.duplicate(fresh(history, directory), SessionCatalog.branchpath(tree, tree.leaf), SessionCatalog.Path()))
+    switch!(terminal, agent, history, selected, "Cloned to new session.", () -> nothing)
+end
+
+switch!(terminal, agent, history, rejected::History.Rejected, message, action) = (agent, history, result!(terminal, rejected))
+switch!(terminal, agent, history, failure::ToolFailure, message, action) = resume!(terminal, agent, history, failure)
+function switch!(terminal, agent, history, selected::History.Tree, message, action)
+    pending = Ref{Union{Nothing, History.Tree}}(selected)
+    try
+        restored = attempt(() -> Agent(agent.provider, agent.tools, Dict{String, Any}[]; history=selected))
+        switch!(terminal, agent, history, selected, message, action, restored, pending)
+    finally
+        release!(history, pending[])
+    end
+end
+switch!(terminal, agent, history, selected, message, action, rejected::History.Rejected, pending) = (agent, history, result!(terminal, rejected))
+switch!(terminal, agent, history, selected, message, action, failure::ToolFailure, pending) = resume!(terminal, agent, history, failure)
+switch!(terminal, agent, history, selected, message, action, restored::Agent, pending) = switch!(terminal, agent, history, selected, message, action, restored, restored.fault, pending)
+switch!(terminal, agent, history, selected, message, action, restored::Agent, rejected::History.Rejected, pending) = (agent, history, result!(terminal, rejected))
+switch!(terminal, agent, history, selected, message, action, restored::Agent, ::Nothing, pending) = switchchecked!(terminal, agent, history, selected, message, action, restored, pending, checkqueues!(terminal, restored.state, selected))
+switchchecked!(terminal, agent, history, selected, message, action, restored, pending, ::PendingInputs) = (agent, history, 1)
+function switchchecked!(terminal, agent, history, selected, message, action, restored, pending, ::Nothing)
+    lock(agent.lock) do
+        switchfinal!(terminal, agent, history, selected, message, action, restored, pending, switchsource!(terminal, agent, history, agent.fault))
+    end
+end
+switchsource!(terminal, agent, history, fault) = switchsource!(agent, sourcecheck!(terminal, agent, history, fault))
+switchsource!(agent, blocked::Union{PendingInputs, History.Rejected}) = blocked
+switchsource!(agent, ::Nothing) = History.ready(agent.state)
+switchfinal!(terminal, agent, history, selected, message, action, restored, pending, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
+function switchfinal!(terminal, agent, history, selected, message, action, restored, pending, ::Nothing)
+    closehistory!(history)
+    pending[] = nothing
+    action()
+    println(terminal.diagnostics, message)
+    flush(terminal.diagnostics)
+    restored, selected, 0
+end
+
+function forkcommand!(terminal, agent, history, input, directory, snapshot, expand)
+    draft = Ref("")
+    agent, history, status = fork!(terminal, agent, history, input, directory, draft)
+    forkprompt!(terminal, agent, history, input, draft[], status, snapshot, expand)
+end
+
+fork!(terminal, agent, history, input, directory, draft::Ref{String}) = forkchecked!(terminal, agent, history, input, directory, draft, sourcecheck!(terminal, agent, history))
+forkchecked!(terminal, agent, history, input, directory, draft, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
+forkchecked!(terminal, agent, history, input, directory, draft, ::Nothing) = fork!(terminal, agent, history, input, directory, draft, attempt(() -> sessiontree(history)))
+fork!(terminal, agent, history, input, directory, draft::Ref{String}, failure::ToolFailure) = resume!(terminal, agent, history, failure)
+fork!(terminal, agent, history, input, directory, draft::Ref{String}, rejected::History.Rejected) = (agent, history, result!(terminal, rejected))
+fork!(terminal, agent, history, input, directory, draft::Ref{String}, tree::History.Tree) = fork!(terminal, agent, history, directory, draft, tree, attempt(() -> TreeTerminal.fork(tree, input, terminal.diagnostics, text -> redact(terminal, text))))
+fork!(terminal, agent, history, directory, draft, tree::History.Tree, failure::ToolFailure) = resume!(terminal, agent, history, failure)
+fork!(terminal, agent, history, directory, draft, tree::History.Tree, ::TreeTerminal.Cancelled) = (agent, history, 0)
+fork!(terminal, agent, history, directory, draft, tree::History.Tree, rejected::History.Rejected) = (agent, history, result!(terminal, rejected))
+function fork!(terminal, agent, history, directory, draft, tree::History.Tree, choice::TreeTerminal.InputFork)
+    selected = attempt(() -> SessionCatalog.duplicate(fresh(history, directory), SessionCatalog.branchpath(tree, choice.node), SessionCatalog.Path()))
+    forked!(terminal, agent, history, draft, selected, choice)
+end
+fork!(terminal, agent, history, directory, draft, tree::History.Tree, choice::TreeTerminal.QueuedFork) = fork!(terminal, agent, history, directory, draft, choice, attempt(() -> SessionCatalog.queuedpath(tree, choice.node)))
+fork!(terminal, agent, history, directory, draft, choice::TreeTerminal.QueuedFork, failure::ToolFailure) = resume!(terminal, agent, history, failure)
+fork!(terminal, agent, history, directory, draft, choice::TreeTerminal.QueuedFork, rejected::History.Rejected) = (agent, history, result!(terminal, rejected))
+function fork!(terminal, agent, history, directory, draft, choice::TreeTerminal.QueuedFork, path::NamedTuple)
+    selected = attempt(() -> queuedcopy(fresh(history, directory), path))
+    forked!(terminal, agent, history, draft, selected, choice)
+end
+queuedcopy(tree::History.Tree, path::NamedTuple) = queuedcopy(SessionCatalog.duplicate(tree, path.batches, SessionCatalog.Path()), path.state)
+queuedcopy(rejected::History.Rejected, state) = rejected
+queuedcopy(tree::History.Tree, state::Conversation.State) = SessionCatalog.prepare!(tree, state)
+function forked!(terminal, agent, history, draft, selected, choice::TreeTerminal.ForkChoice)
+    switch!(terminal, agent, history, selected, "Forked to new session.", () -> (draft[] = join(filter(!isempty, [choice.text, draft[]]), "\n\n")))
+end
+
+function forkprompt!(terminal, agent, history, input, draft, status, snapshot, expand)
+    isempty(draft) && return agent, history, status
+    print(terminal.diagnostics, "Message [", TreeTerminal.clean(redact(terminal, draft)), "] (empty keeps it, /cancel aborts): ")
+    flush(terminal.diagnostics)
+    eof(input) && return agent, history, status
+    text = readline(input)
+    text == "/cancel" && return agent, history, status
+    result = run!(terminal, agent, expand(isempty(text) ? draft : text), snapshot)
+    agent, history, max(status, result)
 end
 
 function resume!(terminal::Terminal, agent::Agent, history, input::IO, directory::AbstractString)

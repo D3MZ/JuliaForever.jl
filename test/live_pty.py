@@ -19,6 +19,7 @@ recover_finish = threading.Event()
 headers_finish = threading.Event()
 failure_finish = threading.Event()
 new_finish = threading.Event()
+fork_finish = threading.Event()
 requests = []
 requests_lock = threading.Lock()
 
@@ -60,7 +61,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
                 return
-            text = {1: "First", 2: "Steered", 3: "Followed", 4: "Stopping", 5: "Resumed", 6: "Hold", 7: "Retrieved", 8: "Reopened", 10: "Failing", 11: "Recovered", 13: "After shell", 14: "Before new", 15: "New session"}.get(index, "Unexpected")
+            text = {1: "First", 2: "Steered", 3: "Followed", 4: "Stopping", 5: "Resumed", 6: "Hold", 7: "Retrieved", 8: "Reopened", 10: "Failing", 11: "Recovered", 13: "After shell", 14: "Before new", 15: "New session", 16: "Before fork", 17: "Fork response"}.get(index, "Unexpected")
             self.event({"choices": [{"index": 0, "delta": {"content": text}}]})
             if index == 1:
                 more.wait(30)
@@ -74,6 +75,8 @@ class Handler(BaseHTTPRequestHandler):
                 failure_finish.wait(30)
             elif index == 14:
                 new_finish.wait(30)
+            elif index == 16:
+                fork_finish.wait(30)
             reason = "content_filter" if index == 10 else "stop"
             self.event({"choices": [{"index": 0, "delta": {}, "finish_reason": reason}]})
             self.chunk(b"data: [DONE]\n\n")
@@ -259,10 +262,26 @@ with tempfile.TemporaryDirectory(prefix="jf-live-pty-") as directory:
         wait_for(lambda: len(requests) >= 15 and "New session" in screen(), "new session did not send the restored input", 15)
         assert [m["content"] for m in requests[14] if m["role"] == "user"] == ["carry"], requests[14]
         assert len(list(pathlib.Path(directory).glob("*.sqlite"))) == 2
+        send("fork slow")
+        key("Enter")
+        wait_for(lambda: len(requests) >= 16 and "Before fork" in screen(), "fork request did not start", 15)
+        send("queued fork")
+        key("Enter")
+        wait_for(lambda: "Steering: queued fork" in screen(), "fork steering was not queued", 8)
+        send("/fork")
+        key("Enter")
+        wait_for(lambda: "Choose a message" in screen(), "fork selector did not open", 10)
+        key("1", "Enter")
+        wait_for(lambda: "Forked to new session." in screen() and "> carry" in screen() and "queued fork" in screen(), "fork did not restore selected and queued text", 10)
+        assert len(requests) == 16 and not fork_finish.is_set()
+        key("Enter")
+        wait_for(lambda: len(requests) >= 17 and "Fork response" in screen(), "fork draft was not sent", 15)
+        assert [m["content"] for m in requests[16] if m["role"] == "user"] == ["carry\n\nqueued fork"], requests[16]
+        assert len(list(pathlib.Path(directory).glob("*.sqlite"))) == 3
         send("/exit")
         key("Enter")
         wait_for(lambda: run("display-message", "-p", "-t", "live", "#{pane_dead}").stdout.strip() == "1", "resumed terminal failed to exit", 15)
-        print("live terminal streaming, naming, new sessions, queues, cancellation, and SQLite resume passed")
+        print("live terminal streaming, naming, session changes, queues, cancellation, and SQLite resume passed")
     finally:
         if pidfile.exists() and not shell_reaped:
             try:
@@ -278,6 +297,7 @@ with tempfile.TemporaryDirectory(prefix="jf-live-pty-") as directory:
         headers_finish.set()
         failure_finish.set()
         new_finish.set()
+        fork_finish.set()
         run("kill-server", check=False)
         server.shutdown()
         server.server_close()
