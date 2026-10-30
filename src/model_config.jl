@@ -226,6 +226,34 @@ modelcatalogname(provider::Union{OpenAI, OpenAIResponses, Anthropic, Google}, fa
 modelcatalogname(route::CatalogRoute, fallback) = route.name
 
 modelchange(provider, model, ::DirectRoute) = typeof(provider)(provider.base, String(model), provider.key, provider.extra, provider.route)
+modelchange(provider::Google, model, ::DirectRoute) = googlechange(provider, model, Models.suffix(model))
+googlechange(provider, model, suffix::Models.Suffix) = unsupportedthinking()
+googlechange(provider, model, ::Nothing) = googleswitch(provider, model, provider.thinking)
+googleswitch(provider, model, ::Nothing) = googlelevel(provider, model, nothing)
+googleswitch(provider, model, thinking::AbstractString) = googleswitch(provider, model, thinking, get(googlelevels, provider.model, nothing), get(googlelevels, model, nothing))
+googleswitch(provider, model, thinking, ::Nothing, ::Nothing) = unsupportedthinking()
+googleswitch(provider, model, thinking, old, ::Nothing) = unsupportedthinking()
+googleswitch(provider, model, thinking, ::Nothing, levels::AbstractDict) = unsupportedthinking()
+function googleswitch(provider, model, thinking, old::AbstractDict, levels::AbstractDict)
+    order = ("off", "minimal", "low", "medium", "high")
+    index = findfirst(level -> get(old, level, nothing) == thinking, order)
+    googleclamp(provider, model, levels, order, index)
+end
+googleclamp(provider, model, levels, order, ::Nothing) = unsupportedthinking()
+function googleclamp(provider, model, levels, order, index::Int)
+    level = findfirst(name -> haskey(levels, name), order[index:end])
+    googleclamp(provider, model, levels, order, index, level)
+end
+googleclamp(provider, model, levels, order, index, ::Nothing) = unsupportedthinking()
+googleclamp(provider, model, levels, order, index, offset::Int) = googlelevel(provider, model, levels[order[index + offset - 1]])
+googlelevel(provider, model, ::Nothing) = Google(provider.base, String(model), provider.key, provider.extra, provider.route)
+googlelevel(provider, model, thinking::AbstractString) = googlelevel(provider, model, thinking, get(googlelevels, model, nothing))
+googlelevel(provider, model, thinking, ::Nothing) = unsupportedthinking()
+function googlelevel(provider, model, thinking, levels::AbstractDict)
+    googlelevel(provider, model, thinking, Models.check(thinking in values(levels)))
+end
+googlelevel(provider, model, thinking, ::Models.InvalidConfig) = unsupportedthinking()
+googlelevel(provider, model, thinking, ::Models.ValidConfig) = Google(provider.base, String(model), provider.key, provider.extra, provider.route, thinking)
 modelchange(provider::OpenAIResponses, model, ::DirectRoute) = responsechange(provider, model, Models.suffix(model))
 responsechange(provider, model, suffix::Models.Suffix) = responsesuffix(provider, suffix, get(responselevels, suffix.base, nothing))
 responsesuffix(provider, suffix, ::Nothing) = unsupportedthinking()
@@ -248,6 +276,17 @@ directthinking(provider) = Models.check(!responsesignin(provider) && !responseau
 const authorizedefforts = Dict("none" => validthinking)
 authorizedthinking(::CatalogRoute, provider, effort) = get(authorizedefforts, effort, deniedthinking)(provider)
 authorizedthinking(::DirectRoute, provider, effort) = get(authorizedefforts, effort, directthinking)(provider)
+modelchange(provider::Google, model, route::CatalogRoute) = googlecatalogchange(provider, model, route, Models.suffix(model))
+googlecatalogchange(provider, model, route, suffix::Models.Suffix) = unsupportedthinking()
+function googlecatalogchange(provider, model, route, ::Nothing)
+    configured = configuredinfo(route.registry, route.name, model, ENV)
+    googlecatalogchange(provider, model, modelchange(configured, model, configured.model))
+end
+googlecatalogchange(provider, model, selected::Integer) = selected
+googlecatalogchange(provider, model, selected::Google) = googleswitch(provider, model, provider.thinking, selected)
+googleswitch(provider, model, thinking, selected::Google) = googleswitch(selected, model, thinking, get(googlelevels, provider.model, nothing), get(googlelevels, model, nothing))
+googleswitch(provider, model, ::Nothing, selected::Google) = googlelevel(selected, model, nothing)
+googlecatalogchange(provider, model, selected) = selected
 function modelchange(provider, model, route::CatalogRoute)
     configured = configuredinfo(route.registry, route.name, model, ENV)
     modelchange(configured, model, configured.model)
