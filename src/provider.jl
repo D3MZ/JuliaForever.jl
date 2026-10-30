@@ -381,17 +381,23 @@ appendtext(current, text) = current * text
 writeonce!(output, key, ::Nothing) = nothing
 writeonce!(output, key, value) = isempty(output[key]) && (output[key] = value)
 
-function payload(provider::OpenAI, messages, tools, parameters; streaming=false)
+bufferedchat!(data) = (data["stream"] = false; nothing)
+function streamedchat!(data)
+    data["stream"] = true
+    data["stream_options"] = Dict("include_usage" => true)
+    nothing
+end
+const chatpayloads = Dict(false => bufferedchat!, true => streamedchat!)
+
+payload(provider::OpenAI, messages, tools, parameters; streaming::Bool=false) = payload(provider, messages, tools, parameters, chatpayloads[streaming])
+function payload(provider::OpenAI, messages, tools, parameters, configure)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(parameters))
     data["model"] = provider.model
     data["messages"] = chat(chatmessage.(messages))
-    data["stream"] = streaming
     delete!(data, "tools")
     delete!(data, "stream_options")
     isempty(tools) || (data["tools"] = definition.(collect(values(tools))))
-    if streaming
-        data["stream_options"] = Dict("include_usage" => true)
-    end
+    configure(data)
     JSON3.write(data)
 end
 
@@ -408,7 +414,7 @@ clientkey(key) = isempty(key) ? "unused" : key
 endpoint(provider::OpenAI) = "$(rstrip(provider.base, '/'))/chat/completions"
 
 function complete(provider::OpenAI, messages, tools; parameters=Dict())
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters, bufferedchat!); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
     200 <= response.status < 300 || return incomplete(ProviderStatus(response.status))
     complete(provider, decode(String(response.body)))
 end
@@ -501,7 +507,7 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
         recordfinish!(finish, on_event, get(choice, "finish_reason", nothing))
         chatdelta!(message, calls, order, reasoningfield, on_event, get(choice, "delta", nothing))
     end
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=event -> receivechat!(process, failure, marker, event.data, failure[]))
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters, streamedchat!); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=event -> receivechat!(process, failure, marker, event.data, failure[]))
     if !(200 <= response.status < 300)
         result = incomplete(ProviderStatus(response.status))
         on_event((; type=:incomplete, result))

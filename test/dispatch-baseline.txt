@@ -75,7 +75,6 @@ provider.jl	:(key == "error")
 provider.jl	:(key isa AbstractString)
 provider.jl	:(name === :done)
 provider.jl	:complete
-provider.jl	:streaming
 scheduler.jl	:(name === :cancelled)
 scheduler.jl	:(same(record.state["spec"], spec))
 scheduler.jl	:(same(state["checkpoint"], next))
