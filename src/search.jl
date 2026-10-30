@@ -14,7 +14,16 @@ end
 
 # Separators keep full-fold expansions inside their original character boundaries.
 const foldescapes = Dict('\0' => "\x01\x02", '\x01' => "\x01\x01")
-function foldliteral(text::AbstractString)
+
+# Memoize only after a longer line contains several non-ASCII characters.
+mutable struct FoldCache
+    seen::Int
+    values::Dict{Char, String}
+end
+FoldCache() = FoldCache(0, Dict{Char, String}())
+
+foldliteral(text::AbstractString) = foldliteral(text, ncodeunits(text) < 128 ? nothing : FoldCache())
+function foldliteral(text::AbstractString, cache)
     output = IOBuffer()
     for character in text
         write(output, '\0')
@@ -24,11 +33,25 @@ function foldliteral(text::AbstractString)
         elseif isascii(character)
             write(output, get(foldescapes, character, lowercase(character)))
         else
-            write(output, Unicode.normalize(string(character); casefold=true, compose=false))
+            writefolded!(output, cache, character)
         end
     end
     write(output, '\0')
     String(take!(output))
+end
+
+writefolded!(output, ::Nothing, character::Char) = write(output, Unicode.normalize(string(character); casefold=true, compose=false))
+function writefolded!(output, cache::FoldCache, character::Char)
+    cache.seen += 1
+    cache.seen < 8 && return writefolded!(output, nothing, character)
+    # Titlecase characters are neither lowercase nor uppercase, but have lowercase mappings.
+    if islowercase(character) || isuppercase(character) || lowercase(character) != character
+        folded = get!(cache.values, character) do
+            Unicode.normalize(string(character); casefold=true, compose=false)
+        end
+        return write(output, folded)
+    end
+    write(output, character)
 end
 
 function Base.occursin(pattern::FoldedPattern, line::AbstractString)

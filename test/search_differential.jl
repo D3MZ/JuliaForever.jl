@@ -22,6 +22,7 @@
         (; tool="grep", args=(; pattern="^Beta", path="root.txt", literal=true)),
         (; tool="grep", args=(; pattern="café [x]", path="literal.dat", literal=true)),
         (; tool="grep", args=(; pattern="café [x]", path="literal.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="ǅ", path="titlecase.dat", literal=true, ignoreCase=true)),
         (; tool="grep", args=(; pattern="σ", path="greek.dat", literal=true, ignoreCase=true)),
         (; tool="grep", args=(; pattern="σ", path="greek.dat", literal=true)),
         (; tool="grep", args=(; pattern="^Σ\$", path="greek.dat", ignoreCase=true)),
@@ -66,6 +67,7 @@
         write(joinpath(dir, "long.txt"), repeat("x", 501) * "needle\n")
         write(joinpath(dir, "unicode.txt"), repeat("🌱", 250) * "needle\n")
         write(joinpath(dir, "literal.dat"), "CAFÉ [x]\ncafé [x]\n")
+        write(joinpath(dir, "titlecase.dat"), join((repeat("中", 50) * c for c in ("Ǆ", "ǅ", "ǆ")), "\n") * "\n")
         write(joinpath(dir, "greek.dat"), "σ\nς\nΣ\n")
         write(joinpath(dir, "kelvin.dat"), "k\nK\nK\n")
         write(joinpath(dir, "long-s.dat"), "s\nS\nſ\n")

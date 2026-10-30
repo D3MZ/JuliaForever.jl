@@ -131,7 +131,9 @@ end
 
 @testset "Unicode case-insensitive literal grep" begin
     mktempdir() do dir
+        prefix = repeat("中", 50)
         files = Dict(
+            "titlecase.dat" => join((prefix * c for c in ("Ǆ", "ǅ", "ǆ")), "\n") * "\n",
             "greek.dat" => "σ\nς\nΣ\n",
             "kelvin.dat" => "k\nK\nK\n",
             "long-s.dat" => "s\nS\nſ\n",
@@ -148,6 +150,7 @@ end
         )
         foreach(pair -> write(joinpath(dir, first(pair)), last(pair)), pairs(files))
         cases = [
+            ((; pattern="ǅ", path="titlecase.dat", literal=true, ignoreCase=true), join(("titlecase.dat:$i: " * prefix * c for (i, c) in enumerate(("Ǆ", "ǅ", "ǆ"))), "\n")),
             ((; pattern="σ", path="greek.dat", literal=true, ignoreCase=true), "greek.dat:1: σ\ngreek.dat:2: ς\ngreek.dat:3: Σ"),
             ((; pattern="σ", path="greek.dat", literal=true), "greek.dat:1: σ"),
             ((; pattern="^Σ\$", path="greek.dat", ignoreCase=true), "greek.dat:1: σ\ngreek.dat:2: ς\ngreek.dat:3: Σ"),
@@ -176,6 +179,8 @@ end
         @test !occursin(JuliaForever.foldedpattern("σ\0x"), "ς\x01X")
         @test !occursin(JuliaForever.foldedpattern("σ\x01x"), "ς\0X")
         @test !occursin(JuliaForever.foldedpattern("σ\x01x"), "ς\x02X")
+        @test occursin(JuliaForever.foldedpattern("σ\0x"), prefix * "ς\0X")
+        @test !occursin(JuliaForever.foldedpattern("σ\0x"), prefix * "ς\x01X")
     end
 end
 
