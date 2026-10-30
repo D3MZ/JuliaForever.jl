@@ -75,13 +75,7 @@ historyabandon(::Union{HistoryInspection, HistoryConflict}, reason) = HistoryCon
 
 haslogin(::APIKeyAuth) = false
 haslogin(::OpenRouterAuth) = true
-validprovider(::Nothing) = true
-validprovider(name::AbstractString) = known(providerinfo(name))
-known(::Nothing) = false
-known(::NamedTuple) = true
-compatible(::APIKeyAuth, selected) = true
-compatible(::OpenRouterAuth, ::Nothing) = true
-compatible(::OpenRouterAuth, selected::AbstractString) = selected == "openrouter"
+const loginproviders = Dict("openrouter" => providerinfos["openrouter"])
 providername(::APIKeyAuth, ::Nothing) = get(ENV, "JF_PROVIDER", "openai")
 providername(::APIKeyAuth, selected::AbstractString) = selected
 providername(::OpenRouterAuth, selected) = "openrouter"
@@ -303,20 +297,29 @@ function (@main)(args)
         println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --fork PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
         return 0
     end
-    if !validprovider(selected)
-        println(stderr, "Unknown provider; choose openai, openai-responses, openrouter, anthropic, or google.")
-        return 2
-    end
     options = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname)
-    historyaction(action, options)
+    selectedprovider(action, options, selected)
 end
 
-function historyaction(::Nothing, options)
+selectedprovider(action, options, ::Nothing) = historyaction(action, options)
+selectedprovider(action, options, selected::AbstractString) = providerselection(action, options, providerinfo(selected))
+providerselection(action, options, ::NamedTuple) = historyaction(action, options)
+function providerselection(action, options, ::Nothing)
+    println(stderr, "Unknown provider; choose openai, openai-responses, openrouter, anthropic, or google.")
+    2
+end
+
+historyaction(::Nothing, options) = loginprovider(options.auth, options.selected, options)
+loginprovider(::APIKeyAuth, selected, options) = launchprovider(options)
+loginprovider(::OpenRouterAuth, ::Nothing, options) = launchprovider(options)
+loginprovider(::OpenRouterAuth, selected::AbstractString, options) = loginprovider(options, get(loginproviders, selected, nothing))
+loginprovider(options, ::NamedTuple) = launchprovider(options)
+function loginprovider(options, ::Nothing)
+    println(stderr, "OpenRouter login requires --provider openrouter.")
+    2
+end
+function launchprovider(options)
     (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname) = options
-    if !compatible(auth, selected)
-        println(stderr, "OpenRouter login requires --provider openrouter.")
-        return 2
-    end
     info = providerinfo(providername(auth, selected))
     model = acquire(auth, info, requested_model)
     launch(model, packages, environments, codemode, session, sessiondir, args, sessionname)

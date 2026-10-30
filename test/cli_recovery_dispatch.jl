@@ -25,5 +25,16 @@ end
         @test !isfile(path)
         badprovider = history_validation(["--provider", "invalid", "--inspect-history"])
         @test badprovider.status == 2 && startswith(badprovider.diagnostics, "Unknown provider;")
+        login = history_validation(["--provider", "anthropic", "--login-openrouter"])
+        @test login == (; status=2, diagnostics="OpenRouter login requires --provider openrouter.\n")
+        duplicate = history_validation(["--login-openrouter", "--login-openrouter-callback"])
+        @test duplicate == (; status=2, diagnostics="Select only one OpenRouter login mode.\n")
+        withenv("OPENROUTER_MODEL" => nothing) do
+            @test history_validation(["--provider", "openrouter", "--login-openrouter"]) == (; status=2, diagnostics="Set OPENROUTER_MODEL.\n")
+            @test history_validation(["--login-openrouter"]) == (; status=2, diagnostics="Set OPENROUTER_MODEL.\n")
+        end
+        withenv("OPENAI_MODEL" => nothing, "OPENAI_API_KEY" => nothing) do
+            @test history_validation(["--provider", "openai"]) == (; status=2, diagnostics="Set OPENAI_MODEL and OPENAI_API_KEY.\n")
+        end
     end
 end

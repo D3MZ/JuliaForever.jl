@@ -1,8 +1,5 @@
-JuliaForever.jl	:(compatible(auth, selected))
 JuliaForever.jl	:(haslogin(auth))
 JuliaForever.jl	:(result.status == 0)
-JuliaForever.jl	:(selected == "openrouter")
-JuliaForever.jl	:(validprovider(selected))
 JuliaForever.jl	:codemode
 agent.jl	:(Kernel.same(recorded, agent.messages))
 agent.jl	:(name === :cancelled)
