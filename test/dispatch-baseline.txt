@@ -155,8 +155,6 @@ provider.jl	:denied
 provider.jl	:streaming
 provider.jl	:success
 provider.jl	:success
-responses.jl	:(get(call, key, nothing) isa AbstractString)
-responses.jl	:(valid(call))
 scheduler.jl	:(key !== nothing)
 scheduler.jl	:(name === :cancelled)
 scheduler.jl	:(same(record.state["spec"], spec))
