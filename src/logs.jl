@@ -54,13 +54,19 @@ Write a finite history as a JSON array, or return the JSON as a string when `io`
 """
 function json(io::IO, history; project=record)
     print(io, '[')
-    first = true
-    for item in history
-        first || print(io, ',')
-        JSON3.write(io, project(item))
-        first = false
-    end
+    jsonitems!(io, history, project, iterate(history))
     print(io, ']')
+    nothing
+end
+
+jsonitems!(io, history, project, ::Nothing) = nothing
+function jsonitems!(io, history, project, first::Tuple)
+    item, state = first
+    JSON3.write(io, project(item))
+    for item in Iterators.rest(history, state)
+        print(io, ',')
+        JSON3.write(io, project(item))
+    end
     nothing
 end
 
@@ -77,18 +83,30 @@ Write a self-contained HTML view of a finite history, or return it as a string w
 function html(io::IO, history; project=record, title="Julia Forever history")
     heading = escape(title)
     print(io, "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>", heading, "</title><style>body{font:16px system-ui,sans-serif;line-height:1.5;max-width:70rem;margin:2rem auto;padding:0 1rem}li{margin:1rem 0}pre{background:#f5f5f5;border-radius:.4rem;padding:1rem;white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><main><h1>", heading, "</h1>\n<ol>\n")
-    empty = true
-    for item in history
-        data = JSON3.write(project(item))
-        formatted = sprint(output -> JSON3.pretty(output, data))
-        print(io, "<li><pre>", escape(formatted), "</pre></li>\n")
-        empty = false
-    end
+    first = iterate(history)
+    htmlitems!(io, history, project, first)
     print(io, "</ol>\n")
-    empty && print(io, "<p>No events.</p>\n")
+    htmlnotice!(io, first)
     print(io, "</main></body></html>\n")
     nothing
 end
+
+htmlitems!(io, history, project, ::Nothing) = nothing
+function htmlitems!(io, history, project, first::Tuple)
+    item, state = first
+    htmlitem!(io, project(item))
+    for item in Iterators.rest(history, state)
+        htmlitem!(io, project(item))
+    end
+    nothing
+end
+function htmlitem!(io, item)
+    data = JSON3.write(item)
+    formatted = sprint(output -> JSON3.pretty(output, data))
+    print(io, "<li><pre>", escape(formatted), "</pre></li>\n")
+end
+htmlnotice!(io, ::Nothing) = print(io, "<p>No events.</p>\n")
+htmlnotice!(io, ::Tuple) = nothing
 
 html(history; project=record, title="Julia Forever history") = sprint(io -> html(io, history; project, title))
 

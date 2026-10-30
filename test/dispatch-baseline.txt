@@ -57,8 +57,6 @@ kernel.jl	:(same(value, result, seen))
 kernel.jl	:(same(x, y, seen))
 kernel.jl	:(same(x, y, seen))
 kernel.jl	:found
-logs.jl	:empty
-logs.jl	:first
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :state)
