@@ -30,6 +30,7 @@ include("agent_execution.jl")
 include("logs.jl")
 include("search.jl")
 include("context.jl")
+include("skills.jl")
 include("codemode.jl")
 include("terminal.jl")
 include("terminal_editor.jl")
@@ -327,7 +328,9 @@ function initial(extensions)
     cwd = pwd()
     files = Instructions.load(cwd; agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing))
     prompt = context(cwd, Extensions.tools(extensions), files)
-    Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+    messages = Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+    Skills.appendprompt!(messages, Skills.render(Skills.load(cwd)))
+    messages
 end
 
 initial(extensions, ::Nothing) = initial(extensions)

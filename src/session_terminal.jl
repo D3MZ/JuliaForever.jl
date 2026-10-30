@@ -66,7 +66,9 @@ function initial(agent::Agent, ::Nothing)
     cwd = pwd()
     files = Instructions.load(cwd; agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing))
     prompt = context(cwd, collect(values(agent.tools)), files)
-    Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+    messages = Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+    Skills.appendprompt!(messages, Skills.render(Skills.load(cwd)))
+    messages
 end
 
 newresult!(terminal, agent, history, selected, rejected::History.Rejected, pending) = (agent, history, result!(terminal, rejected))
