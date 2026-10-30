@@ -1,6 +1,7 @@
 module MCP
 
 using JSON3
+import HTTP
 import ..JuliaForever: Tool, ToolResult, ToolFailure, name, description, schema, execute
 
 struct Failure
@@ -20,8 +21,15 @@ state(::Connecting) = :connecting
 state(::Open) = :open
 state(::Closed) = :closed
 
+mutable struct HttpTransport
+    url::String
+    headers::Vector{Pair{String, String}}
+    session::String
+    version::String
+end
+
 mutable struct Client
-    process::Base.Process
+    process::Union{Base.Process, HttpTransport}
     lock::ReentrantLock
     writer::ReentrantLock
     pending::Dict{Int, Channel{Any}}
@@ -53,14 +61,53 @@ end
 
 send(client::Client, message, ::Closed) = false
 
-function send(client::Client, message, ::Connection)
+send(client::Client, message, connection::Connection) = send(client, message, client.process)
+
+function send(client::Client, message, process::Base.Process)
     try
-        println(client.process, JSON3.write(message))
-        flush(client.process)
+        println(process, JSON3.write(message))
+        flush(process)
         true
     catch
         false
     end
+end
+
+function httpheaders(transport::HttpTransport)
+    headers = copy(transport.headers)
+    push!(headers, "Accept" => "application/json, text/event-stream", "Content-Type" => "application/json")
+    isempty(transport.session) || push!(headers, "Mcp-Session-Id" => transport.session)
+    isempty(transport.version) || push!(headers, "MCP-Protocol-Version" => transport.version)
+    headers
+end
+
+function httprequest(client::Client, transport::HttpTransport, message)
+    try
+        response = HTTP.request("POST", transport.url, httpheaders(transport), JSON3.write(message); status_exception=false, request_timeout=client.timeout, retry=false)
+        200 <= response.status < 300 || return httpfailure!(client, message, Failure(:http, "MCP HTTP status $(response.status)", response.status))
+        session = HTTP.header(response, "Mcp-Session-Id", "")
+        isempty(session) || (transport.session = session)
+        haskey(message, "id") || return true
+        type = lowercase(strip(first(split(HTTP.header(response, "Content-Type", ""), ';'))))
+        type == "application/json" || return httpfailure!(client, message, Failure(:protocol, "Unsupported MCP HTTP response content type: $type"))
+        value = JSON3.read(String(response.body), Dict{String, Any})
+        received(client, value) || return httpfailure!(client, message, Failure(:protocol, "Invalid JSON-RPC message"))
+        true
+    catch exception
+        httpfailure!(client, message, Failure(:transport, sprint(showerror, exception)))
+    end
+end
+
+function httpfailure!(client::Client, message, failure::Failure)
+    haskey(message, "id") || return false
+    channel = lock(() -> pop!(client.pending, message["id"], nothing), client.lock)
+    isnothing(channel) || put!(channel, failure)
+    true
+end
+
+function send(client::Client, message, transport::HttpTransport)
+    haskey(message, "id") && haskey(message, "method") && (@async httprequest(client, transport, message); return true)
+    httprequest(client, transport, message)
 end
 
 function fail!(client::Client, failure::Failure)
@@ -81,7 +128,28 @@ function takepending!(client::Client, ::Connection)
     channels
 end
 
-function shutdown(client::Client)
+shutdown(client::Client) = shutdown(client, client.process)
+
+function shutdown(client::Client, transport::HttpTransport)
+    owner = lock(client.lock) do
+        client.shutting && return false
+        client.shutting = true
+        true
+    end
+    if !owner
+        wait(client.done)
+        return nothing
+    end
+    try
+        isempty(transport.session) || HTTP.request("DELETE", transport.url, httpheaders(transport); status_exception=false, request_timeout=1, retry=false)
+    catch
+    finally
+        notify(client.done)
+    end
+    nothing
+end
+
+function shutdown(client::Client, process::Base.Process)
     owner = lock(client.lock) do
         client.shutting && return false
         client.shutting = true
@@ -226,6 +294,13 @@ function activate!(client::Client, ::Connecting)
     true
 end
 
+function connect(url::AbstractString; timeout=30.0, headers=Pair{String, String}[])
+    transport = HttpTransport(String(url), Pair{String, String}[String(k) => String(v) for (k, v) in headers], "", "")
+    client = Client(transport, ReentrantLock(), ReentrantLock(), Dict{Int, Channel{Any}}(), 0, Connecting(), nothing, Float64(timeout), 0.0, false, Base.Event(), nothing)
+    params = Dict("protocolVersion" => first(versions), "capabilities" => Dict(), "clientInfo" => Dict("name" => "JuliaForever", "version" => "0.1.0"))
+    initialize!(client, request(client, "initialize", params, Connecting()))
+end
+
 function connect(command::Cmd; timeout=30.0, grace=0.5)
     process = try
         open(pipeline(command; stderr=stderr), "r+")
@@ -243,6 +318,9 @@ function initialize!(client::Client, failure::Failure)
     failure
 end
 
+protocol!(::Base.Process, version) = nothing
+protocol!(transport::HttpTransport, version) = (transport.version = version)
+
 function invalid!(client::Client)
     close(client)
     Failure(:protocol, "Invalid or unsupported MCP initialization result")
@@ -253,6 +331,7 @@ initialize!(client::Client, result) = invalid!(client)
 function initialize!(client::Client, result::AbstractDict)
     get(result, "protocolVersion", nothing) in versions && get(result, "capabilities", nothing) isa AbstractDict && get(result["capabilities"], "tools", Dict()) isa AbstractDict && get(result, "serverInfo", nothing) isa AbstractDict && get(result["serverInfo"], "name", nothing) isa AbstractString && get(result["serverInfo"], "version", nothing) isa AbstractString || return invalid!(client)
     client.server = result
+    protocol!(client.process, result["protocolVersion"])
     if !send(client, Dict("jsonrpc" => "2.0", "method" => "notifications/initialized"))
         close(client)
         return Failure(:transport, "Could not finish MCP initialization")
