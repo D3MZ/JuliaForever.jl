@@ -102,6 +102,7 @@ end
 
 respond_execution!(::Agent, prompt, executor, context; kwargs...) = Execution.Rejected(:executor)
 respond_execution!(::Agent, prompt, ::Execution.Executor, context; kwargs...) = Execution.Rejected(:context)
+respond_execution!(::Agent{P, ToolSet}, prompt, ::Execution.Executor, context::AbstractString; kwargs...) where P = Execution.Rejected(:dynamic_tools_unsupported)
 
 function respond_execution!(agent::Agent, prompt, executor::Execution.Executor, context::AbstractString; on_event, on_agent_event, parameters, tool_execution)
     respond_execution!(agent, prompt, executor, context, on_event, fault(agent); on_agent_event, parameters, tool_execution)

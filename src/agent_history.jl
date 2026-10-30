@@ -46,7 +46,9 @@ function restore(provider, tools, history::History.Store, snapshot::History.Snap
     state, events = replayed
     messages = Dict{String, Any}[convert(Dict{String, Any}, message) for message in state.messages]
     failure = fault(state)
-    Agent(provider, tools, messages, initial, state, events, ReentrantLock(), Idle(), ShellCancellation(), nothing, history, snapshot.revision, failure)
+    agent = Agent(provider, tools, messages, initial, state, events, ReentrantLock(), Idle(), ShellCancellation(), nothing, history, snapshot.revision, failure)
+    foreach(event -> applied!(agent.tools, event), events)
+    agent
 end
 
 persist!(agent::Agent, event) = persist!(agent, agent.history, event)

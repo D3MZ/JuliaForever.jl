@@ -4,10 +4,12 @@ using HTTP, JSON3, Unicode, Base64, Random, SHA
 
 export Execution
 export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, CodeSuccess, CodeFailure, cancel!, codeexecute, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Anthropic, Google, Usage, Completion, InvalidResponse, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
+export ToolSet, ToolNamespace, expose!, register!, unregister!
 
 include("instructions.jl")
 include("prompts.jl")
 include("tools.jl")
+include("tool_search.jl")
 include("system.jl")
 include("provider.jl")
 include("kernel.jl")
@@ -15,6 +17,7 @@ include("conversation.jl")
 include("durable.jl")
 include("history.jl")
 include("sqlite_history.jl")
+include("tool_search_events.jl")
 include("agent.jl")
 include("agent_history.jl")
 include("responses.jl")
