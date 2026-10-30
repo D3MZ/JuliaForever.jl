@@ -85,8 +85,6 @@ mcp.jl	:(name === :state)
 mcp.jl	:(received(client, message))
 mcp.jl	:(received(client, value))
 mcp.jl	:(received(client, value))
-mcp.jl	:(result["content"] isa AbstractVector)
-mcp.jl	:(result["isError"] isa Bool)
 mcp.jl	:(stringvalue(get(value, "text", nothing)))
 mcp.jl	:(stringvalue(get(value, "uri", nothing)))
 mcp.jl	:(timedwait((()->begin                   process_exited(client.process)               end), client.grace; pollint = 0.01) != :ok)
@@ -125,13 +123,9 @@ search.jl	:directory
 search.jl	:directory
 search.jl	:directory
 search.jl	:isdirectory
-search.jl	:limited
 search.jl	:matched
 search.jl	:negate
 search.jl	:smartcase
-search.jl	:truncated
-search.jl	:truncated
-search.jl	:truncatedlines
 search.jl	:windows
 search.jl	:windows
 session_terminal.jl	:(Kernel.same(agent.messages, plan.original))
@@ -162,8 +156,6 @@ system.jl	:(code != 0)
 system.jl	:bybytes
 system.jl	:partial
 system.jl	:partial
-system.jl	:reached
-system.jl	:truncated
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :streamed)
