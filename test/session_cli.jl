@@ -256,3 +256,74 @@ end
             @test run(["--continue", "after recovery"]; cwd=crash).output == "reply:after recovery\n"
         end
 end
+
+@testset "switch sessions with /resume" begin
+    mktempdir() do root
+        workspace, sessions = joinpath.((root,), ("project", "sessions"))
+        mkpath(workspace)
+        workspace = realpath(workspace)
+        requestfile = joinpath(root, "requests.jsonl")
+        requests() = [JSON3.read(line) for line in eachline(requestfile)]
+        run(args; input="", fail=false) = session_process(requestfile, workspace, sessions, args; input, fail)
+
+        @test run(["first"]).output == "reply:first\n"
+        firstfile = only(readdir(sessions; join=true))
+        @test run(["second"]).output == "reply:second\n"
+        secondfile = only(filter(!=(firstfile), readdir(sessions; join=true)))
+
+        switched = run(["--session", firstfile]; input="/resume\n1\nswitched\n/exit\n")
+        @test switched.status == 0
+        @test switched.output == "reply:switched\n"
+        @test occursin("first", switched.diagnostics) && occursin("second", switched.diagnostics)
+        @test [m.content for m in last(requests()) if m.role in ("user", "assistant")] == ["second", "reply:second", "switched"]
+        @test run(["--session", secondfile, "after"]).output == "reply:after\n"
+        @test [m.content for m in last(requests()) if m.role in ("user", "assistant")] == ["second", "reply:second", "switched", "reply:switched", "after"]
+
+        cancelled = run(["--session", firstfile]; input="/resume\nq\nkept\n/exit\n")
+        @test cancelled.status == 0
+        @test cancelled.output == "reply:kept\n"
+        @test [m.content for m in last(requests()) if m.role in ("user", "assistant")] == ["first", "reply:first", "kept"]
+
+        @test run(["interrupted"]; fail=true).status == 17
+        count = length(requests())
+        interrupted = run(["--session", firstfile]; input="/resume\n1\nkept again\n/exit\n")
+        @test interrupted.status == 1
+        @test occursin("uncertain pending effect", interrupted.diagnostics)
+        @test interrupted.output == "reply:kept again\n"
+        @test length(requests()) == count + 1
+        @test [m.content for m in last(requests()) if m.role in ("user", "assistant")] == ["first", "reply:first", "kept", "reply:kept", "kept again"]
+
+        alternate = joinpath(root, "alternate")
+        @test run(["--session-dir", alternate, "alternate"]).output == "reply:alternate\n"
+        ephemeral = run(["--no-session", "--session-dir", alternate]; input="/resume\n1\nfollowup\n/exit\n")
+        @test ephemeral.status == 0
+        @test ephemeral.output == "reply:followup\n"
+        @test [m.content for m in last(requests()) if m.role in ("user", "assistant")] == ["alternate", "reply:alternate", "followup"]
+    end
+end
+
+@testset "resume picker preserves diagnostics and current session" begin
+    mktempdir() do root
+        workspace, sessions = joinpath.((root,), ("project", "sessions"))
+        mkpath(workspace)
+        workspace = realpath(workspace)
+        requests = joinpath(root, "requests.jsonl")
+        run(args; input="") = session_process(requests, workspace, sessions, args; input)
+        key = "session-test-secret"
+        @test run(["first " * key]).status == 0
+        first = only(readdir(sessions; join=true))
+        @test run(["second"]).status == 0
+        second = only(filter(!=(first), readdir(sessions; join=true)))
+        choices = JuliaForever.SessionCatalog.list(sessions, workspace)
+        first_index = findfirst(item -> item.path == first, choices)
+        second_index = findfirst(item -> item.path == second, choices)
+        input = "/resume\nq\n/resume\n$second_index\n/resume\n$first_index\nlast\n/exit\n"
+        result = run(["--session", first]; input)
+        @test result.status == 0
+        @test result.output == "reply:last\n"
+        @test occursin("first [redacted]", result.diagnostics)
+        @test !occursin(key, result.diagnostics)
+        last_request = JSON3.read(last(readlines(requests)))
+        @test [message.content for message in last_request if message.role in ("user", "assistant")] == ["first " * key, "reply:first " * key, "last"]
+    end
+end

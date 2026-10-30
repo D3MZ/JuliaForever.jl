@@ -167,9 +167,18 @@ function collectinfo!(items, dir, file, found::RegexMatch)
 end
 
 wrap(rejected::H.Rejected) = rejected
-wrap(store::H.SQLite) = wrap(store, H.Tree(store))
-wrap(store::H.SQLite, tree::H.Tree) = tree
-wrap(store::H.SQLite, rejected::H.Rejected) = (close(store); rejected)
+function wrap(store::H.SQLite)
+    result = nothing
+    try
+        result = H.Tree(store)
+    finally
+        release!(store, result)
+    end
+    result
+end
+
+release!(store::H.SQLite, ::H.Tree) = nothing
+release!(store::H.SQLite, result) = close(store)
 
 istree(record) = false
 istree(record::Dict) = get(record, "format", "") == H.treeformat

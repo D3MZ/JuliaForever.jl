@@ -1,9 +1,9 @@
 using Test, JuliaForever, HTTP, JSON3
 
-function models_process(base, workspace, args; provider="openrouter", openai_model="env-openai", router_model="env/router", openai_key="synthetic-openai-secret", router_key="synthetic-router-secret", input="")
+function models_process(base, workspace, args; provider="openrouter", openai_model="env-openai", router_model="env/router", openai_key="synthetic-openai-secret", router_key="synthetic-router-secret", anthropic_model="env-anthropic", google_model="env-google", input="")
     project = dirname(@__DIR__)
     cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever $args`; dir=workspace)
-    cmd = addenv(cmd, "JF_PROVIDER" => provider, "OPENAI_BASE_URL" => "$base/openai", "OPENAI_MODEL" => openai_model, "OPENAI_API_KEY" => openai_key, "OPENROUTER_BASE_URL" => "$base/router", "OPENROUTER_MODEL" => router_model, "OPENROUTER_API_KEY" => router_key, "JF_INSTRUCTIONS_DIR" => workspace, "JF_TEST_PLUGIN" => nothing, "JF_TEST_EVENTS" => nothing)
+    cmd = addenv(cmd, "JF_PROVIDER" => provider, "OPENAI_BASE_URL" => "$base/openai", "OPENAI_MODEL" => openai_model, "OPENAI_API_KEY" => openai_key, "OPENROUTER_BASE_URL" => "$base/router", "OPENROUTER_MODEL" => router_model, "OPENROUTER_API_KEY" => router_key, "ANTHROPIC_BASE_URL" => "$base/anthropic", "ANTHROPIC_MODEL" => anthropic_model, "ANTHROPIC_API_KEY" => "synthetic-anthropic-secret", "GEMINI_BASE_URL" => "$base/google", "GEMINI_MODEL" => google_model, "GEMINI_API_KEY" => "synthetic-google-secret", "JF_SESSION_DIR" => joinpath(workspace, "sessions"), "JF_INSTRUCTIONS_DIR" => workspace, "JF_TEST_PLUGIN" => nothing, "JF_TEST_EVENTS" => nothing)
     mktempdir() do dir
         stdinpath, stdoutpath, stderrpath = joinpath.((dir,), ("stdin", "stdout", "stderr"))
         write(stdinpath, input)
@@ -16,7 +16,15 @@ end
     requests = Any[]
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
         body = JSON3.read(String(request.body))
-        push!(requests, (; target=request.target, authorization=HTTP.header(request, "Authorization", nothing), body))
+        push!(requests, (; target=request.target, authorization=HTTP.header(request, "Authorization", nothing), anthropic_key=HTTP.header(request, "x-api-key", nothing), google_key=HTTP.header(request, "x-goog-api-key", nothing), body))
+        if request.target == "/anthropic/v1/messages"
+            events = [Dict("type" => "message_start", "message" => Dict("usage" => Dict())), Dict("type" => "content_block_start", "index" => 0, "content_block" => Dict("type" => "text", "text" => "fixture")), Dict("type" => "content_block_stop", "index" => 0), Dict("type" => "message_delta", "delta" => Dict("stop_reason" => "end_turn")), Dict("type" => "message_stop")]
+            return HTTP.Response(200, ["Content-Type" => "text/event-stream"], join("data: $(JSON3.write(event))\n\n" for event in events))
+        end
+        if startswith(request.target, "/google/models/")
+            event = Dict("candidates" => [Dict("content" => Dict("parts" => [Dict("text" => "fixture")]), "finishReason" => "STOP")])
+            return HTTP.Response(200, ["Content-Type" => "text/event-stream"], "data: $(JSON3.write(event))\n\n")
+        end
         if request.target == "/router/auth/keys"
             body.code == "synthetic-empty" && return HTTP.Response(200, ["Content-Type" => "application/json"], "{}")
             body.code == "synthetic-malformed" && return HTTP.Response(200, ["Content-Type" => "application/json"], "{synthetic-login-secret")
@@ -110,6 +118,14 @@ end
             @test denied.status == 1
             @test occursin("HTTP 401", denied.diagnostics)
             @test !occursin("synthetic-router-secret", denied.output * denied.diagnostics)
+
+            anthropic = models_process(base, workspace, ["--provider", "anthropic", "--model", "cli-anthropic", "hello"]; provider="google", anthropic_model=nothing)
+            @test anthropic == ok
+            @test (requests[end].target, requests[end].body.model, requests[end].anthropic_key) == ("/anthropic/v1/messages", "cli-anthropic", "synthetic-anthropic-secret")
+            google = models_process(base, workspace, ["--provider", "google", "--model", "cli-google", "hello"]; provider="anthropic", google_model=nothing)
+            @test google == ok
+            @test requests[end].target == "/google/models/cli-google:streamGenerateContent?alt=sse"
+            @test requests[end].google_key == "synthetic-google-secret"
 
             before = length(requests)
             for args in (["--provider"], ["--model"], ["--model", "--history", path], ["--provider", "--model", "unused"], ["--provider", ""], ["--model", "  "], ["--provider", "synthetic-openai-secret", "hello"], ["--provider", "openai", "--login-openrouter", "hello"], ["--login-openrouter", "--login-openrouter-callback", "hello"], ["--login-openrouter-callback", "--login-openrouter", "hello"])

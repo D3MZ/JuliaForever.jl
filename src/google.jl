@@ -1,0 +1,308 @@
+module GoogleAPI
+
+using HTTP, JSON3, Random, SHA
+import ..JuliaForever: complete, stream, payload, headers, endpoint, definition, decode, incomplete, images, UnsupportedImage, InvalidResponse, Completion, Usage
+
+struct Google
+    base::String
+    model::String
+    key::String
+end
+
+Base.show(io::IO, provider::Google) = print(io, "Google(", repr(provider.model), ", [redacted])")
+JSON3.StructTypes.StructType(::Type{Google}) = JSON3.StructTypes.CustomStruct()
+JSON3.StructTypes.lower(provider::Google) = (; model=provider.model, credentials="[redacted]")
+headers(provider::Google) = ["x-goog-api-key" => provider.key, "content-type" => "application/json"]
+endpoint(provider::Google) = "$(rstrip(provider.base, '/'))/models/$(HTTP.escapeuri(provider.model)):generateContent"
+endpoint(provider::Google, ::typeof(stream)) = "$(rstrip(provider.base, '/'))/models/$(HTTP.escapeuri(provider.model)):streamGenerateContent?alt=sse"
+origin(provider::Google) = bytes2hex(sha256(provider.base)) * ":" * provider.model
+
+abstract type Message end
+struct System <: Message
+    data
+end
+struct User <: Message
+    data
+end
+struct Assistant <: Message
+    data
+end
+struct Tool <: Message
+    data
+end
+const messages = Dict("system" => System, "user" => User, "assistant" => Assistant, "tool" => Tool)
+
+abstract type CallIds end
+struct WithIds <: CallIds end
+struct WithoutIds <: CallIds end
+const idmodes = Dict(false => WithoutIds(), true => WithIds())
+callids(model) = callids(model, match(r"^gemini(?:-live)?-(\d+)"i, model))
+callids(model, ::Nothing) = idmodes[startswith(model, "claude-") || startswith(model, "gpt-oss-")]
+callids(model, version::RegexMatch) = idmodes[parse(Int, version.captures[1]) >= 3]
+
+mutable struct Transcript
+    system::Vector{String}
+    contents::Vector{Any}
+    results::Vector{Any}
+    calls::Dict{String, String}
+    origin::String
+    ids::CallIds
+end
+Transcript(provider::Google) = Transcript(String[], [], [], Dict{String, String}(), origin(provider), callids(provider.model))
+
+function flush!(transcript::Transcript)
+    isempty(transcript.results) || push!(transcript.contents, Dict("role" => "user", "parts" => copy(transcript.results)))
+    empty!(transcript.results)
+end
+function add!(transcript::Transcript, message::System)
+    flush!(transcript)
+    push!(transcript.system, message.data["content"])
+end
+function add!(transcript::Transcript, message::User)
+    flush!(transcript)
+    push!(transcript.contents, Dict("role" => "user", "parts" => [Dict("text" => message.data["content"])]))
+end
+function add!(transcript::Transcript, message::Assistant)
+    flush!(transcript)
+    data = message.data
+    for call in get(data, "tool_calls", [])
+        transcript.calls[call["id"]] = call["function"]["name"]
+    end
+    parts = get(data, "google_parts", nothing)
+    if get(data, "google_origin", "") != transcript.origin
+        parts = nothing
+    end
+    add!(transcript, data, parts)
+end
+function add!(transcript::Transcript, data, ::Nothing)
+    parts = []
+    addtext!(parts, get(data, "content", nothing))
+    for call in get(data, "tool_calls", [])
+        fn = call["function"]
+        result = Dict("name" => fn["name"], "args" => JSON3.read(fn["arguments"], Dict{String, Any}))
+        callid!(result, call["id"], transcript.ids)
+        push!(parts, Dict("functionCall" => result))
+    end
+    add!(transcript, data, parts)
+end
+addtext!(parts, ::Nothing) = nothing
+addtext!(parts, text) = push!(parts, Dict("text" => text))
+function add!(transcript::Transcript, data, parts)
+    restored = replay(parts, get(data, "tool_calls", []), transcript.ids)
+    isempty(restored) || push!(transcript.contents, Dict("role" => "model", "parts" => restored))
+end
+const outputkeys = Dict(false => "output", true => "error")
+function add!(transcript::Transcript, message::Tool)
+    data = message.data
+    id = data["tool_call_id"]
+    name = transcript.calls[id]
+    output = Dict(outputkeys[get(data, "is_error", false)] => data["content"])
+    result = Dict("name" => name, "response" => output)
+    callid!(result, id, transcript.ids)
+    push!(transcript.results, Dict("functionResponse" => result))
+end
+
+payload(provider::Google, input, tools, parameters; streaming=false) = payload(provider, input, tools, parameters, images(input); streaming)
+payload(provider::Google, input, tools, parameters, failure::UnsupportedImage; streaming=false) = failure
+
+function payload(provider::Google, input, tools, parameters, ::Nothing; streaming=false)
+    transcript = Transcript(provider)
+    for message in input
+        data = Dict{String, Any}(string(key) => value for (key, value) in pairs(message))
+        add!(transcript, messages[data["role"]](data))
+    end
+    flush!(transcript)
+    data = Dict{String, Any}(string(key) => value for (key, value) in pairs(parameters))
+    data["contents"] = transcript.contents
+    isempty(transcript.system) || (data["systemInstruction"] = Dict("parts" => [Dict("text" => join(transcript.system, "\n\n"))]))
+    delete!(data, "tools")
+    if !isempty(tools)
+        data["tools"] = [Dict("functionDeclarations" => [Dict("name" => fn["name"], "description" => fn["description"], "parametersJsonSchema" => fn["parameters"]) for fn in (definition(tool)["function"] for tool in values(tools))])]
+    end
+    JSON3.write(data)
+end
+
+function usage(data::AbstractDict)
+    input = something(get(data, "promptTokenCount", nothing), 0)
+    cached = something(get(data, "cachedContentTokenCount", nothing), 0)
+    reasoning = something(get(data, "thoughtsTokenCount", nothing), 0)
+    output = something(get(data, "candidatesTokenCount", nothing), 0) + reasoning
+    total = something(get(data, "totalTokenCount", nothing), input + output)
+    Usage(max(0, input - cached), output, cached, 0, reasoning, total, nothing)
+end
+usage(::Nothing) = nothing
+
+abstract type Part end
+struct Text <: Part
+    data
+end
+struct Thinking <: Part
+    data
+end
+struct Call <: Part
+    data
+end
+struct Unknown <: Part
+    data
+end
+const texts = Dict(false => Text, true => Thinking)
+callid!(data, id, ::WithIds) = (data["id"] = id)
+callid!(data, id, ::WithoutIds) = delete!(data, "id")
+
+function replay(parts, calls, mode::CallIds)
+    index = Ref(0)
+    [replay(part(data), calls, index, mode) for data in parts]
+end
+replay(part::Part, calls, index, mode) = part.data
+function replay(part::Call, calls, index, mode)
+    index[] += 1
+    data = deepcopy(Dict{String, Any}(part.data))
+    call = Dict{String, Any}(data["functionCall"])
+    callid!(call, calls[index[]]["id"], mode)
+    data["functionCall"] = call
+    data
+end
+
+part(data) = part(data, get(data, "functionCall", nothing))
+part(data, call::AbstractDict) = Call(data)
+part(data, ::Nothing) = textpart(data, get(data, "text", nothing))
+textpart(data, ::Nothing) = Unknown(data)
+textpart(data, text) = get(texts, get(data, "thought", false), Unknown)(data)
+
+mutable struct State
+    parts::Vector{Any}
+    calls::Vector{Any}
+    text::Union{Nothing, String}
+    used::Union{Nothing, Usage}
+    reason::Union{Nothing, String}
+    failure::Union{Nothing, String, InvalidResponse}
+end
+State() = State([], [], nothing, nothing, nothing, nothing)
+
+add!(state::State, part::Unknown, callback) = (state.failure = "Google response contained an unsupported content part")
+function add!(state::State, part::Text, callback)
+    push!(state.parts, part.data)
+    text = part.data["text"]
+    add!(state, text, state.text)
+    callback((; type=:text, text))
+end
+add!(state::State, text::AbstractString, ::Nothing) = (state.text = text)
+add!(state::State, text::AbstractString, previous::AbstractString) = (state.text = previous * text)
+function add!(state::State, part::Thinking, callback)
+    push!(state.parts, part.data)
+    text = part.data["text"]
+    callback((; type=:thinking, text, field="thought"))
+end
+function add!(state::State, part::Call, callback)
+    push!(state.parts, part.data)
+    call = part.data["functionCall"]
+    id = get(call, "id", nothing)
+    id = callid(state, id)
+    name = get(call, "name", "")
+    arguments = JSON3.write(get(call, "args", Dict()))
+    push!(state.calls, Dict("id" => id, "type" => "function", "function" => Dict("name" => name, "arguments" => arguments)))
+    index = length(state.calls) - 1
+    callback((; type=:tool_call, index, id, name, arguments))
+end
+callid(state, ::Nothing) = randstring(24)
+function callid(state, id::AbstractString)
+    isempty(id) && return randstring(24)
+    ids = [call["id"] for call in state.calls]
+    id in ids ? randstring(24) : id
+end
+
+function receive!(state::State, data::AbstractDict, callback)
+    receive!(state, state.failure, data, callback)
+end
+function receive!(state::State, ::Nothing, data::AbstractDict, callback)
+    callback((; type=:provider, data))
+    receiveusage!(state, get(data, "usageMetadata", nothing), callback)
+    candidates = get(data, "candidates", [])
+    isempty(candidates) || receivecandidate!(state, first(candidates), callback)
+    haskey(data, "error") && (state.failure = JSON3.write(data["error"]))
+end
+receive!(state::State, failure, data::AbstractDict, callback) = nothing
+receive!(state::State, failure::InvalidResponse, callback) = fail!(state, state.failure, failure)
+fail!(state, ::Nothing, failure) = (state.failure = failure)
+fail!(state, previous, failure) = nothing
+receiveusage!(state, ::Nothing, callback) = nothing
+function receiveusage!(state, data, callback)
+    state.used = usage(data)
+    callback((; type=:usage, usage=state.used))
+end
+function receivecandidate!(state, candidate, callback)
+    content = something(get(candidate, "content", nothing), Dict())
+    for data in get(content, "parts", [])
+        add!(state, part(data), callback)
+    end
+    state.reason = get(candidate, "finishReason", state.reason)
+    reportfinish!(callback, state.reason, state.calls)
+end
+reportfinish!(callback, ::Nothing, calls) = nothing
+function reportfinish!(callback, reason, calls)
+    mapped = get(Dict("STOP" => "stop", "MAX_TOKENS" => "length"), reason, reason)
+    name = mapped == "stop" && !isempty(calls) ? "tool_calls" : mapped
+    callback((; type=:finish, reason=name))
+end
+
+function finish(state::State, provider::Google)
+    message = Dict{String, Any}("role" => "assistant", "content" => state.text, "google_parts" => state.parts, "google_origin" => origin(provider))
+    isempty(state.calls) || (message["tool_calls"] = state.calls)
+    result(message, state, state.reason)
+end
+function result(message, state, ::Nothing)
+    Completion(message, state.used, nothing, false, something(state.failure, "Google stream ended without a finish reason"))
+end
+function result(message, state, reason::AbstractString)
+    mapped = get(Dict("STOP" => "stop", "MAX_TOKENS" => "length"), reason, nothing)
+    result(message, state, reason, mapped)
+end
+function result(message, state, reason, ::Nothing)
+    Completion(message, state.used, nothing, false, something(state.failure, "Google finish reason: $reason"))
+end
+function result(message, state, reason, mapped::AbstractString)
+    finish = mapped == "stop" && !isempty(state.calls) ? "tool_calls" : mapped
+    outcome(message, state, finish, state.failure)
+end
+outcome(message, state, finish, ::Nothing) = Completion(message, state.used, finish, true, nothing)
+outcome(message, state, finish, failure) = Completion(message, state.used, finish, false, failure)
+
+httpfailure(status) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, "Google HTTP $status")
+
+function complete(provider::Google, input, tools; parameters=Dict())
+    complete(provider, payload(provider, input, tools, parameters))
+end
+complete(provider::Google, failure::UnsupportedImage) = incomplete(failure)
+function complete(provider::Google, body::AbstractString)
+    response = HTTP.post(endpoint(provider), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false)
+    200 <= response.status < 300 || return httpfailure(response.status)
+    state = State()
+    receive!(state, decode(String(response.body)), identity)
+    finish(state, provider)
+end
+function stream(provider::Google, input, tools; parameters=Dict(), on_event=identity)
+    stream(provider, payload(provider, input, tools, parameters; streaming=true), on_event)
+end
+function stream(provider::Google, failure::UnsupportedImage, on_event)
+    answer = incomplete(failure)
+    on_event((; type=:incomplete, result=answer))
+    answer
+end
+function stream(provider::Google, body::AbstractString, on_event)
+    state = State()
+    response = HTTP.post(endpoint(provider, stream), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, sse_callback=raw -> receive!(state, decode(raw.data), on_event))
+    if !(200 <= response.status < 300)
+        answer = httpfailure(response.status)
+        on_event((; type=:incomplete, result=answer))
+        return answer
+    end
+    answer = finish(state, provider)
+    report!(on_event, answer, answer.error)
+    answer
+end
+report!(callback, answer, ::Nothing) = callback((; type=:done, result=answer))
+report!(callback, answer, failure) = callback((; type=:incomplete, result=answer))
+
+end
+
+using .GoogleAPI: Google

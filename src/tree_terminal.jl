@@ -125,17 +125,34 @@ tree!(terminal::Terminal, agent::Agent, history::History.SQLite, input::IO, reje
 tree!(terminal::Terminal, agent::Agent, history::History.SQLite, input::IO, tree::History.Tree, snapshot) = tree!(terminal, agent, history, tree, TreeTerminal.choose(tree, input, terminal.diagnostics, text -> redact(terminal, text)), snapshot)
 tree!(terminal::Terminal, agent::Agent, history::History.SQLite, tree::History.Tree, ::TreeTerminal.Cancelled, snapshot) = (agent, history, 0)
 tree!(terminal::Terminal, agent::Agent, history::History.SQLite, tree::History.Tree, rejected::History.Rejected, snapshot) = (agent, history, result!(terminal, rejected))
-tree!(terminal::Terminal, agent::Agent, history::History.SQLite, tree::History.Tree, choice::Union{TreeTerminal.Move, TreeTerminal.Edit}, snapshot) = tree!(terminal, agent, history, tree, choice, History.branch!(tree, choice.node), snapshot)
+tree!(terminal::Terminal, agent::Agent, history::History.SQLite, tree::History.Tree, choice::Union{TreeTerminal.Move, TreeTerminal.Edit}, snapshot) = tree!(terminal, agent, history, tree, choice, selectbranch!(terminal, agent, tree, choice), snapshot)
 tree!(terminal::Terminal, agent::Agent, history::History.SQLite, tree::History.Tree, choice::Union{TreeTerminal.Move, TreeTerminal.Edit}, rejected::History.Rejected, snapshot) = (agent, history, result!(terminal, rejected))
+tree!(terminal::Terminal, agent::Agent, history::History.SQLite, tree::History.Tree, choice::Union{TreeTerminal.Move, TreeTerminal.Edit}, ::PendingInputs, snapshot) = (agent, history, 1)
 tree!(terminal::Terminal, agent::Agent, history::History.SQLite, tree::History.Tree, choice::Union{TreeTerminal.Move, TreeTerminal.Edit}, selected::Integer, snapshot) = tree!(terminal, agent, tree, choice, selected, snapshot)
 tree!(terminal::Terminal, agent::Agent, history::History.Tree, ::TreeTerminal.Cancelled, snapshot) = (agent, history, 0)
 tree!(terminal::Terminal, agent::Agent, history::History.Tree, rejected::History.Rejected, snapshot) = (agent, history, result!(terminal, rejected))
 
 function tree!(terminal::Terminal, agent::Agent, history::History.Tree, choice::Union{TreeTerminal.Move, TreeTerminal.Edit}, snapshot)
-    tree!(terminal, agent, history, choice, History.branch!(history, choice.node), snapshot)
+    tree!(terminal, agent, history, choice, selectbranch!(terminal, agent, history, choice), snapshot)
 end
 
 tree!(terminal::Terminal, agent::Agent, history::History.Tree, choice::Union{TreeTerminal.Move, TreeTerminal.Edit}, rejected::History.Rejected, snapshot) = (agent, history, result!(terminal, rejected))
+tree!(terminal::Terminal, agent::Agent, history::History.Tree, choice::Union{TreeTerminal.Move, TreeTerminal.Edit}, ::PendingInputs, snapshot) = (agent, history, 1)
+
+function selectbranch!(terminal, agent, history, choice)
+    lock(history.lock) do
+        selectbranch!(terminal, history, choice, checkqueues!(terminal, agent.state, history))
+    end
+end
+
+selectbranch!(terminal, history, choice, pending::PendingInputs) = pending
+selectbranch!(terminal, history, choice, ::Nothing) = selectbranch!(terminal, history, choice, History.branches(history))
+selectbranch!(terminal, history, choice, rejected::History.Rejected) = rejected
+selectbranch!(terminal, history, choice, branches::Vector) = selecttarget!(terminal, history, choice, branches[choice.node].state)
+selecttarget!(terminal, history, choice, rejected::History.Rejected) = rejected
+selecttarget!(terminal, history, choice, state::Conversation.State) = selecttarget!(terminal, history, choice, checkqueues!(terminal, state, history))
+selecttarget!(terminal, history, choice, ::Nothing) = History.branch!(history, choice.node)
+selecttarget!(terminal, history, choice, pending::PendingInputs) = pending
 
 function tree!(terminal::Terminal, agent::Agent, history::History.Tree, choice::Union{TreeTerminal.Move, TreeTerminal.Edit}, selected::Integer, snapshot)
     restored = Agent(agent.provider, agent.tools, Dict{String, Any}[]; history)

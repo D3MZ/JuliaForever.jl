@@ -2,6 +2,7 @@ import fcntl
 import json
 import os
 import pty
+import re
 import select
 import struct
 import subprocess
@@ -23,7 +24,7 @@ class Session:
         self.initial_mode = termios.tcgetattr(self.slave)
         self.output = b""
         self.files = []
-        env = dict(os.environ, HOME=str(self.directory), TERM=term, JF_INSTRUCTIONS_DIR=str(self.directory), JF_FIXTURE=mode, JF_CAPTURE=str(self.capture), JF_PROVIDER="openai", OPENAI_MODEL="fixture", OPENAI_API_KEY="fixture-key", JF_TEST_EVENTS=str(self.directory / "plugin-events"), JF_TEST_PLUGIN=plugin)
+        env = dict(os.environ, TERM=term, JF_INSTRUCTIONS_DIR=str(self.directory), JF_SESSION_DIR=str(self.directory / "sessions"), JF_FIXTURE=mode, JF_CAPTURE=str(self.capture), JF_PROVIDER="openai", OPENAI_MODEL="fixture", OPENAI_API_KEY="fixture-key", JF_TEST_EVENTS=str(self.directory / "plugin-events"), JF_TEST_PLUGIN=plugin)
         def destination(enabled, path):
             if enabled:
                 return self.slave
@@ -126,6 +127,39 @@ def tree_editor(julia, project, directory):
         session.close()
 
 
+def resume_editor(julia, project, directory):
+    first = Session(julia, project, directory)
+    try:
+        first.ready()
+        first.send(b"first\r", "first")
+        os.write(first.master, b"/exit\r")
+        first.wait_exit()
+        assert first.process.returncode == 0
+    finally:
+        first.close()
+    fixture = str(project / "test" / "fixtures")
+    session = Session(julia, project, directory, args=("--plugin-env", fixture, "--plugin", "GreetingPlugin"))
+    try:
+        session.ready()
+        session.send(b"second\r", "second")
+        offset = len(session.output)
+        os.write(session.master, b"/resume\r")
+        session.until(lambda: b"Choose a session" in session.output[offset:], "session selector")
+        match = re.search(rb"\[(\d+)\][^\r\n]*first", session.output[offset:])
+        assert match, session.output[offset:]
+        os.write(session.master, match.group(1) + b"\n")
+        session.until(lambda: b"Resuming session." in session.output[offset:], "resumed session")
+        session.until(lambda: b"\x1b[?2004h" in session.output[offset:].split(b"Resuming session.", 1)[1] and b"> " in session.output[offset:].split(b"Resuming session.", 1)[1], "prompt after resume")
+        session.send(b"after\r", "after")
+        os.write(session.master, b"\x04")
+        session.wait_exit()
+        assert session.process.returncode == 0, (session.process.returncode, session.output)
+        assert (directory / "plugin-events").read_text().splitlines() == ["agent_start", "agent_end", "agent_start", "agent_end"]
+        assert termios.tcgetattr(session.slave) == session.initial_mode
+    finally:
+        session.close()
+
+
 def redirected(julia, project, directory):
     session = Session(julia, project, directory, stdout_tty=False)
     try:
@@ -190,7 +224,7 @@ def plugin_terminal(julia, project, directory):
 def main():
     julia, project = sys.argv[1], Path(sys.argv[2])
     with tempfile.TemporaryDirectory(prefix="jf-terminal-pty-") as root:
-        for name, scenario in (("editor", editor), ("tree-editor", tree_editor), ("redirected", redirected), ("no-terminal-output", no_terminal_output), ("dumb-terminal", dumb_terminal), ("plugin", plugin_terminal)):
+        for name, scenario in (("editor", editor), ("tree-editor", tree_editor), ("resume-editor", resume_editor), ("redirected", redirected), ("no-terminal-output", no_terminal_output), ("dumb-terminal", dumb_terminal), ("plugin", plugin_terminal)):
             directory = Path(root) / name
             directory.mkdir()
             scenario(julia, project, directory)

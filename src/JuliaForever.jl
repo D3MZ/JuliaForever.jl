@@ -3,7 +3,7 @@ module JuliaForever
 using HTTP, JSON3, StructTypes, Unicode, Base64, Random, SHA, REPL
 
 export Execution, ContextEstimates
-export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, CodeSuccess, CodeFailure, cancel!, codeexecute, Image, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, Truncated, InvalidResponse, ProviderStatus, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
+export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, CodeSuccess, CodeFailure, cancel!, codeexecute, Image, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Anthropic, Google, Usage, Completion, Truncated, InvalidResponse, ProviderStatus, UnsupportedImage, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
 
 include("instructions.jl")
 include("tools.jl")
@@ -19,6 +19,8 @@ include("estimates.jl")
 include("extensions.jl")
 include("agent_history.jl")
 include("responses.jl")
+include("anthropic.jl")
+include("google.jl")
 include("sessions.jl")
 include("session_catalog.jl")
 include("execution.jl")
@@ -30,6 +32,7 @@ include("context.jl")
 include("codemode.jl")
 include("terminal.jl")
 include("tree_terminal.jl")
+include("session_terminal.jl")
 include("mcp.jl")
 
 missingmodel(env, info, ::Nothing) = isempty(strip(get(env, info.model, ""))) ? [info.model] : String[]
@@ -112,7 +115,7 @@ function login!(login::OpenRouterLogin, code::AbstractString, info, model)
 end
 
 function acquire(::Authentication, ::Nothing, model)
-    println(stderr, "Unknown provider; choose openai, openai-responses, or openrouter.")
+    println(stderr, "Unknown provider; choose openai, openai-responses, openrouter, anthropic, or google.")
     2
 end
 
@@ -129,7 +132,7 @@ end
 
 launch(status::Integer, packages, environments, codemode, session, sessiondir, args) = status
 
-function launch(model::Union{OpenAI, OpenAIResponses}, packages, environments, codemode, session, sessiondir, args)
+function launch(model::Union{OpenAI, OpenAIResponses, Anthropic, Google}, packages, environments, codemode, session, sessiondir, args)
     tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
     Sys.iswindows() && push!(tools, PowerShell(pwd()))
     terminal = Terminal(stdout, stderr, [model.key])
@@ -274,12 +277,12 @@ function (@main)(args)
         end
     end
     if args == ["--help"] || args == ["-h"]
-        println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter. --provider overrides JF_PROVIDER; --model overrides OPENAI_MODEL or OPENROUTER_MODEL. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
+        println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
         println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --session-dir DIR, --no-session. Set JF_SESSION_DIR to choose the default directory.")
         return 0
     end
     if !validprovider(selected)
-        println(stderr, "Unknown provider; choose openai, openai-responses, or openrouter.")
+        println(stderr, "Unknown provider; choose openai, openai-responses, openrouter, anthropic, or google.")
         return 2
     end
     if inspect
@@ -328,12 +331,13 @@ function terminal!(terminal::Terminal, model, registry::Extensions.Registry, cod
     end
     extensions = Extensions.snapshot(registry)
     history = selection(attempt(() -> SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr, text -> redact(terminal, text))))
-    runsession!(history, terminal, model, extensions, args)
+    runsession!(history, terminal, model, extensions, args, sessiondir)
 end
 
-runsession!(::SessionCatalog.Cancelled, terminal, model, extensions, args) = 0
+runsession!(history, terminal, model, extensions, args) = runsession!(history, terminal, model, extensions, args, SessionCatalog.directory(ENV))
+runsession!(::SessionCatalog.Cancelled, terminal, model, extensions, args, sessiondir) = 0
 
-function runsession!(invalid::SessionCatalog.Invalid, terminal, model, extensions, args)
+function runsession!(invalid::SessionCatalog.Invalid, terminal, model, extensions, args, sessiondir)
     println(terminal.diagnostics, redact(terminal, invalid.message))
     2
 end
@@ -347,29 +351,39 @@ end
 
 sessionfault!(terminal, fault, ::Nothing) = result!(terminal, fault)
 
-function runsession!(history, terminal, model, extensions, args)
+function runsession!(history, terminal, model, extensions, args, sessiondir)
     history isa History.Rejected && return result!(terminal, history)
+    store = Ref{Union{Nothing, History.Store}}(history)
     try
         snapshot = isnothing(history) ? nothing : History.snapshot(history)
         snapshot isa History.Rejected && return result!(terminal, snapshot)
-        startsession!(terminal, model, extensions, history, args, attempt(() -> initial(extensions, snapshot)))
+        startsession!(terminal, model, extensions, store, args, sessiondir, attempt(() -> initial(extensions, snapshot)))
     finally
-        isnothing(history) || close(history)
+        closehistory!(store[])
     end
 end
 
-function startsession!(terminal, model, extensions, history, args, failure::ToolFailure)
+closehistory!(::Nothing) = nothing
+closehistory!(history::History.Store) = close(history)
+
+function startsession!(terminal, model, extensions, store, args, sessiondir, failure::ToolFailure)
     println(terminal.diagnostics, "Failed to initialize project context: ", redact(terminal, failure.text))
     flush(terminal.diagnostics)
     1
 end
 
-function startsession!(terminal, model, extensions, history, args, messages)
-    agent = Agent(model, extensions, messages; history)
+function startsession!(terminal, model, extensions, store, args, sessiondir, messages)
+    agent = Agent(model, extensions, messages; history=store[])
     agent isa History.Rejected && return result!(terminal, agent)
-    isnothing(agent.fault) || return sessionfault!(terminal, agent.fault, history)
+    isnothing(agent.fault) || return sessionfault!(terminal, agent.fault, store[])
+    startsession!(terminal, agent, extensions, store, args, sessiondir, checkqueues!(terminal, agent.state, store[]))
+end
+
+startsession!(terminal, agent, extensions, store, args, sessiondir, ::PendingInputs) = 1
+
+function startsession!(terminal, agent, extensions, store, args, sessiondir, ::Nothing)
     if isempty(args)
-        return interact!(terminal, agent, extensions, stdin, stderr)
+        return interact!(terminal, agent, extensions, stdin, stderr, store, sessiondir)
     else
         return run!(terminal, agent, join(args, " "), extensions)
     end
@@ -384,25 +398,25 @@ function prompt!(output, input::Base.TTY)
     flush(output)
 end
 
-interact!(terminal, agent, extensions, input, output) = readloop!(terminal, agent, extensions, input, output)
+interact!(terminal, agent, extensions, input, output) = interact!(terminal, agent, extensions, input, output, Ref{Union{Nothing, History.Store}}(agent.history), SessionCatalog.directory(ENV))
+interact!(terminal, agent, extensions, input, output, store, sessiondir) = readloop!(terminal, agent, extensions, input, output, store, sessiondir)
 
-function interact!(terminal, agent, extensions, input::Base.TTY, output::Base.TTY)
-    get(ENV, "TERM", "") in ("", "dumb") && return readloop!(terminal, agent, extensions, input, output)
+function interact!(terminal, agent, extensions, input::Base.TTY, output::Base.TTY, store, sessiondir)
+    get(ENV, "TERM", "") in ("", "dumb") && return readloop!(terminal, agent, extensions, input, output, store, sessiondir)
     println(output, "Julia Forever — Enter sends; Ctrl+J adds a line; /exit quits")
-    edit!(terminal, agent, extensions)
+    edit!(terminal, agent, extensions, store, sessiondir)
 end
 
-function readloop!(terminal, agent, extensions, input, output)
+function readloop!(terminal, agent, extensions, input, output, store, sessiondir)
     intro!(output, input)
     status = 0
-    history = agent.history
     while true
         prompt!(output, input)
         eof(input) && break
         line = readline(input)
         line == "/exit" && break
-        if line == "/tree"
-            agent, history, result = tree!(terminal, agent, history, input, extensions)
+        if haskey(terminalcommands, line)
+            agent, store[], result = command!(terminalcommands[line], terminal, agent, store[], input, sessiondir, extensions)
             status = max(status, result)
             continue
         end

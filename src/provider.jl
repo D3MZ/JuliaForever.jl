@@ -8,6 +8,13 @@ struct InvalidResponse end
 struct ProviderStatus
     status::Int
 end
+struct UnsupportedImage end
+
+imagecheck(::Nothing, message) = imagecheck(get(Dict(string(key) => value for (key, value) in pairs(message)), "image", nothing))
+imagecheck(unsupported::UnsupportedImage, message) = unsupported
+imagecheck(::Nothing) = nothing
+imagecheck(image) = UnsupportedImage()
+images(input) = foldl(imagecheck, input; init=nothing)
 
 StructTypes.StructType(::Type{OpenAI}) = StructTypes.CustomStruct()
 StructTypes.lower(provider::OpenAI) = (; model=provider.model, credentials="[redacted]")
@@ -32,6 +39,8 @@ function providerinfo(selected)
     selected == "openai" && return (; factory=OpenAI, base="OPENAI_BASE_URL", url="https://api.openai.com/v1", model="OPENAI_MODEL", key="OPENAI_API_KEY")
     selected == "openai-responses" && return (; factory=OpenAIResponses, base="OPENAI_BASE_URL", url="https://api.openai.com/v1", model="OPENAI_MODEL", key="OPENAI_API_KEY")
     selected == "openrouter" && return (; factory=OpenAI, base="OPENROUTER_BASE_URL", url="https://openrouter.ai/api/v1", model="OPENROUTER_MODEL", key="OPENROUTER_API_KEY")
+    selected == "anthropic" && return (; factory=Anthropic, base="ANTHROPIC_BASE_URL", url="https://api.anthropic.com", model="ANTHROPIC_MODEL", key="ANTHROPIC_API_KEY")
+    selected == "google" && return (; factory=Google, base="GEMINI_BASE_URL", url="https://generativelanguage.googleapis.com/v1beta", model="GEMINI_MODEL", key="GEMINI_API_KEY")
     nothing
 end
 
@@ -134,10 +143,10 @@ struct Completion
     usage::Union{Nothing, Usage}
     finish::Union{Nothing, String}
     done::Bool
-    error::Union{Nothing, String, InvalidResponse, ProviderStatus}
+    error::Union{Nothing, String, InvalidResponse, ProviderStatus, UnsupportedImage}
 end
 
-incomplete(failure::Union{InvalidResponse, ProviderStatus}) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, failure)
+incomplete(failure::Union{InvalidResponse, ProviderStatus, UnsupportedImage}) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, failure)
 
 usage(::Nothing) = nothing
 details(::Nothing) = Dict()
@@ -192,6 +201,14 @@ end
 
 const chathandlers = Dict("tool" => chattool!)
 
+function chatmessage(message)
+    data = Dict{String, Any}(string(key) => value for (key, value) in pairs(message))
+    for key in ("is_error", "anthropic_content", "anthropic_origin", "google_parts", "google_origin", "response_output")
+        delete!(data, key)
+    end
+    data
+end
+
 recordusage!(reported, callback, ::Nothing) = nothing
 function recordusage!(reported, callback, raw)
     reported[] = usage(raw)
@@ -212,7 +229,7 @@ writeonce!(output, key, value) = isempty(output[key]) && (output[key] = value)
 function payload(provider::OpenAI, messages, tools, parameters; streaming=false)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(parameters))
     data["model"] = provider.model
-    data["messages"] = chat(messages)
+    data["messages"] = chat(chatmessage.(messages))
     data["stream"] = streaming
     delete!(data, "tools")
     delete!(data, "stream_options")

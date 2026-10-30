@@ -163,7 +163,7 @@ function Base.convert(::Type{Dict{String, Any}}, call::Conversation.ToolCall)
 end
 
 function Base.convert(::Type{Dict{String, Any}}, message::Conversation.ToolMessage)
-    value = Dict{String, Any}("role" => "tool", "tool_call_id" => message.id, "content" => message.content)
+    value = Dict{String, Any}("role" => "tool", "tool_call_id" => message.id, "content" => message.content, "is_error" => message.iserror)
     attach!(value, message.image)
 end
 

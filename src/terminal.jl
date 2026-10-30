@@ -59,6 +59,11 @@ end
 result!(terminal::Terminal, result::Completion) = result!(terminal, result, result.error)
 result!(terminal::Terminal, ::Completion, failure::InvalidResponse) = failure!(terminal, failure)
 result!(terminal::Terminal, ::Completion, failure::ProviderStatus) = failure!(terminal, failure)
+function result!(terminal::Terminal, ::Completion, ::UnsupportedImage)
+    println(terminal.diagnostics, "The selected provider does not support image attachments in tool results.")
+    flush(terminal.diagnostics)
+    1
+end
 
 function result!(terminal::Terminal, ::Truncated)
     println(terminal.diagnostics, "Response was truncated: the model reached its output token limit.")
@@ -80,6 +85,27 @@ function result!(terminal::Terminal, result::Symbol)
 end
 
 result!(::Terminal, ::Union{AbstractString, Nothing}) = 0
+
+struct PendingInputs end
+
+queueplace(::Union{Nothing, History.Memory}) = "These messages exist only in memory."
+queueplace(history::History.Tree) = queueplace(history.store)
+queueplace(history::SessionCatalog.Deferred) = queueplace(history.store)
+queueplace(::History.Store) = "These messages remain saved; start a new session to resubmit them."
+
+function checkqueues!(terminal::Terminal, state::Conversation.State, history)
+    isempty(state.steering) && isempty(state.followups) && return nothing
+    println(terminal.diagnostics, "History has unprocessed queued messages. No new prompt was sent.")
+    for text in state.steering
+        println(terminal.diagnostics, "Unprocessed steering: ", repr(redact(terminal, text)))
+    end
+    for text in state.followups
+        println(terminal.diagnostics, "Unprocessed follow-up: ", repr(redact(terminal, text)))
+    end
+    println(terminal.diagnostics, queueplace(history))
+    flush(terminal.diagnostics)
+    PendingInputs()
+end
 
 function result!(terminal::Terminal, result::History.Rejected)
     if result.reason == :uncertain_effect
@@ -217,7 +243,10 @@ failures!(::Terminal, ::Function) = nothing
 observer(terminal::Terminal, ::Nothing) = event -> render!(terminal, event)
 observer(terminal::Terminal, snapshot::Extensions.Snapshot) = Extensions.listen(snapshot; on_event=event -> render!(terminal, event))
 
-function run!(terminal::Terminal, agent::Agent, prompt, snapshot=nothing)
+run!(terminal::Terminal, agent::Agent, prompt, snapshot=nothing) = run!(terminal, agent, prompt, snapshot, checkqueues!(terminal, agent.state, agent.history))
+run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::PendingInputs) = 1
+
+function run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::Nothing)
     callback = observer(terminal, snapshot)
     result = try
         request!(terminal) do
@@ -284,10 +313,9 @@ function unsupported!(state::REPL.LineEdit.MIState, action)
     edit.refresh_line(state)
 end
 
-function edit!(terminal::Terminal, agent::Agent, snapshot=nothing)
+function edit!(terminal::Terminal, agent::Agent, snapshot, store, sessiondir)
     edit = REPL.LineEdit
     history = InputHistory()
-    store = agent.history
     newline = (state, args...) -> edit.edit_insert_newline(state, 0)
     keymap = Dict{Any, Any}(
         '\n' => newline,
@@ -338,8 +366,8 @@ function edit!(terminal::Terminal, agent::Agent, snapshot=nothing)
         text = String(take!(buffer))
         edit.reset_state(state)
         text == "/exit" && break
-        if text == "/tree"
-            agent, store, result = tree!(terminal, agent, store, stdin, snapshot)
+        if haskey(terminalcommands, text)
+            agent, store[], result = command!(terminalcommands[text], terminal, agent, store[], stdin, sessiondir, snapshot)
             status = max(status, result)
             continue
         end
