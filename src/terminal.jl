@@ -185,6 +185,7 @@ const historydiagnostics = Dict(
     :uncertain_effect => "History has an uncertain pending effect. It was not retried. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.",
     :incomplete_turn => "History has an incomplete turn. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.",
     :not_interrupted => "History has no interrupted turn to abandon.",
+    :pending_inputs => "History has unprocessed queued messages. Review them before forking this session.",
 )
 
 function result!(terminal::Terminal, result::History.Rejected)

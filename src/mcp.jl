@@ -711,10 +711,16 @@ schema(::ListResources) = Dict("type" => "object", "properties" => Dict("server"
 schema(::ReadResource) = Dict("type" => "object", "properties" => Dict("server" => Dict("type" => "string"), "uri" => Dict("type" => "string")), "required" => ["server", "uri"], "additionalProperties" => false)
 
 function resourcetools(servers::AbstractDict{<:AbstractString, <:Client})
-    selected = Dict{String, Client}(String(name) => client for (name, client) in servers if available(capability(client)))
+    selected = Dict{String, Client}()
+    for (name, client) in servers
+        selectresource!(selected, name, client, capability(client))
+    end
     isempty(selected) && return Tool[]
     Tool[ListResources{Resources}(selected), ListResources{Templates}(selected), ReadResource(selected)]
 end
+
+selectresource!(selected, name, client, capability) = nothing
+selectresource!(selected, name, client, capability::AbstractDict) = (selected[String(name)] = client; nothing)
 
 argument(value) = value
 argument(::Nothing) = nothing

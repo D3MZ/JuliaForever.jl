@@ -3,6 +3,7 @@ module SessionCatalog
 using Random, SHA
 import ..History as H
 import ..Conversation as C
+import ..Kernel as K
 import Base: append!
 
 abstract type Request end
@@ -11,6 +12,9 @@ struct Recent <: Request end
 struct Picker <: Request end
 struct Ephemeral <: Request end
 struct Target <: Request
+    value::String
+end
+struct Fork <: Request
     value::String
 end
 struct Explicit <: Request
@@ -26,6 +30,8 @@ assign(::New, ::Ephemeral) = Ephemeral()
 assign(::Ephemeral, ::Ephemeral) = Ephemeral()
 assign(::Explicit, ::Ephemeral) = Conflict()
 assign(::Ephemeral, ::Explicit) = Conflict()
+assign(::Fork, ::Ephemeral) = Conflict()
+assign(::Ephemeral, ::Fork) = Conflict()
 assign(::Conflict, ::Ephemeral) = Conflict()
 
 recovery(::Request) = false
@@ -170,9 +176,13 @@ end
 pushinfo!(items, ::Nothing) = items
 pushinfo!(items, item::Info) = (push!(items, item); items)
 
-function list(dir, cwd)
-    isdir(dir) || return Info[]
+function list(dir, cwd::AbstractString)
     pattern = Regex("^" * project(cwd) * raw"--([0-9a-f]{32})\.sqlite$")
+    list(dir, pattern)
+end
+
+function list(dir, pattern::Regex)
+    isdir(dir) || return Info[]
     items = Info[]
     for file in readdir(dir)
         found = match(pattern, file)
@@ -227,6 +237,136 @@ choose(::New, dir, cwd, input, output) = new(dir, cwd)
 choose(::Ephemeral, dir, cwd, input, output) = H.Tree(H.Memory())
 choose(request::Explicit, dir, cwd, input, output) = adapt(open(H.SQLite, request.path))
 choose(::Conflict, dir, cwd, input, output) = Invalid("Choose only one session option.")
+choose(request::Fork, dir, cwd, input, output, redact=identity) = fork(source(request, dir, cwd, redact), dir, cwd)
+
+function source(request::Fork, dir, cwd, redact)
+    path = expanduser(request.value)
+    isfile(path) && return wrap(open(H.SQLite, path; create=false))
+    matches = filter(item -> occursin(lowercase(request.value), item.id), list(dir, cwd))
+    source(matches, request.value, dir, redact)
+end
+function source(matches::Vector{Info}, value, dir, redact)
+    isempty(matches) && return named(filter(item -> occursin(lowercase(value), item.id), listall(dir)), value, redact)
+    named(matches, value, redact)
+end
+
+listall(dir) = list(dir, r"^[0-9a-f]{24}--([0-9a-f]{32})\.sqlite$")
+
+fork(result, dir, cwd) = result
+function fork(source::H.Tree, dir, cwd)
+    try
+        duplicate(new(dir, cwd), allpaths(source), Whole())
+    finally
+        close(source)
+    end
+end
+
+abstract type CopyKind end
+struct Whole <: CopyKind end
+struct Path <: CopyKind end
+
+function allpaths(tree::H.Tree)
+    lock(tree.lock) do
+        allpaths(tree, H.branches(tree))
+    end
+end
+allpaths(tree, rejected::H.Rejected) = rejected
+function allpaths(tree, branches::Vector)
+    isempty(branches) && return H.Rejected(:invalid_record)
+    allpaths(tree, branches[tree.leaf].state)
+end
+allpaths(tree, state::C.State) = allpaths(tree, state, H.ready(state))
+allpaths(tree, state, rejected::H.Rejected) = rejected
+allpaths(tree, state, ::Nothing) = allpaths(tree, pendinginput(state))
+pendinginput(state::C.State) = isempty(state.steering) && isempty(state.followups) ? nothing : H.Rejected(:pending_inputs)
+allpaths(tree, ::Nothing) = allpaths(tree, H.snapshot(tree.store))
+function allpaths(tree, snapshot::H.Snapshot)
+    snapshot.revision == tree.physical || return H.Rejected(:revision)
+    snapshot.batches
+end
+
+function branchpath(tree::H.Tree, leaf::Integer)
+    lock(tree.lock) do
+        branchpath(tree, leaf, H.branches(tree))
+    end
+end
+branchpath(tree, leaf, rejected::H.Rejected) = rejected
+function branchpath(tree, leaf, branches::Vector)
+    1 <= leaf <= length(branches) || return H.Rejected(:missing_branch)
+    branchpath(tree, leaf, H.ready(branches[tree.leaf].state), H.ready(branches[leaf].state))
+end
+branchpath(tree, leaf, rejected::H.Rejected, target) = rejected
+branchpath(tree, leaf, ::Nothing, rejected::H.Rejected) = rejected
+branchpath(tree, leaf, ::Nothing, ::Nothing) = H.path(tree, leaf)
+
+function queuedpath(tree::H.Tree, leaf::Integer)
+    lock(tree.lock) do
+        queuedpath(tree, leaf, H.branches(tree))
+    end
+end
+queuedpath(tree, leaf, rejected::H.Rejected) = rejected
+function queuedpath(tree, leaf, branches::Vector)
+    1 <= leaf <= length(branches) || return H.Rejected(:missing_branch)
+    queuedpath(tree, leaf, branches[leaf].state, H.ready(branches[tree.leaf].state))
+end
+queuedpath(tree, leaf, state, rejected::H.Rejected) = rejected
+queuedpath(tree, leaf, state, ::Nothing) = queuedtarget(tree, leaf, state, queueable(state))
+queueable(rejected::H.Rejected) = rejected
+queueable(state::C.State) = queueable(state, state.phase)
+queueable(state, ::C.Phase) = H.Rejected(:incomplete_turn)
+queueable(state, ::Union{C.ReadyModelPhase, C.ReadyDecisionPhase}) = isempty(state.kernel.pending) ? nothing : H.Rejected(:uncertain_effect)
+queuedtarget(tree, leaf, state, rejected::H.Rejected) = rejected
+queuedtarget(tree, leaf, state::C.State, ::Nothing) = (; batches=H.path(tree, leaf), state)
+
+append_event!(tree, state::C.State, event::K.Event) = append_event!(tree, event, K.step(state, event))
+append_event!(tree, event::K.Event, rejected::K.Rejected) = H.Rejected(:invalid_record)
+append_event!(tree, event::K.Event, applied::K.Applied) = append_event!(tree, applied.state, H.append!(tree, tree.leaf, Any[H.encode(event)]))
+append_event!(tree, state::C.State, rejected::H.Rejected) = rejected
+append_event!(tree, state::C.State, revision::Integer) = state
+
+function prepare!(tree::H.Tree, state::C.State)
+    result = nothing
+    try
+        result = prepare_interrupt!(tree, append_event!(tree, state, C.Dequeue(state.revision)))
+    finally
+        releasecopy!(tree, result)
+    end
+    result
+end
+prepare_interrupt!(tree, rejected::H.Rejected) = (close(tree); rejected)
+prepare_interrupt!(tree, state::C.State) = prepared!(tree, append_event!(tree, state, C.Interrupt(state.revision, "fork")))
+prepared!(tree, rejected::H.Rejected) = (close(tree); rejected)
+prepared!(tree, state::C.State) = tree
+
+memory(tree::H.Tree{<:H.Memory}) = tree.store
+memory(tree::H.Tree{<:Deferred}) = tree.store.store
+duplicate(tree, rejected::H.Rejected, mode::CopyKind) = (close(tree); rejected)
+function duplicate(tree::H.Tree, batches::Vector, mode::CopyKind)
+    result = nothing
+    try
+        result = duplicate(tree, mode, memory(tree), batches)
+    finally
+        releasecopy!(tree, result)
+    end
+    result
+end
+releasecopy!(tree, ::Union{H.Tree, H.Rejected}) = nothing
+releasecopy!(tree, result) = close(tree)
+function duplicate(tree, mode::CopyKind, store, batches::Vector)
+    saved = foldl((revision, batch) -> appendbatch!(store, revision, batch), batches; init=0)
+    duplicate(tree, mode, saved)
+end
+duplicate(tree, mode::CopyKind, rejected::H.Rejected) = (close(tree); rejected)
+duplicate(tree, mode::CopyKind, saved::Integer) = duplicate(tree, mode, H.Tree(tree.store))
+duplicate(tree, mode::CopyKind, result::H.Tree) = savecopy(result, mode)
+savecopy(tree::H.Tree{<:H.Memory}, ::CopyKind) = tree
+savecopy(tree::H.Tree{<:Deferred}, ::Whole) = savecopy(tree, H.snapshot(tree.store.store))
+savecopy(tree::H.Tree{<:Deferred}, ::Path) = savecopy(tree, firstprompt(H.entries(tree)))
+savecopy(tree, ::Nothing) = tree
+savecopy(tree, prompt::String) = savecopy(tree, H.snapshot(tree.store.store))
+savecopy(tree, rejected::H.Rejected) = (close(tree); rejected)
+savecopy(tree, snapshot::H.Snapshot) = savecopy(tree, materialize!(tree.store, tree.store.store, snapshot))
+savecopy(tree, revision::Integer) = tree
 
 choose(::Recent, dir, cwd, input, output) = recent(list(dir, cwd), dir, cwd)
 recent(items, dir, cwd) = isempty(items) ? new(dir, cwd) : openinfo(first(items))

@@ -20,7 +20,6 @@ agent.jl	:(name === :cancelled)
 agent.jl	:(name === :events)
 agent.jl	:(name === :running)
 agent.jl	:(requestcancelled((last(exceptions)).exception, turnstate(agent)))
-agent.jl	:(result.finish == "length")
 agent.jl	:returned
 agent_history.jl	:complete
 codemode.jl	:(call.status == :running)
@@ -121,7 +120,6 @@ kernel.jl	:(same(x, y, seen))
 kernel.jl	:found
 logs.jl	:empty
 logs.jl	:first
-mcp.jl	:(available(capability(client)))
 mcp.jl	:(cursor isa AbstractString)
 mcp.jl	:(detail isa AbstractDict)
 mcp.jl	:(detail["code"] isa Bool)
@@ -252,16 +250,7 @@ sqlite_history.jl	:create
 sqlite_history.jl	:create
 sqlite_history.jl	:create
 sqlite_history.jl	:opened
-system.jl	:(isnothing(cancel))
-system.jl	:(isnothing(executable))
-system.jl	:(isnothing(executable))
-system.jl	:(isnothing(executable))
-system.jl	:(isnothing(executable))
-system.jl	:(isnothing(executable))
 system.jl	:(isnothing(shellrun))
-system.jl	:(isnothing(timeout))
-system.jl	:(isnothing(timeout))
-system.jl	:(isnothing(timeout))
 system.jl	:(token.cancelled)
 system.jl	:bybytes
 system.jl	:keep

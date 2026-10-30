@@ -38,6 +38,15 @@ end
     @test JuliaForever.Conversation.ToolMessage(request, JuliaForever.Conversation.Abandoned("unknown"), "inspected").content == "Error: Tool outcome unknown; abandoned: inspected"
 end
 
+@testset "completion finish dispatch" begin
+    message = Dict{String, Any}("role" => "assistant", "content" => "partial")
+    truncated = Completion(message, nothing, "length", true, nothing)
+    complete = Completion(message, nothing, "stop", true, nothing)
+    @test JuliaForever.finish(message, truncated, JuliaForever.Truncated) isa JuliaForever.Truncated
+    @test JuliaForever.finish(message, truncated) isa JuliaForever.Truncated
+    @test JuliaForever.finish(message, complete) == "partial"
+end
+
 @testset "tool request dispatch" begin
     tool = CountingTool(Ref(0))
     agent = Agent(nothing, [tool])
