@@ -1,4 +1,17 @@
 using Test, JuliaForever, JSON3
+
+@testset "skill invocation visibility" begin
+    skills = JuliaForever.Skills
+    initial = skills.Skill("first&", "first <description>", "/first", "/", skills.Automatic())
+    hidden = skills.Skill("hidden", "not shown", "/hidden", "/", skills.Explicit())
+    last = skills.Skill("last", "last description", "/last", "/", skills.Automatic())
+    rendered = skills.render([initial, hidden, last])
+    @test occursin("first&amp;", rendered) && occursin("first &lt;description&gt;", rendered)
+    @test !occursin("hidden", rendered)
+    @test first(findfirst("first&amp;", rendered)) < first(findfirst("last description", rendered))
+    @test skills.render([hidden]) === nothing
+end
+
 function refresh_process(requests, workspace, directory, args; input="", fail=false)
     project = dirname(@__DIR__)
     script = joinpath(@__DIR__, "session_cli_process.jl")

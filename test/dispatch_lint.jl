@@ -52,6 +52,10 @@ include("dispatch_checks.jl")
     @test length(dispatchchecks(Meta.parseall("selected(x::String) = if isempty(x); true; else; return false; end\nf(xs) = filter(selected, xs)"))) == 1
     @test isempty(dispatchchecks(Meta.parseall("selected(x) = x > 0\nf(x) = selected(x) ? 1 : 0")))
     @test length(dispatchchecks(Meta.parse("f(flag) = handle(Val(flag))"))) == 1
+    @test length(dispatchchecks(Meta.parse("f() = handle(Val(true))"))) == 1
+    @test length(dispatchchecks(Meta.parse("f() = handle(Val(false))"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(::Val{true}) = 1"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(::Val{false}) = 1"))) == 1
     @test length(dispatchchecks(Meta.parse("f(x) = handle(Val(x == 0))"))) == 1
     @test isempty(dispatchchecks(Meta.parse("f() = handle(Val(1))")))
     @test length(dispatchchecks(Meta.parse("f(flag) = handle(Val{flag}())"))) == 1
