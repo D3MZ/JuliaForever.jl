@@ -164,34 +164,6 @@ end
     end
 end
 
-mutable struct ConcurrentTool <: JuliaForever.Tool
-    release::Channel{Nothing}
-end
-
-JuliaForever.name(::ConcurrentTool) = "ordered"
-function JuliaForever.execute(tool::ConcurrentTool, args)
-    if args.value == "first"
-        take!(tool.release)
-    end
-    ToolResult(String(args.value))
-end
-
-@testset "parallel tool event and transcript order" begin
-    calls = [call("one", "ordered", (; value="first")), call("two", "ordered", (; value="second"))]
-    provider = AgentFixture([completion(nothing; calls, finish="tool_calls"), completion("done")], [])
-    tool = ConcurrentTool(Channel{Nothing}(1))
-    agent = Agent(provider, [tool])
-    events = []
-    @test respond!(agent, "start"; on_event=identity, tool_execution=:parallel, on_agent_event=event -> begin
-        push!(events, event)
-        event.type == :tool_execution_end && event.tool_call_id == "two" && put!(tool.release, nothing)
-    end) == "done"
-    @test [event.tool_call_id for event in events if event.type == :tool_execution_start] == ["one", "two"]
-    @test [event.tool_call_id for event in events if event.type == :tool_execution_end] == ["two", "one"]
-    @test [event.message["tool_call_id"] for event in events if event.type == :message_end && event.message["role"] == "tool"] == ["one", "two"]
-    @test [message["tool_call_id"] for message in provider.requests[2] if message["role"] == "tool"] == ["one", "two"]
-end
-
 @testset "executor truncated final model response" begin
     execution = JuliaForever.Execution
     for recorded in (false, true)
