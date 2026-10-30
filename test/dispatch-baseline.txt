@@ -129,7 +129,6 @@ search.jl	:limited
 search.jl	:matched
 search.jl	:negate
 search.jl	:smartcase
-search.jl	:truncatedlines
 search.jl	:windows
 search.jl	:windows
 session_terminal.jl	:(Kernel.same(agent.messages, plan.original))
