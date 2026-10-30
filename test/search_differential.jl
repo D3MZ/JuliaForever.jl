@@ -137,3 +137,26 @@ end
         end
     end
 end
+
+@testset "Pi ignore file precedence" begin
+    cases = [
+        (; tool="grep", args=(; pattern="needle")),
+        (; tool="find", args=(; pattern="*.txt")),
+    ]
+    mktempdir() do dir
+        ignorepriorityfixture(dir)
+        input = tempname()
+        write(input, JSON3.write(cases))
+        try
+            reference = JSON3.read(read(`node $(joinpath(@__DIR__, "search_reference.mjs")) $(ENV["PI_SOURCE"]) $dir $input`, String))
+            for (index, case) in enumerate(cases)
+                tool = case.tool == "find" ? Find(dir) : Grep(dir)
+                result = execute(tool, case.args)
+                @test result.iserror == reference[index].iserror
+                @test Set(split(result.text, '\n')) == Set(split(reference[index].text, '\n'))
+            end
+        finally
+            rm(input; force=true)
+        end
+    end
+end
