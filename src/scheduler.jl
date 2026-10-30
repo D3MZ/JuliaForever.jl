@@ -23,6 +23,11 @@ abstract type PhaseResult end
 struct Next{T <: Phase} <: PhaseResult
     phase::T
 end
+struct Sleep{T <: Phase} <: PhaseResult
+    phase::T
+    until::UInt64
+end
+Sleep(phase::T, until::Integer) where {T <: Phase} = Sleep{T}(phase, UInt64(until))
 struct Complete <: PhaseResult
     value::Any
 end
@@ -35,6 +40,9 @@ end
 
 abstract type TaskStatus end
 struct Pending <: TaskStatus end
+struct Sleeping <: TaskStatus
+    until::UInt64
+end
 abstract type Running <: TaskStatus end
 struct Active <: Running end
 struct Cancelling <: Running end
@@ -57,7 +65,7 @@ end
 
 Base.propertynames(::Running, private::Bool=false) = (:cancelled,)
 
-struct TaskView
+struct TaskView{S <: TaskStatus}
     id::Int
     conversation::Int
     kind::String
@@ -69,21 +77,24 @@ struct TaskView
     restarts::Int
     maxattempts::Int
     message::Union{Nothing, String}
-    status::TaskStatus
+    status::S
 end
 
-mutable struct Scheduler
+mutable struct Scheduler{F}
     store::Store
     lock::ReentrantLock
     active::Int
+    now::F
+    changed::Threads.Condition
 end
 
 checkpoint(data) = Checkpoint(data["name"], data["value"])
 checkpoint(value::Checkpoint) = Dict("name" => value.name, "value" => value.value)
 
-const taskstatuses = Dict("pending" => Pending, "running" => Running, "completed" => Completed, "failed" => Failed, "cancelled" => Cancelled)
+const taskstatuses = Dict("pending" => Pending, "sleeping" => Sleeping, "running" => Running, "completed" => Completed, "failed" => Failed, "cancelled" => Cancelled)
 taskstatus(state) = taskstatus(taskstatuses[state["status"]], state)
 taskstatus(::Type{Pending}, state) = Pending()
+taskstatus(::Type{Sleeping}, state) = Sleeping(parse(UInt64, state["until"]))
 taskstatus(::Type{Running}, state) = Running(state["cancelled"])
 taskstatus(::Type{Completed}, state) = Completed(state["result"])
 taskstatus(::Type{Failed}, state) = Failed(Symbol(state["reason"]))
@@ -124,9 +135,11 @@ function recover!(state::AbstractDict, view::TaskView, ::Active)
     nothing
 end
 
-Base.open(::Type{Scheduler}, path::AbstractString) = open_scheduler(open(Store, path))
-open_scheduler(rejected::Rejected) = rejected
-function open_scheduler(store::Store)
+millis() = floor(UInt64, time() * 1000)
+
+Base.open(::Type{Scheduler}, path::AbstractString; now=millis) = open_scheduler(open(Store, path), now)
+open_scheduler(rejected::Rejected, now) = rejected
+function open_scheduler(store::Store, now)
     success = false
     try
         records = scan(store, Task)
@@ -136,16 +149,17 @@ function open_scheduler(store::Store)
             end
             nothing
         end
-        finish_open!(store, result) do
+        finish_open!(store, result, now) do
             success = true
         end
     finally
         success || close(store)
     end
 end
-finish_open!(f, store::Store, rejected::Rejected) = rejected
-function finish_open!(f, store::Store, ::Nothing)
-    scheduler = Scheduler(store, ReentrantLock(), 0)
+finish_open!(f, store::Store, rejected::Rejected, now) = rejected
+function finish_open!(f, store::Store, ::Nothing, now)
+    mutex = ReentrantLock()
+    scheduler = Scheduler(store, mutex, 0, now, Threads.Condition(mutex))
     f()
     scheduler
 end
@@ -153,11 +167,39 @@ end
 function Base.close(scheduler::Scheduler)
     lock(scheduler.lock) do
         scheduler.active > 0 && return Rejected(:busy)
-        close(scheduler.store)
+        result = close(scheduler.store)
+        notify(scheduler.changed)
+        result
     end
 end
 
 Base.get(scheduler::Scheduler, id::Integer) = taskview(get(scheduler.store, Task, id))
+
+remaining(scheduler::Scheduler, result) = 0.0
+remaining(scheduler::Scheduler, view::TaskView) = remaining(scheduler, view.status)
+remaining(scheduler::Scheduler, status::TaskStatus) = 0.0
+remaining(scheduler::Scheduler, status::Sleeping) = Float64(clamp(Int128(status.until) - Int128(scheduler.now()), 0, typemax(Int32))) / 1000
+
+"""Wait until a sleeping task is due or changes state, without invoking its handler."""
+function Base.wait(scheduler::Scheduler, id::Integer)
+    lock(scheduler.lock) do
+        while true
+            view = get(scheduler, id)
+            delay = remaining(scheduler, view)
+            delay > 0 || return view
+            timer = Timer(delay) do _
+                lock(scheduler.lock) do
+                    notify(scheduler.changed)
+                end
+            end
+            try
+                wait(scheduler.changed)
+            finally
+                close(timer)
+            end
+        end
+    end
+end
 
 taskviews(rejected::Rejected) = rejected
 add!(views::Vector{TaskView}, ::Nothing) = nothing
@@ -200,36 +242,53 @@ end
 
 function reserve!(scheduler::Scheduler, id::Integer, handler::Handler)
     commit!(scheduler.store) do tx
-        reserve!(tx, id, handler, get(tx, Task, id))
+        reserve!(tx, id, handler, get(tx, Task, id), scheduler.now)
     end
 end
 
-reserve!(tx::Transaction, id::Integer, handler::Handler, ::Nothing) = Rejected(:task_missing)
-reserve!(tx::Transaction, id::Integer, handler::Handler, rejected::Rejected) = rejected
-reserve!(tx::Transaction, id::Integer, handler::Handler, record::Task) = reserve!(tx, id, handler, record, taskview(record))
-reserve!(tx::Transaction, id::Integer, handler::Handler, record::Task, ::Nothing) = Rejected(:not_scheduled)
+reserve!(tx::Transaction, id::Integer, handler::Handler, ::Nothing, now) = Rejected(:task_missing)
+reserve!(tx::Transaction, id::Integer, handler::Handler, rejected::Rejected, now) = rejected
+reserve!(tx::Transaction, id::Integer, handler::Handler, record::Task, now) = reserve!(tx, id, handler, record, taskview(record), now)
+reserve!(tx::Transaction, id::Integer, handler::Handler, record::Task, ::Nothing, now) = Rejected(:not_scheduled)
 
-function reserve!(tx::Transaction, id::Integer, handler::Handler, record::Task, view::TaskView)
+function reserve!(tx::Transaction, id::Integer, handler::Handler, record::Task, view::TaskView, now)
     view.kind == name(handler) || return Rejected(:handler_mismatch)
-    reserve!(tx, id, record, view.status)
+    reserve!(tx, id, record, view.status, now)
 end
 
-reserve!(tx::Transaction, id::Integer, record::Task, ::TaskStatus) = Rejected(:not_pending)
+reserve!(tx::Transaction, id::Integer, record::Task, ::TaskStatus, now) = Rejected(:not_pending)
 
-function reserve!(tx::Transaction, id::Integer, record::Task, ::Pending)
+function reserve!(tx::Transaction, id::Integer, record::Task, status::Sleeping, now)
+    now() < status.until && return Rejected(:sleeping)
+    reserve!(tx, id, record, Pending(), now)
+end
+
+function reserve!(tx::Transaction, id::Integer, record::Task, ::Pending, now)
     record.state["status"] = "running"
     record.state["attempts"] += 1
+    delete!(record.state, "until")
     taskview(tx, id, put!(tx, record))
+end
+
+function checkpoint!(state, next)
+    state["checkpoint"] = next
+    state["phase"] += 1
+    state["attempts"] = 0
+    state["message"] = nothing
 end
 
 function advance!(state, result::Next)
     next = JSON3.read(JSON3.write(checkpoint(encode(result.phase))), Dict{String, Any})
     same(state["checkpoint"], next) && return advance!(state, Retry("no checkpoint progress"))
-    state["checkpoint"] = next
-    state["phase"] += 1
-    state["attempts"] = 0
+    checkpoint!(state, next)
     state["status"] = "pending"
-    state["message"] = nothing
+end
+
+function advance!(state, result::Sleep)
+    next = JSON3.read(JSON3.write(checkpoint(encode(result.phase))), Dict{String, Any})
+    checkpoint!(state, next)
+    state["until"] = string(result.until) # JSON3 can round large JSON numbers while decoding.
+    state["status"] = "sleeping"
 end
 
 function advance!(state, result::Complete)
@@ -284,6 +343,7 @@ function step!(scheduler::Scheduler, id::Integer, handler::Handler, reserved::Ta
     finally
         lock(scheduler.lock) do
             scheduler.active -= 1
+            notify(scheduler.changed)
         end
     end
 end
@@ -297,8 +357,12 @@ function step!(tx::Transaction, id::Integer, outcome, record::Task)
 end
 
 function cancel!(scheduler::Scheduler, id::Integer)
-    commit!(scheduler.store) do tx
-        cancel!(tx, id, get(tx, Task, id))
+    lock(scheduler.lock) do
+        result = commit!(scheduler.store) do tx
+            cancel!(tx, id, get(tx, Task, id))
+        end
+        notify(scheduler.changed)
+        result
     end
 end
 
@@ -310,8 +374,9 @@ cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView) = cancel!(tx
 cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView, ::Union{Cancelled, Cancelling}) = view
 cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView, ::Union{Completed, Failed}) = Rejected(:finished)
 
-function cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView, ::Pending)
+function cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView, ::Union{Pending, Sleeping})
     record.state["status"] = "cancelled"
+    delete!(record.state, "until")
     taskview(tx, id, put!(tx, record))
 end
 
