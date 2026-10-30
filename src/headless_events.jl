@@ -9,7 +9,17 @@ function restore!(session, agent)
 end
 
 restore!(session, value::J.Conversation.Message) = nothing
-restore!(session, value::Union{J.Conversation.User, J.Conversation.ImageUser, J.Conversation.ToolMessage, J.Conversation.Summary, J.Conversation.SkillContext}) = restore!(session, convert(Dict{String, Any}, value))
+restore!(session, value::Union{J.Conversation.User, J.Conversation.ImageUser, J.Conversation.ToolMessage, J.Conversation.SkillContext}) = restore!(session, convert(Dict{String, Any}, value))
+restore!(session, value::J.Conversation.Summary) = restoresummary!(session, value, findlast(record -> summaryvalue(record.entry) == value.content, session.entries))
+summaryvalue(entry::J.Conversation.SessionEntry) = nothing
+summaryvalue(entry::J.Conversation.CompactionEntry) = entry.summary
+restoresummary!(session, value, ::Nothing) = restore!(session, convert(Dict{String, Any}, value))
+function restoresummary!(session, value, index::Int)
+    record = session.entries[index]
+    timestamp = round(Int, 1000 * Dates.datetime2unix(Dates.DateTime(chop(record.timestamp; tail=1))))
+    push!(session.messages, Dict{String, Any}("role" => "compactionSummary", "summary" => value.content, "tokensBefore" => record.entry.tokens_before, "timestamp" => timestamp))
+    nothing
+end
 restore!(session, value::J.Conversation.RawMessage) = restore!(session, value.value)
 restore!(session, value::J.Conversation.BashMessage) = push!(session.messages, convert(Dict{String, Any}, value))
 restore!(session, raw::AbstractDict) = restore!(session, LiveJSON.role(raw), raw)
@@ -68,6 +78,26 @@ event!(session, ::Nothing, event) = nothing
 function event!(session, kind::LiveJSON.AgentStart, event)
     notify(session.started)
     LiveJSON.observe!(session.stream, kind, event)
+end
+function event!(session, kind::LiveJSON.CompactionStart, event)
+    notify(session.started)
+    session.compaction = Compacting()
+    LiveJSON.compactionstart!(session.stream, event)
+end
+function event!(session, kind::LiveJSON.CompactionEnd, event)
+    entry = LiveJSON.compactionentry(event, session.entries)
+    compacted!(session, entry)
+    session.compaction = CompactionIdle()
+    LiveJSON.compactionend!(session.stream, event, entry)
+end
+compacted!(session, ::Nothing) = nothing
+function compacted!(session, entry::J.Conversation.CompactionEntry)
+    entrysaved!(session, recordentry!(session, entry))
+    empty!(session.messages)
+    session.lastcontent = nothing
+    session.statistics = RestoredStatistics()
+    foreach(message -> restore!(session, message), getfield(session.agent.state, :messages))
+    nothing
 end
 function event!(session, kind::LiveJSON.MessageStart, event)
     queues!(session)

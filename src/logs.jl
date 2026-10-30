@@ -50,6 +50,7 @@ record(value::Conversation.ModelEntry) = (; type="model_change", value.provider,
 record(value::Conversation.ThinkingEntry) = (; type="thinking_level_change", thinkingLevel=value.level)
 record(value::Conversation.MessageEntry) = (; type="message", value.message)
 record(value::Conversation.NameEntry) = (; type="session_info", value.name)
+record(value::Conversation.CompactionEntry) = (; type="compaction", value.summary, firstKeptEntryId=value.firstkept, tokensBefore=value.tokens_before, estimatedTokensAfter=value.estimated_after, value.info)
 record(value::Conversation.SessionRecord) = (; type="session_record", value.revision, value.id, value.parent, value.timestamp, entry=record(value.entry))
 record(value::Conversation.Advance) = (; type="advance", value.revision)
 record(value::Conversation.Cancel) = (; type="cancel", value.revision)

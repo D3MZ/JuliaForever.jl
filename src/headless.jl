@@ -94,6 +94,12 @@ abstract type StatisticsState end
 struct AvailableStatistics <: StatisticsState end
 struct UnavailableStatistics <: StatisticsState end
 struct RestoredStatistics <: StatisticsState end
+abstract type CompactionState end
+struct CompactionIdle <: CompactionState end
+struct Compacting <: CompactionState end
+abstract type AbortState end
+struct ActiveRun <: AbortState end
+struct AbortedRun <: AbortState end
 const newstatuses = Dict(0 => SessionStarted())
 
 const unsupportedcommands = (
@@ -188,6 +194,8 @@ mutable struct Session{A, T, E, S, P, L, R, M}
     started::Base.Event
     outputstate::Union{OpenOutput, ClosedOutput}
     statistics::Union{AvailableStatistics, UnavailableStatistics, RestoredStatistics}
+    compaction::CompactionState
+    abort::AbortState
     bashcancel::J.ShellCancellation
     bashtasks::Set{Task}
     pendingbash::Vector{J.Conversation.BashMessage}
@@ -198,12 +206,13 @@ end
 function Session(terminal, agent, extensions, store, templates, directory)
     stream = LiveJSON.Stream(terminal, agent, terminal.mode)
     registry = modelregistry(agent.provider)
-    session = Session(agent, agent.provider, terminal, extensions, store, templates, registry, directory, ReentrantLock(), Dict{String, Any}[], LiveJSON.id(store[]), sessionname(J.SessionCatalog.sessionname(store[])), stream, "off", nothing, String[], String[], nothing, Base.Event(), OpenOutput(), AvailableStatistics(), J.ShellCancellation(), Set{Task}(), J.Conversation.BashMessage[], J.Conversation.SessionRecordValue[], nothing)
+    session = Session(agent, agent.provider, terminal, extensions, store, templates, registry, directory, ReentrantLock(), Dict{String, Any}[], LiveJSON.id(store[]), sessionname(J.SessionCatalog.sessionname(store[])), stream, "off", nothing, String[], String[], nothing, Base.Event(), OpenOutput(), AvailableStatistics(), CompactionIdle(), ActiveRun(), J.ShellCancellation(), Set{Task}(), J.Conversation.BashMessage[], J.Conversation.SessionRecordValue[], nothing)
     startupmodel!(session, agent, terminal.mode.model, ResumeBinding())
     session.thinking = initialthinking!(agent, terminal.mode.thinking)
     session.stream = LiveJSON.Stream(terminal, agent, terminal.mode)
-    restore!(session, agent)
     restoreentries!(session)
+    restore!(session, agent)
+    backfill!(session, LiveJSON.recordpresence(session.entries))
     session
 end
 sessionname(::Nothing) = nothing
@@ -246,13 +255,14 @@ end
 
 function state(session)
     agent = session.agent
-    active, count, name, thinking = lock(session.lock) do
-        (streaming(session.task), length(session.messages), session.name, session.thinking)
+    active, compacting, count, name, thinking = lock(session.lock) do
+        (streaming(session.task), iscompacting(session.compaction), length(session.messages), session.name, session.thinking)
     end
     pending, steering, followup = lock(agent.lock) do
         (length(agent.state.steering) + length(agent.state.followups), J.Conversation.queuecode(agent.state.steeringmode), J.Conversation.queuecode(agent.state.followupmode))
     end
-    data = Dict{String, Any}("model" => modelinfo(session), "thinkingLevel" => thinking, "isStreaming" => active, "isCompacting" => false, "steeringMode" => steering, "followUpMode" => followup, "sessionId" => session.id, "autoCompactionEnabled" => false, "messageCount" => count, "pendingMessageCount" => pending)
+    enabled = compactionflag(J.attempt(() -> J.compactionenabled(ENV, pwd())))
+    data = Dict{String, Any}("model" => modelinfo(session), "thinkingLevel" => thinking, "isStreaming" => active, "isCompacting" => compacting, "steeringMode" => steering, "followUpMode" => followup, "sessionId" => session.id, "autoCompactionEnabled" => enabled, "messageCount" => count, "pendingMessageCount" => pending)
     optional!(data, "sessionName", name)
     optional!(data, "sessionFile", sessionfile(session.store[]))
 end
@@ -270,6 +280,10 @@ sessionfile(::J.History.Memory, path) = nothing
 sessionfile(::J.History.SQLite, path) = path
 streaming(::Nothing) = false
 streaming(::Task) = true
+iscompacting(::CompactionIdle) = false
+iscompacting(::Compacting) = true
+compactionflag(value::Bool) = value
+compactionflag(value) = false
 optional!(data, key, ::Nothing) = data
 optional!(data, key, value) = (data[key] = value; data)
 
@@ -279,10 +293,12 @@ handle!(session, ::GetSessionStats) = lock(() -> statistics(session, session.sta
 handle!(session, ::AbortRetry) = Success()
 handle!(session, command::SetSteeringMode) = setqueuemode!(session, J.steeringmode!, get(deliverymodes, command.mode, nothing))
 handle!(session, command::SetFollowUpMode) = setqueuemode!(session, J.followupmode!, get(deliverymodes, command.mode, nothing))
-handle!(session, command::SetAutoCompaction) = get(compactionoptions, command.enabled, Failure("Automatic compaction is not available in headless mode"))
+handle!(session, command::SetAutoCompaction) = compactionchanged(session, J.attempt(() -> J.setcompaction!(ENV, command.enabled)))
+compactionchanged(session, ::Nothing) = Success()
+compactionchanged(session, ::J.Models.InvalidConfig) = Failure("Invalid compaction settings")
+compactionchanged(session, failure::J.ToolFailure) = Failure(J.redact(session.terminal, failure.text))
 handle!(session, command::SetAutoRetry) = get(retryoptions, command.enabled, Failure("Automatic retry is not available"))
 const deliverymodes = Dict("one-at-a-time" => :one_at_a_time, "all" => :all)
-const compactionoptions = Dict(false => Success())
 const retryoptions = Dict(false => Success())
 setqueuemode!(session, setter, ::Nothing) = Failure("Unknown queue mode")
 setqueuemode!(session, setter, mode::Symbol) = queuemoderesult(setter(session.agent, mode))
@@ -351,11 +367,14 @@ function rebind!(session, agent, history, binding::SessionBinding)
         session.stream = LiveJSON.Stream(session.terminal, agent, session.terminal.mode)
         session.lastcontent = nothing
         session.statistics = AvailableStatistics()
+        session.compaction = CompactionIdle()
+        session.abort = ActiveRun()
         empty!(session.messages)
         empty!(session.steering)
         empty!(session.followups)
-        restore!(session, agent)
         restoreentries!(session)
+        restore!(session, agent)
+        backfill!(session, LiveJSON.recordpresence(session.entries))
         write!(session, (; type="queue_update", steering=String[], followUp=String[]))
     end
     nothing
@@ -510,6 +529,10 @@ function handle!(session, command::Prompt)
 end
 promptprovider!(session, command, ::J.UnconfiguredProvider) = Failure("No configured model or API key is available.")
 function promptprovider!(session, command, provider)
+    promptpolicy!(session, command, J.attempt(() -> J.terminalcompaction(provider, session.terminal.mode.provider, ENV, pwd())))
+end
+promptpolicy!(session, command, failure::Union{J.Models.InvalidConfig, J.ToolFailure}) = Failure("Invalid or unreadable compaction settings")
+function promptpolicy!(session, command, policy::Union{Nothing, J.AutoCompaction})
     lock(session.lock) do
         prompt!(session, command, session.task)
     end
@@ -519,6 +542,7 @@ prompt!(session, command::Prompt, ::Nothing, fault::J.History.Rejected) = Failur
 function prompt!(session, command::Prompt, ::Nothing, ::Nothing)
     prompt = J.fileprompt(J.Prompts.expand(command.message, session.templates), command.images)
     session.started = Base.Event()
+    session.abort = ActiveRun()
     started = session.started
     session.task = Threads.@spawn begin
         result = FailedRun()
@@ -539,12 +563,17 @@ prompt!(session, command::Prompt{NoQueue}, task::Task) = Failure("Agent is alrea
 prompt!(session, command::Prompt, task::Task) = queue!(session, command.message, command.mode, command.images)
 
 function handle!(session, ::Abort)
-    task, started = lock(() -> (session.task, session.started), session.lock)
+    task, started = lock(session.lock) do
+        abortrequested!(session, session.task)
+        (session.task, session.started)
+    end
     waitstarted(task, started)
     J.cancel!(session.agent)
     waittask(task)
     Success()
 end
+abortrequested!(session, ::Nothing) = nothing
+abortrequested!(session, ::Task) = (session.abort = AbortedRun(); nothing)
 waitstarted(::Nothing, started) = nothing
 waitstarted(task::Task, started) = wait(started)
 waittask(::Nothing) = nothing
@@ -578,9 +607,11 @@ end
 
 function turn!(session, prompt)
     callback = J.Extensions.listen(session.extensions; on_event=event -> event!(session, event))
+    policy = J.ChangingCompaction(() -> J.usablecompaction(J.attempt(() -> J.terminalcompaction(session.agent.provider, session.terminal.mode.provider, ENV, pwd()))))
     response = try
         J.request!(session.terminal) do
-            J.respond!(session.agent, prompt; on_event=ProviderObserver(session), on_agent_event=callback)
+            result = J.respond!(session.agent, prompt; on_event=ProviderObserver(session), on_agent_event=callback, auto_compaction=policy)
+            continuepending!(session, callback, policy, result)
         end
     finally
         J.failures!(session.terminal, callback)
@@ -588,6 +619,20 @@ function turn!(session, prompt)
     result = turnresult!(session, get(turnresults, response.status, FailedTurn()), response.value)
     lock(() -> LiveJSON.finishrun!(session.stream, session.stream.runended), session.lock)
     result
+end
+
+continuepending!(session, callback, policy, result) = result
+function continuepending!(session, callback, policy, result::AbstractString)
+    abort = lock(() -> session.abort, session.lock)
+    continuepending!(session, callback, policy, result, abort)
+end
+continuepending!(session, callback, policy, result, ::AbortedRun) = :cancelled
+function continuepending!(session, callback, policy, result, ::ActiveRun)
+    agent = session.agent
+    pending = lock(() -> length(agent.state.steering) + length(agent.state.followups), agent.lock)
+    iszero(pending) && return result
+    next = J.continue!(agent; on_event=ProviderObserver(session), on_agent_event=callback, auto_compaction=policy)
+    continuepending!(session, callback, policy, next)
 end
 
 const turnresults = Dict(0 => CompletedTurn(), 130 => InterruptedTurn())

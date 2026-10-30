@@ -221,7 +221,7 @@ end
 end
 
 @testset "overflow: compaction failure and cancellation stop retry" begin
-    for outcome in (:rejected, :exception, :cancelled, :cancel_failed, :revision, :storage)
+    for outcome in (:rejected, :exception, :cancelled, :cancel_failed, :storage)
         history = H.Memory()
         provider = Provider(Any[failure(), answer("unexpected")], Any[])
         agent = Agent(provider, [], initial(); history)
@@ -234,8 +234,6 @@ end
             outcome == :cancelled && (cancel!(agent); return "ignored")
             outcome == :cancel_failed && (cancel!(agent); return H.Rejected(:summary_failed))
             outcome == :storage && (steer!(Agent(provider, []; history), "other writer"); return "stale")
-            steer!(agent, "queued")
-            "stale"
         end
         result = respond!(agent, "current"; auto_compaction=policy(), summarize, on_agent_event=event -> push!(events, event))
         @test outcome in (:cancelled, :cancel_failed) ? result == :cancelled : outcome == :storage ? result == H.Rejected(:revision) : result isa Completion
@@ -246,6 +244,24 @@ end
         @test count(event -> event.type == :auto_compaction_end, events) == 1
         outcome in (:cancelled, :cancel_failed) && @test only(event for event in events if event.type == :auto_compaction_end).result == :cancelled
     end
+end
+
+@testset "overflow: concurrent transcript changes reject the summary" begin
+    history = H.Memory()
+    provider = Provider(Any[failure(), answer("unexpected")], Any[])
+    agent = Agent(provider, [], initial(); history)
+    original, changed = Ref{Any}(), Ref{Any}()
+    events = Any[]
+    summarize = _ -> begin
+        original[] = deepcopy(agent.messages)
+        push!(agent.messages, Dict("role" => "system", "content" => "concurrent edit"))
+        changed[] = deepcopy(agent.messages)
+        "stale"
+    end
+    result = respond!(agent, "current"; auto_compaction=policy(), summarize, on_agent_event=event -> push!(events, event))
+    @test result isa Completion && length(provider.requests) == 1
+    @test agent.messages == changed[] && Agent(provider, []; history).messages == original[]
+    @test only(event for event in events if event.type == :auto_compaction_end).result == H.Rejected(:revision)
 end
 
 @testset "overflow: cancellation at compaction event boundaries" begin

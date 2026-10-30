@@ -1,4 +1,4 @@
-using HTTP
+using HTTP, JSON3
 
 @testset "automatic compaction at response boundary" begin
     used(n) = JuliaForever.Usage(n, 0, 0, 0, 0, n, nothing)
@@ -32,6 +32,31 @@ using HTTP
     cancelled = compactagent(provider; history=CompactHistory.Memory())
     @test respond!(cancelled, "next"; auto_compaction=JuliaForever.AutoCompaction(100,20), summarize=_ -> (cancel!(cancelled); "ignored")) == "done"
     @test !any(m -> occursin("<summary>", string(get(m, "content", ""))), cancelled.messages)
+end
+
+@testset "automatic compaction keeps queued input and rejects concurrent transcript changes" begin
+    used = JuliaForever.Usage(81, 0, 0, 0, 0, 81, nothing)
+    answer = JuliaForever.Completion(Dict{String, Any}("role" => "assistant", "content" => "done"), used, "stop", true, nothing)
+    policy = JuliaForever.AutoCompaction(100, 20)
+    history = CompactHistory.Memory()
+    agent = compactagent(CompactProvider(answer, Any[]); history)
+    @test respond!(agent, "next"; auto_compaction=policy, summarize=_ -> (steer!(agent, "queued"); "checkpoint")) == "done"
+    @test agent.state.steering == ["queued"] && occursin("checkpoint", JSON3.write(agent.messages))
+    @test Agent(agent.provider, []; history).messages == agent.messages
+
+    history = CompactHistory.Memory()
+    agent = compactagent(CompactProvider(answer, Any[]); history)
+    before = Ref{Any}()
+    external = Ref{Any}()
+    summarize = _ -> begin
+        before[] = deepcopy(agent.messages)
+        external[] = Agent(agent.provider, []; history)
+        @test steer!(external[], "external queue") === nothing
+        "must not commit"
+    end
+    @test respond!(agent, "next"; auto_compaction=policy, summarize) == "done"
+    @test agent.messages == before[] && agent.fault == CompactHistory.Rejected(:revision)
+    @test Agent(agent.provider, []; history).state.steering == ["external queue"]
 end
 
 @testset "cancel a native automatic summary" begin

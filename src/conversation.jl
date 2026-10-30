@@ -377,6 +377,13 @@ end
 struct NameEntry <: SessionEntry
     name::String
 end
+struct CompactionEntry <: SessionEntry
+    summary::String
+    firstkept::Union{Nothing, String}
+    tokens_before::Int
+    estimated_after::Int
+    info::Union{Nothing, ResponseInfo}
+end
 struct SessionRecord{E<:SessionEntry} <: K.Event
     revision::Int
     id::String
@@ -384,7 +391,7 @@ struct SessionRecord{E<:SessionEntry} <: K.Event
     timestamp::String
     entry::E
 end
-const SessionRecordValue = Union{SessionRecord{ModelEntry}, SessionRecord{ThinkingEntry}, SessionRecord{MessageEntry}, SessionRecord{NameEntry}}
+const SessionRecordValue = Union{SessionRecord{ModelEntry}, SessionRecord{ThinkingEntry}, SessionRecord{MessageEntry}, SessionRecord{NameEntry}, SessionRecord{CompactionEntry}}
 
 sessionname(text::AbstractString) = String(strip(replace(text, r"[\r\n]+" => " ")))
 

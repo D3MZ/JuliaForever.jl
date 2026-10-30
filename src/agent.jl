@@ -870,16 +870,20 @@ function direct_next!(run, message, completion, next, added, ::Union{Idle, Runni
 end
 
 "Continue a transcript ending in a user or tool message. Returns :empty or :assistant_tail for unsupported tails."
-function continue!(agent::Agent; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:parallel)
+function continue!(agent::Agent; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:parallel, auto_compaction=nothing, summarize=Summarizer(agent.provider))
     used = Ref{Union{Nothing, Usage}}(nothing)
-    task_local_storage(:jf_compaction_usage, used) do
-        task_local_storage(:jf_overflow_recovery, nothing) do
-            selected = lock(agent.lock) do
-                continue_start!(agent, agent.turn, agent.fault, toolmode(tool_execution))
+    result = task_local_storage(:jf_pre_compaction, (auto_compaction, summarize)) do
+        task_local_storage(:jf_compaction_usage, used) do
+            task_local_storage(:jf_overflow_recovery, recovery(auto_compaction, summarize, agent.provider)) do
+                selected = lock(agent.lock) do
+                    continue_start!(agent, agent.turn, agent.fault, toolmode(tool_execution))
+                end
+                continue_selected!(agent, selected; on_event, on_agent_event, parameters, tool_execution)
             end
-            continue_selected!(agent, selected; on_event, on_agent_event, parameters, tool_execution)
         end
     end
+    finishauto!(agent, result, used[], auto_compaction, summarize, on_agent_event)
+    result
 end
 continue_start!(agent, ::Union{Running, Cancelled}, fault, mode) = :busy
 continue_start!(agent, ::Idle, fault::History.Rejected, mode) = fault
@@ -911,6 +915,7 @@ function continue_run!(agent, history, constructor; on_event, on_agent_event, pa
     callback = EventSink(ReentrantLock(), on_agent_event)
     run = (; agent, on_event, callback, parameters, tool_execution, messages, constructor)
     try
+        precompact!(agent, callback)
         syncresult = sync!(agent)
         continue_synced!(run, history, syncresult)
     finally

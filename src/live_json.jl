@@ -1,6 +1,7 @@
 module LiveJSON
 
 using JSON3, Dates, Random, SHA
+import ..JuliaForever as J
 import ..JuliaForever: Terminal, JSONMode, RPCMode, Agent, OpenAI, OpenAIResponses, Anthropic, Google, ManagedChatGPT, ChatGPT, UnconfiguredProvider, Usage, CostBreakdown, Completion, Finished, Unfinished, Truncated, History, SessionCatalog, Extensions, FileArguments, Prompts, Skills, Image, ToolResult, ToolFailure, ShellUpdate, PendingInputs, Unannounced, Announced, providercomplete!, run!, runmode!, starttemplates!, request!, respond!, failures!, result!, redact, attempt, fileinput, fileprompt, iserror, modelcatalogname
 
 function write!(io, event)
@@ -84,6 +85,11 @@ mutable struct CallBlock <: Block
 end
 CallBlock(index, id, name, arguments::AbstractString, pending::AbstractString, state::CallState) = CallBlock(index, id, name, buffer(arguments), buffer(pending), state)
 
+abstract type WireActivity end
+struct WireIdle <: WireActivity end
+struct WireRunning <: WireActivity end
+struct WireRetry <: WireActivity end
+
 mutable struct Stream{I<:IO, T<:Terminal}
     io::I
     terminal::T
@@ -106,10 +112,11 @@ mutable struct Stream{I<:IO, T<:Terminal}
     ended::Union{Unannounced, Announced}
     turnended::Union{Unannounced, Announced}
     runended::Union{Unannounced, Announced}
+    activity::WireActivity
 end
 
 function Stream(terminal, agent, mode)
-    Stream(terminal.output, terminal, api(agent.provider), providername(mode, agent.provider), agent.provider.model, nothing, nothing, nowms(), Union{TextBlock, ThinkingBlock, CallBlock}[], nothing, Dict{Any, CallBlock}(), Dict{String, String}(), Dict{String, Any}(), Dict{String, Any}(), Dict{String, Any}[], Dict{String, Any}[], initialmessages(agent), Unannounced(), Unannounced(), Unannounced(), Unannounced())
+    Stream(terminal.output, terminal, api(agent.provider), providername(mode, agent.provider), agent.provider.model, nothing, nothing, nowms(), Union{TextBlock, ThinkingBlock, CallBlock}[], nothing, Dict{Any, CallBlock}(), Dict{String, String}(), Dict{String, Any}(), Dict{String, Any}(), Dict{String, Any}[], Dict{String, Any}[], initialmessages(agent), Unannounced(), Unannounced(), Unannounced(), Unannounced(), WireIdle())
 end
 
 struct ProviderObserver{S}
@@ -142,22 +149,32 @@ struct MessageEnd <: Event end
 struct ToolStart <: Event end
 struct ToolUpdate <: Event end
 struct ToolEnd <: Event end
-const events = Dict(:agent_start => AgentStart(), :agent_end => AgentEnd(), :turn_start => TurnStart(), :turn_end => TurnEnd(), :message_start => MessageStart(), :message_update => MessageUpdate(), :message_end => MessageEnd(), :tool_execution_start => ToolStart(), :tool_execution_update => ToolUpdate(), :tool_execution_end => ToolEnd())
+struct CompactionStart <: Event end
+struct CompactionEnd <: Event end
+const events = Dict(:agent_start => AgentStart(), :agent_end => AgentEnd(), :turn_start => TurnStart(), :turn_end => TurnEnd(), :message_start => MessageStart(), :message_update => MessageUpdate(), :message_end => MessageEnd(), :tool_execution_start => ToolStart(), :tool_execution_update => ToolUpdate(), :tool_execution_end => ToolEnd(), :auto_compaction_start => CompactionStart(), :auto_compaction_end => CompactionEnd())
 
 observe!(stream, event) = observe!(stream, get(events, event.type, nothing), event)
 observe!(stream, ::Nothing, event) = nothing
 function observe!(stream, ::AgentStart, event)
     empty!(stream.messages)
     stream.runended = Unannounced()
+    stream.activity = WireRunning()
     write!(stream.io, (; type="agent_start"))
 end
-observe!(stream, ::AgentEnd, event) = (stream.runended = Announced(); nothing)
+observe!(stream, ::AgentEnd, event) = agentended!(stream, stream.activity)
+agentended!(stream, activity::WireActivity) = nothing
+function agentended!(stream, ::WireRunning)
+    stream.runended = Announced()
+    stream.activity = WireIdle()
+    nothing
+end
 finishrun!(stream, ::Unannounced) = nothing
 function finishrun!(stream, ::Announced)
     write!(stream.io, (; type="agent_end", messages=stream.messages, willRetry=false))
     stream.runended = Unannounced()
 end
 function observe!(stream, ::TurnStart, event)
+    retrybegin!(stream, stream.activity)
     stream.used = nothing
     stream.completion = nothing
     empty!(stream.results)
@@ -170,6 +187,8 @@ function observe!(stream, ::TurnStart, event)
     write!(stream.io, (; type="turn_start"))
     initial!(stream)
 end
+retrybegin!(stream, activity::WireActivity) = nothing
+retrybegin!(stream, ::WireRetry) = observe!(stream, AgentStart(), nothing)
 function observe!(stream, ::TurnEnd, event)
     write!(stream.io, (; type="turn_end", message=stream.assistant, toolResults=stream.results))
     stream.turnended = Announced()
@@ -457,12 +476,26 @@ end
 
 listener(snapshot::Nothing, callback) = callback
 listener(snapshot::Extensions.Snapshot, callback) = Extensions.listen(snapshot; on_event=callback)
+
+include("live_compaction.jl")
+
 function runmode!(terminal::Terminal, agent::Agent, prompt, snapshot, on_agent_event, mode::JSONMode)
+    policy = attempt(() -> J.terminalcompaction(agent.provider, mode.provider, ENV, pwd()))
+    runjson!(terminal, agent, prompt, snapshot, on_agent_event, mode, policy)
+end
+function runjson!(terminal, agent, prompt, snapshot, on_agent_event, mode, failure::Union{J.Models.InvalidConfig, ToolFailure})
+    println(terminal.diagnostics, "Invalid or unreadable compaction settings.")
+    flush(terminal.diagnostics)
+    2
+end
+function runjson!(terminal, agent, prompt, snapshot, on_agent_event, mode, policy::Union{Nothing, J.AutoCompaction})
     stream = Stream(terminal, agent, mode)
-    callback = listener(snapshot, event -> (observe!(stream, event); on_agent_event(event)))
+    recorder = Recorder(agent)
+    backfill!(recorder, stream, recordpresence(recorder.entries))
+    callback = listener(snapshot, event -> (observejson!(stream, recorder, event); on_agent_event(event)))
     result = try
         request!(terminal) do
-            respond!(agent, prompt; on_event=ProviderObserver(stream), on_agent_event=callback)
+            respond!(agent, prompt; on_event=ProviderObserver(stream), on_agent_event=callback, auto_compaction=policy)
         end
     finally
         failures!(terminal, callback)

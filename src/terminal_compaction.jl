@@ -64,3 +64,51 @@ function compactionmodel(provider::Union{OpenAI, OpenAIResponses, Anthropic, Goo
     Models.findmodel(model -> model.provider == catalogname && model.id == provider.model, modelcatalog(provider))
 end
 compactionmodel(provider::ManagedChatGPT, name) = Models.findmodel(model -> model.provider == "openai" && model.id == provider.model, Models.catalog())
+
+settingspath(env) = joinpath(get(env, "PI_CODING_AGENT_DIR", joinpath(homedir(), ".pi", "agent")), "settings.json")
+compactionenabled(env, cwd) = compactionenabled(terminalsettings(env, cwd))
+compactionenabled(settings::Models.InvalidConfig) = settings
+compactionenabled(settings::AbstractDict) = compactionconfigenabled(get(settings, "compaction", Dict{String, Any}()))
+compactionconfigenabled(config) = Models.InvalidConfig()
+compactionconfigenabled(config::AbstractDict) = compactionenabledvalue(get(config, "enabled", true))
+compactionenabledvalue(value) = Models.InvalidConfig()
+compactionenabledvalue(value::Bool) = value
+
+function setcompaction!(env, enabled::Bool)
+    path = settingspath(env)
+    mkpath(dirname(path))
+    lockpath = path * ".lock"
+    setcompaction!(path, lockpath, enabled, attempt(() -> mkdir(lockpath)))
+end
+setcompaction!(path, lockpath, enabled, failure::ToolFailure) = failure
+function setcompaction!(path, lockpath, enabled, acquired::String)
+    try
+        target = islink(path) ? realpath(path) : path
+        setcompaction!(target, enabled, readsettings(path))
+    finally
+        rm(lockpath)
+    end
+end
+setcompaction!(path, enabled, settings::InvalidResponse) = Models.InvalidConfig()
+setcompaction!(path, enabled, settings) = Models.InvalidConfig()
+function setcompaction!(path, enabled, settings::AbstractDict)
+    setcompaction!(path, enabled, settings, get(settings, "compaction", Dict{String, Any}()))
+end
+setcompaction!(path, enabled, settings, config) = Models.InvalidConfig()
+function setcompaction!(path, enabled, settings, config::AbstractDict)
+    updated = Dict{String, Any}(settings)
+    updated["compaction"] = merge(Dict{String, Any}(config), Dict("enabled" => enabled))
+    mktemp(dirname(path)) do temporary, io
+        JSON3.pretty(io, updated)
+        write(io, '\n')
+        flush(io)
+        close(io)
+        preservepermissions!(temporary, path)
+        Base.Filesystem.rename(temporary, path)
+    end
+    nothing
+end
+preservepermissions!(temporary, path) = isfile(path) && chmod(temporary, stat(path).mode & 0o777)
+
+usablecompaction(settings::Union{Nothing, AutoCompaction}) = settings
+usablecompaction(settings) = nothing

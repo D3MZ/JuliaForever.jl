@@ -19,11 +19,13 @@ end
 
 function recordentry!(session, entry::J.Conversation.SessionEntry)
     lock(session.lock) do
-        id = bytes2hex(rand(UInt8, 8))
-        parent = session.entryleaf
-        timestamp = Dates.format(Dates.now(Dates.UTC), dateformat"yyyy-mm-ddTHH:MM:SS.sss") * "Z"
-        result, _ = J.transition!(revision -> J.Conversation.SessionRecord(revision, id, parent, timestamp, entry), session.agent)
-        recordedentry!(session, result)
+        lock(session.agent.lock) do
+            id = bytes2hex(rand(UInt8, 8))
+            parent = session.entryleaf
+            timestamp = Dates.format(Dates.now(Dates.UTC), dateformat"yyyy-mm-ddTHH:MM:SS.sss") * "Z"
+            result, _ = J.transition!(revision -> J.Conversation.SessionRecord(revision, id, parent, timestamp, entry), session.agent)
+            recordedentry!(session, result)
+        end
     end
 end
 recordedentry!(session, rejected::J.History.Rejected) = rejected
@@ -45,10 +47,25 @@ function recordmessage!(session, value::AbstractDict)
     entrysaved!(session, recordentry!(session, J.Conversation.MessageEntry(message)))
 end
 
+backfill!(session, ::LiveJSON.RecordedMessages) = nothing
+function backfill!(session, ::LiveJSON.NoRecordedMessages)
+    foreach(message -> backfillmessage!(session, get(backfillroles, message["role"], nothing), message), session.messages)
+    nothing
+end
+backfillmessage!(session, ::Nothing, message) = nothing
+backfillmessage!(session, ::LiveJSON.Role, message) = recordmessage!(session, message)
+const backfillroles = Dict("system" => LiveJSON.SystemRole(), "user" => LiveJSON.UserRole(), "assistant" => LiveJSON.AssistantRole(), "toolResult" => LiveJSON.ToolRole(), "bashExecution" => LiveJSON.OtherRole())
+
 entryfields(entry::J.Conversation.ModelEntry) = (; type="model_change", provider=entry.provider, modelId=entry.model)
 entryfields(entry::J.Conversation.ThinkingEntry) = (; type="thinking_level_change", thinkingLevel=entry.level)
 entryfields(entry::J.Conversation.MessageEntry) = (; type="message", message=entry.message)
 entryfields(entry::J.Conversation.NameEntry) = (; type="session_info", name=entry.name)
+function entryfields(entry::J.Conversation.CompactionEntry)
+    fields = LiveJSON.compactiondata(entry)
+    delete!(fields, "estimatedTokensAfter")
+    fields["type"] = "compaction"
+    fields
+end
 function entryvalue(record::J.Conversation.SessionRecord)
     value = Dict{String, Any}("id" => record.id, "parentId" => record.parent, "timestamp" => record.timestamp)
     for (key, field) in pairs(entryfields(record.entry))

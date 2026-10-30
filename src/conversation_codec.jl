@@ -156,6 +156,9 @@ pack(x::C.ModelEntry) = node("entry_model", x.provider, x.model)
 pack(x::C.ThinkingEntry) = node("entry_thinking", x.level)
 pack(x::C.MessageEntry) = node("entry_message", packvalue(x.message))
 pack(x::C.NameEntry) = node("entry_name", x.name)
+pack(x::C.CompactionEntry) = pack(x, x.info)
+pack(x::C.CompactionEntry, ::Nothing) = node("entry_compaction", x.summary, x.firstkept, x.tokens_before, x.estimated_after)
+pack(x::C.CompactionEntry, info::C.ResponseInfo) = node("entry_compaction", x.summary, x.firstkept, x.tokens_before, x.estimated_after, pack(info))
 pack(x::C.SessionRecord) = node("session_record", x.revision, x.id, x.parent, x.timestamp, pack(x.entry))
 pack(x::C.ContinueQueued) = node("continue_queued", x.revision)
 pack(x::C.Continue) = node("continue", x.revision)
@@ -189,7 +192,7 @@ const nodetypes = Dict(
     "tool_search_reply" => ToolLoaded, "tool_discovery_reply" => ToolDiscovery,
     "model_failure" => C.ModelFailure, "abandoned" => C.Abandoned, "input" => C.Input, "input_images" => C.ImageInput, "steer" => C.Steer,
     "followup" => C.Followup, "steer_images" => C.ImageSteer, "followup_images" => C.ImageFollowup, "steering_mode" => C.SteeringMode, "followup_mode" => C.FollowupMode, "dequeue" => C.Dequeue, "session_name" => C.SessionName, "bash_output" => C.BashOutput, "entry_model" => C.ModelEntry, "entry_thinking" => C.ThinkingEntry, "entry_message" => C.MessageEntry, "entry_name" => C.NameEntry, "session_record" => C.SessionRecord, "continue_queued" => C.ContinueQueued, "continue" => C.Continue, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History, "compaction_usage" => C.CompactionUsage,
-    "system_update" => C.SystemUpdate, "interrupt" => C.Interrupt, "abandon" => C.Abandon, "call" => K.Call, "return" => K.Return,
+    "entry_compaction" => C.CompactionEntry, "system_update" => C.SystemUpdate, "interrupt" => C.Interrupt, "abandon" => C.Abandon, "call" => K.Call, "return" => K.Return,
     "fail" => K.Fail, "plan" => K.Plan, "observe" => K.Observe, "finish" => K.Finish, "image" => C.Image,
 )
 
@@ -238,6 +241,7 @@ unpack(::Type{C.ModelEntry}, f::Vector) = C.ModelEntry(f[1], f[2])
 unpack(::Type{C.ThinkingEntry}, f::Vector) = C.ThinkingEntry(f[1])
 unpack(::Type{C.MessageEntry}, f::Vector) = C.MessageEntry(unvalue(f[1]))
 unpack(::Type{C.NameEntry}, f::Vector) = C.NameEntry(f[1])
+unpack(::Type{C.CompactionEntry}, f::Vector) = C.CompactionEntry(f[1], f[2], f[3], f[4], unpackinfo(get(f, 5, nothing)))
 unpack(::Type{C.SessionRecord}, f::Vector) = C.SessionRecord(f[1], f[2], f[3], f[4], unpack(f[5]))
 unpack(::Type{C.ContinueQueued}, f::Vector) = C.ContinueQueued(f[1])
 unpack(::Type{C.Continue}, f::Vector) = C.Continue(f[1])

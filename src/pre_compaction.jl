@@ -2,6 +2,7 @@ precompact!(agent, callback) = precompact!(agent, callback, get(task_local_stora
 precompact!(agent, callback, ::Nothing) = nothing
 precompact!(agent, callback, policy::Tuple) = precompact!(agent, callback, policy...)
 precompact!(agent, callback, settings, summarize) = nothing
+precompact!(agent, callback, settings::ChangingCompaction, summarize) = precompact!(agent, callback, settings.select(), summarize)
 function precompact!(agent, callback, settings::UsageCompaction, summarize)
     precompact!(agent, callback, settings, summarize, sync!(agent))
 end

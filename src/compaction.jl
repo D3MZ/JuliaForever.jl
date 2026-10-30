@@ -87,6 +87,9 @@ struct CompactionPlan
     summarized::Vector{Conversation.Message}
     retained::Vector{Conversation.Message}
 end
+abstract type CompactionConcurrency end
+struct ExactRevision <: CompactionConcurrency end
+struct PreserveQueues <: CompactionConcurrency end
 
 compactionplan(agent, rejected::History.Rejected) = rejected
 compactionplan(agent, ::Nothing) = compactionplan(agent, nothing, fault(agent.state))
@@ -176,16 +179,17 @@ function compact!(agent, summarize, ::Nothing)
     compact!(agent, summarize, plan)
 end
 
-compact!(agent, summarize, plan::CompactionPlan) = compactsummary!(agent, plan, recoverycall!(agent, summarize, deepcopy(plan.summarized)))
-compactsummary!(agent, plan, outcome::SummaryOutcome) = compactsummary!(agent, plan, outcome.value, outcome.info)
-compactsummary!(agent, plan, rejected::History.Rejected) = rejected
-compactsummary!(agent, plan, rejected::History.Rejected, info) = compactfailed!(agent, rejected, info)
-compactsummary!(agent, plan, text::AbstractString, info) = compacttext!(agent, plan, summarytext(text), info)
-compacttext!(agent, plan, rejected::History.Rejected, info) = compactfailed!(agent, rejected, info)
+compact!(agent, summarize, plan::CompactionPlan) = compact!(agent, summarize, plan, ExactRevision())
+compact!(agent, summarize, plan::CompactionPlan, concurrency::CompactionConcurrency) = compactsummary!(agent, plan, recoverycall!(agent, summarize, deepcopy(plan.summarized)), concurrency)
+compactsummary!(agent, plan, outcome::SummaryOutcome, concurrency) = compactsummary!(agent, plan, outcome.value, outcome.info, concurrency)
+compactsummary!(agent, plan, rejected::History.Rejected, concurrency) = rejected
+compactsummary!(agent, plan, rejected::History.Rejected, info, concurrency) = compactfailed!(agent, rejected, info)
+compactsummary!(agent, plan, text::AbstractString, info, concurrency) = compacttext!(agent, plan, summarytext(text), info, concurrency)
+compacttext!(agent, plan, rejected::History.Rejected, info, concurrency) = compactfailed!(agent, rejected, info)
 
-function compacttext!(agent, plan, text::String, info)
+function compacttext!(agent, plan, text::String, info, concurrency)
     lock(agent.lock) do
-        compactcommit!(agent, plan, text, info, agent.turn)
+        compactcommit!(agent, plan, text, info, agent.turn, concurrency)
     end
 end
 
@@ -195,15 +199,22 @@ function compactfailed!(agent, result, info::Conversation.ResponseInfo)
     outcome(saved, result)
 end
 
-compactcommit!(agent, plan, text, info, ::Cancelled) = compactfailed!(agent, :cancelled, info)
+compactcommit!(agent, plan, text, info, ::Cancelled, concurrency) = compactfailed!(agent, :cancelled, info)
 
-function compactcommit!(agent, plan, text, info, ::Union{Idle, Running})
-    agent.state.revision == plan.revision || return compactfailed!(agent, History.Rejected(:revision), info)
+function compactcommit!(agent, plan, text, info, ::Union{Idle, Running}, concurrency)
+    compactionrevision(agent, plan, concurrency) || return compactfailed!(agent, History.Rejected(:revision), info)
     Kernel.same(agent.messages, plan.original) || return compactfailed!(agent, History.Rejected(:revision), info)
     messages = vcat(plan.system, Conversation.Message[Conversation.Summary(text)], plan.retained)
     result, _ = transition!(revision -> Conversation.History(revision, messages, info), agent)
     compactcommit!(agent, text, result)
 end
+compactionrevision(agent, plan, ::ExactRevision) = agent.state.revision == plan.revision
+function compactionrevision(agent, plan, ::PreserveQueues)
+    events = Iterators.dropwhile(event -> event.revision < plan.revision, getfield(agent, :events))
+    foldl(queuesafe, events; init=true)
+end
+queuesafe(allowed, event::Kernel.Event) = false
+queuesafe(allowed, event::Union{Conversation.Steer, Conversation.Followup, Conversation.ImageSteer, Conversation.ImageFollowup, Conversation.SteeringMode, Conversation.FollowupMode, Conversation.Dequeue, Conversation.SessionName, Conversation.SessionRecord}) = allowed
 
 compactcommit!(agent, text, result) = result
 
@@ -223,6 +234,9 @@ UsageCompaction(context_window, reserve_tokens) = UsageCompaction(context_window
 struct DisabledCompaction <: AutoCompaction
     context_window::Int
     reserve_tokens::Int
+end
+struct ChangingCompaction{F} <: AutoCompaction
+    select::F
 end
 
 const autocompactiontypes = Dict(true => UsageCompaction, false => DisabledCompaction)
@@ -255,16 +269,17 @@ function autoplan!(agent, summarize, callback, retention, ::Nothing)
     autoplan!(agent, summarize, callback, retention, plan)
 end
 function autoplan!(agent, summarize, callback, retention, plan::CompactionPlan)
-    emit(callback, (; type=:auto_compaction_start, reason=:threshold))
+    tokens = compactiontokens(agent)
+    emit(callback, (; type=:auto_compaction_start, reason=:threshold, plan, tokens_before=tokens))
     result = autoperform!(agent, summarize, plan, turnstate(agent))
-    emit(callback, (; type=:auto_compaction_end, reason=:threshold, result))
+    autoended!(callback, agent, :threshold, result, plan, tokens, false)
     result
 end
 autoperform!(agent, summarize, plan, ::Cancelled) = :cancelled
 function autoperform!(agent, summarize, plan, ::Union{Idle, Running})
     depth = length(current_exceptions())
     try
-        compact!(agent, summarize, plan)
+        compact!(agent, summarize, plan, PreserveQueues())
     finally
         for failure in autofailures(current_exceptions(), depth, turnstate(agent))
             return failure
@@ -286,9 +301,16 @@ mutable struct OverflowRecovery{F, P, R<:CompactionRetention}
     retention::R
     attempt::RecoveryAttempt
 end
+mutable struct ChangingRecovery{F, P, C}
+    summarize::F
+    provider::P
+    policy::C
+    attempt::RecoveryAttempt
+end
 
 recovery(settings, summarize, provider) = nothing
 recovery(settings::UsageCompaction, summarize, provider) = OverflowRecovery(summarize, provider, settings.retention, AvailableRecovery())
+recovery(settings::ChangingCompaction, summarize, provider) = ChangingRecovery(summarize, provider, settings, AvailableRecovery())
 
 abstract type OverflowSignal end
 struct NoOverflow <: OverflowSignal end
@@ -304,9 +326,9 @@ overflowsignal(::NoOverflow, status) = NoOverflow()
 overflowsignal(::Overflow, status) = get(overflowexclusions, status, Overflow())
 
 recoverycomplete!(::Nothing, result) = nothing
-recoverycomplete!(recovery::OverflowRecovery, result) = nothing
-recoverycomplete!(recovery::OverflowRecovery, ::Nothing) = (recovery.attempt = AvailableRecovery(); nothing)
-recoverycomplete!(recovery::OverflowRecovery, result::Completion) = recoverycomplete!(recovery, result.finish, result.error, getfield(result, :status))
+recoverycomplete!(recovery::Union{OverflowRecovery, ChangingRecovery}, result) = nothing
+recoverycomplete!(recovery::Union{OverflowRecovery, ChangingRecovery}, ::Nothing) = (recovery.attempt = AvailableRecovery(); nothing)
+recoverycomplete!(recovery::Union{OverflowRecovery, ChangingRecovery}, result::Completion) = recoverycomplete!(recovery, result.finish, result.error, getfield(result, :status))
 recoverycomplete!(recovery, finish, failure, status) = nothing
 recoverycomplete!(recovery, finish, ::Nothing, ::Finished) = get(recoveryfinishes, finish, resetrecovery!)(recovery)
 resetrecovery!(recovery) = (recovery.attempt = AvailableRecovery(); nothing)
@@ -314,7 +336,7 @@ keeprecovery!(recovery) = nothing
 const recoveryfinishes = Dict("length" => keeprecovery!)
 
 recoveryinput!(recovery, message) = nothing
-recoveryinput!(recovery::OverflowRecovery, ::Union{Conversation.User, Conversation.ImageUser}) = resetrecovery!(recovery)
+recoveryinput!(recovery::Union{OverflowRecovery, ChangingRecovery}, ::Union{Conversation.User, Conversation.ImageUser}) = resetrecovery!(recovery)
 
 function rememberusage!(result)
     recoverycomplete!(get(task_local_storage(), :jf_overflow_recovery, nothing), result)
@@ -331,17 +353,28 @@ recover!(run, result, ::Cancelled) = :cancelled
 recover!(run, result, ::Union{Idle, Running}) = recover!(run, result, get(task_local_storage(), :jf_overflow_recovery, nothing))
 recover!(run, result, recovery) = result
 recover!(run, result::Completion, recovery::OverflowRecovery) = recover!(run, result, recovery, overflowsignal(result.error), recovery.attempt)
+recover!(run, result::Completion, recovery::ChangingRecovery) = recoverselected!(run, result, recovery, recovery.policy.select())
+recoverselected!(run, result, recovery, settings) = result
+recoverselected!(run, result, recovery, settings::UsageCompaction) = recover!(run, result, recovery, overflowsignal(result.error), recovery.attempt)
 recover!(run, result, recovery, ::NoOverflow, attempt) = result
 function recover!(run, result, recovery, ::Overflow, ::AttemptedRecovery)
-    emit(run.callback, (; type=:auto_compaction_end, reason=:overflow, result=History.Rejected(:overflow_retry_exhausted)))
+    emit(run.callback, (; type=:auto_compaction_end, reason=:overflow, result=History.Rejected(:overflow_retry_exhausted), will_retry=false))
     recoverycancel!(run, result, turnstate(run.agent))
 end
 
 function recover!(run, result, recovery, ::Overflow, ::AvailableRecovery)
+    recoverretained!(run, result, recovery, recoveryretention(recovery))
+end
+recoveryretention(recovery::OverflowRecovery) = recovery.retention
+recoveryretention(recovery::ChangingRecovery) = recoveryretention(recovery.policy.select())
+recoveryretention(settings) = nothing
+recoveryretention(settings::UsageCompaction) = settings.retention
+recoverretained!(run, result, recovery, ::Nothing) = result
+function recoverretained!(run, result, recovery, retention::CompactionRetention)
     run.agent.provider === recovery.provider || return result
     recovery.attempt = AttemptedRecovery()
     plan = lock(run.agent.lock) do
-        recoveryplan(run.agent, sync!(run.agent), recovery.retention)
+        recoveryplan(run.agent, sync!(run.agent), retention)
     end
     recover!(run, result, recovery, plan)
 end
@@ -351,12 +384,35 @@ recoveryplan(agent, ::Nothing, retention) = compactionplan(agent, agent.fault, r
 recover!(run, result, recovery, rejected::History.Rejected) = recoverycancel!(run, result, turnstate(run.agent))
 
 function recover!(run, result, recovery, plan::CompactionPlan)
-    emit(run.callback, (; type=:auto_compaction_start, reason=:overflow))
+    tokens = compactiontokens(run.agent)
+    emit(run.callback, (; type=:auto_compaction_start, reason=:overflow, plan, tokens_before=tokens))
     compacted = recoverysummary!(run.agent, recovery, plan, turnstate(run.agent))
     compacted = recoveryoutcome(compacted, turnstate(run.agent))
-    emit(run.callback, (; type=:auto_compaction_end, reason=:overflow, result=compacted))
+    autoended!(run.callback, run.agent, :overflow, compacted, plan, tokens, recoveryretry(compacted))
     recoveryresult!(run, result, compacted, recovery, turnstate(run.agent))
 end
+
+recoveryretry(result) = false
+recoveryretry(result::AbstractString) = true
+
+function compactiontokens(agent)
+    lock(agent.lock) do
+        compacttokens(preestimate(agent), agent.state.messages)
+    end
+end
+compacttokens(tokens::Int, messages) = tokens
+compacttokens(::Nothing, messages) = sum(pretoken, messages; init=0)
+
+function autoended!(callback, agent, reason, result, plan, tokens, retry)
+    info, after = lock(agent.lock) do
+        (latestcompactioninfo(result, getfield(agent, :events)), sum(pretoken, agent.state.messages; init=0))
+    end
+    emit(callback, (; type=:auto_compaction_end, reason, result, plan, tokens_before=tokens, estimated_after=after, info, will_retry=retry))
+end
+latestcompactioninfo(result, events) = nothing
+latestcompactioninfo(result::AbstractString, events) = foldl(compactioneventinfo, events; init=nothing)
+compactioneventinfo(info, event::Conversation.History) = event.compaction
+compactioneventinfo(info, event) = info
 
 recoveryoutcome(compacted, ::Cancelled) = :cancelled
 recoveryoutcome(compacted, ::Union{Idle, Running}) = compacted
@@ -369,7 +425,7 @@ function recoverysummary!(agent, recovery, plan, ::Union{Idle, Running})
         History.Rejected(:summary_failed)
     end
     agent.provider === recovery.provider || return recoverychanged!(agent, summary)
-    compactsummary!(agent, plan, recoverytext(summary))
+    compactsummary!(agent, plan, recoverytext(summary), PreserveQueues())
 end
 recoverychanged!(agent, summary) = History.Rejected(:provider_changed)
 recoverychanged!(agent, summary::SummaryOutcome) = compactfailed!(agent, History.Rejected(:provider_changed), summary.info)
@@ -425,3 +481,5 @@ end
 finishauto!(agent, result, usage, ::Nothing, summarize, callback) = nothing
 finishauto!(agent, result, usage, settings::AutoCompaction, summarize, callback) = nothing
 finishauto!(agent, result::AbstractString, usage, settings::AutoCompaction, summarize, callback) = (autocompact!(agent, usage, settings, summarize, callback); nothing)
+finishauto!(agent, result, usage, settings::ChangingCompaction, summarize, callback) = finishauto!(agent, result, usage, settings.select(), summarize, callback)
+finishauto!(agent, result::AbstractString, usage, settings::ChangingCompaction, summarize, callback) = finishauto!(agent, result, usage, settings.select(), summarize, callback)
