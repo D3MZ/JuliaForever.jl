@@ -23,6 +23,28 @@ function session_process(requests, workspace, directory, args; input="", fail=fa
     end
 end
 
+@testset "Windows short aliases discover sessions" begin
+    if Sys.iswindows()
+        mktempdir(get(ENV, "JF_ALIAS_TEST_ROOT", tempdir())) do root
+            long = joinpath(root, "Julia Forever long project directory")
+            mkpath(long)
+            short = JuliaForever.SessionCatalog.winpath(long, JuliaForever.SessionCatalog.shortpath)
+            if short != long
+                sessions, requests = joinpath(root, "sessions"), joinpath(root, "requests.jsonl")
+                @test session_process(requests, long, sessions, ["long original"]).status == 0
+                @test session_process(requests, short, sessions, ["--continue", "short continuation"]).status == 0
+                @test session_process(requests, short, sessions, ["short original"]).status == 0
+                @test session_process(requests, long, sessions, ["--continue", "long continuation"]).status == 0
+                histories = [JSON3.read(line) for line in eachline(requests)]
+                @test occursin("long original", string(histories[2]))
+                @test occursin("short original", string(histories[4]))
+                @test length(JuliaForever.SessionCatalog.list(sessions, long)) == 2
+                @test length(JuliaForever.SessionCatalog.list(sessions, short)) == 2
+            end
+        end
+    end
+end
+
 @testset "session diagnostics redact provider credentials" begin
     for key in ("session-test-secret", "synthetic" * Char(0x80))
         mktempdir() do root
