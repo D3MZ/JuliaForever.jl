@@ -33,49 +33,62 @@ end
 status(::Terminal, ::ToolSuccess) = "ok"
 status(terminal::Terminal, result::ToolFailure) = "error: " * redact(terminal, result.text)
 
-function render!(terminal::Terminal, event)
-    if event.type == :message_end && get(event.message, "role", nothing) == "assistant"
-        content = get(event.message, "content", nothing)
-        !terminal.streamed && content isa AbstractString && text!(terminal, content)
-        line!(terminal)
-        terminal.streamed = false
-    elseif event.type == :tool_execution_start
-        println(terminal.diagnostics, "[tool] ", redact(terminal, something(event.tool_name, "unknown")), ": started")
-        flush(terminal.diagnostics)
-    elseif event.type == :tool_execution_end
-        name = redact(terminal, something(event.tool_name, "unknown"))
-        result = status(terminal, event.result)
-        println(terminal.diagnostics, "[tool] ", name, ": ", result)
-        flush(terminal.diagnostics)
-    end
+ignore_event!(terminal, event) = nothing
+
+function render_assistant!(terminal::Terminal, event)
+    showcontent!(terminal, get(event.message, "content", nothing))
+    line!(terminal)
+    terminal.streamed = false
 end
 
-function result!(terminal::Terminal, result::Completion)
-    result.error isa InvalidResponse && return failure!(terminal, result.error)
-    detail = result.finish == "content_filter" ? "content was filtered" : result.finish == "failed" ? "the provider reported failure" : result.finish == "incomplete" ? "the provider reported incomplete output" : "the provider stream did not finish"
+showcontent!(terminal::Terminal, content) = nothing
+showcontent!(terminal::Terminal, content::AbstractString) = terminal.streamed || text!(terminal, content)
+const messagerenders = Dict("assistant" => render_assistant!)
+render_message!(terminal::Terminal, event) = get(messagerenders, get(event.message, "role", nothing), ignore_event!)(terminal, event)
+
+function render_tool_start!(terminal::Terminal, event)
+    println(terminal.diagnostics, "[tool] ", redact(terminal, something(event.tool_name, "unknown")), ": started")
+    flush(terminal.diagnostics)
+end
+
+function render_tool_end!(terminal::Terminal, event)
+    name = redact(terminal, something(event.tool_name, "unknown"))
+    result = status(terminal, event.result)
+    println(terminal.diagnostics, "[tool] ", name, ": ", result)
+    flush(terminal.diagnostics)
+end
+
+const terminalrenders = Dict(:message_end => render_message!, :tool_execution_start => render_tool_start!, :tool_execution_end => render_tool_end!)
+render!(terminal::Terminal, event) = get(terminalrenders, event.type, ignore_event!)(terminal, event)
+
+const finishdetails = Dict("content_filter" => "content was filtered", "failed" => "the provider reported failure", "incomplete" => "the provider reported incomplete output")
+result!(terminal::Terminal, result::Completion) = result!(terminal, result, result.error)
+result!(terminal::Terminal, result::Completion, error::InvalidResponse) = failure!(terminal, error)
+
+function result!(terminal::Terminal, result::Completion, error)
+    detail = get(finishdetails, result.finish, "the provider stream did not finish")
     println(terminal.diagnostics, "Response incomplete: ", detail)
     flush(terminal.diagnostics)
     1
 end
 
+const resultstatuses = Dict(:cancelled => 130)
 function result!(terminal::Terminal, result::Symbol)
     println(terminal.diagnostics, "Request ", result, ".")
     flush(terminal.diagnostics)
-    result == :cancelled ? 130 : 1
+    get(resultstatuses, result, 1)
 end
 
 result!(::Terminal, ::Union{AbstractString, Nothing}) = 0
 
+const historydiagnostics = Dict(
+    :uncertain_effect => "History has an uncertain pending effect. It was not retried. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.",
+    :incomplete_turn => "History has an incomplete turn. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.",
+    :not_interrupted => "History has no interrupted turn to abandon.",
+)
+
 function result!(terminal::Terminal, result::History.Rejected)
-    if result.reason == :uncertain_effect
-        println(terminal.diagnostics, "History has an uncertain pending effect. It was not retried. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.")
-    elseif result.reason == :incomplete_turn
-        println(terminal.diagnostics, "History has an incomplete turn. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.")
-    elseif result.reason == :not_interrupted
-        println(terminal.diagnostics, "History has no interrupted turn to abandon.")
-    else
-        println(terminal.diagnostics, "History rejected: ", result.reason, ".")
-    end
+    println(terminal.diagnostics, get(historydiagnostics, result.reason, "History rejected: $(result.reason)."))
     flush(terminal.diagnostics)
     1
 end
@@ -179,9 +192,13 @@ function request!(f, terminal::Terminal)
     (; value=fetch(task), status=0)
 end
 
+streamtext!(terminal::Terminal, event) = text!(terminal, event.text)
+const streamrenders = Dict(:text => streamtext!)
+streamrender!(terminal::Terminal, event) = get(streamrenders, event.type, ignore_event!)(terminal, event)
+
 function run!(terminal::Terminal, agent::Agent, prompt)
     result = request!(terminal) do
-        respond!(agent, prompt; on_event=event -> event.type == :text && text!(terminal, event.text), on_agent_event=event -> render!(terminal, event))
+        respond!(agent, prompt; on_event=event -> streamrender!(terminal, event), on_agent_event=event -> render!(terminal, event))
     end
     result.status == 0 || return result.status
     result!(terminal, result.value)

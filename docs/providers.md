@@ -33,4 +33,6 @@ Callbacks receive raw `:provider` events and `:text`, `:thinking`, `:tool_call`,
 
 Malformed JSON returns an incomplete `Completion` whose `error` is an `InvalidResponse` value; the raw malformed payload is not included. This applies to streamed and nonstreamed completions. A malformed OpenRouter authorization exchange returns `InvalidResponse` directly. Other parsing exceptions and HTTP failures propagate. Once a stream encounters malformed JSON, later events in that stream are ignored.
 
+`Completion.done` remains a Boolean property and its JSON representation retains `done`. Internally, the completion has a typed status; code using `getfield(result, :done)` or reflecting on its fields must use the property instead. Previously saved Julia `Serialization` values using the old field layout are not covered by this compatibility guarantee.
+
 This is a subset of Pi's providers. Only the first Chat Completions choice is processed. Responses handles text, refusal, reasoning and function-call items, with local function results. Built-in hosted tools, images, audio, ChatGPT authentication, cross-provider/model reasoning handoff, and Pi's complete model catalog, provider options, and event format are not implemented. Responses behavior has been tested with synthetic loopback fixtures, not a live OpenAI model.

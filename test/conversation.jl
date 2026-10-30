@@ -1,10 +1,23 @@
-using Test, JuliaForever
+using Test, JuliaForever, JSON3
 
 import JuliaForever.Kernel as K
 import JuliaForever.Conversation as C
 
 function reply(text; calls=C.ToolCall[], finish="stop", done=true)
     C.ModelReply(C.Assistant(text, calls, finish, done))
+end
+
+@testset "assistant completion compatibility" begin
+    for done in (true, false)
+        message = C.Assistant("answer", C.ToolCall[], "stop", done; metadata=Dict("note" => "kept"))
+        encoded = JSON3.write(message)
+        @test JSON3.read(encoded).done == done
+        restored = JSON3.read(encoded, C.Assistant)
+        @test restored.done == done && restored.content == "answer" && restored.metadata["note"] == "kept"
+        @test isequal(restored, message)
+    end
+    @test C.Assistant(nothing, C.ToolCall[], nothing, 1).done
+    @test !C.Assistant(nothing, C.ToolCall[], nothing, 0).done
 end
 
 @testset "conversation transitions" begin

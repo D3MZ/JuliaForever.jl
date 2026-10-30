@@ -280,7 +280,7 @@ function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), o
     state = ResponseStream(on_event)
     HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, sse_callback=event -> receive!(state, event.data))
     result = finish(provider, state, state.terminal)
-    on_event((; type=result.done ? :done : :incomplete, result))
+    on_event((; type=completionevent(result), result))
     result
 end
 

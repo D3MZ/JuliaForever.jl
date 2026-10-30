@@ -1,5 +1,21 @@
 using HTTP, JSON3
 
+@testset "completion properties and JSON" begin
+    for done in (true, false)
+        used = Usage(1, 2, 3, 4, 5, 10, 0.25)
+        result = Completion(Dict{String, Any}("role" => "assistant", "content" => "answer"), used, "stop", done, done ? nothing : "interrupted")
+        data = JSON3.read(JSON3.write(result))
+        @test Set(keys(data)) == Set([:message, :usage, :finish, :done, :error])
+        @test data.done == done
+        restored = JSON3.read(JSON3.write(result), Completion)
+        @test restored.done == done && restored.error == result.error
+        @test restored.message == result.message && restored.finish == result.finish
+        @test restored.usage.total == 10 && restored.usage.cost == 0.25
+    end
+    @test Completion(Dict{String, Any}(), nothing, nothing, 1, nothing).done
+    @test !Completion(Dict{String, Any}(), nothing, nothing, 0, nothing).done
+end
+
 @testset "chat finish reasons" begin
     reason = Ref{Union{Nothing, String}}("stop")
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request

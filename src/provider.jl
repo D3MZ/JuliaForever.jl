@@ -113,13 +113,36 @@ struct Usage
     cost::Union{Nothing, Float64}
 end
 
+abstract type CompletionStatus end
+struct Finished <: CompletionStatus end
+struct Unfinished <: CompletionStatus end
+const completionstatuses = Dict(true => Finished(), false => Unfinished())
+completionstatus(done::Bool) = completionstatuses[done]
+finished(::Finished) = true
+finished(::Unfinished) = false
+completionevent(::Finished) = :done
+completionevent(::Unfinished) = :incomplete
+JSON3.StructTypes.StructType(::Type{<:CompletionStatus}) = JSON3.StructTypes.CustomStruct()
+JSON3.StructTypes.lowertype(::Type{<:CompletionStatus}) = Bool
+JSON3.StructTypes.lower(status::CompletionStatus) = finished(status)
+JSON3.StructTypes.construct(::Type{CompletionStatus}, done::Bool) = completionstatus(done)
+
 struct Completion
     message::Dict{String, Any}
     usage::Union{Nothing, Usage}
     finish::Union{Nothing, String}
-    done::Bool
+    status::CompletionStatus
     error::Union{Nothing, String, InvalidResponse}
+
+    function Completion(message, usage, finish, status::CompletionStatus, error)
+        new(message, usage, finish, status, error)
+    end
 end
+Completion(message, usage, finish, done, error) = Completion(message, usage, finish, completionstatus(convert(Bool, done)), error)
+Base.getproperty(result::Completion, name::Symbol) = name === :done ? finished(getfield(result, :status)) : getfield(result, name)
+Base.propertynames(::Completion, private::Bool=false) = (:message, :usage, :finish, :done, :error, :status)
+completionevent(result::Completion) = completionevent(getfield(result, :status))
+JSON3.StructTypes.names(::Type{Completion}) = ((:status, :done),)
 
 incomplete(failure::InvalidResponse) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, failure)
 
@@ -291,6 +314,6 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
     status = chatfinish(finish[])
     finishfailure!(failure, status, failure[])
     result = Completion(message, reported_usage[], finish[], finishdone(status, marker[], failure[]), failure[])
-    on_event((; type=result.done ? :done : :incomplete, result))
+    on_event((; type=completionevent(result), result))
     result
 end

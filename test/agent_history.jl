@@ -342,6 +342,7 @@ JuliaForever.complete(::BrokenHistoryProvider, messages, tools) = error("provide
     history = H.Memory()
     agent = Agent(BrokenHistoryProvider(), []; history)
     @test respond!(agent, "start"; tool_execution=:parallel) == H.Rejected(:unsupported_execution)
+    @test respond!(agent, "start"; tool_execution=:unknown) == H.Rejected(:unsupported_execution)
     @test H.snapshot(history).revision == 1
     @test_throws ErrorException respond!(agent, "start")
     @test respond!(agent, "again") == H.Rejected(:uncertain_effect)

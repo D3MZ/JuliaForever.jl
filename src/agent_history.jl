@@ -174,8 +174,10 @@ end
 
 respond_recorded!(agent::Agent, prompt, rejected::History.Rejected; kwargs...) = rejected
 
-function respond_recorded!(agent::Agent, prompt, ::Nothing; on_event, on_agent_event, parameters, tool_execution)
-    tool_execution == :sequential || return History.Rejected(:unsupported_execution)
+respond_recorded!(agent::Agent, prompt, ::Nothing; on_event, on_agent_event, parameters, tool_execution) = recorded_mode!(agent, prompt, toolmode(tool_execution); on_event, on_agent_event, parameters)
+recorded_mode!(agent, prompt, mode; kwargs...) = History.Rejected(:unsupported_execution)
+
+function recorded_mode!(agent, prompt, ::Sequential; on_event, on_agent_event, parameters)
     begin!(agent) || return :busy
     messages = Dict{String, Any}[]
     event_lock = ReentrantLock()
@@ -284,8 +286,14 @@ end
 recorded_observed!(run, answer, result, added) = result
 recorded_observed!(run, answer, result::Kernel.Applied, added) = recorded_result!(run, answer, result, added, answer.result)
 recorded_result!(run, answer, transition, added, ::Nothing) = recorded_complete!(run, answer, transition, added)
+recorded_result!(run, answer, transition, added, result::Completion) = recorded_result!(run, answer, transition, added, result, getfield(result, :status))
+recorded_result!(run, answer, transition, added, result::Completion, ::Finished) = recorded_complete!(run, answer, transition, added)
+recorded_result!(run, answer, transition, added, result::Completion, ::Unfinished) = recorded_partial!(run, answer, result)
 function recorded_result!(run, answer, transition, added, result)
     result.done && return recorded_complete!(run, answer, transition, added)
+    recorded_partial!(run, answer, result)
+end
+function recorded_partial!(run, answer, result)
     answer.started || emit(run.callback, (; type=:message_start, message=deepcopy(answer.message)))
     emit(run.callback, (; type=:message_end, message=deepcopy(answer.message)))
     emit(run.callback, (; type=:turn_end, message=deepcopy(answer.message), tool_results=Dict{String, Any}[]))

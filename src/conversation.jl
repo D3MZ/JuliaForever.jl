@@ -1,7 +1,7 @@
 module Conversation
 
 import ..Kernel as K
-import ..JuliaForever: ToolResult, content
+import ..JuliaForever: ToolResult, content, CompletionStatus, Finished, Unfinished, completionstatus, finished, JSON3
 
 abstract type Message end
 
@@ -30,15 +30,19 @@ struct Assistant <: Message
     content::Union{Nothing, String}
     calls::Vector{ToolCall}
     finish::Union{Nothing, String}
-    done::Bool
+    status::CompletionStatus
     metadata::Dict{String, Any}
 
-    function Assistant(content, calls, finish, done, metadata::AbstractDict)
-        new(content, deepcopy(calls), finish, done, deepcopy(Dict{String, Any}(metadata)))
+    function Assistant(content, calls, finish, status::CompletionStatus, metadata::AbstractDict)
+        new(content, deepcopy(calls), finish, status, deepcopy(Dict{String, Any}(metadata)))
     end
 end
 
+Assistant(content, calls, finish, done, metadata::AbstractDict) = Assistant(content, calls, finish, completionstatus(convert(Bool, done)), metadata)
 Assistant(content, calls, finish, done; metadata=Dict{String, Any}()) = Assistant(content, calls, finish, done, metadata)
+Base.getproperty(message::Assistant, name::Symbol) = name === :done ? finished(getfield(message, :status)) : getfield(message, name)
+Base.propertynames(::Assistant, private::Bool=false) = (:content, :calls, :finish, :done, :metadata, :status)
+JSON3.StructTypes.names(::Type{Assistant}) = ((:status, :done),)
 
 struct ToolMessage <: Message
     id::String
@@ -351,7 +355,11 @@ K.step(state::State, event::K.Observe{ModelReply}) = observe(state, event, obser
 function observe(state::State, event::K.Observe{ModelReply}, result::K.Applied)
     kernel = result.state
     answer = deepcopy(event.observation.message)
-    answer.done || return K.Applied(update(state; kernel, phase=Incomplete), ())
+    observe(state, kernel, answer, getfield(answer, :status))
+end
+
+observe(state::State, kernel::K.State, answer::Assistant, ::Unfinished) = K.Applied(update(state; kernel, phase=Incomplete), ())
+function observe(state::State, kernel::K.State, answer::Assistant, ::Finished)
     messages = copy(getfield(state, :messages))
     push!(messages, answer)
     steering = getfield(state, :steering)

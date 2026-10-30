@@ -5,6 +5,12 @@ struct Idle <: TurnState end
 struct Running <: TurnState end
 struct Cancelled <: TurnState end
 
+abstract type ToolMode end
+struct Sequential <: ToolMode end
+struct Parallel <: ToolMode end
+const toolmodes = Dict(:sequential => Sequential(), :parallel => Parallel())
+toolmode(mode) = get(toolmodes, mode, nothing)
+
 mutable struct Agent{P}
     provider::P
     tools::Dict{String, Tool}
@@ -332,26 +338,32 @@ end
 parallel(::Conversation.ToolRequest) = true
 parallel(effect) = false
 
-function runtools!(agent, effects, messages, on_agent_event; tool_execution=:sequential)
+runtools!(agent, effects, messages, on_agent_event; tool_execution=:sequential) = runtools!(agent, effects, messages, on_agent_event, toolmode(tool_execution))
+
+function runtools!(agent, effects, messages, on_agent_event, ::Union{Sequential, Nothing})
     results = Dict{String, Any}[]
     calls = [convert(Dict{String, Any}, effect.effect.call) for effect in effects]
-    if tool_execution == :parallel && all(effect -> parallel(effect.effect), effects)
-        foreach(call -> toolstart(call, on_agent_event), calls)
-        completed = Vector{ToolResult}(undef, length(calls))
-        @sync for i in eachindex(calls)
-            Threads.@spawn completed[i] = toolresult(agent, calls[i], effects[i].effect, on_agent_event)
-        end
-        for i in eachindex(calls)
-            toolobserve!(agent, effects[i], completed[i], messages, on_agent_event)
-            push!(results, toolmessage(calls[i], completed[i]))
-        end
-    else
-        for (effect, call) in zip(effects, calls)
-            toolstart(call, on_agent_event)
-            result = toolresult(agent, call, effect.effect, on_agent_event)
-            toolobserve!(agent, effect, result, messages, on_agent_event)
-            push!(results, toolmessage(call, result))
-        end
+    for (effect, call) in zip(effects, calls)
+        toolstart(call, on_agent_event)
+        result = toolresult(agent, call, effect.effect, on_agent_event)
+        toolobserve!(agent, effect, result, messages, on_agent_event)
+        push!(results, toolmessage(call, result))
+    end
+    results
+end
+
+function runtools!(agent, effects, messages, on_agent_event, ::Parallel)
+    all(effect -> parallel(effect.effect), effects) || return runtools!(agent, effects, messages, on_agent_event, Sequential())
+    calls = [convert(Dict{String, Any}, effect.effect.call) for effect in effects]
+    foreach(call -> toolstart(call, on_agent_event), calls)
+    completed = Vector{ToolResult}(undef, length(calls))
+    @sync for i in eachindex(calls)
+        Threads.@spawn completed[i] = toolresult(agent, calls[i], effects[i].effect, on_agent_event)
+    end
+    results = Dict{String, Any}[]
+    for i in eachindex(calls)
+        toolobserve!(agent, effects[i], completed[i], messages, on_agent_event)
+        push!(results, toolmessage(calls[i], completed[i]))
     end
     results
 end
@@ -363,6 +375,7 @@ function conversation_reply(answer)
 end
 
 conversation_reply(message, calls, ::Nothing) = Conversation.ModelReply(Conversation.Assistant(get(message, "content", nothing), calls, nothing, true; metadata=message))
+conversation_reply(message, calls, result::Completion) = Conversation.ModelReply(Conversation.Assistant(get(message, "content", nothing), calls, result.finish, getfield(result, :status); metadata=message))
 conversation_reply(message, calls, result) = Conversation.ModelReply(Conversation.Assistant(get(message, "content", nothing), calls, result.finish, result.done; metadata=message))
 
 function modelresponse(agent, effect, parameters, on_event, on_agent_event)
@@ -403,51 +416,11 @@ function respond!(agent::Agent, prompt, ::Nothing; on_event, on_agent_event, par
     event_lock = ReentrantLock()
     callback = on_agent_event
     on_agent_event = event -> lock(() -> emit(callback, event), event_lock)
+    run = (; agent, on_event, callback=on_agent_event, parameters, tool_execution, messages)
     try
         emit(on_agent_event, (; type=:agent_start))
         emit(on_agent_event, (; type=:turn_start))
-        sync!(agent)
-        _, added = transition!(revision -> Conversation.Input(revision, prompt), agent)
-        present!(agent, added, messages, on_agent_event)
-        if cancelled(agent) && !agent.state.cancelled
-            transition!(revision -> Conversation.Cancel(revision), agent)
-        end
-        sync!(agent)
-        next, added = transition!(revision -> Conversation.Advance(revision), agent)
-        present!(agent, added, messages, on_agent_event)
-        if cancelled(agent)
-            emit(on_agent_event, (; type=:turn_end, message=nothing, tool_results=Dict{String, Any}[]))
-            return :cancelled
-        end
-        effect = only(next.effects)
-        while true
-            if cancelled(agent)
-                transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("cancelled before dispatch")), agent)
-                emit(on_agent_event, (; type=:turn_end, message=nothing, tool_results=Dict{String, Any}[]))
-                return :cancelled
-            end
-            answer = modelresponse(agent, effect, parameters, on_event, on_agent_event)
-            result = answer.result
-            outcome = conversation_reply(answer)
-            transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, outcome), agent)
-            if !isnothing(result) && !result.done
-                answer.started || emit(on_agent_event, (; type=:message_start, message=deepcopy(answer.message)))
-                emit(on_agent_event, (; type=:message_end, message=deepcopy(answer.message)))
-                emit(on_agent_event, (; type=:turn_end, message=deepcopy(answer.message), tool_results=Dict{String, Any}[]))
-                return cancelled(agent) ? :cancelled : result
-            end
-            message = answer.message
-            present!(agent, added, messages, on_agent_event; started=answer.started)
-            results = runtools!(agent, transition.effects, messages, on_agent_event; tool_execution)
-            emit(on_agent_event, (; type=:turn_end, message=deepcopy(message), tool_results=deepcopy(results)))
-            sync!(agent)
-            next, added = transition!(revision -> Conversation.Advance(revision), agent)
-            cancelled(agent) && return :cancelled
-            isempty(next.effects) && return message["content"]
-            emit(on_agent_event, (; type=:turn_start))
-            present!(agent, added, messages, on_agent_event)
-            effect = only(next.effects)
-        end
+        direct_begin!(run, prompt)
     finally
         try
             interrupt!(agent, agent.state.phase)
@@ -457,4 +430,89 @@ function respond!(agent::Agent, prompt, ::Nothing; on_event, on_agent_event, par
             finish!(agent)
         end
     end
+end
+
+function direct_begin!(run, prompt)
+    agent = run.agent
+    sync!(agent)
+    _, added = transition!(revision -> Conversation.Input(revision, prompt), agent)
+    present!(agent, added, run.messages, run.callback)
+    direct_cancel!(run, turnstate(agent))
+    sync!(agent)
+    next, added = transition!(revision -> Conversation.Advance(revision), agent)
+    present!(agent, added, run.messages, run.callback)
+    direct_ready!(run, next, turnstate(agent))
+end
+
+direct_cancel!(run, ::Union{Idle, Running}) = nothing
+function direct_cancel!(run, ::Cancelled)
+    run.agent.state.cancelled && return nothing
+    transition!(revision -> Conversation.Cancel(revision), run.agent)
+    nothing
+end
+
+function direct_ready!(run, next, ::Cancelled)
+    emit(run.callback, (; type=:turn_end, message=nothing, tool_results=Dict{String, Any}[]))
+    :cancelled
+end
+direct_ready!(run, next, ::Union{Idle, Running}) = direct_loop!(run, only(next.effects))
+
+function direct_loop!(run, effect)
+    pending = Kernel.Pending[effect]
+    result = Ref{Any}()
+    while !isempty(pending)
+        next = direct_step!(run, pop!(pending), turnstate(run.agent))
+        schedule_pending!(pending, result, next)
+    end
+    result[]
+end
+
+function direct_step!(run, effect, ::Cancelled)
+    transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("cancelled before dispatch")), run.agent)
+    emit(run.callback, (; type=:turn_end, message=nothing, tool_results=Dict{String, Any}[]))
+    :cancelled
+end
+
+function direct_step!(run, effect, ::Union{Idle, Running})
+    answer = modelresponse(run.agent, effect, run.parameters, run.on_event, run.callback)
+    outcome = conversation_reply(answer)
+    result, added = transition!(revision -> Kernel.Observe(revision, effect.id, outcome), run.agent)
+    direct_result!(run, answer, result, added, answer.result)
+end
+
+direct_result!(run, answer, transition, added, ::Nothing) = direct_complete!(run, answer, transition, added)
+direct_result!(run, answer, transition, added, result::Completion) = direct_result!(run, answer, transition, added, result, getfield(result, :status))
+direct_result!(run, answer, transition, added, result::Completion, ::Finished) = direct_complete!(run, answer, transition, added)
+direct_result!(run, answer, transition, added, result::Completion, ::Unfinished) = direct_partial!(run, answer, result)
+function direct_result!(run, answer, transition, added, result)
+    result.done && return direct_complete!(run, answer, transition, added)
+    direct_partial!(run, answer, result)
+end
+
+function direct_partial!(run, answer, result)
+    answer.started || emit(run.callback, (; type=:message_start, message=deepcopy(answer.message)))
+    emit(run.callback, (; type=:message_end, message=deepcopy(answer.message)))
+    emit(run.callback, (; type=:turn_end, message=deepcopy(answer.message), tool_results=Dict{String, Any}[]))
+    direct_partial!(result, turnstate(run.agent))
+end
+direct_partial!(result, ::Cancelled) = :cancelled
+direct_partial!(result, ::Union{Idle, Running}) = result
+
+function direct_complete!(run, answer, transition, added)
+    agent = run.agent
+    message = answer.message
+    present!(agent, added, run.messages, run.callback; started=answer.started)
+    results = runtools!(agent, transition.effects, run.messages, run.callback; tool_execution=run.tool_execution)
+    emit(run.callback, (; type=:turn_end, message=deepcopy(message), tool_results=deepcopy(results)))
+    sync!(agent)
+    next, added = transition!(revision -> Conversation.Advance(revision), agent)
+    direct_next!(run, message, next, added, turnstate(agent))
+end
+
+direct_next!(run, message, next, added, ::Cancelled) = :cancelled
+function direct_next!(run, message, next, added, ::Union{Idle, Running})
+    isempty(next.effects) && return message["content"]
+    emit(run.callback, (; type=:turn_start))
+    present!(run.agent, added, run.messages, run.callback)
+    only(next.effects)
 end

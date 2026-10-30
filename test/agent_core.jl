@@ -99,6 +99,33 @@ end
     @test last(events).type == :agent_end
 end
 
+@testset "cancellation before dispatch and during an incomplete stream" begin
+    provider = AgentFixture([completion("unused")], [])
+    agent = Agent(provider, [])
+    result = respond!(agent, "cancel before dispatch"; on_event=identity, on_agent_event=event -> begin
+        event.type == :message_end && event.message["role"] == "user" && cancel!(agent)
+    end)
+    @test result == :cancelled
+    @test isempty(provider.requests)
+
+    provider = AgentFixture([completion("partial"; done=false, finish=nothing)], [])
+    agent = Agent(provider, [])
+    result = respond!(agent, "cancel during stream"; on_event=identity, on_agent_event=event -> begin
+        event.type == :message_update && cancel!(agent)
+    end)
+    @test result == :cancelled
+    @test length(provider.requests) == 1
+end
+
+@testset "unrecognized tool mode remains sequential" begin
+    mktempdir() do dir
+        calls = [call("one", "write", (; path="a.txt", content="first")), call("two", "write", (; path="b.txt", content="second"))]
+        provider = AgentFixture([completion(nothing; calls, finish="tool_calls"), completion("done")], [])
+        @test respond!(Agent(provider, [Write(dir)]), "start"; on_event=identity, tool_execution=:unknown) == "done"
+        @test [message["tool_call_id"] for message in provider.requests[2] if message["role"] == "tool"] == ["one", "two"]
+    end
+end
+
 mutable struct ConcurrentTool <: JuliaForever.Tool
     release::Channel{Nothing}
 end

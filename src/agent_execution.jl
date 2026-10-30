@@ -112,7 +112,11 @@ respond_execution!(agent::Agent, prompt, executor::Execution.Executor, context::
 
 function respond_execution!(agent::Agent, prompt, executor::Execution.Executor, context::AbstractString, ::Nothing, ::Nothing; on_agent_event, parameters, tool_execution)
     isempty(parameters) || return Execution.Rejected(:parameters)
-    tool_execution == :sequential || return Execution.Rejected(:parallel_tools)
+    execution_mode!(agent, prompt, executor, context, toolmode(tool_execution); on_agent_event)
+end
+execution_mode!(agent, prompt, executor, context, mode; kwargs...) = Execution.Rejected(:parallel_tools)
+
+function execution_mode!(agent, prompt, executor, context, ::Sequential; on_agent_event)
     begin!(agent) || return :busy
     messages = Dict{String, Any}[]
     models = Execution.ModelResult[]
@@ -213,8 +217,9 @@ function execution_reply!(run, effect, model, reply::Conversation.ModelFailure)
 end
 execution_reply!(run, effect, model, reply) = execution_error!(run, effect, model, reply, model.error)
 execution_error!(run, effect, model, reply, ::Nothing) = execution_observe!(run, effect, reply)
-function execution_error!(run, effect, model, reply, error)
-    reply.message.done || return execution_observe!(run, effect, reply)
+execution_error!(run, effect, model, reply, error) = execution_error!(run, effect, model, reply, error, getfield(reply.message, :status))
+execution_error!(run, effect, model, reply, error, ::Unfinished) = execution_observe!(run, effect, reply)
+function execution_error!(run, effect, model, reply, error, ::Finished)
     result, _ = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("provider reported an error")), run.agent)
     execution_failure!(run, result, :provider_error)
 end
@@ -226,14 +231,16 @@ function execution_observe!(run, effect, reply)
     execution_observed!(run, reply, result, added)
 end
 execution_observed!(run, reply, result, added) = Execution.Turn(result, run.models)
-function execution_observed!(run, reply, result::Kernel.Applied, added)
+execution_observed!(run, reply, result::Kernel.Applied, added) = execution_observed!(run, reply, result, added, getfield(reply.message, :status))
+function execution_observed!(run, reply, result::Kernel.Applied, added, ::Unfinished)
     message = convert(Dict{String, Any}, reply.message)
-    if !reply.message.done
-        emit(run.callback, (; type=:message_start, message=deepcopy(message)))
-        emit(run.callback, (; type=:message_end, message=deepcopy(message)))
-        emit(run.callback, (; type=:turn_end, message=deepcopy(message), tool_results=Dict{String, Any}[]))
-        return execution_incomplete!(run, turnstate(run.agent))
-    end
+    emit(run.callback, (; type=:message_start, message=deepcopy(message)))
+    emit(run.callback, (; type=:message_end, message=deepcopy(message)))
+    emit(run.callback, (; type=:turn_end, message=deepcopy(message), tool_results=Dict{String, Any}[]))
+    execution_incomplete!(run, turnstate(run.agent))
+end
+function execution_observed!(run, reply, result::Kernel.Applied, added, ::Finished)
+    message = convert(Dict{String, Any}, reply.message)
     present!(run.agent, added, run.messages, run.callback)
     results = execution_tools!(run.agent, run.executor, run.context, result.effects, run.messages, run.callback)
     execution_tools_done!(run, message, results)
