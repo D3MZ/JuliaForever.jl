@@ -213,9 +213,9 @@ def plugin_terminal(julia, project, directory):
             os.write(session.master, prompt.encode() + b"\r")
             session.until(lambda: b"plugin:Hello, Ada!" in session.output[offset:] and b"> " in session.output[offset:].split(b"plugin:Hello, Ada!", 1)[1], "plugin reply and prompt")
             session.until(lambda: (directory / "plugin-events").exists() and len((directory / "plugin-events").read_text().splitlines()) >= 3 * turn, "plugin turn completion")
+            session.until(lambda: b"hook failure: synthetic-secret" in session.output[offset:], "hook failure")
         events = (directory / "plugin-events").read_text().splitlines()
         assert events == ["agent_start", "tool_execution_end", "agent_end"] * 2, events
-        assert session.output.count(b"hook failure: synthetic-secret") == 2, session.output
         os.write(session.master, b"/exit\r")
         session.wait_exit()
         assert session.process.returncode == 0, session.output
