@@ -258,7 +258,7 @@ invoke(tool::Union{Bash, PowerShell}, args, cancel::ShellCancellation, update) =
 function invoke(agent, call, update, callback)
     tool, args = try
         tool = call["function"]
-        agent.tools[tool["name"]], JSON3.read(tool["arguments"])
+        agent.tools[tool["name"]], JSON3.read(IOBuffer(tool["arguments"]))
     catch exception
         return ToolFailure(sprint(showerror, exception))
     end

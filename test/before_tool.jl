@@ -84,6 +84,17 @@ end
     provider = Provider([Dict("role" => "assistant", "content" => nothing, "tool_calls" => [call]), Dict("role" => "assistant", "content" => "done")], [])
     @test respond!(Agent(provider, snapshot), "go"; on_agent_event=E.listen(snapshot)) == "done"
     @test provider.requests[2][end]["content"] == value * "!"
+    execution = JuliaForever.Execution
+    conversation = JuliaForever.Conversation
+    context = "unicode-before-tool-test"
+    @test execution.install!(context, nothing, [Echo()])
+    try
+        request = conversation.ToolRequest(conversation.ToolCall("unicode", "echo", JSON3.write((; value))))
+        reply = execution.perform(execution.Work(context, request), execution.Cancellation())
+        @test reply.text == value
+    finally
+        execution.uninstall!(context)
+    end
 end
 
 @testset "continuation combines call hooks and deferred discovery" begin
