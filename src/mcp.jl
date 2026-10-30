@@ -695,7 +695,7 @@ rpcerror(detail) = Failure(:protocol, "Invalid JSON-RPC error")
 rpcerror(detail::AbstractDict) = rpcerror(detail, get(detail, "code", nothing), get(detail, "message", nothing))
 rpcerror(detail, code, message) = Failure(:protocol, "Invalid JSON-RPC error")
 rpcerror(detail, code::Bool, message::AbstractString) = Failure(:protocol, "Invalid JSON-RPC error")
-rpcerror(detail, code::Integer, message::AbstractString) = Failure(:rpc, message, detail)
+rpcerror(detail, code::Real, message::AbstractString) = Failure(:rpc, message, detail)
 
 prepare!(client, id, ::Nothing, message) = nothing
 prepare!(client, id, pending::Pending, message) = prepare!(client, id, pending, message, pending.progress)

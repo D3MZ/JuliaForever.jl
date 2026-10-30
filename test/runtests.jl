@@ -240,6 +240,9 @@ end
 module MCPHTTPTests
 include("mcp_http.jl")
 end
+module MCPFractionalTests
+include("mcp_fractional.jl")
+end
 module MCPHTTPSSETests
 include("mcp_http_sse.jl")
 end
