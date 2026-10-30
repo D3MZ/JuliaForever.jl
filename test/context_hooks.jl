@@ -223,4 +223,43 @@ end
     end
 end
 
+mutable struct LiveEntryProvider
+    model::String
+    requests::Vector{Any}
+end
+function J.complete(provider::LiveEntryProvider, messages, tools; parameters=Dict())
+    push!(provider.requests, deepcopy(messages))
+    Completion(Dict{String, Any}("role" => "assistant", "content" => "answer"), nothing, "stop", true, nothing)
+end
+function J.stream(provider::LiveEntryProvider, messages, tools; parameters=Dict(), on_event=identity)
+    result = J.complete(provider, messages, tools; parameters)
+    on_event((; type=:text, text="answer"))
+    on_event((; type=:done, result))
+    result
+end
+
+@testset "request context stays out of mixed live session entries" begin
+    mktempdir() do root
+        registry = E.Registry()
+        E.register!(registry, :fixture, E.Plugin(; hooks=(:context => event -> (push!(event.messages, Dict("role" => "user", "content" => "request-only input")); nothing),)))
+        snapshot = E.snapshot(registry)
+        provider = LiveEntryProvider("fixture", [])
+        history = J.History.Memory()
+        agent = Agent(provider, []; history)
+        @test respond!(agent, "direct"; on_agent_event=E.listen(snapshot)) == "answer"
+        text = J.Terminal(IOBuffer(), IOBuffer(), String[], J.TextMode("fixture"))
+        @test J.run!(text, agent, "text", snapshot) == 0
+        json = J.Terminal(IOBuffer(), IOBuffer(), String[], J.JSONMode("fixture"))
+        @test J.run!(json, agent, "json", snapshot) == 0
+        @test length(provider.requests) == 3 && all(request -> any(message -> get(message, "content", "") == "request-only input", request), provider.requests)
+        terminal = J.Terminal(IOBuffer(), IOBuffer(), String[], J.RPCMode("fixture", "off"))
+        session = J.Headless.Session(terminal, agent, nothing, Ref(history), nothing, root)
+        entries = J.Headless.handle!(session, J.Headless.GetEntries(nothing)).fields.data.entries
+        users = [entry for entry in entries if entry["type"] == "message" && get(entry["message"], "role", "") == "user"]
+        @test [join(get(block, "text", "") for block in entry["message"]["content"]) for entry in users] == ["direct", "text", "json"]
+        @test !occursin("request-only input", JSON3.write(entries))
+        @test !occursin("request-only input", repr(J.History.snapshot(history)))
+    end
+end
+
 end
