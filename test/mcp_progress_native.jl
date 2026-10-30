@@ -171,10 +171,9 @@ server() = `$(Base.julia_cmd()) --startup-file=no --project=$(dirname(Base.activ
                 end
             end)
             takebefore(entered)
-            @test timedwait(() -> begin
-                result = MCP.request(client, "probe", Dict(); timeout=0.1)
-                result isa MCP.Failure && result.kind == :closed
-            end, 15) == :ok
+            # Wait for the reader to consume the response and observe EOF. Sending a
+            # probe here can fail on the closed input pipe before stdout is drained.
+            @test timedwait(() -> lock(() -> client.state == :closed, client.lock), 15) == :ok
             @test !istaskdone(job)
             if action == :close
                 close(client)
