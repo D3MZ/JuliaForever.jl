@@ -184,12 +184,24 @@ function bashenvironment!(env)
 end
 
 shellgate(::Bash, env, ::Nothing, ::Nothing, command) = nothing
-function bashoptions!(env)
-    options = split(get(env, "SHELLOPTS", ""), ':')
-    flags = [flag for (option, flag) in (("xtrace", "-x"), ("verbose", "-v")) if option in options]
-    isempty(flags) && return ""
-    env["SHELLOPTS"] = join(filter(option -> option ∉ ("xtrace", "verbose"), options), ':')
-    join(flags, " ")
+bashoption!(env, name, file) = bashoption!(env, name, pop!(env, name, nothing), file)
+bashoption!(env, name, ::Nothing, file) = nothing
+function bashoption!(env, name, options::AbstractString, file)
+    variable = "JF_BASH_" * name * "_" * replace(basename(file), r"[^A-Za-z0-9]" => "_")
+    value = variable * "_VALUE"
+    env[variable] = options
+    (value * "=\"\${" * variable * "}\"\nunset " * variable * "\n", "\"" * name * "=\${" * value * "}\"")
+end
+bashoptionstart(::Nothing) = ""
+bashoptionstart(option::Tuple) = first(option)
+bashoptionarg(::Nothing) = ""
+bashoptionarg(option::Tuple) = last(option)
+bashlauncher(::Nothing, ::Nothing) = "\"\$BASH\""
+bashlauncher(shell, bash) = "/usr/bin/env " * bashoptionarg(shell) * " " * bashoptionarg(bash) * " \"\$BASH\""
+function bashoptions!(env, file)
+    shell = bashoption!(env, "SHELLOPTS", file)
+    bash = bashoption!(env, "BASHOPTS", file)
+    (bashoptionstart(shell) * bashoptionstart(bash), bashlauncher(shell, bash))
 end
 function shellgate(::Bash, env, cancel, timeout, command)
     any(name -> startswith(uppercase(name), "BASH_FUNC_") && endswith(name, "%%"), keys(env)) && return ToolFailure("Could not isolate Bash with exported functions; command was not started")
@@ -198,6 +210,7 @@ function shellgate(::Bash, env, cancel, timeout, command)
     close(pidio)
     try
         startup = bashstartup!(env, bashenvironment!(env), file)
+        options, executable = bashoptions!(env, file)
         name = "JF_BASH_GATE_" * replace(basename(file), r"[^A-Za-z0-9]" => "_")
         pidname = name * "_PID"
         pidvalue = pidname * "_VALUE"
@@ -207,10 +220,9 @@ function shellgate(::Bash, env, cancel, timeout, command)
         env[pidname] = replace(pidfile, '\\' => '/')
         env[commandname] = command
         env["BASH_ENV"] = "\${" * name * "}"
-        flags = bashoptions!(env)
-        write(io, "IFS= read -r " * pidvalue * " < /proc/\$\$/winpid || :\n", "printf '%s\\n' \"\${" * pidvalue * "}\" > \"\${" * pidname * "}\"\n", "unset " * pidvalue * " " * pidname * "\n", "(IFS= read -r ready) || exit 1\n", startup, commandvalue * "=\"\${" * commandname * "}\"\n", "unset " * name * " " * commandname * "\n", raw"""
+        write(io, "IFS= read -r " * pidvalue * " < /proc/\$\$/winpid || :\n", "printf '%s\\n' \"\${" * pidvalue * "}\" > \"\${" * pidname * "}\"\n", "unset " * pidvalue * " " * pidname * "\n", "(IFS= read -r ready) || exit 1\n", startup, options, commandvalue * "=\"\${" * commandname * "}\"\n", "unset " * name * " " * commandname * "\n", raw"""
         SHLVL=$((SHLVL - 1))
-        """, "\"\$BASH\" " * flags * " -c \"\${" * commandvalue * "}\" \"\$0\"\nexit \"\$?\"\n")
+        """, executable * " -c \"\${" * commandvalue * "}\" \"\$0\"\nexit \"\$?\"\n")
     finally
         close(io)
     end

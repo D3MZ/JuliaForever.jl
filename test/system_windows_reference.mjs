@@ -37,18 +37,28 @@ for (const tool of tools) for (const stage of ["normal", "timeout", "cancel"]) {
 
 if (tools.includes("bash")) {
     const dir = await mkdtemp(join(tmpdir(), "jf-bash-trace-"));
-    const saved = Object.fromEntries(["SHELLOPTS", "BASH_ENV", "BASH_XTRACEFD", "PS4"].map(name => [name, process.env[name]]));
+    const saved = Object.fromEntries(["SHELLOPTS", "BASHOPTS", "BASH_ENV", "BASH_XTRACEFD", "PS4"].map(name => [name, process.env[name]]));
     try {
         process.env.PS4 = "+ ";
         delete process.env.BASH_ENV;
         delete process.env.BASH_XTRACEFD;
+        delete process.env.BASHOPTS;
         const cases = [];
-        for (const options of ["xtrace", "verbose", "verbose:xtrace"]) {
+        for (const options of ["xtrace", "verbose", "verbose:xtrace", "posix", "noexec", "posix:verbose:xtrace", "noexec:verbose:xtrace", "posix:noexec:verbose:xtrace", "allexport:noclobber", "privileged:xtrace"]) {
             process.env.SHELLOPTS = options;
             const result = await createBashToolDefinition(dir).execute("trace", { command: "printf complete >&2", timeout: 30 }, new AbortController().signal);
             cases.push({ text: result.content.find(block => block.type === "text").text, iserror: result.isError === true });
         }
-        results.push({ cases });
+        delete process.env.SHELLOPTS;
+        const bashcases = [];
+        for (const [shell, options] of [[null, "extdebug"], [null, "expand_aliases"], [null, "failglob"], [null, "extdebug:expand_aliases"], ["posix:xtrace", "extdebug:expand_aliases"]]) {
+            if (shell === null) delete process.env.SHELLOPTS;
+            else process.env.SHELLOPTS = shell;
+            process.env.BASHOPTS = options;
+            const result = await createBashToolDefinition(dir).execute("options", { command: "printf complete >&2", timeout: 30 }, new AbortController().signal);
+            bashcases.push({ text: result.content.find(block => block.type === "text").text, iserror: result.isError === true });
+        }
+        results.push({ cases, bashcases });
     } finally {
         for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : process.env[name] = value;
         await rm(dir, { recursive: true, force: true });

@@ -350,8 +350,14 @@ end
                     @test read(joinpath(dir, "hook-env"), String) == hook
                 end
                 write(hook, "printf hook >&2\n")
-                for options in ("xtrace", "verbose", "verbose:xtrace")
-                    withenv("SHELLOPTS" => options, "BASH_ENV" => hook, "BASH_XTRACEFD" => nothing, "PS4" => "+ ") do
+                for options in ("xtrace", "verbose", "verbose:xtrace", "posix", "noexec", "posix:verbose:xtrace", "noexec:verbose:xtrace", "posix:noexec:verbose:xtrace", "allexport:noclobber", "privileged:xtrace")
+                    withenv("SHELLOPTS" => options, "BASHOPTS" => nothing, "BASH_ENV" => hook, "BASH_XTRACEFD" => nothing, "PS4" => "+ ") do
+                        command = "printf complete >&2"
+                        @test execute(bash, (; command, timeout=30)) == execute(bash, (; command))
+                    end
+                end
+                for (shell, options) in ((nothing, "extdebug"), (nothing, "expand_aliases"), (nothing, "failglob"), (nothing, "extdebug:expand_aliases"), ("posix:xtrace", "extdebug:expand_aliases"))
+                    withenv("SHELLOPTS" => shell, "BASHOPTS" => options, "BASH_ENV" => hook, "BASH_XTRACEFD" => nothing, "PS4" => "+ ") do
                         command = "printf complete >&2"
                         @test execute(bash, (; command, timeout=30)) == execute(bash, (; command))
                     end
@@ -379,6 +385,40 @@ end
                 gatefile = JuliaForever.shellgate(bash, env, ShellCancellation(), 30, "printf bad > user-ran")
                 @test !occursin(protected, read(gatefile.file, String))
                 executable, arguments = JuliaForever.config(bash)
+                blocked = Cmd(Cmd([executable; arguments; JuliaForever.shellcommand(bash, "printf bad > user-ran", ShellCancellation(), 30, gatefile)]); dir=dir, env)
+                try
+                    mktemp() do _, io
+                        result = JuliaForever.startshell!(Set{JuliaForever.ShellRun}(), blocked, io, JuliaForever.WindowsJob(C_NULL))
+                        @test result == ToolFailure("Could not isolate Windows shell; command was not started")
+                    end
+                    @test !isfile(joinpath(dir, "startup-ran"))
+                    @test !isfile(joinpath(dir, "user-ran"))
+                finally
+                    JuliaForever.cleanupgate(gatefile)
+                end
+
+                env = copy(ENV)
+                env["SHELLOPTS"] = "posix"
+                gatefile = JuliaForever.shellgate(bash, env, ShellCancellation(), 30, "printf bad > missing-env-ran")
+                missing = replace(joinpath(dir, "missing-env"), '\\' => '/')
+                write(gatefile.file, replace(read(gatefile.file, String), "/usr/bin/env" => bashquote(missing)))
+                blocked = Cmd(Cmd([executable; arguments; JuliaForever.shellcommand(bash, "printf bad > missing-env-ran", ShellCancellation(), 30, gatefile)]); dir=dir, env)
+                try
+                    mktemp() do output, io
+                        token = ShellCancellation()
+                        run = JuliaForever.startshell!(token, blocked, io, token, 30, gatefile)
+                        result = JuliaForever.shellrun!(run, token, 30, nothing, output, io, Ref{Union{Nothing, String}}(nothing), Ref{Union{Nothing, String}}(nothing))
+                        @test result.iserror && occursin("missing-env", result.text)
+                    end
+                    @test !isfile(joinpath(dir, "missing-env-ran"))
+                finally
+                    JuliaForever.cleanupgate(gatefile)
+                end
+
+                env = copy(ENV)
+                env["BASH_ENV"] = protected
+                env["SHELLOPTS"] = "posix:noexec:verbose:xtrace"
+                gatefile = JuliaForever.shellgate(bash, env, ShellCancellation(), 30, "printf bad > user-ran")
                 blocked = Cmd(Cmd([executable; arguments; JuliaForever.shellcommand(bash, "printf bad > user-ran", ShellCancellation(), 30, gatefile)]); dir=dir, env)
                 try
                     mktemp() do _, io
@@ -501,6 +541,24 @@ end
                 finally
                     cancel!(token)
                     write(joinpath(dir, "bash-release"), "release")
+                end
+                withenv("SHELLOPTS" => "posix:xtrace", "BASH_ENV" => nothing) do
+                    token = ShellCancellation()
+                    running = Threads.@spawn execute(bash, (; command="printf before >&2; printf ready > option-ready; sleep 30", timeout=30); cancel=token)
+                    try
+                        ready = joinpath(dir, "option-ready")
+                        @test timedwait(() -> isfile(ready) || istaskdone(running), 15; pollint=0.05) == :ok
+                        @test isfile(ready)
+                        cancel!(token)
+                        @test timedwait(() -> istaskdone(running), 10; pollint=0.05) == :ok
+                        if istaskdone(running)
+                            result = fetch(running)
+                            @test result.iserror && occursin("before", result.text) && endswith(result.text, "\n\nCommand aborted")
+                            @test !occursin("JF_BASH_GATE_", result.text)
+                        end
+                    finally
+                        cancel!(token)
+                    end
                 end
             end
 
@@ -625,11 +683,17 @@ if Sys.iswindows() && haskey(ENV, "PI_SOURCE")
             end
             if bashenabled == "bash"
                 bash = Bash(dir)
-                for (index, options) in enumerate(("xtrace", "verbose", "verbose:xtrace"))
-                    withenv("SHELLOPTS" => options, "BASH_ENV" => nothing, "BASH_XTRACEFD" => nothing, "PS4" => "+ ") do
+                for (index, options) in enumerate(("xtrace", "verbose", "verbose:xtrace", "posix", "noexec", "posix:verbose:xtrace", "noexec:verbose:xtrace", "posix:noexec:verbose:xtrace", "allexport:noclobber", "privileged:xtrace"))
+                    withenv("SHELLOPTS" => options, "BASHOPTS" => nothing, "BASH_ENV" => nothing, "BASH_XTRACEFD" => nothing, "PS4" => "+ ") do
                         traced = execute(bash, (; command="printf complete >&2", timeout=30); cancel=ShellCancellation())
                         @test (traced.text, traced.iserror) == (reference[end - 2].cases[index].text, reference[end - 2].cases[index].iserror)
                         @test !occursin("JF_BASH_GATE_", traced.text)
+                    end
+                end
+                for (index, (shell, options)) in enumerate(((nothing, "extdebug"), (nothing, "expand_aliases"), (nothing, "failglob"), (nothing, "extdebug:expand_aliases"), ("posix:xtrace", "extdebug:expand_aliases")))
+                    withenv("SHELLOPTS" => shell, "BASHOPTS" => options, "BASH_ENV" => nothing, "BASH_XTRACEFD" => nothing, "PS4" => "+ ") do
+                        result = execute(bash, (; command="printf complete >&2", timeout=30); cancel=ShellCancellation())
+                        @test (result.text, result.iserror) == (reference[end - 2].bashcases[index].text, reference[end - 2].bashcases[index].iserror)
                     end
                 end
                 normal = execute(bash, (; command="printf complete", timeout=30); cancel=ShellCancellation())
