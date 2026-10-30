@@ -72,7 +72,7 @@ resolveprovider(options, model::Models.Model, thinking::AbstractString) = select
 selectmodelthinking(options, model, thinking, ::Models.InvalidConfig) = selectthinking(options, model, thinking, get(get(thinkingcatalogs, (model.provider, model.api), Dict()), model.id, nothing))
 function selectmodelthinking(options, model, thinking, ::Models.ValidConfig)
     valid = model.id in anthropicbudgetmodels && !haskey(options.modelconfig.providers, model.provider) && haskey(anthropicbudgets, thinking)
-    selectthinking(options, model, thinking, Models.check(valid))
+    selectthinking(merge(options, (; requested_thinking=String(thinking))), model, thinking, Models.check(valid))
 end
 selectthinking(options, model, thinking, ::Nothing) = unsupportedthinking()
 function selectthinking(options, model, thinking, levels::AbstractDict)

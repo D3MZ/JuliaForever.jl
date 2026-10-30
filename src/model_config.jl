@@ -295,9 +295,9 @@ modelchange(configured, model, ::Nothing) = invalidmodelconfig()
 modelchange(configured, model, ::Models.Model) = acquire(APIKeyAuth(), configured, model)
 
 function anthropiclevel(provider::Anthropic, model, level)
-    valid = model in anthropicbudgetmodels && haskey(anthropicbudgets, level) && !occursin("sk-ant-oat", provider.key) && isempty(provider.extra)
-    anthropicroute(provider, model, level, provider.route, Models.check(valid))
+    anthropicroute(provider, model, level, provider.route, anthropicvalidity(provider, model, level))
 end
+anthropicvalidity(provider, model, level) = Models.check(model in anthropicbudgetmodels && haskey(anthropicbudgets, level) && !occursin("sk-ant-oat", provider.key) && isempty(provider.extra))
 anthropicroute(provider, model, level, ::CatalogRoute, validity) = unsupportedthinking()
 anthropicroute(provider, model, level, ::DirectRoute, validity) = anthropiclevel(provider, model, level, validity)
 anthropiclevel(provider, model, level, ::Models.InvalidConfig) = unsupportedthinking()
