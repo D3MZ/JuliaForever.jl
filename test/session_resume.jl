@@ -156,7 +156,7 @@ end
 
 @testset "resumed fault reports a redacted history path" begin
     mktempdir() do root
-        key = "synthetic\tsecret"
+        key = "synthetic-secret"
         directory = joinpath(root, "sessions-" * key)
         selected = ResumeCatalog.new(directory, pwd())
         existing = Agent(ResumeProvider(), []; history=selected)
