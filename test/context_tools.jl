@@ -5,6 +5,18 @@ const J = JuliaForever
 const E = J.Extensions
 const X = J.Execution
 
+struct BlockingDeclaration <: J.Tool
+    started::Channel{Nothing}
+    release::Channel{Nothing}
+end
+J.name(::BlockingDeclaration) = "blocked"
+J.description(tool::BlockingDeclaration) = (put!(tool.started, nothing); take!(tool.release); "blocked")
+J.schema(::BlockingDeclaration) = Dict("type" => "object", "properties" => Dict())
+struct BrokenDeclaration <: J.Tool end
+J.name(::BrokenDeclaration) = "broken"
+J.description(::BrokenDeclaration) = error("private-worker-catalog-failure")
+J.schema(::BrokenDeclaration) = Dict("type" => "object", "properties" => Dict())
+
 mutable struct Provider
     requests::Vector{Any}
     replies::Vector{Any}
@@ -80,6 +92,79 @@ end
             close(executor)
             X.uninstall!(id)
         end
+    end
+end
+
+@testset "executor hooks see and filter worker declarations" begin
+    mktempdir() do dir
+        worker = ContextToolCases.provider()
+        id = "context-tool-executor-filter"
+        @test X.install!(id, worker, [Write(dir)])
+        executor = X.Executor(myid())
+        try
+            seen = Any[]
+            registry = E.Registry()
+            E.register!(registry, :fixture, E.Plugin(; hooks=(:context_with_system => event -> begin
+                push!(seen, [tool["name"] for tool in get(event.messages[1], "toolsAdded", [])])
+                event.messages[1]["toolsAdded"] = []
+                nothing
+            end,)))
+            agent = Agent(nothing, Dict{String, J.Tool}(), Dict{String, Any}[Dict("role" => "system", "content" => "base")]; history=J.History.Memory())
+            @test respond!(agent, "start"; executor, context=id, on_agent_event=E.listen(E.snapshot(registry))).value == "done"
+            @test seen == [["write"], ["write"]]
+            @test all(request -> isempty(request.names), worker.requests)
+            @test read(joinpath(dir, "written"), String) == "ok"
+            results = filter(message -> get(message, "role", "") == "tool", agent.messages)
+            @test only(filter(message -> message["tool_call_id"] == "missing", results))["is_error"]
+            @test !only(filter(message -> message["tool_call_id"] == "allowed", results))["is_error"]
+            @test !occursin("toolsAdded", repr(J.History.snapshot(agent.history)))
+        finally
+            close(executor)
+            X.uninstall!(id)
+        end
+    end
+end
+
+@testset "cancellation during worker catalog lookup" begin
+    started = Channel{Nothing}(1)
+    release = Channel{Nothing}(1)
+    worker = ContextToolCases.provider()
+    id = "context-catalog-cancel"
+    @test X.install!(id, worker, [BlockingDeclaration(started, release)])
+    executor = X.Executor(myid())
+    try
+        seen = Any[]
+        registry = E.Registry()
+        E.register!(registry, :fixture, E.Plugin(; hooks=(:context_with_system => event -> (push!(seen, event); nothing),)))
+        agent = Agent(nothing, Dict{String, J.Tool}(), Dict{String, Any}[Dict("role" => "system", "content" => "base")]; history=J.History.Memory())
+        task = @async respond!(agent, "start"; executor, context=id, on_agent_event=E.listen(E.snapshot(registry)))
+        @test timedwait(() -> isready(started), 10) == :ok
+        @test J.cancel!(agent)
+        put!(release, nothing)
+        @test fetch(task).value == :cancelled
+        @test isempty(seen) && isempty(worker.requests)
+    finally
+        close(executor)
+        X.uninstall!(id)
+    end
+end
+
+@testset "catalog failures are closed and redacted" begin
+    worker = ContextToolCases.provider()
+    id = "context-catalog-failure"
+    @test X.install!(id, worker, [BrokenDeclaration()])
+    executor = X.Executor(myid())
+    try
+        registry = E.Registry()
+        E.register!(registry, :fixture, E.Plugin(; hooks=(:context_with_system => event -> nothing,)))
+        agent = Agent(nothing, [])
+        result = respond!(agent, "start"; executor, context=id, on_agent_event=E.listen(E.snapshot(registry)))
+        @test result.value == X.Rejected(:context_catalog)
+        @test !occursin("private-worker-catalog-failure", repr(result))
+        @test isempty(worker.requests)
+    finally
+        close(executor)
+        X.uninstall!(id)
     end
 end
 

@@ -27,6 +27,29 @@ const X = J.Execution
                     @test respond!(agent, "hello"; executor=pool, context="context-remote", on_agent_event=E.listen(E.snapshot(registry))).value == "done"
                     additions = filter(item -> get(item, :type, "") == "additional_tools", only(requests).input)
                     @test [tool.name for tool in only(additions).tools] == ["write"]
+
+                    seen = Any[]
+                    filtered = E.Registry()
+                    E.register!(filtered, :fixture, E.Plugin(; hooks=(:context_with_system => event -> begin
+                        push!(seen, [tool["name"] for tool in get(event.messages[1], "toolsAdded", [])])
+                        event.messages[1]["toolsAdded"] = []
+                        nothing
+                    end,)))
+                    agent = Agent(nothing, Dict{String, J.Tool}(), Dict{String, Any}[Dict("role" => "system", "content" => "base")]; history=J.History.Memory())
+                    @test respond!(agent, "hello"; executor=pool, context="context-remote", on_agent_event=E.listen(E.snapshot(filtered))).value == "done"
+                    @test only(seen) == ["write"]
+                    @test !any(item -> get(item, :type, "") == "additional_tools", requests[2].input)
+                    @test !haskey(requests[2], :tools)
+
+                    changed = E.Registry()
+                    E.register!(changed, :fixture, E.Plugin(; hooks=(:context_with_system => event -> begin
+                        remotecall_wait(X.uninstall!, pid, "context-remote")
+                        @test remotecall_fetch(X.install!, pid, "context-remote", provider, [])
+                        nothing
+                    end,)))
+                    agent = Agent(nothing, Dict{String, J.Tool}(), Dict{String, Any}[Dict("role" => "system", "content" => "base")]; history=J.History.Memory())
+                    @test respond!(agent, "hello"; executor=pool, context="context-remote", on_agent_event=E.listen(E.snapshot(changed))).value == X.Rejected(:provider_failure)
+                    @test length(requests) == 2
                 finally
                     close(pool)
                     remotecall_wait(X.uninstall!, pid, "context-remote")

@@ -1,6 +1,9 @@
+struct ContextCatalog <: Kernel.Effect end
+
 struct ContextModel <: Kernel.Effect
     messages::Vector{Conversation.Message}
     tools::ToolChanges
+    catalog::Vector{ToolDeclaration}
 end
 
 resulttype(::Conversation.ModelRequest) = Execution.ModelResult
@@ -207,9 +210,31 @@ function execution_cancel_observed!(run, ::Kernel.Applied)
 end
 
 function execution_step!(run, effect, ::Union{Idle, Running})
-    outcome = submitted(run.agent, run.executor, requesteffect(run.callback, effect, run.agent.tools), run.context)
+    execution_prepare!(run, effect, catalogeffect(run.callback, effect))
+end
+
+function execution_prepare!(run, effect, ::Nothing)
+    outcome = submitted(run.agent, run.executor, effect, run.context)
     execution_outcome!(run, effect, outcome)
 end
+
+function execution_prepare!(run, effect, catalog::Kernel.Pending)
+    outcome = submitted(run.agent, run.executor, catalog, run.context)
+    execution_catalog!(run, effect, outcome)
+end
+
+execution_catalog!(run, effect, outcome) = execution_outcome!(run, effect, outcome)
+function execution_catalog!(run, effect, outcome::Execution.Completed)
+    execution_catalog!(run, effect, outcome.value, turnstate(run.agent))
+end
+execution_catalog!(run, effect, catalog, ::Cancelled) = execution_step!(run, effect, Cancelled())
+function execution_catalog!(run, effect, catalog::Vector{ToolDeclaration}, ::Union{Idle, Running})
+    tools = OrderedDict{String, Tool}(name(tool) => tool for tool in catalog)
+    request = requesteffect(run.callback, effect, tools, catalog)
+    outcome = submitted(run.agent, run.executor, request, run.context)
+    execution_outcome!(run, effect, outcome)
+end
+execution_catalog!(run, effect, value, ::Union{Idle, Running}) = execution_outcome!(run, effect, Execution.Rejected(:context_catalog))
 
 execution_outcome!(run, effect, outcome) = Execution.Turn(unresolved(run.agent, outcome), run.models)
 execution_outcome!(run, effect, outcome::Execution.Cancelled) = execution_cancel_outcome!(run, effect, outcome, turnstate(run.agent))
@@ -295,25 +320,37 @@ function finishauto!(agent, result::Execution.Turn, usage, settings::AutoCompact
 end
 finishauto!(agent, result::Execution.Turn, usage, settings::ChangingCompaction, summarize, callback) = finishauto!(agent, result, usage, settings.select(), summarize, callback)
 
-requesteffect(callback, effect, tools) = effect
-requesteffect(sink::EventSink, effect, tools) = lock(() -> requesteffect(sink.callback, effect, tools), sink.lock)
-function requesteffect(listener::Extensions.Listener, effect::Kernel.Pending{Conversation.ModelRequest}, tools)
-    isempty(get(listener.events, :context, ())) && isempty(get(listener.events, :context_with_system, ())) && return effect
+catalogeffect(callback, effect) = nothing
+catalogeffect(sink::EventSink, effect) = catalogeffect(sink.callback, effect)
+function catalogeffect(listener::Extensions.Listener, effect::Kernel.Pending{Conversation.ModelRequest})
+    hooks = (get(listener.events, :context, ())..., get(listener.events, :context_with_system, ())...)
+    catalogeffect(hooks, effect)
+end
+catalogeffect(::Tuple{}, effect) = nothing
+function catalogeffect(hooks::Tuple, effect)
+    Kernel.Pending(effect.id, ContextCatalog())
+end
+
+requesteffect(sink::EventSink, effect, tools, catalog) = lock(() -> requesteffect(sink.callback, effect, tools, catalog), sink.lock)
+function requesteffect(listener::Extensions.Listener, effect::Kernel.Pending{Conversation.ModelRequest}, tools, catalog)
     original = Dict{String, Any}[convert(Dict{String, Any}, message) for message in effect.effect.messages]
     seedtools!(original, tools)
     request = requestview(listener, effect.effect.messages, tools, nothing)
     messages = Conversation.Message[Conversation.RawMessage(message) for message in request.messages]
     baseline = toolbaseline(contexthead(original), contexthead(request.messages))
-    Kernel.Pending(effect.id, ContextModel(messages, toolchanges(tools, request.tools, request.messages, baseline)))
+    Kernel.Pending(effect.id, ContextModel(messages, toolchanges(tools, request.tools, request.messages, baseline), catalog))
 end
 
-initialnames(messages, role) = Set{String}()
-initialnames(messages, ::ContextSystem) = Set(String(tool["name"]) for tool in get(first(messages), "toolsAdded", []))
-seedworkertools!(messages, available, tools, ::ClearTools) = messages
-function seedworkertools!(messages, available, tools, ::RetainTools)
-    names = initialnames(messages, contexthead(messages))
-    missing = OrderedDict{String, Tool}(key => value for (key, value) in pairs(available) if haskey(tools, key) && key ∉ names)
-    seedtools!(messages, missing)
+workcatalog(tools) = ToolDeclaration[declaration(tool) for tool in values(tools)]
+catalogentries(catalog) = Dict(name(tool) => tool.data for tool in catalog)
+
+function Execution.perform(work::Execution.Work{ContextCatalog}, cancellation::Execution.Cancellation)
+    capabilities = Execution.context(work.context)
+    try
+        workcatalog(Execution.worktools(capabilities.tools, work.exposed))
+    catch
+        Execution.Rejected(:context_catalog)
+    end
 end
 
 function Execution.perform(work::Execution.Work{ContextModel}, cancellation::Execution.Cancellation)
@@ -321,8 +358,9 @@ function Execution.perform(work::Execution.Work{ContextModel}, cancellation::Exe
     try
         messages = modelmessages(work.effect.messages)
         available = Execution.worktools(capabilities.tools, work.exposed)
-        tools = applychanges(available, work.effect.tools)
-        seedworkertools!(messages, available, tools, work.effect.tools.baseline)
+        catalogentries(workcatalog(available)) == catalogentries(work.effect.catalog) || return Execution.result(Conversation.ModelFailure("request context tool catalog changed"), work.result)
+        baseline = OrderedDict{String, Tool}(name(tool) => tool for tool in work.effect.catalog)
+        tools = applychanges(baseline, work.effect.tools)
         request = contextrequest(capabilities.provider, messages, currentsystem(messages), tools)
         performcontext(work, capabilities, request)
     catch
