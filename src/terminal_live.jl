@@ -26,6 +26,7 @@ struct Failed <: Outcome
 end
 const outcomes = Dict(0 => Completed(), 130 => Interrupted())
 include("terminal_screen.jl")
+include("terminal_completion.jl")
 
 struct Deferred{M<:Submission}
     text::String
@@ -84,6 +85,7 @@ mutable struct Session{V<:View, T}
     agent::JuliaForever.Agent
     terminal::JuliaForever.Terminal
     templates::T
+    completion::Union{Completion.Closed, Completion.Dismissed, Completion.Menu}
     extensions::Union{Nothing, JuliaForever.Extensions.Snapshot}
     activity::Activity
     visibility::Visibility
@@ -109,12 +111,13 @@ function Base.unsafe_write(output::Output, pointer::Ptr{UInt8}, count::UInt)
 end
 
 function Session(editor, terminal, agent, templates, extensions, view::View)
-    session = Session(editor, terminal.diagnostics, agent, terminal, templates, extensions, Available(), Visible(), nothing, "", nothing, DeferredQueue(), "", 0, view)
+    session = Session(editor, terminal.diagnostics, agent, terminal, templates, Completion.Closed(), extensions, Available(), Visible(), nothing, "", nothing, DeferredQueue(), "", 0, view)
     session.terminal = maketerminal(session, terminal, view)
     session
 end
 maketerminal(session, terminal, ::Regular) = JuliaForever.Terminal(output(session, terminal.output), Output(session), terminal.secrets)
 maketerminal(session, terminal, ::Fullscreen) = JuliaForever.Terminal(ScreenOutput(session, AssistantText()), ScreenOutput(session, DiagnosticText()), terminal.secrets)
+include("terminal_completion_ui.jl")
 output(session, stream::IO) = stream
 output(session, stream::Base.TTY) = output(session.physical, session, stream)
 output(physical::IO, session, stream::Base.TTY) = stream
@@ -158,6 +161,7 @@ function redraw!(session, ::Visible, prefix)
     lines = String[]
     isempty(session.partial) || push!(lines, session.partial)
     append!(lines, queuelines(session))
+    append!(lines, completionlines(session, max(1, last(displaysize(session.physical)) - 1), 5))
     area = join(lines, "\n")
     if isempty(area)
         session.area = nothing
@@ -256,16 +260,23 @@ function continuation!(state, ::Send)
     false
 end
 
-function send!(session, state, mode::Submission)
+send!(session, state, mode::Submission) = sendcompletion!(session, state, mode, synccompletion!(session, state))
+sendcompletion!(session, state, mode::Submission, completion::Completion.State) = sendinput!(session, state, mode)
+function sendcompletion!(session, state, ::Send, completion::Completion.Menu)
+    applycompletion!(session, state, completion)
+    sendinput!(session, state, Send())
+end
+
+function sendinput!(session, state, mode::Submission)
     continuation!(state, mode) && return :ok
     text = String(strip(LineEdit.input_string(state)))
     isempty(text) && return :ok
+    LineEdit.replace_line(state, text)
     send!(session, state, mode, text, session.activity, JuliaForever.terminalcommand(text))
 end
 
 function send!(session, state, mode, text, ::Available, ::Nothing)
     waittask(session.task)
-    LineEdit.replace_line(state, text)
     LineEdit.commit_line(state)
     LineEdit.reset_state(state)
     TerminalEditor.remember!(session.editor)
@@ -276,7 +287,6 @@ end
 
 function send!(session, state, mode, text, ::Available, command::JuliaForever.TerminalCommand)
     waittask(session.task)
-    LineEdit.replace_line(state, text)
     LineEdit.commit_line(state)
     session.visibility = Hidden()
     :done
@@ -391,10 +401,23 @@ function escape!(session, state, data, escapes, keymap)
     escape!(session, state, data, escapes, keymap, received)
 end
 escape!(session, state, data, escapes, keymap, ::EscapeSequence) = LineEdit.match_input(escapes, state, LineEdit.terminal(state), Char['\e'], keymap)(state, data)
-escape!(session, state, data, escapes, keymap, ::EscapeAlone) = abort!(session, state, session.activity)
+escape!(session, state, data, escapes, keymap, ::EscapeAlone) = escapecompletion!(session, state, synccompletion!(session, state))
 
 function createeditor(input, terminal, reference, view::View)
     extra = Dict{Any, Any}(
+        "*" => (state, data, text) -> insertcompletion!(reference[], state, text),
+        '\t' => (state, args...) -> tabcompletion!(reference[], state),
+        "\e[A" => (state, args...) -> upcompletion!(reference[], state),
+        "\e[B" => (state, args...) -> downcompletion!(reference[], state),
+        "\e[D" => (state, args...) -> editcompletion!(reference[], state, TerminalEditor.left!),
+        "\e[C" => (state, args...) -> editcompletion!(reference[], state, TerminalEditor.right!),
+        "^B" => (state, args...) -> editcompletion!(reference[], state, TerminalEditor.left!),
+        "^F" => (state, args...) -> editcompletion!(reference[], state, TerminalEditor.right!),
+        '\b' => (state, args...) -> editcompletion!(reference[], state, TerminalEditor.backspace!),
+        '\x7f' => (state, args...) -> editcompletion!(reference[], state, TerminalEditor.backspace!),
+        "\e[3~" => (state, args...) -> editcompletion!(reference[], state, TerminalEditor.forward!),
+        '\n' => (state, args...) -> editcompletion!(reference[], state, TerminalEditor.newline!),
+        "\e[200~" => (state, args...) -> pastecompletion!(reference[], state),
         '\r' => (state, args...) -> send!(reference[], state, Send()),
         "\e\r" => (state, args...) -> send!(reference[], state, Follow()),
         "\e[13;3u" => (state, args...) -> send!(reference[], state, Follow()),
