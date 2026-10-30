@@ -237,6 +237,40 @@ end
                 write(background.release, "release")
             end
 
+            for attempt in 1:4
+                current = fixture(dir, "race-$attempt")
+                finish = joinpath(dir, "race-$attempt-finish")
+                awaitchild = "while (!(Test-Path -LiteralPath $(psquote(current.ready)))) { Start-Sleep -Milliseconds 20 }; while (!(Test-Path -LiteralPath $(psquote(finish)))) { Start-Sleep -Milliseconds 20 }"
+                command = replace(current.command, "\$p.WaitForExit()" => awaitchild)
+                token = ShellCancellation()
+                running = Threads.@spawn execute(shell, (; command, timeout=30); cancel=token)
+                try
+                    @test timedwait(() -> isfile(current.ready) || istaskdone(running), 20; pollint=0.05) == :ok
+                    @test isfile(current.ready)
+                    if isfile(current.ready)
+                        pids = parse.(UInt32, read.((current.child, current.grandchild), String))
+                        write(finish, "finish")
+                        cancel!(token)
+                        @test timedwait(() -> istaskdone(running), 15; pollint=0.05) == :ok
+                        if istaskdone(running)
+                            result = fetch(running)
+                            if result == ToolSuccess("before")
+                                @test all(alive, pids)
+                                write(current.release, "release")
+                                @test timedwait(() -> isfile(current.late), 10; pollint=0.05) == :ok
+                            else
+                                @test result == ToolFailure("before\n\nCommand aborted")
+                                @test timedwait(() -> all(pid -> !alive(pid), pids), 10; pollint=0.05) == :ok
+                            end
+                        end
+                    end
+                finally
+                    write(finish, "finish")
+                    cancel!(token)
+                    write(current.release, "release")
+                end
+            end
+
             large = execute(shell, (; command="[Console]::Write(('x' * 52001)); [Console]::Out.Flush(); Start-Sleep -Seconds 30", timeout=10))
             @test large.iserror && startswith(large.text, repeat("x", 51200))
             @test occursin("Command timed out after 10 seconds", large.text)
@@ -507,6 +541,8 @@ if Sys.iswindows() && haskey(ENV, "PI_SOURCE")
         @test readchomp(`git -C $(ENV["PI_SOURCE"]) rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
         bashenabled = isnothing(JuliaForever.config(Bash(pwd()))) ? "powershell" : "bash"
         reference = JSON3.read(read(`node --conditions=source --experimental-strip-types $(joinpath(@__DIR__, "system_windows_reference.mjs")) $(ENV["PI_SOURCE"]) $bashenabled`, String))
+        @test reference[end].background === true
+        @test reference[end].text == "complete"
         mktempdir() do dir
             shell = PowerShell(dir)
             normal = execute(shell, (; command="[Console]::Write('complete')"))

@@ -137,9 +137,10 @@ joboutcome(outcome, ::ShellComplete) = outcome
 joboutcome(outcome, failure::ShellStopFailed) = failure
 waitjob(outcome::Union{ShellTimeout, ShellCancelled}, job::WindowsJob) = joboutcome(outcome, get(windowsjoboutcomes, timedwait(() -> jobempty(job), 5; pollint=0.01), ShellStopFailed()))
 function waitjob(outcome::ShellComplete, job::WindowsJob)
-    jobempty(job) && return outcome
-    ccall((:TerminateJobObject, "kernel32"), Int32, (Ptr{Cvoid}, UInt32), job.handle, 1) == 0 && return ShellStopFailed()
-    joboutcome(outcome, get(windowsjoboutcomes, timedwait(() -> jobempty(job), 5; pollint=0.01), ShellStopFailed()))
+    basic = WindowsBasicLimits(0, 0, 0, 0, 0, 0, 0, 0, 0)
+    counters = WindowsIOCounters(0, 0, 0, 0, 0, 0)
+    limits = Ref(WindowsJobLimits(basic, counters, 0, 0, 0, 0))
+    ccall((:SetInformationJobObject, "kernel32"), Int32, (Ptr{Cvoid}, Int32, Ref{WindowsJobLimits}, UInt32), job.handle, 9, limits, sizeof(WindowsJobLimits)) == 0 ? ShellStopFailed() : outcome
 end
 
 shellcommand(tool::Union{Bash, PowerShell}, command, cancel, timeout, ::Nothing) = shellcommand(tool, command)
