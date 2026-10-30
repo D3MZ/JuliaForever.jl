@@ -78,6 +78,8 @@ end
         @test execute(grepper, (; pattern="needle", glob="*.ts")).text == "src/deep/sample.spec.ts:1: needle"
         @test Set(split(execute(grepper, (; pattern="needle")).text, '\n')) == Set([".hidden.txt:1: hidden needle", "keep.log:1: needle", "other/local.txt:1: needle", "root.txt:2: Beta needle", "root.txt:4: needle again", "src/deep/sample.spec.ts:1: needle"])
         @test Set(split(execute(grepper, (; pattern="needle", glob="*.txt")).text, '\n')) == Set([".hidden.txt:1: hidden needle", "ignored.txt:1: needle", "other/local.txt:1: needle", "root.txt:2: Beta needle", "root.txt:4: needle again", "src/local.txt:1: needle"])
+        @test Set(split(execute(grepper, (; pattern="needle", glob="!*.txt")).text, '\n')) == Set(["keep.log:1: needle", "src/deep/sample.spec.ts:1: needle"])
+        @test execute(grepper, (; pattern="needle", glob="!")).text == execute(grepper, (; pattern="needle")).text
         @test execute(grepper, (; pattern="needle", path="root.txt", context=1)).text == "root.txt-1- alpha\nroot.txt:2: Beta needle\nroot.txt-3- omega\nroot.txt-3- omega\nroot.txt:4: needle again\nroot.txt-5- "
         @test execute(grepper, (; pattern="needle", path="missing")).iserror
         @test execute(grepper, (; pattern="[", path="root.txt")).iserror

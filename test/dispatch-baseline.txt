@@ -127,10 +127,9 @@ scheduler.jl	:(typeof(b))
 scheduler.jl	:(view.kind == name(handler))
 scheduler.jl	:cancelled
 scheduler.jl	:success
-search.jl	:(isnothing(filterregex))
-search.jl	:(isnothing(filterregex))
 search.jl	:(isnothing(stop))
 search.jl	:(rule.directory)
+search.jl	:(selectglob(filter, target))
 search.jl	:anchored
 search.jl	:anchored
 search.jl	:anywhere
@@ -141,8 +140,6 @@ search.jl	:directory
 search.jl	:directory
 search.jl	:directory
 search.jl	:directory
-search.jl	:exclude
-search.jl	:exclude
 search.jl	:isdirectory
 search.jl	:limited
 search.jl	:matched
