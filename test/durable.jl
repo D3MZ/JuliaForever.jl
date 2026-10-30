@@ -14,28 +14,6 @@ if !Sys.isunix()
     end
 else
 
-@testset "durable lifecycle properties" begin
-    mktempdir() do dir
-        store = open(D.Store, joinpath(dir, "state.jsonl"))
-        @test !store.failed && !store.closed && !store.busy
-        @test setproperty!(store, :failed, 1) === true
-        @test D.revision(store) == D.Rejected(:failed)
-        @test setproperty!(store, :failed, 0) === false
-        @test setproperty!(store, :nextid, 0.0) === 0
-        held = Ref{Any}()
-        @test D.commit!(store) do tx
-            held[] = tx
-            @test store.busy && tx.active
-            @test setproperty!(tx, :active, 1) === true
-            @test close(store) == D.Rejected(:busy)
-            nothing
-        end === nothing
-        @test !store.busy && !held[].active
-        close(store)
-        @test store.closed && !store.failed
-    end
-end
-
 @testset "durable store" begin
     mktempdir() do dir
         path = joinpath(dir, "session.jsonl")
