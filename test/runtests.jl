@@ -94,6 +94,8 @@ include("kernel.jl")
 include("conversation.jl")
 include("agent_machine.jl")
 include("agent_history.jl")
+include("compaction.jl")
+include("compaction_cli.jl")
 include("abandon.jl")
 include("sqlite_history.jl")
 include("execution.jl")
@@ -112,6 +114,7 @@ end
 include("scheduler.jl")
 if haskey(ENV, "PI_SOURCE")
     include("session_differential.jl")
+    include("compaction_differential.jl")
     include("system_differential.jl")
     mktempdir() do oracle
         withenv("PI_CODING_AGENT_DIR" => oracle) do

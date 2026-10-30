@@ -1,11 +1,21 @@
 abstract type TerminalCommand end
 struct TreeCommand <: TerminalCommand end
 struct ResumeCommand <: TerminalCommand end
+struct CompactCommand <: TerminalCommand end
 
-const terminalcommands = Dict{String, TerminalCommand}("/tree" => TreeCommand(), "/resume" => ResumeCommand())
+const terminalcommands = Dict{String, TerminalCommand}("/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/compact" => CompactCommand())
 
 command!(::TreeCommand, terminal, agent, history, input, directory) = tree!(terminal, agent, history, input)
 command!(::ResumeCommand, terminal, agent, history, input, directory) = resume!(terminal, agent, history, input, directory)
+command!(::CompactCommand, terminal, agent, history, input, directory) = (agent, history, compactresult!(terminal, compact!(agent)))
+
+function compactresult!(terminal, summary::AbstractString)
+    println(terminal.diagnostics, "Context compacted.")
+    flush(terminal.diagnostics)
+    0
+end
+
+compactresult!(terminal, result) = result!(terminal, result)
 
 function resume!(terminal::Terminal, agent::Agent, history, input::IO, directory::AbstractString)
     selected = SessionCatalog.choose(SessionCatalog.Picker(), directory, pwd(), input, terminal.diagnostics)
