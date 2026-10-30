@@ -168,7 +168,7 @@ decodeparent(id, value, parent) = nothing
 decodeparent(id, value, conversation::Int, at::Int) = Conversation(id, value, (conversation, at))
 decodeparent(id, value, conversation, at) = nothing
 
-detach(record::Record) = decode(JSON3.read(JSON3.write(encode(record)), Dict{String, Any}))
+detach(record::Record) = decode(JSON3.read(codeunits(JSON3.write(encode(record))), Dict{String, Any}))
 
 pushparent!(pending, ::Nothing, upper) = nothing
 pushparent!(pending, parent::Tuple{Int, Int}, upper) = push!(pending, (parent[1], min(upper, parent[2])))
@@ -355,7 +355,7 @@ function recoverline!(state, bytes, start::Int, last::Int)
     line = bytes[start:last-1]
     isvalid(String, line) || return Rejected(:corrupt_log)
     batch = try
-        JSON3.read(String(line), Dict{String, Any})
+        JSON3.read(line, Dict{String, Any})
     catch
         return Rejected(:corrupt_log)
     end

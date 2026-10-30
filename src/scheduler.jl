@@ -232,7 +232,7 @@ taskkey(request::AbstractString) = String(request)
 function enqueue!(scheduler::Scheduler, conversation::Integer, handler::Handler, phase::Phase, input; request::Union{Nothing, AbstractString}=nothing, maxattempts::Integer=3, owner::Union{Nothing, Integer}=nothing)
     maxattempts > 0 || return Rejected(:invalid_attempt_limit)
     initial = checkpoint(encode(phase))
-    spec = JSON3.read(JSON3.write(Dict("kind" => name(handler), "input" => input, "initial" => initial, "maxattempts" => maxattempts)), Dict{String, Any})
+    spec = JSON3.read(codeunits(JSON3.write(Dict("kind" => name(handler), "input" => input, "initial" => initial, "maxattempts" => maxattempts))), Dict{String, Any})
     key = taskkey(request)
     lock(scheduler.lock) do
         commit!(scheduler.store) do tx
@@ -317,21 +317,21 @@ function checkpoint!(state, next)
 end
 
 function advance!(state, result::Next)
-    next = JSON3.read(JSON3.write(checkpoint(encode(result.phase))), Dict{String, Any})
+    next = JSON3.read(codeunits(JSON3.write(checkpoint(encode(result.phase)))), Dict{String, Any})
     same(state["checkpoint"], next) && return advance!(state, Retry("no checkpoint progress"))
     checkpoint!(state, next)
     state["status"] = "pending"
 end
 
 function advance!(state, result::Sleep)
-    next = JSON3.read(JSON3.write(checkpoint(encode(result.phase))), Dict{String, Any})
+    next = JSON3.read(codeunits(JSON3.write(checkpoint(encode(result.phase)))), Dict{String, Any})
     checkpoint!(state, next)
     state["until"] = string(result.until) # JSON3 can round large JSON numbers while decoding.
     state["status"] = "sleeping"
 end
 
 function advance!(state, result::Join)
-    next = JSON3.read(JSON3.write(checkpoint(encode(result.phase))), Dict{String, Any})
+    next = JSON3.read(codeunits(JSON3.write(checkpoint(encode(result.phase)))), Dict{String, Any})
     checkpoint!(state, next)
     state["on"] = result.on
     state["status"] = "waiting"

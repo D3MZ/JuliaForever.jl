@@ -117,7 +117,7 @@ end
 
 function ssemessage!(client::Client, data, event, id)
     (isempty(data) || !(event in ("", "message"))) && return false
-    value = JSON3.read(join(data, "\n"), Dict{String, Any})
+    value = JSON3.read(codeunits(join(data, "\n")), Dict{String, Any})
     received(client, value) || return false
     get(value, "id", nothing) == id && !haskey(value, "method")
 end
@@ -166,7 +166,7 @@ function httprequest(client::Client, transport::HttpTransport, message)
             if type == "text/event-stream"
                 sseread!(client, stream, id) || httpfailure!(client, message, Failure(:protocol, "MCP response stream ended without a response"))
             elseif type == "application/json"
-                value = JSON3.read(String(read(stream)), Dict{String, Any})
+                value = JSON3.read(read(stream), Dict{String, Any})
                 received(client, value) || httpfailure!(client, message, Failure(:protocol, "Invalid JSON-RPC message"))
             else
                 httpfailure!(client, message, Failure(:protocol, "Unsupported MCP HTTP response content type: $type"))
@@ -335,7 +335,7 @@ function readmessages(client::Client)
                 return
             end
             message = try
-                JSON3.read(line, Dict{String, Any})
+                JSON3.read(codeunits(line), Dict{String, Any})
             catch
                 fail!(client, Failure(:protocol, "Invalid JSON-RPC message"))
                 return

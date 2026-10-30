@@ -176,6 +176,7 @@ if haskey(ENV, "PI_SOURCE")
     include("mcp_roots_differential.jl")
 end
 include("scheduler.jl")
+include("json_content.jl")
 if haskey(ENV, "PI_SOURCE")
     include("durable_forks_differential.jl")
     include("session_differential.jl")
