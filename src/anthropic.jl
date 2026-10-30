@@ -16,7 +16,7 @@ Anthropic(base, model, key, extra) = Anthropic(base, model, key, extra, DirectRo
 Base.show(io::IO, provider::Anthropic) = print(io, "Anthropic(", repr(provider.model), ", [redacted])")
 JSON3.StructTypes.StructType(::Type{Anthropic}) = JSON3.StructTypes.CustomStruct()
 JSON3.StructTypes.lower(provider::Anthropic) = (; model=provider.model, credentials="[redacted]")
-headers(provider::Anthropic) = mergeheaders(["x-api-key" => provider.key, "anthropic-version" => "2023-06-01", "content-type" => "application/json"], provider.extra)
+headers(provider::Anthropic) = mergeheaders(vcat(isempty(provider.key) ? Pair{String, String}[] : ["x-api-key" => provider.key], ["anthropic-version" => "2023-06-01", "content-type" => "application/json"]), provider.extra)
 endpoint(provider::Anthropic) = "$(rstrip(provider.base, '/'))/v1/messages"
 origin(provider::Anthropic) = bytes2hex(sha256(provider.base)) * ":" * provider.model
 

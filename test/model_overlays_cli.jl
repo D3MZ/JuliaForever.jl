@@ -2,10 +2,10 @@ module ModelOverlaysCLI
 
 using Test, JuliaForever, HTTP, JSON3
 
-function runcli(workspace, args; input="")
+function runcli(workspace, args; input="", env=[])
     project = dirname(@__DIR__)
     cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever $args`; dir=workspace)
-    cmd = fixtureenv(cmd, workspace)
+    cmd = addenv(fixtureenv(cmd, workspace), env...)
     mktempdir() do dir
         stdinpath, output, diagnostics = joinpath.((dir,), ("stdin", "output", "diagnostics"))
         write(stdinpath, input)
@@ -35,7 +35,7 @@ end
     requests = []
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
         body = JSON3.read(codeunits(String(request.body)))
-        push!(requests, (; target=request.target, model=String(get(body, :model, "")), authorization=HTTP.header(request, "Authorization", ""), providerheader=HTTP.header(request, "x-provider", ""), modelheader=HTTP.header(request, "x-model", ""), anthropic=HTTP.header(request, "x-api-key", ""), google=HTTP.header(request, "x-goog-api-key", "")))
+        push!(requests, (; target=request.target, model=String(get(body, :model, "")), authorization=HTTP.header(request, "Authorization", ""), providerheader=HTTP.header(request, "x-provider", ""), modelheader=HTTP.header(request, "x-model", ""), anthropic=HTTP.header(request, "x-api-key", ""), google=HTTP.header(request, "x-goog-api-key", ""), gateway=HTTP.header(request, "cf-aig-authorization", "")))
         if endswith(request.target, "/responses")
             delta = JSON3.write((; type="response.output_text.delta", delta="fixture response"))
             output = [(; type="message", content=[(; type="output_text", text="fixture response")])]
@@ -69,7 +69,7 @@ end
             @test result.status == 0 && result.output == "fixture response\n"
             @test length(requests) == 1
             if length(requests) == 1
-                @test only(requests) == (; target="/model/chat/completions", model="alpha", authorization="Bearer fixture-key", providerheader="fixture-header", modelheader="fixture-model-header", anthropic="", google="")
+                @test only(requests) == (; target="/model/chat/completions", model="alpha", authorization="Bearer fixture-key", providerheader="fixture-header", modelheader="fixture-model-header", anthropic="", google="", gateway="")
                 if haskey(ENV, "PI_SOURCE")
                     pi = reference(joinpath(agent, "models.json"), "configured")
                     @test (base * only(requests).target, only(requests).model, only(requests).authorization, only(requests).providerheader, only(requests).modelheader) == (String(pi.base) * "/chat/completions", String(pi.id), String(pi.auth.headers.Authorization), String(pi.auth.headers["x-provider"]), String(pi.auth.headers["x-model"]))
@@ -144,6 +144,47 @@ end
             write(joinpath(agent, "models.json"), JSON3.write(missing))
             command = runcli(workspace, ["--provider", "fixture", "--model", "alpha", "--no-session", "hello"])
             @test command.status == 2 && !isfile(joinpath(workspace, "command-ran")) && length(requests) == count
+
+            keyless = Dict("providers" => Dict("local" => Dict("baseUrl" => base * "/local", "api" => "openai-completions", "headers" => Dict("Authorization" => "Bearer \$JF_CUSTOM_HEADER"), "models" => [Dict("id" => "chat"), Dict("id" => "response", "api" => "openai-responses"), Dict("id" => "claude", "api" => "anthropic-messages") ])))
+            write(joinpath(agent, "models.json"), JSON3.write(keyless))
+            if haskey(ENV, "PI_SOURCE")
+                pi = reference(joinpath(agent, "models.json"), "configured"; provider="local", id="chat")
+                @test pi.auth.ok && pi.auth.headers.Authorization == "Bearer fixture-header" && !haskey(pi.auth, :apiKey)
+            end
+            for (id, path) in (("chat", "/local/chat/completions"), ("response", "/local/responses"), ("claude", "/local/v1/messages"))
+                before = length(requests)
+                result = runcli(workspace, ["--provider", "local", "--model", id, "--no-session", "hello"]; env=["OPENAI_API_KEY" => "unrelated-openai", "ANTHROPIC_API_KEY" => "unrelated-anthropic"])
+                @test result.status == 0 && result.output == "fixture response\n"
+                @test length(requests) == before + 1
+                if length(requests) == before + 1
+                    @test (requests[end].target, requests[end].authorization, requests[end].anthropic) == (path, "Bearer fixture-header", "")
+                end
+                @test !occursin("fixture-header", result.output * result.diagnostics)
+            end
+            localconfig = keyless["providers"]["local"]
+            localconfig["headers"] = Dict("cf-aig-authorization" => "Bearer gateway-token")
+            write(joinpath(agent, "models.json"), JSON3.write(keyless))
+            gateway = runcli(workspace, ["--provider", "local", "--model", "chat", "--no-session", "hello"])
+            @test gateway.status == 0 && requests[end].authorization == "Bearer unused" && requests[end].gateway == "Bearer gateway-token"
+            localconfig["headers"] = Dict("Authorization" => "Bearer \$JF_CUSTOM_HEADER")
+            localconfig["authHeader"] = true
+            write(joinpath(agent, "models.json"), JSON3.write(keyless))
+            before = length(requests)
+            if haskey(ENV, "PI_SOURCE")
+                pi = reference(joinpath(agent, "models.json"), "configured"; provider="local", id="chat")
+                @test !pi.auth.ok && pi.auth.error == "No API key found for \"local\""
+            end
+            rejected = runcli(workspace, ["--provider", "local", "--model", "chat", "--no-session", "hello"])
+            @test rejected.status == 2 && length(requests) == before
+            delete!(localconfig, "authHeader")
+            localconfig["headers"] = Dict("Authorization" => "Bearer \$JF_MISSING_KEY")
+            write(joinpath(agent, "models.json"), JSON3.write(keyless))
+            rejected = runcli(workspace, ["--provider", "local", "--model", "chat", "--no-session", "hello"])
+            @test rejected.status == 2 && length(requests) == before
+            localconfig["headers"] = Dict("x-other" => "fixture")
+            write(joinpath(agent, "models.json"), JSON3.write(keyless))
+            rejected = runcli(workspace, ["--provider", "local", "--model", "chat", "--no-session", "hello"])
+            @test rejected.status == 2 && length(requests) == before
 
             write(joinpath(agent, "models.json"), "{\"providers\":{\"fixture\":{\"apiKey\":\"sensitive-probe-secret\",broken}}")
             invalid = runcli(workspace, ["--list-models"])
