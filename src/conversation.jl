@@ -1,7 +1,7 @@
 module Conversation
 
 import ..Kernel as K
-import ..JuliaForever: Image, ToolResult, content, CompletionStatus, Finished, Unfinished, completionstatus, finished, JSON3
+import ..JuliaForever: Image, ToolResult, content, loaded, CompletionStatus, Finished, Unfinished, completionstatus, finished, JSON3
 
 abstract type Message end
 
@@ -98,13 +98,13 @@ end
 Base.isequal(a::ToolCall, b::ToolCall) = K.same((a.id, a.name, a.arguments, a.metadata), (b.id, b.name, b.arguments, b.metadata))
 Base.isequal(a::Assistant, b::Assistant) = K.same((a.content, a.calls, a.finish, a.done, a.metadata), (b.content, b.calls, b.finish, b.done, b.metadata))
 Base.isequal(a::ModelReply, b::ModelReply) = isequal(a.message, b.message)
-Base.isequal(a::ToolReply, b::ToolReply) = isequal((a.text, a.iserror, a.image), (b.text, b.iserror, b.image))
+Base.isequal(a::ToolReply, b::ToolReply) = isequal((a.text, a.iserror, a.image, loaded(a.result)), (b.text, b.iserror, b.image, loaded(b.result)))
 Base.isequal(a::ModelFailure, b::ModelFailure) = isequal(a.reason, b.reason)
 Base.isequal(a::Abandoned, b::Abandoned) = isequal(a.reason, b.reason)
 Base.hash(value::ToolCall, h::UInt) = hash((value.id, value.name, value.arguments, value.metadata), hash(ToolCall, h))
 Base.hash(value::Assistant, h::UInt) = hash((value.content, value.calls, value.finish, value.done, value.metadata), hash(Assistant, h))
 Base.hash(value::ModelReply, h::UInt) = hash(value.message, hash(ModelReply, h))
-Base.hash(value::ToolReply, h::UInt) = hash((value.text, value.iserror, value.image), hash(ToolReply, h))
+Base.hash(value::ToolReply, h::UInt) = hash((value.text, value.iserror, value.image, loaded(value.result)), hash(ToolReply, h))
 Base.hash(value::ModelFailure, h::UInt) = hash(value.reason, hash(ModelFailure, h))
 Base.hash(value::Abandoned, h::UInt) = hash(value.reason, hash(Abandoned, h))
 

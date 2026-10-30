@@ -15,9 +15,9 @@ struct Parallel <: ToolMode end
 const toolmodes = Dict(:sequential => Sequential(), :parallel => Parallel())
 toolmode(mode) = get(toolmodes, mode, nothing)
 
-mutable struct Agent{P}
+mutable struct Agent{P, T}
     provider::P
-    tools::Dict{String, Tool}
+    tools::T
     messages::Vector{Dict{String, Any}}
     initial::Conversation.State
     state::Conversation.State
@@ -34,10 +34,11 @@ end
 function Agent(provider, tools, messages; history=nothing)
     transcript = Conversation.Message[Conversation.RawMessage(deepcopy(message)) for message in messages]
     initial = Conversation.State("agent-" * randstring(16); automatic=false, messages=transcript)
-    openagent(provider, tools, messages, initial, history)
+    openagent(provider, fresh(tools), messages, initial, history)
 end
 
 Agent(provider, tools; history=nothing) = Agent(provider, Dict{String, Tool}(name(tool) => tool for tool in tools), Dict{String, Any}[]; history)
+Agent(provider, tools::ToolSet; history=nothing) = Agent(provider, tools, Dict{String, Any}[]; history)
 
 function Base.getproperty(agent::Agent, name::Symbol)
     name === :running && return running(getfield(agent, :turn))
@@ -74,6 +75,7 @@ transition!(agent::Agent, event, before, result, rejected::History.Rejected) = (
 function transition!(agent::Agent, event, before, result::Kernel.Applied, ::Nothing)
     agent.state = result.state
     push!(getfield(agent, :events), event)
+    applied!(agent.tools, event)
     result, result.state.messages[before+1:end]
 end
 
@@ -245,6 +247,7 @@ description(::Edit) = "Replace unique, non-overlapping text in a file."
 definition(tool) = Dict("type" => "function", "function" => Dict("name" => name(tool), "description" => description(tool), "parameters" => schema(tool)))
 
 invoke(tool::Tool, args, ::ShellCancellation) = execute(tool, args)
+invoke(tool::ToolSearch, args, ::ShellCancellation) = search(tool, args)
 invoke(tool::Union{Bash, PowerShell}, args, cancel::ShellCancellation) = Sys.iswindows() ? execute(tool, args) : execute(tool, args; cancel)
 
 function invoke(agent, call)

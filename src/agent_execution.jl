@@ -18,9 +18,12 @@ submitted(agent::Agent, executor, effect, context, rejected::History.Rejected) =
 submitted(agent::Agent, executor, effect, context, ::Cancelled) = nothing
 submitted(agent::Agent, executor, effect, context, ::Union{Idle, Running}) = submitted(agent, executor, effect, context)
 
+exposure(tools) = nothing
+exposure(tools::ToolSet) = lock(() -> copy(tools.loaded), tools.lock)
+
 function submitted(agent::Agent, executor, effect, context, ::Nothing)
     handle = try
-        Execution.submit!(executor, effect, 1, context; detailed=detailed(effect.effect), on_handle=handle -> register!(agent, handle))
+        Execution.submit!(executor, effect, 1, context; detailed=detailed(effect.effect), exposed=exposure(agent.tools), on_handle=handle -> register!(agent, handle))
     catch
         lock(agent.lock) do
             agent.handle = nothing
