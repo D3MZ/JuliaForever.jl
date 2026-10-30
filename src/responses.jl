@@ -50,7 +50,10 @@ inputcontent!(items, role, ::Nothing) = nothing
 inputcontent!(items, role, content) = push!(items, Dict("role" => role, "content" => content))
 
 applythinking!(data, ::Nothing) = nothing
-applythinking!(data, effort::AbstractString) = (data["reasoning"] = effort == "none" ? Dict("effort" => effort) : Dict("effort" => effort, "summary" => "auto"))
+plainreasoning!(data, effort) = (data["reasoning"] = Dict("effort" => effort))
+summarizedreasoning!(data, effort) = (data["reasoning"] = Dict("effort" => effort, "summary" => "auto"))
+const reasoningwriters = Dict("none" => plainreasoning!)
+applythinking!(data, effort::AbstractString) = get(reasoningwriters, effort, summarizedreasoning!)(data, effort)
 
 function payload(provider::OpenAIResponses, messages, tools, parameters; streaming=false)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(parameters))

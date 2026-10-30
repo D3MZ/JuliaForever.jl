@@ -85,6 +85,8 @@ include("dispatch_checks.jl")
     @test length(dispatchchecks(Meta.parse("f(value) = value == \"stop\""))) == 1
     @test length(dispatchchecks(Meta.parse("f(selected) = selected == \"future-provider\" ? 1 : 0"))) == 1
     @test length(dispatchchecks(Meta.parse("f(label) = label == \"results\" ? 1 : 0"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(effort) = effort == \"none\" ? 1 : 0"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(effort) = effort == \"none\""))) == 1
     @test length(dispatchchecks(Meta.parse("f(event) = event.status == \"custom\""))) == 1
     @test length(dispatchchecks(Meta.parse("f(failure) = failure.code in (\"invalid_grant\", \"token_expired\")"))) == 1
     @test length(dispatchchecks(Meta.parse("f(data) = get(data, \"code\", nothing) == -32601"))) == 1

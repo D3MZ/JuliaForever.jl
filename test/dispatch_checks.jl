@@ -3,7 +3,7 @@ function dispatchcallee(expression)
     expression
 end
 
-const dispatchfields = (:type, :kind, :status, :phase, :reason, :role, :finish, :mode, :state, :outcome, :selected, :label, :code)
+const dispatchfields = (:type, :kind, :status, :phase, :reason, :role, :finish, :mode, :state, :outcome, :selected, :label, :code, :effort)
 const dispatchresultflags = Dict(:Completion => 5, :ToolResult => 3, :ToolReply => 3, :CodeResult => 2)
 const dispatchresultproperties = Dict(:Completion => :done, :CodeResult => :ok)
 const dispatchresultvariables = Set([:iserror, :failed, :failure, :ok, :done, :success, :cancelled, :truncated, :flag])

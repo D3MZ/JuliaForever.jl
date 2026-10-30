@@ -69,6 +69,7 @@ mcp.jl	:(timedwait((()->begin                   process_exited(client.process)  
 mcp.jl	:(timedwait((()->begin                   process_exited(client.process)               end), client.grace; pollint = 0.01) != :ok)
 mcp.jl	:(visible(item))
 mcp.jl	:validcontent
+model_config.jl	:(effort in values(levels))
 provider.jl	:((last(current_exceptions())).exception isa ArgumentError)
 provider.jl	:(get(data, "is_byok", false))
 provider.jl	:(key == "error")

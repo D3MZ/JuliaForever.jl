@@ -808,7 +808,6 @@ responses.jl	&&	"length(unique(call[\"id\"] for call in calls)) == length(calls)
 responses.jl	&&	"text == \"[DONE]\""
 responses.jl	?	"200 <= response.status < 300"
 responses.jl	?	"\"reasoning.encrypted_content\" in include"
-responses.jl	?	"effort == \"none\""
 responses.jl	?	"isempty(value)"
 responses.jl	for	"(index, item) in enumerate(data[\"output\"])"
 responses.jl	for	"(index, item) in enumerate(data[\"output\"])"
