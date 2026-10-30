@@ -26,6 +26,7 @@ mutable struct HttpTransport
     headers::Vector{Pair{String, String}}
     session::String
     version::String
+    requests::Dict{Int, HTTP.RequestContext}
 end
 
 mutable struct Client
@@ -81,20 +82,70 @@ function httpheaders(transport::HttpTransport)
     headers
 end
 
+function ssemessage!(client::Client, data, event, id)
+    (isempty(data) || !(event in ("", "message"))) && return false
+    value = JSON3.read(join(data, "\n"), Dict{String, Any})
+    received(client, value) || return false
+    get(value, "id", nothing) == id && !haskey(value, "method")
+end
+
+function sseread!(client::Client, stream, id)
+    data = String[]
+    event = ""
+    for line in eachline(stream)
+        line = rstrip(line, '\r')
+        if isempty(line)
+            ssemessage!(client, data, event, id) && return true
+            empty!(data)
+            event = ""
+        elseif !startswith(line, ':')
+            parts = split(line, ':'; limit=2)
+            field = parts[1]
+            value = length(parts) == 2 ? parts[2] : ""
+            startswith(value, ' ') && (value = value[2:end])
+            field == "data" && push!(data, value)
+            field == "event" && (event = value)
+        end
+    end
+    ssemessage!(client, data, event, id)
+end
+
 function httprequest(client::Client, transport::HttpTransport, message)
+    id = haskey(message, "method") ? get(message, "id", nothing) : nothing
+    context = HTTP.RequestContext()
+    if !isnothing(id)
+        admitted = lock(client.lock) do
+            haskey(client.pending, id) || return false
+            transport.requests[id] = context
+            true
+        end
+        admitted || return false
+    end
     try
-        response = HTTP.request("POST", transport.url, httpheaders(transport), JSON3.write(message); status_exception=false, request_timeout=client.timeout, retry=false)
-        200 <= response.status < 300 || return httpfailure!(client, message, Failure(:http, "MCP HTTP status $(response.status)", response.status))
-        session = HTTP.header(response, "Mcp-Session-Id", "")
-        isempty(session) || (transport.session = session)
-        haskey(message, "id") || return true
-        type = lowercase(strip(first(split(HTTP.header(response, "Content-Type", ""), ';'))))
-        type == "application/json" || return httpfailure!(client, message, Failure(:protocol, "Unsupported MCP HTTP response content type: $type"))
-        value = JSON3.read(String(response.body), Dict{String, Any})
-        received(client, value) || return httpfailure!(client, message, Failure(:protocol, "Invalid JSON-RPC message"))
+        HTTP.open("POST", transport.url, httpheaders(transport); status_exception=false, request_timeout=client.timeout, retry=false, redirect=false, cookies=false, context) do stream
+            write(stream, JSON3.write(message))
+            response = HTTP.startread(stream)
+            200 <= response.status < 300 || return httpfailure!(client, message, Failure(:http, "MCP HTTP status $(response.status)", response.status))
+            session = HTTP.header(response, "Mcp-Session-Id", "")
+            isempty(session) || (transport.session = session)
+            isnothing(id) && return true
+            type = lowercase(strip(first(split(HTTP.header(response, "Content-Type", ""), ';'))))
+            if type == "text/event-stream"
+                sseread!(client, stream, id) || httpfailure!(client, message, Failure(:protocol, "MCP response stream ended without a response"))
+            elseif type == "application/json"
+                value = JSON3.read(String(read(stream)), Dict{String, Any})
+                received(client, value) || httpfailure!(client, message, Failure(:protocol, "Invalid JSON-RPC message"))
+            else
+                httpfailure!(client, message, Failure(:protocol, "Unsupported MCP HTTP response content type: $type"))
+            end
+        end
         true
     catch exception
         httpfailure!(client, message, Failure(:transport, sprint(showerror, exception)))
+    finally
+        if !isnothing(id)
+            lock(() -> pop!(transport.requests, id, nothing), client.lock)
+        end
     end
 end
 
@@ -141,6 +192,8 @@ function shutdown(client::Client, transport::HttpTransport)
         return nothing
     end
     try
+        contexts = lock(() -> collect(values(transport.requests)), client.lock)
+        foreach(HTTP.cancel!, contexts)
         isempty(transport.session) || HTTP.request("DELETE", transport.url, httpheaders(transport); status_exception=false, request_timeout=1, retry=false)
     catch
     finally
@@ -281,7 +334,14 @@ expire!(client::Client, id, ::Nothing, connection::Connection) = nothing
 
 function expire!(client::Client, id, pending::Channel, connection::Connection)
     cancelrequest!(client, id, connection)
+    cancelhttp!(client.process, client, id)
     put!(pending, Failure(:timeout, "MCP request timed out"))
+end
+
+cancelhttp!(::Base.Process, client, id) = nothing
+function cancelhttp!(transport::HttpTransport, client, id)
+    context = lock(() -> get(transport.requests, id, nothing), client.lock)
+    isnothing(context) || HTTP.cancel!(context)
 end
 
 cancelrequest!(client::Client, id, ::Connection) = nothing
@@ -295,7 +355,7 @@ function activate!(client::Client, ::Connecting)
 end
 
 function connect(url::AbstractString; timeout=30.0, headers=Pair{String, String}[])
-    transport = HttpTransport(String(url), Pair{String, String}[String(k) => String(v) for (k, v) in headers], "", "")
+    transport = HttpTransport(String(url), Pair{String, String}[String(k) => String(v) for (k, v) in headers], "", "", Dict{Int, HTTP.RequestContext}())
     client = Client(transport, ReentrantLock(), ReentrantLock(), Dict{Int, Channel{Any}}(), 0, Connecting(), nothing, Float64(timeout), 0.0, false, Base.Event(), nothing)
     params = Dict("protocolVersion" => first(versions), "capabilities" => Dict(), "clientInfo" => Dict("name" => "JuliaForever", "version" => "0.1.0"))
     initialize!(client, request(client, "initialize", params, Connecting()))
