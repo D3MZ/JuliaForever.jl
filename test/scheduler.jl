@@ -449,6 +449,7 @@ end
 
 if Sys.isunix() && haskey(ENV, "PI_SOURCE")
     include("scheduler_differential.jl")
+    include("ownership_differential.jl")
 end
 
 struct JoinHandler <: D.Handler end
@@ -500,5 +501,58 @@ Base.run(::JoinHandler, phase::TestPhase, input, ::D.Invocation) = phase.value =
         @test cyclefirst == missingfirst + 1
         @test D.step!(scheduler, cyclefirst, JoinHandler()).reason == :wait_cycle
         close(scheduler)
+    end
+end
+
+@testset "owned task validation and active cancellation" begin
+    mktempdir() do dir
+        s = open(D.Scheduler, joinpath(dir, "tasks"))
+        a, b = D.commit!(s.store) do tx
+            a = D.mint!(tx); D.put!(tx, D.Conversation(a, nothing))
+            b = D.mint!(tx); D.put!(tx, D.Conversation(b, nothing))
+            (a, b)
+        end
+        h = TestHandler()
+        parent = D.enqueue!(s, a, h, TestPhase(1), nothing)
+        @test D.enqueue!(s, a, h, TestPhase(1), nothing; owner=999).reason == :owner_missing
+        @test D.enqueue!(s, b, h, TestPhase(1), nothing; owner=parent).reason == :owner_conversation
+        held = HeldHandler(Channel{D.Invocation}(1), Channel{Nothing}(1))
+        child = D.enqueue!(s, a, held, TestPhase(1), nothing; owner=parent)
+        task = @async D.step!(s, child, held)
+        take!(held.entered)
+        D.cancel!(s, parent)
+        @test get(s, child).status isa D.Cancelling
+        @test D.enqueue!(s, a, h, TestPhase(1), nothing; owner=child).reason == :owner_finished
+        put!(held.resume, nothing)
+        @test fetch(task).status isa D.Cancelled
+        @test D.enqueue!(s, a, h, TestPhase(1), nothing; owner=parent).reason == :owner_finished
+        close(s)
+    end
+end
+
+@testset "ownership with document history and fork safety" begin
+    mktempdir() do dir
+        path = joinpath(dir, "tasks")
+        s = open(D.Scheduler, path)
+        chat, doc, first = D.commit!(s.store) do tx
+            chat = D.mint!(tx); D.put!(tx, D.Conversation(chat, nothing))
+            doc = D.mint!(tx); D.put!(tx, D.Document(doc, chat, "before"))
+            first = D.put!(tx, D.Entry(D.mint!(tx), chat, "first", nothing))
+            (chat, doc, first)
+        end
+        parent = D.enqueue!(s, chat, TestHandler(), TestPhase(1), nothing)
+        child = D.enqueue!(s, chat, TestHandler(), TestPhase(1), nothing; owner=parent)
+        second = D.commit!(s.store) do tx
+            D.put!(tx, D.Document(doc, chat, "after"))
+            D.put!(tx, D.Entry(D.mint!(tx), chat, "second", nothing))
+        end
+        @test D.commit!(tx -> D.fork!(tx, chat, first), s.store) == D.Rejected(:fork_documents_unsupported)
+        D.cancel!(s, parent)
+        close(s); s = open(D.Scheduler, path)
+        @test get(s, child).status isa D.Cancelled
+        @test D.snapshot(s.store, chat, doc, first).value == "before"
+        @test D.snapshot(s.store, chat, doc, second).value == "after"
+        @test D.commit!(tx -> D.fork!(tx, chat, second), s.store) == D.Rejected(:fork_documents_unsupported)
+        close(s)
     end
 end
