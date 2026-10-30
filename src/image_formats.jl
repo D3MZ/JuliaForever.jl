@@ -36,9 +36,7 @@ struct GIFImage <: GIFRecord end
 struct GIFInvalid <: GIFRecord end
 const gifrecords = Dict{UInt8, GIFRecord}(0x3b => GIFTrailer(), 0x21 => GIFExtension(), 0x2c => GIFImage())
 
-abstract type GIFFrame end
-struct GIFEmpty <: GIFFrame end
-struct GIFStatic <: GIFFrame
+struct GIFFrame
     width::Int
     height::Int
     colors::Int
@@ -52,13 +50,13 @@ end
 mutable struct GIFScan
     bytes::Vector{UInt8}
     position::Int
-    frame::GIFFrame
+    frames::Vector{GIFFrame}
     status::GIFStatus
     colors::Int
 end
 
 function gifproblem(bytes, position, colors)
-    scan = GIFScan(bytes, position, GIFEmpty(), GIFReading(), colors)
+    scan = GIFScan(bytes, position, GIFFrame[], GIFReading(), colors)
     for record in scan
         gifrecord!(scan, record)
     end
@@ -78,16 +76,13 @@ gifresult(result::GIFDone) = result.problem
 gifresult(result::String) = result
 gifresult(scan::GIFScan) = gifresult(scan.status)
 gifreadresult(result::String) = result
-gifreadresult(scan::GIFScan) = gifreadresult(gifresult(scan.status), scan.frame)
+gifreadresult(scan::GIFScan) = gifreadresult(gifresult(scan.status), scan.frames)
 gifreadresult(problem::String, frame) = problem
-gifreadresult(::Nothing, frame::GIFStatic) = iszero(frame.colors) ? "image/gif color table is missing" : nothing
+gifreadresult(::Nothing, frames::Vector{GIFFrame}) = any(frame -> iszero(frame.colors), frames) ? "image/gif color table is missing" : nothing
 gifinvalid!(scan) = (scan.status = GIFDone("image/gif structure is not supported"))
 gifrecord!(scan, ::GIFInvalid) = gifinvalid!(scan)
-gifrecord!(scan, ::GIFTrailer) = giftrailer!(scan, scan.frame)
-giftrailer!(scan, ::GIFEmpty) = gifinvalid!(scan)
-giftrailer!(scan, frame::GIFStatic) = (scan.status = GIFDone(gifdecode(scan.bytes, frame) ? nothing : "image/gif data is not supported"))
-gifrecord!(scan, ::GIFImage) = gifframe!(scan, scan.frame)
-gifframe!(scan, ::GIFStatic) = (scan.status = GIFDone("Animated GIF is not supported"))
+gifrecord!(scan, ::GIFTrailer) = (scan.status = GIFDone(!isempty(scan.frames) && gifdecode(scan.bytes, scan.frames) ? nothing : "image/gif data is not supported"))
+gifrecord!(scan, ::GIFImage) = gifframe!(scan)
 
 function gifrecord!(scan, ::GIFExtension)
     scan.position <= length(scan.bytes) || return gifinvalid!(scan)
@@ -95,7 +90,7 @@ function gifrecord!(scan, ::GIFExtension)
     gifsubblocks!(scan)
 end
 
-function gifframe!(scan, ::GIFEmpty)
+function gifframe!(scan)
     bytes, position = scan.bytes, scan.position
     position + 8 <= length(bytes) || return gifinvalid!(scan)
     w, h = little(bytes, position + 4, 2), little(bytes, position + 6, 2)
@@ -108,7 +103,7 @@ function gifframe!(scan, width, height, ::Nothing)
     scan.position += 9 + colors
     scan.position <= length(scan.bytes) || return gifinvalid!(scan)
     scan.position += 1
-    scan.frame = GIFStatic(width, height, max(scan.colors, div(colors, 3)))
+    push!(scan.frames, GIFFrame(width, height, max(scan.colors, div(colors, 3))))
     gifsubblocks!(scan)
 end
 
@@ -142,7 +137,8 @@ end
 
 mutable struct GIFDecoder
     file::Ptr{Cvoid}
-    frame::GIFStatic
+    frames::Vector{GIFFrame}
+    index::Int
     row::Vector{UInt8}
     status::GIFStatus
 end
@@ -165,8 +161,11 @@ gifdecodedresult(::String) = false
 
 function gifdecoded!(decoder, ::GIFImage)
     ccall((:DGifGetImageDesc, libgif), Cint, (Ptr{Cvoid},), decoder.file) == 1 || return gifinvalid!(decoder)
-    for _ in 1:decoder.frame.height
-        ccall((:DGifGetLine, libgif), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), decoder.file, decoder.row, decoder.frame.width) == 1 || return gifinvalid!(decoder)
+    decoder.index += 1
+    frame = decoder.frames[decoder.index]
+    resize!(decoder.row, frame.width)
+    for _ in 1:frame.height
+        ccall((:DGifGetLine, libgif), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), decoder.file, decoder.row, frame.width) == 1 || return gifinvalid!(decoder)
     end
     nothing
 end
@@ -180,14 +179,14 @@ function gifdecoded!(decoder, ::GIFExtension)
     nothing
 end
 
-function gifdecode(bytes, frame::GIFStatic)
+function gifdecode(bytes, frames::Vector{GIFFrame})
     Base.ScopedValues.with(gifinput => GIFInput(bytes, 1)) do
         reader = @cfunction(gifread, Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint))
         status = Ref{Cint}(0)
         file = ccall((:DGifOpen, libgif), Ptr{Cvoid}, (Ptr{Cvoid}, Ptr{Cvoid}, Ref{Cint}), C_NULL, reader, status)
         file == C_NULL && return false
         try
-            decoder = GIFDecoder(file, frame, Vector{UInt8}(undef, frame.width), GIFReading())
+            decoder = GIFDecoder(file, frames, 0, UInt8[], GIFReading())
             for record in decoder
                 gifdecoded!(decoder, record)
             end
@@ -203,13 +202,35 @@ webpsize(bytes, problem::String) = problem
 function webpsize(bytes, ::Nothing)
     width, height = Ref{Cint}(0), Ref{Cint}(0)
     ccall((:WebPGetInfo, libwebp), Cint, (Ptr{UInt8}, Csize_t, Ref{Cint}, Ref{Cint}), bytes, length(bytes), width, height) == 1 || return "image/webp structure is not supported"
-    length(bytes) >= 21 && @view(bytes[13:16]) == codeunits("VP8X") && !iszero(bytes[21] & 0x02) && return "Animated WebP is not supported"
     webpdimensions(bytes, width[], height[], dimensionproblem(width[], height[]))
 end
 webpdimensions(bytes, width, height, problem::String) = problem
 function webpdimensions(bytes, width, height, ::Nothing)
+    length(bytes) >= 21 && @view(bytes[13:16]) == codeunits("VP8X") && !iszero(bytes[21] & 0x02) && return webpanimation(bytes)
     stride = 4 * width
     output = Vector{UInt8}(undef, stride * height)
     decoded = ccall((:WebPDecodeRGBAInto, libwebp), Ptr{UInt8}, (Ptr{UInt8}, Csize_t, Ptr{UInt8}, Csize_t, Cint), bytes, length(bytes), output, length(output), stride)
     decoded == C_NULL ? "image/webp data is not supported" : nothing
+end
+
+struct WebPData
+    bytes::Ptr{UInt8}
+    size::Csize_t
+end
+
+function webpanimation(bytes)
+    GC.@preserve bytes begin
+        data = Ref(WebPData(pointer(bytes), length(bytes)))
+        decoder = ccall((:WebPAnimDecoderNewInternal, libwebpdemux), Ptr{Cvoid}, (Ref{WebPData}, Ptr{Cvoid}, Cint), data, C_NULL, 0x0107)
+        decoder == C_NULL && return "image/webp data is not supported"
+        try
+            output, timestamp = Ref{Ptr{UInt8}}(C_NULL), Ref{Cint}(0)
+            while ccall((:WebPAnimDecoderHasMoreFrames, libwebpdemux), Cint, (Ptr{Cvoid},), decoder) != 0
+                ccall((:WebPAnimDecoderGetNext, libwebpdemux), Cint, (Ptr{Cvoid}, Ref{Ptr{UInt8}}, Ref{Cint}), decoder, output, timestamp) == 1 || return "image/webp data is not supported"
+            end
+            nothing
+        finally
+            ccall((:WebPAnimDecoderDelete, libwebpdemux), Cvoid, (Ptr{Cvoid},), decoder)
+        end
+    end
 end
