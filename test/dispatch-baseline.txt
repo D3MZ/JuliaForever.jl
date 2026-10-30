@@ -77,7 +77,6 @@ scheduler.jl	:(same(state["checkpoint"], next))
 scheduler.jl	:(typeof(a))
 scheduler.jl	:(typeof(b))
 scheduler.jl	:(view.kind == name(handler))
-scheduler.jl	:cancelled
 search.jl	:(matchesignore(pattern.pattern, relative, entry))
 search.jl	:(matchesignore(pattern.pattern, relative, entry))
 search.jl	:(selectglob(filter, target))
