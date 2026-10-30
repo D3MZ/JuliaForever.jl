@@ -26,19 +26,21 @@ end
 
 bashresult!(session, command, ::Nothing, failure::J.ToolFailure, token) = lock(() -> bashnotstarted!(session, command, failure, token.runs), token.lock)
 bashnotstarted!(session, command, failure, ::Set{J.ShellRun}) = Failure(J.redact(session.terminal, failure.text))
-bashnotstarted!(session, command, failure, ::Nothing) = bashresult!(session, command, J.ShellReport("", nothing, false, J.ShellCancelled(), nothing), failure, nothing)
+bashnotstarted!(session, command, failure, ::Nothing) = bashresult!(session, command, J.ShellReport(J.ShellTail("", "", nothing), nothing, J.ShellCancelled(), nothing), failure, nothing)
 function bashresult!(session, command, report::J.ShellReport, result, token)
     bashresult!(session, command, report, report.outcome)
 end
 bashresult!(session, command, report, ::J.ShellStopFailed) = Failure("Could not stop shell process group")
 function bashresult!(session, command, report, outcome::J.ShellOutcome)
-    message = J.Conversation.BashMessage(command.command, report.output, report.exitcode, bashcancelled(report.outcome), report.truncated, report.file, round(Int, 1000 * time()), command.context)
+    message = J.Conversation.BashMessage(command.command, report.tail.text, report.exitcode, bashstatus(report.outcome), bashextent(report.tail.file), report.file, round(Int, 1000 * time()), command.context)
     saved = lock(() -> queuebash!(session, message, session.task), session.lock)
     bashreply(saved, message)
 end
 
-bashcancelled(::J.ShellOutcome) = false
-bashcancelled(::J.ShellCancelled) = true
+bashstatus(::J.ShellOutcome) = J.Conversation.FinishedBash()
+bashstatus(::J.ShellCancelled) = J.Conversation.CancelledBash()
+bashextent(::Nothing) = J.Conversation.FullBash()
+bashextent(::String) = J.Conversation.TruncatedBash()
 queuebash!(session, message, ::Task) = (push!(session.pendingbash, message); nothing)
 queuebash!(session, message, ::Nothing) = savebash!(session, message)
 function savebash!(session, message)

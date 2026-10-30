@@ -29,9 +29,10 @@ using HTTP, JSON3, SHA, Base64
         @test wait(callback; timeout=1) == "synthetic+code"
 
         received = Channel{Any}(1)
+        returned = Ref{Any}("synthetic-key")
         server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
             put!(received, (; target=request.target, body=JSON3.read(String(request.body))))
-            HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write((; key="synthetic-key")))
+            HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write((; key=returned[])))
         end
         try
             key = exchange(login, "synthetic+code"; base="http://$(HTTP.server_addr(server))/api/v1")
@@ -40,6 +41,11 @@ using HTTP, JSON3, SHA, Base64
             @test request.body.code == "synthetic+code"
             @test request.body.code_verifier == login.verifier
             @test key == "synthetic-key"
+            for value in ("", 1, nothing)
+                returned[] = value
+                @test exchange(login, "synthetic+code"; base="http://$(HTTP.server_addr(server))/api/v1") === nothing
+                take!(received)
+            end
         finally
             close(server)
             wait(server)

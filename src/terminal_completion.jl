@@ -17,6 +17,7 @@ const builtins = Item[
     Item("compact", "Compact the current context"),
     Item("resume", "Resume a different session"),
     Item("reload", "Reload skills"),
+    Item("export", "Export the session as HTML or JSONL"),
     Item("exit", "Exit the session"),
 ]
 
@@ -28,17 +29,14 @@ function commands(resources::JuliaForever.Skills.Resources)
     [commands(resources.templates); [Item("skill:" * skill.name, skill.description) for skill in resources.skills]]
 end
 
-function alignment(query, text)
-    positions = Int[]
-    start = 1
-    for unit in query
-        index = something(findnext(==(unit), text, start), length(text) + 1)
-        index > length(text) && return nothing
-        push!(positions, index)
-        start = index + 1
-    end
-    positions
+alignment(query, text) = foldl((positions, unit) -> align!(positions, text, unit), query; init=Int[])
+align!(::Nothing, text, unit) = nothing
+function align!(positions::Vector{Int}, text, unit)
+    start = get(positions, length(positions), 0) + 1
+    align!(positions, findnext(==(unit), text, start))
 end
+align!(positions, ::Nothing) = nothing
+align!(positions, index::Int) = (push!(positions, index); positions)
 
 function positionscore(positions, text)
     score = 0.0

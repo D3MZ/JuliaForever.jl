@@ -10,6 +10,13 @@ D.encode(phase::TestPhase) = D.Checkpoint("test", phase.value)
 D.decode(::TestHandler, checkpoint::D.Checkpoint) = TestPhase(checkpoint.value)
 Base.run(::TestHandler, phase::TestPhase, input, context::D.Invocation) = phase.value == 1 ? D.Next(TestPhase(2)) : D.Complete(Dict("input" => input, "attempt" => context.attempt, "phase" => context.phase))
 
+@testset "checkpoint equality preserves value types" begin
+    @test D.Checkpoint("work", Dict("items" => Any[1, "x"])) == D.Checkpoint("work", Dict{String, Any}("items" => Any[1, "x"]))
+    @test D.Checkpoint("work", [1]) != D.Checkpoint("work", [true])
+    @test D.Checkpoint("work", 1) != D.Checkpoint("work", 1.0)
+    @test D.Checkpoint("work", 1) != D.Checkpoint("other", 1)
+end
+
 struct OtherHandler <: D.Handler end
 D.name(::OtherHandler) = "other"
 

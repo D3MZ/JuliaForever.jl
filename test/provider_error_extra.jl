@@ -21,6 +21,12 @@ using Test, JuliaForever, HTTP, JSON3, Serialization, Distributed
             @test any(event -> event.type == :incomplete, events)
         end
 
+        data = Dict("error" => nothing, "candidates" => [Dict("content" => Dict("parts" => [Dict("text" => "partial")]), "finishReason" => "STOP")])
+        put!(fixture.replies, ("text/event-stream", provider_error_sse(data)))
+        result = stream(google, [], Dict())
+        @test !result.done && result.error isa JuliaForever.ProviderError && result.error.kind == :unknown
+        @test result.message["content"] == "partial"
+
         start = Dict("type" => "message_start", "message" => Dict("usage" => Dict()))
         delta = Dict("type" => "message_delta", "delta" => Dict("stop_reason" => secret), "usage" => Dict())
         stop = Dict("type" => "message_stop")

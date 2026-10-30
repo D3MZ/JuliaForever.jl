@@ -76,6 +76,7 @@ failurestatus(value) = nothing
 failurestatus(value::Integer) = 400 <= value <= 599 ? Int(value) : nothing
 failurestatus(data::AbstractDict) = failurestatus(get(data, "code", nothing))
 providererror(provider::Symbol, data) = ProviderError(provider, failurekind(data), failurestatus(data))
+protocolfield(data, key) = haskey(data, key) ? Some(data[key]) : nothing
 
 const finishreasons = Dict(reason => reason for reason in ("stop", "end", "length", "tool_calls", "function_call", "content_filter", "failed", "incomplete"))
 safefinish(value) = nothing
@@ -232,10 +233,9 @@ end
 
 apikey(failure::InvalidResponse) = failure
 
-function apikey(data::AbstractDict)
-    key = get(data, "key", nothing)
-    key isa AbstractString && !isempty(key) ? key : nothing
-end
+apikey(data::AbstractDict) = apikeyvalue(get(data, "key", nothing))
+apikeyvalue(value) = nothing
+apikeyvalue(value::AbstractString) = isempty(value) ? nothing : value
 
 struct Usage
     input::Int
@@ -310,7 +310,11 @@ details(data) = data
 upstream(::Nothing) = 0
 upstream(data) = get(data, "upstream_inference_cost", 0)
 usagecost(::Nothing, data) = nothing
-usagecost(cost, data) = Float64(get(data, "is_byok", false) ? cost + upstream(get(data, "cost_details", nothing)) : cost)
+usagecost(cost, data) = usagecost(cost, data, get(data, "is_byok", false))
+plaincost(cost, data) = cost
+byokcost(cost, data) = cost + upstream(get(data, "cost_details", nothing))
+const costcalculators = Dict(false => plaincost, true => byokcost)
+usagecost(cost, data, byok::Bool) = Float64(costcalculators[byok](cost, data))
 
 function usage(data)
     prompt = get(data, "prompt_tokens", 0)
@@ -507,12 +511,12 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
     failure = Ref{Union{Nothing, String, InvalidResponse, ProviderError}}(nothing)
     marker = Ref{CompletionStatus}(Unfinished())
     reasoningfield = Ref{Union{Nothing, String}}(nothing)
-    process = data -> begin
+    function process(data)
         on_event((; type=:provider, data))
-        if haskey(data, "error")
-            failure[] = providererror(:openai_compatible, data["error"])
-            return
-        end
+        process(data, protocolfield(data, "error"))
+    end
+    process(data, error::Some) = (failure[] = providererror(:openai_compatible, something(error)); nothing)
+    function process(data, ::Nothing)
         recordusage!(reported_usage, on_event, get(data, "usage", nothing))
         choices = get(data, "choices", [])
         isempty(choices) && return

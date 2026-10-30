@@ -8,12 +8,58 @@ end
 
 struct FoldedPattern
     text::String
+    folded::String
+    ascii::String
 end
 
-Base.occursin(pattern::FoldedPattern, line::AbstractString) = occursin(pattern.text, lowercase(line))
+# Separators keep full-fold expansions inside their original character boundaries.
+const foldescapes = Dict('\0' => "\x01\x02", '\x01' => "\x01\x01")
 
+# Memoize only after a longer line contains several non-ASCII characters.
+mutable struct FoldCache
+    seen::Int
+    values::Dict{Char, String}
+end
+FoldCache() = FoldCache(0, Dict{Char, String}())
+
+foldliteral(text::AbstractString) = foldliteral(text, ncodeunits(text) < 128 ? nothing : FoldCache())
+function foldliteral(text::AbstractString, cache)
+    output = IOBuffer()
+    for character in text
+        write(output, '\0')
+        if !isvalid(character)
+            # This sequence cannot occur in a folded valid character.
+            write(output, "\x01\x03")
+        elseif isascii(character)
+            write(output, get(foldescapes, character, lowercase(character)))
+        else
+            writefolded!(output, cache, character)
+        end
+    end
+    write(output, '\0')
+    String(take!(output))
+end
+
+writefolded!(output, ::Nothing, character::Char) = write(output, Unicode.normalize(string(character); casefold=true, compose=false))
+function writefolded!(output, cache::FoldCache, character::Char)
+    cache.seen += 1
+    cache.seen < 8 && return writefolded!(output, nothing, character)
+    # Titlecase characters are neither lowercase nor uppercase, but have lowercase mappings.
+    if islowercase(character) || isuppercase(character) || lowercase(character) != character
+        folded = get!(cache.values, character) do
+            Unicode.normalize(string(character); casefold=true, compose=false)
+        end
+        return write(output, folded)
+    end
+    write(output, character)
+end
+
+function Base.occursin(pattern::FoldedPattern, line::AbstractString)
+    isascii(pattern.text) && isascii(line) && return occursin(pattern.ascii, lowercase(line))
+    occursin(pattern.folded, foldliteral(line))
+end
 literalpattern(pattern) = pattern
-foldedpattern(pattern) = FoldedPattern(lowercase(pattern))
+foldedpattern(pattern) = FoldedPattern(String(pattern), foldliteral(pattern), lowercase(pattern))
 regexpattern(pattern) = Regex(pattern, "")
 caselesspattern(pattern) = Regex(pattern, "i")
 const searchpatterns = Dict((true, false) => literalpattern, (true, true) => foldedpattern, (false, false) => regexpattern, (false, true) => caselesspattern)
@@ -28,13 +74,15 @@ schema(::Grep) = Dict("type" => "object", "properties" => Dict("pattern" => Dict
 description(::Find) = "Find files and directories by glob pattern, respecting ignore files. Output is limited to 1000 results or 50KB."
 description(::Grep) = "Search file contents for a regex or literal pattern, respecting ignore files. Output is limited to 100 matches or 50KB."
 
-function fileurlpath(name, windows=Sys.iswindows())
-    uri = HTTP.URI(name)
+unixfileurl(uri) = HTTP.unescapeuri(uri.path)
+function windowsfileurl(uri)
     path = HTTP.unescapeuri(uri.path)
-    windows && !isempty(uri.host) && lowercase(uri.host) != "localhost" && return "//$(uri.host)$path"
-    windows && occursin(r"^/[A-Za-z]:/", path) && return path[2:end]
+    !isempty(uri.host) && lowercase(uri.host) != "localhost" && return "//$(uri.host)$path"
+    occursin(r"^/[A-Za-z]:/", path) && return path[2:end]
     path
 end
+const fileurlreaders = Dict(false => unixfileurl, true => windowsfileurl)
+fileurlpath(name, windows::Bool=Sys.iswindows()) = fileurlreaders[windows](HTTP.URI(name))
 
 function searchpath(tool, name)
     name = isempty(name) ? "." : name
@@ -91,13 +139,26 @@ function globsource(pattern)
     String(take!(out))
 end
 
-function glob(pattern; smartcase=false, anywhere=false)
-    source = globsource(pattern)
-    prefix = anywhere ? "(?:.*/)?" : ""
-    Regex("^" * prefix * source * "\$", smartcase && !any(isuppercase, pattern) ? "i" : "")
-end
+rootglob(source) = source
+anyglob(source) = "(?:.*/)?" * source
+caseflags(pattern) = ""
+smartflags(pattern) = any(isuppercase, pattern) ? "" : "i"
+const globprefixes = Dict(false => rootglob, true => anyglob)
+const globcases = Dict(false => caseflags, true => smartflags)
+glob(pattern; smartcase::Bool=false, anywhere::Bool=false) = glob(pattern, globprefixes[anywhere], globcases[smartcase])
+glob(pattern, scope, flags) = Regex("^" * scope(globsource(pattern)) * "\$", flags(pattern))
 
 posix(path) = Sys.iswindows() ? replace(path, '\\' => '/') : path
+
+abstract type SearchEntry end
+struct SearchFile{P<:AbstractString} <: SearchEntry
+    path::P
+end
+struct SearchDirectory{P<:AbstractString} <: SearchEntry
+    path::P
+end
+const searchentries = Dict(false => SearchFile, true => SearchDirectory)
+searchentry(path, directory::Bool) = searchentries[directory](path)
 
 abstract type IgnoreRule end
 
@@ -123,10 +184,11 @@ end
 const ignorescopes = Dict(true => DirectoryPattern, false => identity)
 const ignoreactions = Dict(true => IncludePattern, false => IgnorePattern)
 
-matchesignore(pattern::Regex, relative, directory) = occursin(pattern, relative)
-matchesignore(pattern::DirectoryPattern, relative, directory) = directory && occursin(pattern.regex, relative)
-ignorevalue(previous, pattern::IgnorePattern, relative, directory) = matchesignore(pattern.pattern, relative, directory) ? true : previous
-ignorevalue(previous, pattern::IncludePattern, relative, directory) = matchesignore(pattern.pattern, relative, directory) ? false : previous
+matchesignore(pattern::Regex, relative, entry::SearchEntry) = occursin(pattern, relative)
+matchesignore(pattern::DirectoryPattern, relative, ::SearchFile) = false
+matchesignore(pattern::DirectoryPattern, relative, ::SearchDirectory) = occursin(pattern.regex, relative)
+ignorevalue(previous, pattern::IgnorePattern, relative, entry) = matchesignore(pattern.pattern, relative, entry) ? true : previous
+ignorevalue(previous, pattern::IncludePattern, relative, entry) = matchesignore(pattern.pattern, relative, entry) ? false : previous
 
 function cleargit!(rules)
     kept = 0
@@ -152,28 +214,29 @@ function rules(file, ::Type{T}; base=dirname(file)) where {T <: IgnoreRule}
         anchored = startswith(line, '/')
         line = chopprefix(line, "/")
         isempty(line) && continue
-        pattern = scope(glob(line; anywhere=!anchored && !occursin('/', line)))
+        pattern = scope(glob(line, globprefixes[!anchored && !occursin('/', line)], caseflags))
         push!(result, T(base, action(pattern)))
     end
     result
 end
 
-ignorevalue(value, rule::IgnoreRule, target, directory, ::Type{T}) where {T <: IgnoreRule} = value
-function ignorevalue(value, rule::T, target, directory, ::Type{T}) where {T <: IgnoreRule}
-    relative = posix(relpath(target, rule.base))
+ignorevalue(value, rule::IgnoreRule, entry, ::Type{T}) where {T <: IgnoreRule} = value
+function ignorevalue(value, rule::T, entry, ::Type{T}) where {T <: IgnoreRule}
+    relative = posix(relpath(entry.path, rule.base))
     startswith(relative, "../") && return value
-    ignorevalue(value, rule.pattern, relative, directory)
+    ignorevalue(value, rule.pattern, relative, entry)
 end
 
-function ignored(kind::Type{T}, rules, target, directory, value) where {T <: IgnoreRule}
+function ignored(kind::Type{T}, rules, entry, value) where {T <: IgnoreRule}
     for rule in rules
-        value = ignorevalue(value, rule, target, directory, kind)
+        value = ignorevalue(value, rule, entry, kind)
     end
     value
 end
 
 # .ignore rules take precedence over .gitignore, even across directory levels.
-ignored(rules, target, directory) = ignored(FileRule, rules, target, directory, ignored(GitRule, rules, target, directory, false))
+ignored(rules, target, directory::Bool) = ignored(rules, searchentry(target, directory))
+ignored(rules, entry::SearchEntry) = ignored(FileRule, rules, entry, ignored(GitRule, rules, entry, false))
 
 function ancestors(root)
     dirs = String[]
@@ -223,15 +286,19 @@ function walksearch(visit, root, tool::Union{Find, Grep}; whitelist=(target -> f
         for entry in readdir(dir)
             entry == ".git" && continue
             target = joinpath(dir, entry)
-            directory = isdir(target) && !islink(target)
-            ignored(ruleset, target, directory) && (directory || !whitelist(target)) && continue
-            visit(target, directory) || return false
-            directory && !walk(target, ruleset, inside) && return false
+            item = searchentry(target, isdir(target) && !islink(target))
+            skipentry(ruleset, item, whitelist) && continue
+            visit(item) || return false
+            walkentry(walk, item, ruleset, inside) || return false
         end
         true
     end
     walk(root, inherited, inside)
 end
+skipentry(rules, entry::SearchDirectory, whitelist) = ignored(rules, entry)
+skipentry(rules, entry::SearchFile, whitelist) = ignored(rules, entry) && !whitelist(entry.path)
+walkentry(walk, entry::SearchDirectory, rules, inside) = walk(entry.path, rules, inside)
+walkentry(walk, entry::SearchFile, rules, inside) = true
 
 function findresult(lines, limit)
     isempty(lines) && return ToolResult("No files found matching pattern")
@@ -251,22 +318,25 @@ function execute(tool::Find, args)
     limit >= 0 || return ToolFailure("Invalid result limit: $limit")
     pattern = args.pattern
     regex = try
-        glob(pattern; smartcase=true, anywhere=occursin('/', pattern) && !startswith(pattern, '/'))
+        glob(pattern, globprefixes[occursin('/', pattern) && !startswith(pattern, '/')], smartflags)
     catch exception
         return ToolFailure(sprint(showerror, exception))
     end
     found = String[]
-    walksearch(root, tool) do target, directory
+    walksearch(root, tool) do entry
+        target = entry.path
         relative = posix(relpath(target, root))
         candidate = occursin('/', pattern) ? (startswith(pattern, '/') ? posix(target) : relative) : basename(target)
         if occursin(regex, candidate)
-            push!(found, directory ? relative * "/" : rstrip(relative))
+            push!(found, findpath(entry, relative))
             limit > 0 && length(found) >= limit && return false
         end
         true
     end
     findresult(found, limit)
 end
+findpath(::SearchDirectory, relative) = relative * "/"
+findpath(::SearchFile, relative) = rstrip(relative)
 
 struct ShortenedLine
     text::String
@@ -298,7 +368,7 @@ end
 function globfilter(raw::AbstractString)
     pattern = chopprefix(raw, "!")
     isempty(pattern) && return nothing
-    filter = GlobFilter(pattern, glob(pattern))
+    filter = GlobFilter(pattern, glob(pattern, rootglob, caseflags))
     (identity, ExcludedGlob)[Int(startswith(raw, "!")) + 1](filter)
 end
 
@@ -308,6 +378,75 @@ selectglob(filter::GlobFilter, target) = occursin(filter.regex, globtarget(filte
 selectglob(filter::ExcludedGlob, target) = !selectglob(filter.filter, target)
 whitelistglob(::Union{Nothing, ExcludedGlob}, target) = false
 whitelistglob(filter::GlobFilter, target) = selectglob(filter, target)
+
+function decoded(bytes)
+    text = String(copy(bytes))
+    isvalid(text) && return text
+    out = IOBuffer()
+    i = 1
+    while i <= length(bytes)
+        b = bytes[i]
+        size = b < 0x80 ? 1 : 0xc2 <= b <= 0xdf ? 2 : 0xe0 <= b <= 0xef ? 3 : 0xf0 <= b <= 0xf4 ? 4 : 0
+        if size == 0
+            print(out, '�')
+            i += 1
+            continue
+        end
+        j = i + 1
+        while j < i + size && j <= length(bytes)
+            c = bytes[j]
+            low = j == i + 1 && b == 0xe0 ? 0xa0 : j == i + 1 && b == 0xf0 ? 0x90 : 0x80
+            high = j == i + 1 && b == 0xed ? 0x9f : j == i + 1 && b == 0xf4 ? 0x8f : 0xbf
+            low <= c <= high || break
+            j += 1
+        end
+        if j == i + size
+            write(out, @view bytes[i:j-1])
+        else
+            print(out, '�')
+        end
+        i = j
+    end
+    String(take!(out))
+end
+
+originallines!(cache, original, raw, rawlines) = originallines!(cache, original, raw, rawlines, cache[])
+originallines!(cache, original, raw, rawlines, cached::Vector) = cached
+function originallines!(cache, original, raw, rawlines, ::Nothing)
+    lines = original === raw && isvalid(raw) ? rawlines : split(replace(decoded(codeunits(original)), "\r\n" => "\n"), '\n'; keepempty=true)
+    cache[] = lines
+    lines
+end
+
+function binaryprefix(bytes, nul)
+    # A binary read is discarded; incomplete lines carry over as the buffer grows.
+    capacity = 65536
+    position = 0
+    consumed = 0
+    while position < nul
+        retained = position - consumed
+        retained == capacity && (capacity *= 3)
+        stop = min(length(bytes), position + capacity - retained)
+        nul <= stop && return consumed
+        consumed = lineprefix(consumed, position, findprev(==(0x0a), bytes, stop))
+        position = stop
+    end
+    consumed
+end
+lineprefix(consumed, position, ::Nothing) = consumed
+lineprefix(consumed, position, lastline::Int) = lastline > position ? lastline : consumed
+
+binarycontent!(bytes, ::SearchDirectory, nul) = resize!(bytes, binaryprefix(bytes, nul))
+binarycontent!(bytes, ::SearchFile, nul) = replace!(bytes, 0x00 => 0x0a)
+function searchcontent(bytes, root, ::Nothing)
+    raw = String(bytes)
+    raw, raw
+end
+function searchcontent(bytes, root, nul::Int)
+    original = String(copy(bytes))
+    binarycontent!(bytes, root, nul)
+    original, String(bytes)
+end
 
 function execute(tool::Grep, args)
     root = searchpath(tool, get(args, :path, "."))
@@ -327,26 +466,27 @@ function execute(tool::Grep, args)
     output = String[]
     count = 0
     linenotices = Set{String}()
-    directory = isdir(root)
-    function visit(target, isdirectory)
-        isdirectory && return true
+    rootentry = searchentry(root, isdir(root))
+    visit(::SearchDirectory) = true
+    function visit(entry::SearchFile)
+        target = entry.path
         isfile(target) || return true
-        relative = directory ? posix(relpath(target, root)) : basename(target)
+        relative = searchrelative(rootentry, target)
         selectglob(filter, target) || return true
         bytes = read(target)
-        0x00 in bytes && return true
-        text = String(bytes)
-        isvalid(text) || return true
-        isempty(text) && return true
-        lines = split(replace(text, "\r\n" => "\n"), '\n'; keepempty=true)
-        lastmatch = length(lines) - endswith(text, '\n')
+        originalraw, raw = searchcontent(bytes, rootentry, findfirst(==(0x00), bytes))
+        isempty(raw) && return true
+        rawlines = split(replace(raw, "\r\n" => "\n"), '\n'; keepempty=true)
+        original_lines = Ref{Union{Nothing,Vector{SubString{String}}}}(nothing)
+        lastmatch = length(rawlines) - endswith(raw, '\n')
         for number in 1:lastmatch
-            line = lines[number]
-            matched = occursin(regex, line)
-            matched || continue
+            line = rawlines[number]
+            occursin(regex, line) || continue
             count += 1
-            for n in max(1, number - context):min(length(lines), number + context)
-                shown = shortline(replace(lines[n], '\r' => ""))
+            displaylines = context > 0 || !isvalid(line) ? originallines!(original_lines, originalraw, raw, rawlines) : rawlines
+            lastline = context > 0 ? min(length(displaylines), number + context) : number
+            for n in max(1, number - context):lastline
+                shown = shortline(replace(get(displaylines, n, ""), '\r' => ""))
                 linenotice!(linenotices, shown)
                 text = linetext(shown)
                 push!(output, n == number ? "$relative:$n: $text" : "$relative-$n- $text")
@@ -356,7 +496,7 @@ function execute(tool::Grep, args)
         true
     end
     whitelist = target -> whitelistglob(filter, target)
-    directory ? walksearch(visit, root, tool; whitelist) : visit(root, false)
+    visitroot(visit, rootentry, tool, whitelist)
     isempty(output) && return ToolResult("No matches found")
     # Match limits count matches, not context rows.
     bounded = head(output)
@@ -368,3 +508,7 @@ function execute(tool::Grep, args)
     !isempty(notices) && (text *= "\n\n[$(join(notices, ". "))]")
     ToolResult(text)
 end
+searchrelative(root::SearchDirectory, target) = posix(relpath(target, root.path))
+searchrelative(root::SearchFile, target) = basename(target)
+visitroot(visit, root::SearchDirectory, tool, whitelist) = walksearch(visit, root.path, tool; whitelist)
+visitroot(visit, root::SearchFile, tool, whitelist) = visit(root)

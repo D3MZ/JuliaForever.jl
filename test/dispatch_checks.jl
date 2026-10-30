@@ -4,10 +4,11 @@ function dispatchcallee(expression)
 end
 
 const dispatchfields = (:type, :kind, :status, :phase, :reason, :role, :finish, :mode, :state, :outcome, :selected, :label, :code, :effort)
-const dispatchresultflags = Dict(:Completion => 5, :ToolResult => 3, :ToolReply => 3, :CodeResult => 2)
+const dispatchresultflags = Dict(:Completion => 5, :ToolResult => 3, :ToolReply => 3, :CodeResult => 2, :BashMessage => 5)
 const dispatchresultproperties = Dict(:Completion => :done, :CodeResult => :ok)
 const dispatchresultvariables = Set([:iserror, :failed, :failure, :ok, :done, :success, :cancelled, :truncated, :flag])
 const dispatchflagvariables = union(dispatchresultvariables, Set([:exclude, :negate, :enabled]))
+const dispatchpresencefields = union(Set(dispatchfields), dispatchflagvariables, Set([:error, :is_error, :isError]))
 
 struct DispatchPredicates
     booleans::Set{Symbol}
@@ -28,6 +29,21 @@ function dispatchfield(expression)
         return key isa QuoteNode ? key.value : key isa String ? Symbol(key) : nothing
     end
     nothing
+end
+
+function dispatchpresence(expression)
+    expression isa Expr && expression.head == :call && length(expression.args) == 3 || return false
+    dispatchcallee(first(expression.args)) === :haskey || return false
+    key = last(expression.args)
+    key = key isa QuoteNode ? key.value : key isa String ? Symbol(key) : nothing
+    key in dispatchpresencefields
+end
+
+function dispatchindexdefault(expression)
+    expression isa Expr && expression.head == :call && length(expression.args) >= 3 || return false
+    dispatchcallee(first(expression.args)) === :something || return false
+    value = expression.args[2]
+    value isa Expr && value.head == :call && dispatchcallee(first(value.args)) in (:findfirst, :findlast, :findnext, :findprev)
 end
 
 function dispatchpredicate(expression, predicates=DispatchPredicates())
@@ -58,6 +74,8 @@ dispatchdynamic(value) = value isa Bool || !(value isa Union{Number, AbstractStr
 
 function dispatchprobe(expression)
     expression isa Expr || return false
+    dispatchpresence(expression) && return true
+    dispatchindexdefault(expression) && return true
     if expression.head == :curly && length(expression.args) == 2 && dispatchcallee(first(expression.args)) === :Val && last(expression.args) isa Bool
         return true
     end
@@ -79,6 +97,8 @@ function dispatchcheck(expression, direct)
     expression === :iserror && return direct
     direct && expression isa Symbol && expression ∉ (:true, :false, :nothing) && return true
     expression isa Expr || return false
+    dispatchpresence(expression) && return true
+    dispatchindexdefault(expression) && return true
     direct && expression.head in (:., :ref) && return true
     expression.head == :. && last(expression.args) == QuoteNode(:iserror) && return true
     expression.head == :call || return false
@@ -195,6 +215,10 @@ function dispatchchecks!(checks, expression, condition=false, direct=true, predi
     if expression.head in (:(=), :function) && length(expression.args) == 2 && dispatchconstructor(first(expression.args))
         dispatchsignature!(checks, first(expression.args), predicates)
         dispatchchecks!(checks, last(expression.args), false, true, predicates)
+    elseif expression.head == :(=) && length(expression.args) == 2 && first(expression.args) isa Symbol
+        value = last(expression.args)
+        boolvalue = value isa Expr && value.head == :call && dispatchcallee(first(value.args)) in predicates.booleans
+        dispatchchecks!(checks, value, boolvalue, false, predicates)
     elseif condition && expression.head == :block
         foreach(arg -> dispatchchecks!(checks, arg, false, true, predicates), expression.args[1:end-1])
         dispatchchecks!(checks, last(expression.args), true, direct, predicates)
@@ -214,7 +238,10 @@ function dispatchchecks!(checks, expression, condition=false, direct=true, predi
         callee = dispatchcallee(first(expression.args))
         index = dispatchresultflags[callee]
         property = get(dispatchresultproperties, callee, nothing)
-        if length(expression.args) >= index && (expression.args[index] isa Bool || expression.args[index] in dispatchresultvariables || (!isnothing(property) && dispatchfield(expression.args[index]) === property))
+        fields = callee === :BashMessage ? ((5, :cancelled), (6, :truncated)) : ((index, property),)
+        if any(fields) do (index, property)
+            length(expression.args) >= index && (expression.args[index] isa Bool || expression.args[index] in dispatchresultvariables || (!isnothing(property) && dispatchfield(expression.args[index]) === property))
+        end
             value = Base.remove_linenums!(deepcopy(expression))
             push!(checks, replace(sprint(show, value), '\n' => ' '))
         end

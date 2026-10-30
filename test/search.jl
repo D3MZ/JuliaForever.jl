@@ -129,6 +129,61 @@ end
     end
 end
 
+@testset "Unicode case-insensitive literal grep" begin
+    mktempdir() do dir
+        prefix = repeat("中", 50)
+        files = Dict(
+            "titlecase.dat" => join((prefix * c for c in ("Ǆ", "ǅ", "ǆ")), "\n") * "\n",
+            "greek.dat" => "σ\nς\nΣ\n",
+            "kelvin.dat" => "k\nK\nK\n",
+            "long-s.dat" => "s\nS\nſ\n",
+            "turkic.dat" => "i\nI\nİ\nı\n",
+            "sharp-s.dat" => "ß\nẞ\nss\nSS\n",
+            "ligature.dat" => "ﬀ\nff\nﬅ\nﬆ\nst\n",
+            "greek-accent.dat" => "ΐ\nΐ\nΐ\n",
+            "cyrillic.dat" => "Ᲊ\nᲊ\n",
+            "controls.dat" => "Σ\x01s\nσ\x02s\n",
+            "empty-lines.dat" => "abc\n\nσ\n",
+            "deseret.dat" => "𐐀\n𐐨\n",
+            "quoted.dat" => "[A]\\e(B)\n[a]\\E(b)\nA\\eB\n",
+            "canonical.dat" => "é\né\n",
+        )
+        foreach(pair -> write(joinpath(dir, first(pair)), last(pair)), pairs(files))
+        cases = [
+            ((; pattern="ǅ", path="titlecase.dat", literal=true, ignoreCase=true), join(("titlecase.dat:$i: " * prefix * c for (i, c) in enumerate(("Ǆ", "ǅ", "ǆ"))), "\n")),
+            ((; pattern="σ", path="greek.dat", literal=true, ignoreCase=true), "greek.dat:1: σ\ngreek.dat:2: ς\ngreek.dat:3: Σ"),
+            ((; pattern="σ", path="greek.dat", literal=true), "greek.dat:1: σ"),
+            ((; pattern="^Σ\$", path="greek.dat", ignoreCase=true), "greek.dat:1: σ\ngreek.dat:2: ς\ngreek.dat:3: Σ"),
+            ((; pattern="k", path="kelvin.dat", literal=true, ignoreCase=true), "kelvin.dat:1: k\nkelvin.dat:2: K\nkelvin.dat:3: K"),
+            ((; pattern="s", path="long-s.dat", literal=true, ignoreCase=true), "long-s.dat:1: s\nlong-s.dat:2: S\nlong-s.dat:3: ſ"),
+            ((; pattern="i", path="turkic.dat", literal=true, ignoreCase=true), "turkic.dat:1: i\nturkic.dat:2: I"),
+            ((; pattern="ß", path="sharp-s.dat", literal=true, ignoreCase=true), "sharp-s.dat:1: ß\nsharp-s.dat:2: ẞ"),
+            ((; pattern="ss", path="sharp-s.dat", literal=true, ignoreCase=true), "sharp-s.dat:3: ss\nsharp-s.dat:4: SS"),
+            ((; pattern="s", path="sharp-s.dat", literal=true, ignoreCase=true), "sharp-s.dat:3: ss\nsharp-s.dat:4: SS"),
+            ((; pattern="ﬀ", path="ligature.dat", literal=true, ignoreCase=true), "ligature.dat:1: ﬀ"),
+            ((; pattern="ﬅ", path="ligature.dat", literal=true, ignoreCase=true), "ligature.dat:3: ﬅ\nligature.dat:4: ﬆ"),
+            ((; pattern="st", path="ligature.dat", literal=true, ignoreCase=true), "ligature.dat:5: st"),
+            ((; pattern="ΐ", path="greek-accent.dat", literal=true, ignoreCase=true), "greek-accent.dat:1: ΐ\ngreek-accent.dat:2: ΐ"),
+            ((; pattern="Ᲊ", path="cyrillic.dat", literal=true, ignoreCase=true), "cyrillic.dat:1: Ᲊ\ncyrillic.dat:2: ᲊ"),
+            ((; pattern="ς\x01S", path="controls.dat", literal=true, ignoreCase=true), "controls.dat:1: Σ\x01s"),
+            ((; pattern="", path="empty-lines.dat", literal=true, ignoreCase=true), "empty-lines.dat:1: abc\nempty-lines.dat:2: \nempty-lines.dat:3: σ"),
+            ((; pattern="𐐀", path="deseret.dat", literal=true, ignoreCase=true), "deseret.dat:1: 𐐀\ndeseret.dat:2: 𐐨"),
+            ((; pattern="[a]\\E(b)", path="quoted.dat", literal=true, ignoreCase=true), "quoted.dat:1: [A]\\e(B)\nquoted.dat:2: [a]\\E(b)"),
+            ((; pattern="é", path="canonical.dat", literal=true, ignoreCase=true), "canonical.dat:1: é"),
+        ]
+        for (args, expected) in cases
+            result = execute(Grep(dir), args)
+            @test !result.iserror && result.text == expected
+        end
+        @test occursin(JuliaForever.foldedpattern("σ\0x"), "ς\0X")
+        @test !occursin(JuliaForever.foldedpattern("σ\0x"), "ς\x01X")
+        @test !occursin(JuliaForever.foldedpattern("σ\x01x"), "ς\0X")
+        @test !occursin(JuliaForever.foldedpattern("σ\x01x"), "ς\x02X")
+        @test occursin(JuliaForever.foldedpattern("σ\0x"), prefix * "ς\0X")
+        @test !occursin(JuliaForever.foldedpattern("σ\0x"), prefix * "ς\x01X")
+    end
+end
+
 @testset "ignore scope and output limits" begin
     mktempdir() do dir
         mkpath(joinpath(dir, "one"))

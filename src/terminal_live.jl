@@ -26,6 +26,7 @@ struct Failed <: Outcome
 end
 const outcomes = Dict(0 => Completed(), 130 => Interrupted())
 include("terminal_screen.jl")
+include("terminal_markdown.jl")
 include("terminal_completion.jl")
 
 struct Deferred{M<:Submission}
@@ -92,6 +93,7 @@ mutable struct Session{V<:View, T}
     visibility::Visibility
     task::Union{Nothing, Task}
     partial::String
+    assistant::String
     area::Union{Nothing, LineEdit.InputAreaState}
     deferred::DeferredQueue
     draft::String
@@ -102,17 +104,32 @@ end
 struct Output <: IO
     session::Session
 end
+struct AssistantOutput <: IO
+    session::Session
+end
 
 function output! end
 Base.isopen(::Output) = true
 Base.flush(output::Output) = flush(output.session.physical)
+Base.isopen(::AssistantOutput) = true
+Base.flush(output::AssistantOutput) = flush(output.session.physical)
+Base.write(output::AssistantOutput, byte::UInt8) = (write(output, [byte]); 1)
+function Base.unsafe_write(output::AssistantOutput, pointer::Ptr{UInt8}, count::UInt)
+    session = output.session
+    text = unsafe_string(pointer, Int(count))
+    lock(session.editor.state.line_modify_lock) do
+        session.assistant *= text
+        redraw!(session)
+    end
+    count
+end
 function Base.unsafe_write(output::Output, pointer::Ptr{UInt8}, count::UInt)
     output!(output.session, unsafe_string(pointer, Int(count)))
     count
 end
 
 function Session(editor, terminal, agent, templates, extensions, view::View)
-    session = Session(editor, terminal.diagnostics, agent, terminal, templates, Completion.Closed(), nothing, extensions, Available(), Visible(), nothing, "", nothing, DeferredQueue(), "", 0, view)
+    session = Session(editor, terminal.diagnostics, agent, terminal, templates, Completion.Closed(), nothing, extensions, Available(), Visible(), nothing, "", "", nothing, DeferredQueue(), "", 0, view)
     session.terminal = maketerminal(session, terminal, view)
     session
 end
@@ -148,7 +165,14 @@ include("terminal_completion_ui.jl")
 output(session, stream::IO) = stream
 output(session, stream::Base.TTY) = output(session.physical, session, stream)
 output(physical::IO, session, stream::Base.TTY) = stream
-output(physical::Base.TTY, session, stream::Base.TTY) = Output(session)
+output(physical::Base.TTY, session, stream::Base.TTY) = AssistantOutput(session)
+
+function JuliaForever.render!(terminal::JuliaForever.Terminal{<:AssistantOutput}, event::JuliaForever.AssistantEnded)
+    JuliaForever.showcontent!(terminal, event.content)
+    JuliaForever.line!(terminal)
+    terminal.presentation = JuliaForever.Unstreamed()
+    finishassistant!(terminal.output.session)
+end
 
 function queues(session)
     lock(session.agent.lock) do
@@ -186,6 +210,11 @@ function redraw!(session, ::Visible, prefix)
     cleararea!(session, session.area)
     print(terminal, prefix)
     lines = String[]
+    if !isempty(session.assistant)
+        rows, cols = displaysize(session.physical)
+        preview = MarkdownScreen.render(session.assistant, max(1, cols - 1), MarkdownScreen.Plain())
+        append!(lines, last(preview, min(length(preview), max(1, rows - 5))))
+    end
     isempty(session.partial) || push!(lines, session.partial)
     append!(lines, queuelines(session))
     append!(lines, completionlines(session, max(1, last(displaysize(session.physical)) - 1), 5))
@@ -204,8 +233,20 @@ end
 
 function output!(session, text)
     lock(session.editor.state.line_modify_lock) do
+        finishassistant!(session)
         output!(session, session.visibility, text)
     end
+end
+
+function finishassistant!(session)
+    lock(session.editor.state.line_modify_lock) do
+        isempty(session.assistant) && return nothing
+        width = max(1, last(displaysize(session.physical)) - 1)
+        lines = MarkdownScreen.render(session.assistant, width)
+        session.assistant = ""
+        redraw!(session, join(lines, "\n") * "\n")
+    end
+    nothing
 end
 
 function output!(session, ::Visible, text)
@@ -248,6 +289,7 @@ function launch!(session, text)
             result[] = JuliaForever.run!(session.terminal, session.agent, text, session.extensions; on_agent_event=event -> event!(session, event))
         finally
             lock(session.editor.state.line_modify_lock) do
+                finishassistant!(session)
                 completed!(session, result[])
                 redraw!(session)
             end
@@ -276,15 +318,15 @@ end
 waittask(::Nothing) = nothing
 waittask(task::Task) = wait(task)
 
-continuation!(state, ::Follow) = false
-function continuation!(state, ::Send)
+sendinput!(session, state, mode::Follow) = submitinput!(session, state, mode)
+function sendinput!(session, state, mode::Send)
     buffer = LineEdit.buffer(state)
     if position(buffer) > 0 && buffer.data[position(buffer)] == UInt8('\\')
         LineEdit.edit_backspace(state)
         LineEdit.edit_insert_newline(state, 0)
-        return true
+        return :ok
     end
-    false
+    submitinput!(session, state, mode)
 end
 
 send!(session, state, mode::Submission) = sendcompletion!(session, state, mode, synccompletion!(session, state))
@@ -295,8 +337,7 @@ function sendcompletion!(session, state, ::Send, completion::Completion.Menu)
 end
 sendcompletion!(session, state, ::Send, completion::Union{Completion.FileMenu, Completion.ModelMenu}) = (applycompletion!(session, state, completion); :ok)
 
-function sendinput!(session, state, mode::Submission)
-    continuation!(state, mode) && return :ok
+function submitinput!(session, state, mode::Submission)
     text = String(strip(LineEdit.input_string(state)))
     isempty(text) && return :ok
     session.completion = Completion.DismissedFiles(text, text)
@@ -341,8 +382,8 @@ function send!(session, state, mode, text, ::Busy, ::JuliaForever.ReloadCommand)
     :ok
 end
 send!(session, state, mode, text, ::Busy, command::JuliaForever.TerminalCommand) = command!(session, state)
-send!(session, state, mode, text, ::Available, command::Union{JuliaForever.ShowName, JuliaForever.SetName}) = (waittask(session.task); inline!(session, state, command))
-send!(session, state, mode, text, ::Busy, command::Union{JuliaForever.ShowName, JuliaForever.SetName}) = inline!(session, state, command)
+send!(session, state, mode, text, ::Available, command::Union{JuliaForever.ShowName, JuliaForever.SetName, JuliaForever.ExportCommand}) = (waittask(session.task); inline!(session, state, command))
+send!(session, state, mode, text, ::Busy, command::Union{JuliaForever.ShowName, JuliaForever.SetName, JuliaForever.ExportCommand}) = inline!(session, state, command)
 
 function inline!(session, state, command)
     TerminalEditor.remember!(session.editor)

@@ -1,4 +1,5 @@
 JuliaForever.jl	:(result.status == 0)
+JuliaForever.jl	:(something(findfirst((==)("--"), args), length(args) + 1))
 agent.jl	:(Kernel.same(recorded, agent.messages))
 agent.jl	:(Kernel.same(value, convert(Dict{String, Any}, previous)))
 agent.jl	:(name === :cancelled)
@@ -17,7 +18,6 @@ codemode.jl	:(name === :ok)
 codemode.jl	:(ok(result))
 codemode.jl	:(timedout[])
 compaction.jl	:(Kernel.same(agent.messages, plan.original))
-conversation.jl	:(index === nothing)
 conversation.jl	:(name === :automatic)
 conversation.jl	:(name === :cancelled)
 conversation.jl	:(name === :done)
@@ -41,6 +41,7 @@ durable.jl	:(visible(state, conversation, at))
 execution.jl	:(cancelled(cancellation))
 execution.jl	:(cancelled(handle.cancellation))
 execution_conversation.jl	:(name === :detailed)
+headless_thinking.jl	:(something(findfirst(isequal(session.thinking), choices.levels), 0))
 history.jl	:(name === :batches)
 history.jl	:(name === :batches)
 history.jl	:(name === :status)
@@ -51,10 +52,8 @@ kernel.jl	:(name === :observations)
 kernel.jl	:(name === :pending)
 kernel.jl	:(same(getfield(a, field), getfield(b, field), seen))
 kernel.jl	:(same(key, other))
-kernel.jl	:(same(value, result, seen))
 kernel.jl	:(same(x, y, seen))
 kernel.jl	:(same(x, y, seen))
-kernel.jl	:found
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :state)
@@ -67,32 +66,21 @@ mcp.jl	:(visible(item))
 mcp.jl	:validcontent
 model_config.jl	:(effort in values(levels))
 provider.jl	:((last(current_exceptions())).exception isa ArgumentError)
-provider.jl	:(get(data, "is_byok", false))
 provider.jl	:(key == "error")
-provider.jl	:(key isa AbstractString)
 provider.jl	:(name === :done)
 provider.jl	:complete
+scheduler.jl	:(cancel!(tx, id, get(tx, Task, id)))
+scheduler.jl	:(cancel!(tx, record.id, get(tx, Task, record.id)))
 scheduler.jl	:(name === :cancelled)
 scheduler.jl	:(same(record.state["spec"], spec))
 scheduler.jl	:(same(state["checkpoint"], next))
-scheduler.jl	:(typeof(a))
-scheduler.jl	:(typeof(b))
 scheduler.jl	:(view.kind == name(handler))
-scheduler.jl	:cancelled
+search.jl	:(matchesignore(pattern.pattern, relative, entry))
+search.jl	:(matchesignore(pattern.pattern, relative, entry))
 search.jl	:(selectglob(filter, target))
+search.jl	:(visit(item))
+search.jl	:(walkentry(walk, item, ruleset, inside))
 search.jl	:anchored
-search.jl	:anywhere
-search.jl	:directory
-search.jl	:directory
-search.jl	:directory
-search.jl	:directory
-search.jl	:directory
-search.jl	:directory
-search.jl	:isdirectory
-search.jl	:matched
-search.jl	:smartcase
-search.jl	:windows
-search.jl	:windows
 session_terminal.jl	:(Kernel.same(agent.messages, plan.original))
 session_terminal.jl	:(Kernel.same(original, message.value))
 session_terminal.jl	:(Kernel.same(projected, agent.messages))
@@ -111,7 +99,6 @@ terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :streamed)
 terminal.jl	:(name === :streamed)
 terminal.jl	:(result.status == 0)
-terminal_live.jl	:(continuation!(state, mode))
 terminal_live.jl	:(matches(item, mode))
 terminal_menus.jl	:(selected === nothing)
 tool_selection.jl	:(name(tool) in wanted)

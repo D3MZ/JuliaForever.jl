@@ -83,6 +83,7 @@ include("command_completion.jl")
 include("file_completion.jl")
 include("model_completion.jl")
 include("prompt_history.jl")
+include("terminal_markdown.jl")
 include("terminal_http.jl")
 include("terminal_history.jl")
 include("cli_recovery_dispatch.jl")
@@ -193,6 +194,7 @@ include("recorded_execution.jl")
 include("recorded_journal.jl")
 include("logs.jl")
 include("session_export.jl")
+include("terminal_export.jl")
 include("search.jl")
 include("tool_search.jl")
 include("codemode.jl")
@@ -235,6 +237,7 @@ if haskey(ENV, "PI_SOURCE")
     mktempdir() do oracle
         withenv("PI_CODING_AGENT_DIR" => oracle) do
             include("search_differential.jl")
+            include("search_bytes_differential.jl")
         end
     end
 end

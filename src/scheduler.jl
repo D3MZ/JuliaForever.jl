@@ -5,7 +5,8 @@ struct Checkpoint
     name::String
     value::Any
 end
-same(a, b) = typeof(a) === typeof(b) && isequal(a, b)
+same(a, b) = false
+same(a::T, b::T) where T = isequal(a, b)
 same(a::AbstractDict, b::AbstractDict) = length(a) == length(b) && all(haskey(b, key) && same(value, b[key]) for (key, value) in a)
 same(a::AbstractVector, b::AbstractVector) = length(a) == length(b) && all(same(x, y) for (x, y) in zip(a, b))
 Base.:(==)(a::Checkpoint, b::Checkpoint) = a.name == b.name && same(a.value, b.value)
@@ -62,7 +63,8 @@ struct Failed <: TaskStatus
 end
 struct Cancelled <: TaskStatus end
 
-Running(cancelled::Bool) = cancelled ? Cancelling() : Active()
+const runningstates = Dict(false => Active(), true => Cancelling())
+Running(cancelled::Bool) = runningstates[cancelled]
 cancelled(::Active) = false
 cancelled(::Cancelling) = true
 
