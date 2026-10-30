@@ -143,11 +143,8 @@ search.jl	:directory
 search.jl	:directory
 search.jl	:exclude
 search.jl	:exclude
-search.jl	:ignorecase
-search.jl	:ignorecase
 search.jl	:isdirectory
 search.jl	:limited
-search.jl	:literal
 search.jl	:matched
 search.jl	:negate
 search.jl	:smartcase
@@ -177,12 +174,10 @@ sessions.jl	:(name === :terminated)
 sessions.jl	:(parent isa AbstractString)
 sqlite_history.jl	:(formaterror((last(exceptions)).exception))
 sqlite_history.jl	:(mode in ("delete", "truncate", "persist", "wal"))
-sqlite_history.jl	:(result isa H.Rejected)
 sqlite_history.jl	:complete
 sqlite_history.jl	:create
 sqlite_history.jl	:create
 sqlite_history.jl	:create
-sqlite_history.jl	:opened
 system.jl	:(isnothing(shellrun))
 system.jl	:(token.cancelled)
 system.jl	:bybytes
