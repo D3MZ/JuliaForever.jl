@@ -126,7 +126,7 @@ with tempfile.TemporaryDirectory(prefix="jf-live-pty-") as directory:
     env = os.environ.copy()
     env.update(JF_PROVIDER="openai", OPENAI_MODEL="fixture", OPENAI_API_KEY="synthetic", OPENAI_BASE_URL=f"http://127.0.0.1:{server.server_port}/v1", JF_SESSION_DIR=directory, PI_CODING_AGENT_DIR=str(pathlib.Path(directory) / "agent"))
     env.pop("JF_INSTRUCTIONS_DIR", None)
-    command = shlex.join([julia, "--startup-file=no", "--compiled-modules=existing", f"--project={root}", "-e", "using JuliaForever; exit(JuliaForever.main(ARGS))", "--"])
+    command = shlex.join([julia, "--startup-file=no", "--compiled-modules=existing", f"--project={root}", "-e", "using JuliaForever; exit(JuliaForever.main(ARGS))", "--", "--tui-mode", "regular"])
     subprocess.run([*tmux, "new-session", "-d", "-s", "live", "-x", "72", "-y", "24", "-c", directory, command], env=env, check=True, capture_output=True, text=True)
     run("set-option", "-g", "remain-on-exit", "on")
     try:
@@ -195,7 +195,7 @@ with tempfile.TemporaryDirectory(prefix="jf-live-pty-") as directory:
         wait_for(lambda: run("display-message", "-p", "-t", "live", "#{pane_dead}").stdout.strip() == "1", "terminal failed to exit", 15)
         assert run("display-message", "-p", "-t", "live", "#{pane_dead_status}").stdout.strip() == "0", screen()
         assert len(list(pathlib.Path(directory).glob("*.sqlite"))) == 1
-        resumed = shlex.join([julia, "--startup-file=no", "--compiled-modules=existing", f"--project={root}", "-e", "using JuliaForever; exit(JuliaForever.main(ARGS))", "--", "--continue"])
+        resumed = shlex.join([julia, "--startup-file=no", "--compiled-modules=existing", f"--project={root}", "-e", "using JuliaForever; exit(JuliaForever.main(ARGS))", "--", "--tui-mode", "regular", "--continue"])
         run("new-window", "-t", "live", "-n", "resumed", "-c", directory, resumed)
         wait_for(lambda: "> " in screen(), "saved session did not reopen", 60)
         send("reopen")

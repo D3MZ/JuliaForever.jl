@@ -10,12 +10,21 @@ struct ShowName <: TerminalCommand end
 struct SetName <: TerminalCommand
     name::String
 end
+struct SelectModel <: TerminalCommand end
+struct SetModel <: TerminalCommand
+    model::String
+end
 
-const terminalcommands = Dict{String, TerminalCommand}("/compact" => CompactCommand(), "/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand(), "/clone" => CloneCommand(), "/fork" => ForkCommand(), "/exit" => ExitCommand())
+const terminalcommands = Dict{String, TerminalCommand}("/compact" => CompactCommand(), "/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand(), "/clone" => CloneCommand(), "/fork" => ForkCommand(), "/exit" => ExitCommand(), "/model" => SelectModel())
 const namepattern = r"\A/name(?: +([\s\S]*))?\z"
+const modelpattern = r"\A/model +([^\r\n]+)\z"
 terminalcommand(text) = terminalcommand(get(terminalcommands, text, nothing), text)
 terminalcommand(command::TerminalCommand, text) = command
-terminalcommand(::Nothing, text) = namecommand(match(namepattern, text))
+terminalcommand(::Nothing, text) = modelcommand(namecommand(match(namepattern, text)), text)
+modelcommand(command::TerminalCommand, text) = command
+modelcommand(::Nothing, text) = modelcommand(match(modelpattern, text))
+modelcommand(::Nothing) = nothing
+modelcommand(found::RegexMatch) = SetModel(strip(found[1]))
 namecommand(::Nothing) = nothing
 namecommand(found::RegexMatch) = namecommand(Conversation.sessionname(something(found[1], "")))
 namecommand(name::String) = isempty(name) ? ShowName() : SetName(name)
@@ -39,6 +48,32 @@ command!(command::TerminalCommand, terminal, agent, history, input, directory, s
 command!(::ForkCommand, terminal, agent, history, input, directory, snapshot, draft::Ref{String}) = fork!(terminal, agent, history, input, directory, draft)
 command!(::ShowName, terminal, agent, history, input, directory, snapshot) = showname!(terminal, agent, history, SessionCatalog.sessionname(history))
 command!(command::SetName, terminal, agent, history, input, directory, snapshot) = setname!(terminal, agent, history, command.name, name!(agent, command.name))
+command!(command::SetModel, terminal, agent, history, input, directory, snapshot) = setmodel!(terminal, agent, history, command.model)
+
+function command!(::SelectModel, terminal, agent, history, input, directory, snapshot)
+    print(terminal.diagnostics, "Model ID (empty cancels): ")
+    flush(terminal.diagnostics)
+    eof(input) && return agent, history, 0
+    model = strip(readline(input))
+    isempty(model) && return agent, history, 0
+    setmodel!(terminal, agent, history, model)
+end
+
+function setmodel!(terminal, agent::Agent{P}, history, model::AbstractString) where {P<:Union{OpenAI, OpenAIResponses, Anthropic, Google}}
+    isempty(model) && return agent, history, 0
+    lock(agent.lock) do
+        previous = agent.provider
+        agent.provider = P(previous.base, String(model), previous.key)
+    end
+    println(terminal.diagnostics, "Model set: ", redact(terminal, model))
+    flush(terminal.diagnostics)
+    agent, history, 0
+end
+function setmodel!(terminal, agent::Agent, history, model)
+    println(terminal.diagnostics, "Model switching is unavailable for this provider.")
+    flush(terminal.diagnostics)
+    agent, history, 1
+end
 
 function showname!(terminal, agent, history, ::Nothing)
     println(terminal.diagnostics, "Usage: /name <name>")

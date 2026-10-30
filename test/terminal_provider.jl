@@ -10,6 +10,12 @@ function JuliaForever.stream(provider::OpenAI, messages, tools; parameters=Dict(
     mode == "http" && throw(HTTP.StatusError(HTTP.Response(401)))
     mode == "json" && JSON3.read("{bad fixture}")
     mode == "bug" && throw(ArgumentError("ordinary failure"))
+    if mode == "hold" && messages[end]["role"] == "user" && messages[end]["content"] == "hold"
+        on_event((; type=:text, text="Holding"))
+        while !isfile(joinpath(ENV["JF_INSTRUCTIONS_DIR"], "release"))
+            sleep(0.05)
+        end
+    end
     if mode in ("plugin", "codeplugin", "two-plugins")
         haskey(tools, "greet") || error("greet tool not exposed")
         mode == "two-plugins" && !haskey(tools, "farewell") && error("farewell tool not exposed")
