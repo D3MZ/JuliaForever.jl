@@ -61,7 +61,7 @@ end
             @test requests[2].body.contents[3].parts[1].functionResponse.name == "write"
             @test requests[2].body.contents[3].parts[1].functionResponse.response.output == "Successfully wrote to a.txt"
         end
-        model = provider(Dict("JF_PROVIDER" => "google", "GEMINI_MODEL" => "gemini", "GEMINI_API_KEY" => "secret"))
+        model = provider(Dict("JF_PROVIDER" => "google", "GEMINI_MODEL" => "gemini", "GEMINI_API_KEY" => "secret", "PI_CODING_AGENT_DIR" => mktempdir()))
         @test model isa Google
         @test model.base == "https://generativelanguage.googleapis.com/v1beta"
     finally

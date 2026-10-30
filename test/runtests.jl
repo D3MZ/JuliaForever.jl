@@ -1,5 +1,8 @@
 using Test, JuliaForever
 
+ENV["PI_CODING_AGENT_DIR"] = mktempdir()
+
+include("credential_storage.jl")
 include("quality.jl")
 include("branch_audit.jl")
 include("dispatch_lint.jl")

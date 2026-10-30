@@ -1,13 +1,13 @@
 using HTTP, JSON3, Base64, SHA
 
 @testset "provider configuration" begin
-    openai = JuliaForever.provider(Dict("OPENAI_MODEL" => "model-a", "OPENAI_API_KEY" => "synthetic-a"))
+    openai = JuliaForever.provider(Dict("OPENAI_MODEL" => "model-a", "OPENAI_API_KEY" => "synthetic-a", "PI_CODING_AGENT_DIR" => mktempdir()))
     @test openai.base == "https://api.openai.com/v1"
     @test openai.model == "model-a"
     @test openai.key == "synthetic-a"
     @test !occursin("synthetic-a", sprint(show, openai))
     @test !occursin("synthetic-a", sprint(show, MIME("text/plain"), openai))
-    router = JuliaForever.provider(Dict("JF_PROVIDER" => "openrouter", "OPENROUTER_MODEL" => "vendor/model-b", "OPENROUTER_API_KEY" => "synthetic-b", "OPENROUTER_BASE_URL" => "http://localhost/router/"))
+    router = JuliaForever.provider(Dict("JF_PROVIDER" => "openrouter", "OPENROUTER_MODEL" => "vendor/model-b", "OPENROUTER_API_KEY" => "synthetic-b", "OPENROUTER_BASE_URL" => "http://localhost/router/", "PI_CODING_AGENT_DIR" => mktempdir()))
     @test router.base == "http://localhost/router/"
     @test router.model == "vendor/model-b"
     @test router.key == "synthetic-b"
