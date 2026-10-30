@@ -146,14 +146,20 @@ end
 function httprequest(client::Client, transport::HttpTransport, message)
     id = haskey(message, "method") ? get(message, "id", nothing) : nothing
     context = HTTP.RequestContext()
-    if !isnothing(id)
-        admitted = lock(client.lock) do
-            haskey(client.pending, id) || return false
-            transport.requests[id] = context
-            true
-        end
-        admitted || return false
+    httprequest(client, transport, message, id, admit!(client, transport, id, context))
+end
+
+admit!(client, transport, ::Nothing, context) = context
+function admit!(client, transport, id, context)
+    lock(client.lock) do
+        haskey(client.pending, id) || return nothing
+        transport.requests[id] = context
+        context
     end
+end
+
+httprequest(client, transport, message, id, ::Nothing) = Failure(:transport, "Could not write to MCP server")
+function httprequest(client, transport, message, id, context::HTTP.RequestContext)
     try
         HTTP.open("POST", transport.url, httpheaders(transport); status_exception=false, request_timeout=client.timeout, retry=false, redirect=false, cookies=false, context) do stream
             write(stream, JSON3.write(message))
@@ -161,26 +167,33 @@ function httprequest(client::Client, transport::HttpTransport, message)
             200 <= response.status < 300 || return httpfailure!(client, message, Failure(:http, "MCP HTTP status $(response.status)", response.status))
             session = HTTP.header(response, "Mcp-Session-Id", "")
             isempty(session) || (transport.session = session)
-            isnothing(id) && return true
-            type = lowercase(strip(first(split(HTTP.header(response, "Content-Type", ""), ';'))))
-            if type == "text/event-stream"
-                sseread!(client, stream, id) || httpfailure!(client, message, Failure(:protocol, "MCP response stream ended without a response"))
-            elseif type == "application/json"
-                value = JSON3.read(String(read(stream)), Dict{String, Any})
-                received(client, value) || httpfailure!(client, message, Failure(:protocol, "Invalid JSON-RPC message"))
-            else
-                httpfailure!(client, message, Failure(:protocol, "Unsupported MCP HTTP response content type: $type"))
-            end
+            httpresponse!(client, stream, message, id, response)
         end
-        true
+        nothing
     catch exception
         httpfailure!(client, message, Failure(:transport, sprint(showerror, exception)))
+        haskey(message, "id") ? nothing : Failure(:transport, "Could not write to MCP server")
     finally
-        if !isnothing(id)
-            lock(() -> pop!(transport.requests, id, nothing), client.lock)
-        end
+        forgethttp!(transport, client, id)
     end
 end
+
+httpresponse!(client, stream, message, ::Nothing, response) = true
+function httpresponse!(client, stream, message, id, response)
+    type = lowercase(strip(first(split(HTTP.header(response, "Content-Type", ""), ';'))))
+    get(httpreaders, type, unsupportedhttp!)(client, stream, message, id, type)
+end
+function ssehttp!(client, stream, message, id, type)
+    sseread!(client, stream, id) || httpfailure!(client, message, Failure(:protocol, "MCP response stream ended without a response"))
+end
+function jsonhttp!(client, stream, message, id, type)
+    value = JSON3.read(String(read(stream)), Dict{String, Any})
+    received(client, value) || httpfailure!(client, message, Failure(:protocol, "Invalid JSON-RPC message"))
+end
+unsupportedhttp!(client, stream, message, id, type) = httpfailure!(client, message, Failure(:protocol, "Unsupported MCP HTTP response content type: $type"))
+const httpreaders = Dict("text/event-stream" => ssehttp!, "application/json" => jsonhttp!)
+forgethttp!(transport, client, ::Nothing) = nothing
+forgethttp!(transport, client, id) = lock(() -> pop!(transport.requests, id, nothing), client.lock)
 
 function httpfailure!(client::Client, message, failure::Failure)
     haskey(message, "id") || return false
@@ -193,7 +206,7 @@ deliver!(channel::Channel, value) = put!(channel, value)
 
 function send(client::Client, message, transport::HttpTransport)
     haskey(message, "id") && haskey(message, "method") && (@async httprequest(client, transport, message); return nothing)
-    httprequest(client, transport, message) ? nothing : Failure(:transport, "Could not write to MCP server")
+    httprequest(client, transport, message)
 end
 
 function fail!(client::Client, failure::Failure)
