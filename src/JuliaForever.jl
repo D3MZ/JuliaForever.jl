@@ -83,8 +83,6 @@ historyinspect(::Union{HistoryAbandonment, HistoryConflict}) = HistoryConflict()
 historyabandon(::Union{Nothing, HistoryAbandonment}, reason) = HistoryAbandonment(reason)
 historyabandon(::Union{HistoryInspection, HistoryConflict}, reason) = HistoryConflict()
 
-haslogin(::APIKeyAuth) = false
-haslogin(::OpenRouterAuth) = true
 const loginproviders = Dict("openrouter" => providerinfos["openrouter"])
 providername(::APIKeyAuth, ::Nothing) = get(ENV, "JF_PROVIDER", "openai")
 providername(::APIKeyAuth, selected::AbstractString) = selected
@@ -218,137 +216,10 @@ function help!()
     0
 end
 
+include("cli_options.jl")
+
 function (@main)(args)
-    codemode = nothing
-    packages = String[]
-    environments = String[]
-    action = nothing
-    selected = nothing
-    requested_model = nothing
-    auth = APIKeyAuth()
-    session = SessionCatalog.New()
-    sessiondir = SessionCatalog.directory(ENV)
-    sessionname = nothing
-    positional = String[]
-    baseline = ToolSelection.Defaults()
-    rules = ToolSelection.Inherit()
-    excluded = Regex[]
-    outputmode = TextMode()
-    while !isempty(args)
-        if first(args) == "--"
-            append!(positional, args)
-            break
-        elseif first(args) in ("--help", "-h")
-            return help!()
-        elseif first(args) == "--codemode"
-            codemode = CodeMode
-            args = args[2:end]
-        elseif first(args) == "--mode"
-            if length(args) < 2 || startswith(args[2], "-")
-                println(stderr, "--mode requires text or json.")
-                return 2
-            end
-            outputmode = assignmode(outputmode, terminalmode(args[2]))
-            args = args[3:end]
-        elseif first(args) in ("--no-tools", "-nt")
-            baseline = ToolSelection.baseline(baseline, ToolSelection.NoTools())
-            args = args[2:end]
-        elseif first(args) in ("--no-builtin-tools", "-nbt")
-            baseline = ToolSelection.baseline(baseline, ToolSelection.NoBuiltin())
-            args = args[2:end]
-        elseif first(args) in ("--tools", "-t", "--exclude-tools", "-xt")
-            option = first(args)
-            if length(args) < 2
-                println(stderr, option, " requires a value.")
-                return 2
-            end
-            if option in ("--tools", "-t")
-                rules = ToolSelection.assign(rules, ToolSelection.entries(args[2]))
-            else
-                excluded = ToolSelection.patterns(args[2])
-            end
-            args = args[3:end]
-        elseif first(args) in ("--provider", "--model")
-            option = first(args)
-            if length(args) < 2 || isempty(strip(args[2])) || startswith(args[2], "--")
-                println(stderr, option, " requires a value.")
-                return 2
-            end
-            if option == "--provider"
-                selected = args[2]
-            else
-                requested_model = args[2]
-            end
-            args = args[3:end]
-        elseif first(args) in ("--login-openrouter", "--login-openrouter-callback")
-            if haslogin(auth)
-                println(stderr, "Select only one OpenRouter login mode.")
-                return 2
-            end
-            auth = first(args) == "--login-openrouter" ? CodeAuth() : CallbackAuth()
-            args = args[2:end]
-        elseif first(args) in ("--plugin", "--plugin-env")
-            option = first(args)
-            if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
-                println(stderr, option, " requires a ", option == "--plugin" ? "package name" : "path", ".")
-                return 2
-            end
-            push!(option == "--plugin" ? packages : environments, args[2])
-            args = args[3:end]
-        elseif first(args) == "--history"
-            if length(args) < 2 || startswith(args[2], "--")
-                println(stderr, "--history requires a path.")
-                return 2
-            end
-            session = SessionCatalog.assign(session, SessionCatalog.Explicit(args[2]))
-            args = args[3:end]
-        elseif first(args) in ("--session", "--session-dir", "--fork")
-            if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
-                println(stderr, first(args), " requires a value.")
-                return 2
-            end
-            if first(args) == "--session"
-                session = SessionCatalog.assign(session, SessionCatalog.Target(args[2]))
-            elseif first(args) == "--fork"
-                session = SessionCatalog.assign(session, SessionCatalog.Fork(args[2]))
-            else
-                sessiondir = abspath(expanduser(args[2]))
-            end
-            args = args[3:end]
-        elseif first(args) in ("--continue", "-c")
-            session = SessionCatalog.assign(session, SessionCatalog.Recent())
-            args = args[2:end]
-        elseif first(args) in ("--resume", "-r")
-            session = SessionCatalog.assign(session, SessionCatalog.Picker())
-            args = args[2:end]
-        elseif first(args) == "--no-session"
-            session = SessionCatalog.assign(session, SessionCatalog.Ephemeral())
-            args = args[2:end]
-        elseif first(args) in ("--name", "-n")
-            if length(args) < 2 || isempty(Conversation.sessionname(args[2]))
-                println(stderr, "--name requires a non-empty value.")
-                return 2
-            end
-            sessionname = Conversation.sessionname(args[2])
-            args = args[3:end]
-        elseif first(args) == "--abandon"
-            if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
-                println(stderr, "--abandon requires a reason.")
-                return 2
-            end
-            action = historyabandon(action, args[2])
-            args = args[3:end]
-        elseif first(args) == "--inspect-history"
-            action = historyinspect(action)
-            args = args[2:end]
-        else
-            push!(positional, first(args))
-            args = args[2:end]
-        end
-    end
-    args = positional
-    options = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, outputmode, output=stdout)
-    selectedmode(action, options, outputmode)
+    clifinal(foldl(cliargument, args; init=CLIReady(CLIOptions())))
 end
 
 selectedmode(action, options, ::TerminalMode) = selectedtools(action, options, options.rules)

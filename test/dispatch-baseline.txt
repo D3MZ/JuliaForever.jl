@@ -1,4 +1,3 @@
-JuliaForever.jl	:(haslogin(auth))
 JuliaForever.jl	:(result.status == 0)
 agent.jl	:(Kernel.same(recorded, agent.messages))
 agent.jl	:(Kernel.same(value, convert(Dict{String, Any}, previous)))
