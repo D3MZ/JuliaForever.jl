@@ -407,6 +407,13 @@ end
 struct History <: K.Event
     revision::Int
     messages::Vector{Message}
+    compaction::Union{Nothing, ResponseInfo}
+end
+History(revision, messages) = History(revision, messages, nothing)
+
+struct CompactionUsage <: K.Event
+    revision::Int
+    info::ResponseInfo
 end
 
 struct Interrupt <: K.Event
@@ -553,6 +560,11 @@ end
 function K.step(state::State, event::History)
     event.revision == state.revision || return K.Rejected(state, :revision)
     K.Applied(update(state; messages=deepcopy(event.messages)), ())
+end
+
+function K.step(state::State, event::CompactionUsage)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    K.Applied(update(state), ())
 end
 
 function K.step(state::State, event::Interrupt)

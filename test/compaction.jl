@@ -104,7 +104,8 @@ end
         original, revision = deepcopy(agent.messages), agent.history_revision
         @test compact!(agent) == failure
         @test agent.messages == original
-        @test agent.history_revision == revision
+        @test agent.history_revision == revision + 1
+        @test Agent(provider, []; history).messages == original
         @test !agent.running
     end
 

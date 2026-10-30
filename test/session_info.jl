@@ -32,7 +32,7 @@ end
         @test occursin("Input: 195", first.diagnostics) && occursin("Output: 30", first.diagnostics)
         @test occursin("Cached: 35 (17.9%)", first.diagnostics) && occursin("Uncached: 160 (10 written to cache)", first.diagnostics)
         @test occursin("Total: 225", first.diagnostics) && occursin("\$0.015", first.diagnostics)
-        @test occursin("Response usage excludes compaction requests.", first.diagnostics)
+        @test occursin("Cost may be estimated from model prices.", first.diagnostics)
         if isfile(exported)
             rows = JSON3.read.(readlines(exported))
             assistants = [row.message for row in rows if row.type == "message" && row.message.role == "assistant"]

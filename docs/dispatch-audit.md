@@ -268,6 +268,8 @@ Merging upstream shell, history, and extension refactors adds 14 inventory entri
 
 Model pricing adds 13 branch entries, from 1,707 to 1,720, for rate validation, tier selection, accounting, and serialization. Provider and pricing alternatives dispatch on their concrete types; no dispatch candidates were added.
 
+Compaction usage adds one revision check, bringing the branch inventory from 1,720 to 1,721; no dispatch candidates were added.
+
 RPC custom-model listing and selection add nine branch entries and retire one, bringing the inventory to 1,585. Model metadata uses a concrete wire type; unsupported catalog entries are handled by dispatch.
 
 The built-in model snapshot and indexed lookup add six branch entries, for 1,591 total. The snapshot is loaded once per process when needed.

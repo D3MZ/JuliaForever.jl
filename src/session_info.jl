@@ -78,6 +78,10 @@ initialusage!(counts, role::J.LiveJSON.Role) = nothing
 initialusage!(counts, ::J.LiveJSON.AssistantRole) = (counts.usage = UnknownUsage(); nothing)
 
 observed!(counts, event::J.Kernel.Event) = nothing
+observed!(counts, event::J.Conversation.History) = compacted!(counts, event.compaction)
+observed!(counts, event::J.Conversation.CompactionUsage) = compacted!(counts, event.info)
+compacted!(counts, ::Nothing) = nothing
+compacted!(counts, info::J.Conversation.ResponseInfo) = (counts.usage = addusage(counts.usage, info); nothing)
 function observed!(counts, event::J.Kernel.Observe{J.Conversation.ModelReply})
     message = event.observation.message
     counts.usage = addusage(counts.usage, message.info)
@@ -173,7 +177,7 @@ function printinfo(io, report::Report, clean)
     println(io, "Assistant: ", number(counts.assistant))
     println(io, "Tools: ", number(counts.calls), " calls, ", number(counts.results), " results\n")
     printusage(io, counts.usage)
-    println(io, "\nResponse usage excludes compaction requests. Cost may be estimated from model prices.")
+    println(io, "\nCost may be estimated from model prices.")
     nothing
 end
 function printusage(io, usage::UnknownUsage)
