@@ -38,8 +38,6 @@ durable.jl	:(name === :failed)
 durable.jl	:(name === :failed)
 durable.jl	:(previous.kind == kind)
 durable.jl	:(visible(state, conversation, at))
-durable.jl	:adopted
-durable.jl	:created
 execution.jl	:(cancelled(cancellation))
 execution.jl	:(cancelled(handle.cancellation))
 execution_conversation.jl	:(name === :detailed)
