@@ -46,6 +46,7 @@ end
         client = MCP.connect(mcpserver("normal", marker); timeout=10, grace=0.2)
         @test client isa MCP.Client
         if client isa MCP.Client
+            @test MCP.admission!(client, MCP.Closed(), MCP.Open()).kind == :closed
             @test client.shutdown isa MCP.ShutdownReady
             @test !client.shutting
             @test client.state === :open
@@ -105,7 +106,8 @@ end
             @test process_exited(client.process)
             @test istaskdone(client.reader)
             close(client)
-            @test MCP.call(client, "alpha", Dict()) isa MCP.Failure
+            rejected = MCP.call(client, "alpha", Dict())
+            @test rejected isa MCP.Failure && rejected.kind == :closed
         end
         @test MCP.connect(mcpserver("badversion", marker); timeout=10, grace=0.2) isa MCP.Failure
         @test MCP.connect(mcpserver("badcap", marker); timeout=10, grace=0.2) isa MCP.Failure
