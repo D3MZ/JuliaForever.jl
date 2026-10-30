@@ -110,6 +110,34 @@ end
     @test String(take!(diagnostics)) == "Response incomplete: the provider stream did not finish\n"
 end
 
+@testset "terminal redacts formatted tool errors" begin
+    for (key, suffix) in (("synthetic" * Char(0x80), "a"), ("synthetic" * Char(0x10ffff), "f"), ("synthetic" * Char(0x7f), "0"))
+        mktempdir() do dir
+            path = "missing-" * key * suffix
+            call = Dict("id" => "one", "type" => "function", "function" => Dict("name" => "read", "arguments" => JSON3.write((; path))))
+            replies = [(terminal_completion(nothing; calls=[call], finish="tool_calls"), String[]), (terminal_completion("done"), ["done"])]
+            provider = TerminalFixture(replies, () -> nothing)
+            output, diagnostics = IOBuffer(), IOBuffer()
+            terminal = JuliaForever.Terminal(output, diagnostics, [key])
+            @test JuliaForever.run!(terminal, Agent(provider, [Read(dir)]), "start") == 0
+            text = String(take!(diagnostics))
+            @test occursin("missing-[redacted]" * suffix, text)
+            @test !occursin(chop(repr(key * suffix); head=1, tail=2), text)
+        end
+    end
+    key = "synthetic" * '\0'
+    terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), [key])
+    @test JuliaForever.redact(terminal, repr("before " * key * "0 after")) == repr("before [redacted]0 after")
+end
+
+@testset "terminal redacts quoted forms in context" begin
+    for char in (Char(0), Char(0x7f), Char(0x80), Char(0x9f), Char(0x10ffff)), suffix in ("", "0", "7", "8", "a", "f", "A", "F", "g")
+        key = "synthetic" * char
+        terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), [key])
+        @test JuliaForever.redact(terminal, repr("before " * key * suffix * " after")) == repr("before [redacted]" * suffix * " after")
+    end
+end
+
 function terminal_process(mode, args; input="", key="synthetic-secret")
     project = dirname(@__DIR__)
     script = joinpath(@__DIR__, "terminal_process.jl")
