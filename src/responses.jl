@@ -21,11 +21,58 @@ const inputtypes = Dict("tool" => Conversation.ToolMessage, "assistant" => Conve
 tooloutput(content, ::Nothing) = content
 tooloutput(content, image) = [Dict("type" => "input_text", "text" => content), Dict("type" => "input_image", "detail" => "auto", "image_url" => "data:$(image["mime"]);base64,$(image["data"])")]
 
+struct ResponseThinking
+    provider::String
+    model::String
+    effort::String
+end
+
+responseprovider(::DirectRoute) = "openai"
+responseprovider(route::CatalogRoute) = route.name
+officialresponses(provider::OpenAIResponses) = lowercase(HTTP.URI(provider.base).host) == "api.openai.com"
+responsesignin(provider::OpenAIResponses) = responseprovider(provider.route) == "openai" && officialresponses(provider) && !startswith(provider.key, "sk-")
+responseauthoverride(provider::OpenAIResponses) = officialresponses(provider) && any(pair -> lowercase(first(pair)) == "authorization", provider.extra)
+thinkingupdate(::ChatGPT.Plan) = nothing
+thinkingupdate(provider::OpenAIResponses) = thinkingupdate(provider, provider.thinking)
+thinkingupdate(provider, ::Nothing) = nothing
+thinkingupdate(provider, effort::AbstractString) = thinkingupdate(provider, effort, get(responselevels, provider.model, nothing))
+thinkingupdate(provider, effort, ::Nothing) = nothing
+thinkingupdate(provider, effort, levels::AbstractDict) = thinkingupdate(provider, effort, thinkingwire(levels))
+thinkingupdate(provider, effort, ::DirectThinking) = nothing
+thinkingupdate(provider, effort, ::UpdateThinking) = thinkingupdate(provider, effort, provider.route)
+thinkingupdate(provider, effort, ::CatalogRoute) = nothing
+function thinkingupdate(provider, effort, ::DirectRoute)
+    (effort == "none" || responsesignin(provider) || responseauthoverride(provider)) && return nothing
+    ResponseThinking(responseprovider(provider.route), provider.model, String(effort))
+end
+
 function input(messages)
     items = Any[]
     foreach(message -> input!(items, get(inputtypes, message["role"], nothing), message), messages)
     items
 end
+input(messages, ::Nothing) = input(messages)
+function input(messages, update::ResponseThinking)
+    items = Any[]
+    foreach(message -> input!(items, get(inputtypes, message["role"], nothing), message, update), messages)
+    responseupdate!(items, update.effort)
+    items
+end
+input!(items, type, message, update::ResponseThinking) = input!(items, type, message)
+function input!(items, ::Type{Conversation.Assistant}, message, update::ResponseThinking)
+    output = Any[]
+    input!(output, Conversation.Assistant, message)
+    replayupdate!(items, output, message, update)
+    append!(items, output)
+end
+function replayupdate!(items, output, message, update)
+    isempty(output) && return nothing
+    identity = (get(message, "provider", nothing), get(message, "api", nothing), get(message, "model", nothing))
+    identity == (update.provider, "openai-responses", update.model) || return nothing
+    responseupdate!(items, get(message, "providerThinkingLevel", nothing))
+end
+responseupdate!(items, value) = nothing
+responseupdate!(items, effort::AbstractString) = push!(items, Dict("type" => "configuration_update", "reasoning" => Dict("effort" => String(effort))))
 
 input!(items, ::Nothing, message) = inputcontent!(items, message["role"], get(message, "content", nothing))
 input!(items, ::Type{Conversation.User}, message) = inputuser!(items, message, get(message, "images", nothing))
@@ -51,12 +98,15 @@ inputcontent!(items, role, content) = push!(items, Dict("role" => role, "content
 
 applythinking!(data, ::Nothing) = nothing
 applythinking!(data, effort::AbstractString) = (data["reasoning"] = effort == "none" ? Dict("effort" => effort) : Dict("effort" => effort, "summary" => "auto"))
+applythinking!(data, effort, ::Nothing) = applythinking!(data, effort)
+applythinking!(data, effort, ::ResponseThinking) = (data["reasoning"] = Dict("effort" => "medium", "summary" => "auto"))
 
 function payload(provider::OpenAIResponses, messages, tools, parameters; streaming=false)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(parameters))
     data["model"] = provider.model
-    applythinking!(data, provider.thinking)
-    data["input"] = input(messages)
+    update = thinkingupdate(provider)
+    applythinking!(data, provider.thinking, update)
+    data["input"] = input(messages, update)
     data["stream"] = streaming
     get!(data, "store", false)
     include = get(data, "include", [])
@@ -104,6 +154,15 @@ function message(output)
     end
     isempty(calls) || (result["tool_calls"] = calls)
     result
+end
+message(output, provider) = recordthinking!(message(output), thinkingupdate(provider))
+recordthinking!(message, ::Nothing) = message
+function recordthinking!(message, update::ResponseThinking)
+    message["provider"] = update.provider
+    message["api"] = "openai-responses"
+    message["model"] = update.model
+    message["providerThinkingLevel"] = update.effort
+    message
 end
 
 output!(result, calls, ::Nothing, item) = nothing
@@ -185,7 +244,7 @@ responsecomplete(::Finished, ::Nothing) = Finished()
 
 function completion(provider::Union{OpenAIResponses, ChatGPT.Plan}, data; failure=nothing)
     output = get(data, "output", [])
-    msg = message(output)
+    msg = message(output, provider)
     raw = get(data, "status", nothing)
     status = responsestatus(raw)
     failure = responsefailure(data, raw, status, failure)
