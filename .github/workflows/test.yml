@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: test-${{ github.ref }}
+  group: test-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 
 jobs:
