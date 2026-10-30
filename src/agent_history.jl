@@ -303,34 +303,34 @@ recorded_incomplete!(run, result, ::Union{Idle, Running}) = result
 
 function recorded_complete!(run, answer, transition, added)
     present!(run.agent, added, run.messages, run.callback; started=answer.started)
-    recorded_tools_begin!(run, answer.message, transition, run.agent.fault)
+    recorded_tools_begin!(run, answer.message, answer.result, transition, run.agent.fault)
 end
 
-recorded_tools_begin!(run, message, transition, rejected::History.Rejected) = rejected
-function recorded_tools_begin!(run, message, transition, ::Nothing)
+recorded_tools_begin!(run, message, completion, transition, rejected::History.Rejected) = rejected
+function recorded_tools_begin!(run, message, completion, transition, ::Nothing)
     results = recorded_tools!(run.agent, transition.effects, run.messages, run.callback)
-    recorded_tools_done!(run, message, results)
+    recorded_tools_done!(run, message, completion, results)
 end
 
-recorded_tools_done!(run, message, result) = result
-function recorded_tools_done!(run, message, results::Vector)
+recorded_tools_done!(run, message, completion, result) = result
+function recorded_tools_done!(run, message, completion, results::Vector)
     emit(run.callback, (; type=:turn_end, message=deepcopy(message), tool_results=deepcopy(results)))
-    recorded_post_tools!(run, message, run.agent.fault)
+    recorded_post_tools!(run, message, completion, run.agent.fault)
 end
 
-recorded_post_tools!(run, message, rejected::History.Rejected) = rejected
-recorded_post_tools!(run, message, ::Nothing) = recorded_post_sync!(run, message, sync!(run.agent))
-recorded_post_sync!(run, message, rejected::History.Rejected) = rejected
-function recorded_post_sync!(run, message, ::Nothing)
+recorded_post_tools!(run, message, completion, rejected::History.Rejected) = rejected
+recorded_post_tools!(run, message, completion, ::Nothing) = recorded_post_sync!(run, message, completion, sync!(run.agent))
+recorded_post_sync!(run, message, completion, rejected::History.Rejected) = rejected
+function recorded_post_sync!(run, message, completion, ::Nothing)
     result, added = transition!(revision -> Conversation.Advance(revision), run.agent)
-    recorded_next!(run, message, result, added)
+    recorded_next!(run, message, completion, result, added)
 end
 
-recorded_next!(run, message, result, added) = result
-recorded_next!(run, message, result::Kernel.Applied, added) = recorded_next!(run, message, result, added, turnstate(run.agent))
-recorded_next!(run, message, result, added, ::Cancelled) = :cancelled
-function recorded_next!(run, message, result, added, ::Union{Idle, Running})
-    isempty(result.effects) && return message["content"]
+recorded_next!(run, message, completion, result, added) = result
+recorded_next!(run, message, completion, result::Kernel.Applied, added) = recorded_next!(run, message, completion, result, added, turnstate(run.agent))
+recorded_next!(run, message, completion, result, added, ::Cancelled) = :cancelled
+function recorded_next!(run, message, completion, result, added, ::Union{Idle, Running})
+    isempty(result.effects) && return finish(message, completion)
     emit(run.callback, (; type=:turn_start))
     present!(run.agent, added, run.messages, run.callback)
     recorded_effect!(run, result, run.agent.fault)

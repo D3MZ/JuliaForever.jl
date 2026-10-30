@@ -31,18 +31,65 @@ struct Deferred{M<:Submission}
     mode::M
 end
 
+struct DeferredQueue
+    steering::Channel{String}
+    followups::Channel{String}
+    display::Vector{Deferred}
+end
+DeferredQueue() = DeferredQueue(Channel{String}(Inf), Channel{String}(Inf), Deferred[])
+channel(queue::DeferredQueue, ::Send) = queue.steering
+channel(queue::DeferredQueue, ::Follow) = queue.followups
+Base.isempty(queue::DeferredQueue) = !isready(queue.steering) && !isready(queue.followups)
+
+function defer!(queue::DeferredQueue, text, mode::Submission)
+    put!(channel(queue, mode), text)
+    push!(queue.display, Deferred(text, mode))
+    nothing
+end
+
+matches(::Deferred, ::Submission) = false
+matches(::Deferred{T}, ::T) where {T<:Submission} = true
+
+function next!(queue::DeferredQueue)
+    mode = isready(queue.steering) ? Send() : Follow()
+    text = take!(channel(queue, mode))
+    index = findfirst(item -> matches(item, mode), queue.display)
+    deleteat!(queue.display, index)
+    text
+end
+
+function drain!(channel::Channel, target)
+    while isready(channel)
+        push!(target, take!(channel))
+    end
+    nothing
+end
+
+function collect!(queue::DeferredQueue, queued::NamedTuple)
+    drain!(queue.steering, queued.steering)
+    drain!(queue.followups, queued.followups)
+    empty!(queue.display)
+    [queued.steering; queued.followups]
+end
+
+function Base.empty!(queue::DeferredQueue)
+    collect!(queue, (; steering=String[], followups=String[]))
+    queue
+end
+
 mutable struct Session
     editor::TerminalEditor.Editor
     physical::IO
     agent::JuliaForever.Agent
     terminal::JuliaForever.Terminal
     templates::Dict{String, String}
+    extensions::Union{Nothing, JuliaForever.Extensions.Snapshot}
     activity::Activity
     visibility::Visibility
     task::Union{Nothing, Task}
     partial::String
     area::Union{Nothing, LineEdit.InputAreaState}
-    deferred::Vector{Deferred}
+    deferred::DeferredQueue
     draft::String
     status::Int
 end
@@ -59,8 +106,8 @@ function Base.unsafe_write(output::Output, pointer::Ptr{UInt8}, count::UInt)
     count
 end
 
-function Session(editor, terminal, agent, templates)
-    session = Session(editor, terminal.diagnostics, agent, terminal, templates, Available(), Visible(), nothing, "", nothing, Deferred[], "", 0)
+function Session(editor, terminal, agent, templates, extensions)
+    session = Session(editor, terminal.diagnostics, agent, terminal, templates, extensions, Available(), Visible(), nothing, "", nothing, DeferredQueue(), "", 0)
     session.terminal = JuliaForever.Terminal(output(session, terminal.output), Output(session), terminal.secrets)
     session
 end
@@ -99,7 +146,7 @@ function redraw!(session, ::Visible, prefix)
     isempty(session.partial) || push!(lines, session.partial)
     append!(lines, ["Steering: " * replace(text, '\n' => ' ') for text in queued.steering])
     append!(lines, ["Follow-up: " * replace(text, '\n' => ' ') for text in queued.followups])
-    append!(lines, [label(item) for item in session.deferred])
+    append!(lines, [label(item) for item in session.deferred.display])
     area = join(lines, "\n")
     if isempty(area)
         session.area = nothing
@@ -135,17 +182,13 @@ enqueue!(agent, text, ::Send) = JuliaForever.steer!(agent, text)
 enqueue!(agent, text, ::Follow) = JuliaForever.followup!(agent, text)
 label(item::Deferred{Send}) = "Steering: " * replace(item.text, '\n' => ' ')
 label(item::Deferred{Follow}) = "Follow-up: " * replace(item.text, '\n' => ' ')
-deferred!(steering, followups, item::Deferred{Send}) = push!(steering, item.text)
-deferred!(steering, followups, item::Deferred{Follow}) = push!(followups, item.text)
-steering(::Deferred{Send}) = true
-steering(::Deferred{Follow}) = false
 
 function queue!(session::Session, text, mode::Submission)
     lock(session.agent.lock) do
         queue!(session, text, mode, session.agent.turn, session.agent.state.phase)
     end
 end
-defer!(session, text, mode) = (push!(session.deferred, Deferred(text, mode)); nothing)
+defer!(session, text, mode) = defer!(session.deferred, text, mode)
 queue!(session, text, mode, ::Union{JuliaForever.Idle, JuliaForever.Cancelled}, phase) = defer!(session, text, mode)
 queue!(session, text, mode, ::JuliaForever.Running, ::JuliaForever.Conversation.Phase) = enqueue!(session.agent, text, mode)
 queue!(session, text, mode, ::JuliaForever.Running, ::Union{JuliaForever.Conversation.CompletePhase, JuliaForever.Conversation.IncompletePhase, JuliaForever.Conversation.CancelledPhase}) = defer!(session, text, mode)
@@ -160,7 +203,7 @@ function launch!(session, text)
     session.task = Threads.@spawn begin
         result = Ref{Union{Nothing, Int}}(nothing)
         try
-            result[] = JuliaForever.run!(session.terminal, session.agent, text; on_agent_event=event -> redraw!(session))
+            result[] = JuliaForever.run!(session.terminal, session.agent, text, session.extensions; on_agent_event=event -> redraw!(session))
         finally
             lock(session.editor.state.line_modify_lock) do
                 completed!(session, result[])
@@ -185,12 +228,7 @@ end
 
 function continue!(session)
     isempty(session.deferred) && return nothing
-    continue!(session, findfirst(steering, session.deferred))
-end
-continue!(session, ::Nothing) = launch!(session, popfirst!(session.deferred).text)
-function continue!(session, index::Int)
-    item = splice!(session.deferred, index)
-    launch!(session, item.text)
+    launch!(session, next!(session.deferred))
 end
 
 waittask(::Nothing) = nothing
@@ -255,7 +293,7 @@ function inline!(session, state, command)
     LineEdit.replace_line(state, "")
     diagnostics = IOBuffer()
     terminal = JuliaForever.Terminal(session.terminal.output, diagnostics, session.terminal.secrets)
-    _, _, result = JuliaForever.command!(command, terminal, session.agent, session.agent.history, session.editor.terminal.in_stream, "")
+    _, _, result = JuliaForever.command!(command, terminal, session.agent, session.agent.history, session.editor.terminal.in_stream, "", session.extensions)
     session.status = max(session.status, result)
     redraw!(session, String(take!(diagnostics)))
     :ok
@@ -289,11 +327,7 @@ function queued!(session, state, rejected::JuliaForever.History.Rejected)
     :ok
 end
 
-function collect!(session, queued::NamedTuple)
-    foreach(item -> deferred!(queued.steering, queued.followups, item), session.deferred)
-    empty!(session.deferred)
-    [queued.steering; queued.followups]
-end
+collect!(session, queued::NamedTuple) = collect!(session.deferred, queued)
 
 function restore!(session, state, queued::NamedTuple)
     text = LineEdit.input_string(state)
@@ -362,17 +396,17 @@ end
 stop!(session, ::Available) = nothing
 stop!(session, ::Busy) = JuliaForever.cancel!(session.agent)
 
-function loop!(terminal, agent, history, input::Base.TTY, directory, templates)
+function loop!(terminal, agent, extensions, history, input::Base.TTY, directory, templates)
     println(terminal.diagnostics, "Julia Forever — Enter sends, Alt+Enter follows up, Esc interrupts, /exit quits")
     reference = Ref{Any}()
     editor = createeditor(input, terminal, reference)
-    session = Session(editor, terminal, agent, templates)
+    session = Session(editor, terminal, agent, templates, extensions)
     reference[] = session
     try
         for line in editor
             waittask(session.task)
             line == "/exit" && break
-            agent, selected, result = JuliaForever.command!(JuliaForever.terminalcommand(line), terminal, session.agent, history[], input, directory)
+            agent, selected, result = JuliaForever.command!(JuliaForever.terminalcommand(line), terminal, session.agent, history[], input, directory, extensions)
             history[] = selected
             session.agent = agent
             session.status = max(session.status, result)

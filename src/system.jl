@@ -10,7 +10,17 @@ struct Ls <: Tool
     cwd::String
 end
 
-export ShellCancellation
+export ShellCancellation, ShellUpdate
+
+"""
+    ShellUpdate
+
+`execute(shell, args; on_update)` calls `on_update` with an initial empty update and cumulative output snapshots. Snapshots retain the last 2,000 lines or 50 KiB; `file` identifies the preserved full-output file when truncated.
+"""
+struct ShellUpdate
+    text::String
+    file::Union{Nothing, String}
+end
 
 abstract type ShellOutcome end
 struct ShellComplete <: ShellOutcome end
@@ -158,30 +168,37 @@ function shellresult(::ShellComplete, output, timeout, process)
     ToolResult(output)
 end
 
-function measure(io)
-    seekstart(io)
-    bytes = 0
-    newlines = 0
-    lastline = 0
-    completed = 0
-    lastbyte = UInt8(0)
-    while !eof(io)
-        block = read(io, 65536)
-        bytes += length(block)
+mutable struct ShellMeasure
+    bytes::Int
+    newlines::Int
+    lastline::Int
+    completed::Int
+    lastbyte::UInt8
+end
+
+ShellMeasure() = ShellMeasure(0, 0, 0, 0, 0x00)
+
+function measure!(measure::ShellMeasure, io, size)
+    seek(io, measure.bytes)
+    while measure.bytes < size
+        block = read(io, min(65536, size - measure.bytes))
+        measure.bytes += length(block)
         for byte in block
-            lastbyte = byte
+            measure.lastbyte = byte
             if byte == 0x0a
-                newlines += 1
-                completed = lastline
-                lastline = 0
+                measure.newlines += 1
+                measure.completed = measure.lastline
+                measure.lastline = 0
             else
-                lastline += 1
+                measure.lastline += 1
             end
         end
     end
-    lines = newlines + (bytes > 0 && lastbyte != 0x0a)
-    (bytes, lines, lastbyte == 0x0a ? completed : lastline)
+    lines = measure.newlines + (measure.bytes > 0 && measure.lastbyte != 0x0a)
+    (measure.bytes, lines, measure.lastbyte == 0x0a ? measure.completed : measure.lastline)
 end
+
+measure(io) = measure!(ShellMeasure(), io, filesize(io))
 
 function sizeformat(bytes)
     bytes < 1024 && return "$(bytes)B"
@@ -189,16 +206,21 @@ function sizeformat(bytes)
     "$(round(bytes / (1024 * 1024); digits=1))MB"
 end
 
-function tail(io, file)
-    bytes, lines, lastsize = measure(io)
+struct ShellTail
+    text::String
+    notice::String
+    file::Union{Nothing, String}
+end
+
+function tail(io, file, bytes, lines, lastsize)
     if bytes <= 51200 && lines <= 2000
         seekstart(io)
-        return (String(read(io)), false)
+        return ShellTail(String(read(io, bytes)), "", nothing)
     end
     offset = max(0, bytes - 51201)
     preceding = offset > 0 ? (seek(io, offset - 1); read(io, UInt8)) : 0x0a
     seek(io, offset)
-    data = read(io)
+    data = read(io, bytes - offset)
     !isempty(data) && last(data) == 0x0a && pop!(data)
     pieces = split(String(data), '\n'; keepempty=true)
     selected = SubString{String}[]
@@ -237,12 +259,104 @@ function tail(io, file)
         limit = bybytes && length(selected) < 2000 ? " (50.0KB limit)" : ""
         notice = "Showing lines $firstline-$lines of $lines$limit. Full output: $file"
     end
-    ("$output\n\n[$notice]", true)
+    ShellTail(output, "\n\n[$notice]", file)
 end
 
-function execute(tool::Union{Bash, PowerShell}, args; cancel=nothing)
+preserved(::Nothing) = false
+preserved(::String) = true
+remember!(saved, ::Nothing) = nothing
+remember!(saved, file::String) = (saved[] = file)
+removeoutput(file, ::Nothing) = rm(file; force=true)
+removeoutput(file, ::String) = nothing
+
+function tail(io, file)
+    result = tail(io, file, measure(io)...)
+    result = bound(result, file, shelltext(result.text))
+    (result.text * result.notice, preserved(result.file))
+end
+
+update(::Nothing, value) = nothing
+update(callback::F, value) where {F} = callback(value)
+
+function shelltext(text::AbstractString)
+    isvalid(text) && return String(text)
+    join((isvalid(char) ? char : '\ufffd' for char in text))
+end
+
+function live(text::String)
+    isempty(text) && return text
+    index = lastindex(text)
+    isvalid(text[index]) && return shelltext(text)
+    byte = codeunit(text, index)
+    width = 0xc2 <= byte <= 0xdf ? 2 : 0xe0 <= byte <= 0xef ? 3 : 0xf0 <= byte <= 0xf4 ? 4 : 0
+    ending = collect(codeunits(text)[index:end])
+    if 0 < length(ending) < width
+        length(ending) == 1 && push!(ending, byte == 0xe0 ? 0xa0 : byte == 0xf0 ? 0x90 : 0x80)
+        append!(ending, fill(0x80, width - length(ending)))
+        isvalid(String(ending)) && return shelltext(SubString(text, 1, prevind(text, index)))
+    end
+    shelltext(text)
+end
+
+notice(snapshot::ShellTail, limited::ShellTail, ::Nothing) = limited.notice
+notice(snapshot::ShellTail, limited::ShellTail, file::String) = "\n\n[Showing last $(sizeformat(ncodeunits(limited.text))) after decoding. Full output: $file]"
+
+function bound(snapshot::ShellTail, file, text::String)
+    ncodeunits(text) <= 51200 && return ShellTail(text, snapshot.notice, snapshot.file)
+    io = IOBuffer(text)
+    limited = tail(io, file, measure!(ShellMeasure(), io, ncodeunits(text))...)
+    ShellTail(limited.text, notice(snapshot, limited, snapshot.file), file)
+end
+
+function shellupdate!(callback::F, snapshot::ShellTail, text, saved, last) where {F}
+    remember!(saved, snapshot.file)
+    last[] = text
+    update(callback, ShellUpdate(text, snapshot.file))
+    nothing
+end
+
+function refresh!(callback::F, io, file, measure::ShellMeasure, saved, last) where {F}
+    size = filesize(io)
+    size == measure.bytes && return
+    snapshot = tail(io, file, measure!(measure, io, size)...)
+    snapshot = bound(snapshot, file, live(snapshot.text))
+    shellupdate!(callback, snapshot, snapshot.text, saved, last)
+end
+
+function finishoutput!(callback::F, io, file, measure::ShellMeasure, saved, last) where {F}
+    before = measure.bytes
+    snapshot = tail(io, file, measure!(measure, io, filesize(io))...)
+    snapshot = bound(snapshot, file, shelltext(snapshot.text))
+    text = snapshot.text
+    before == measure.bytes && text == last[] && return
+    shellupdate!(callback, snapshot, text, saved, last)
+end
+
+function waitoutput(run::ShellRun, watcher, ::Nothing, file, saved)
+    outcome = take!(run.done)
+    waitfor(watcher, outcome)
+    outcome
+end
+
+function waitoutput(run::ShellRun, watcher, callback::F, file, saved) where {F}
+    open(file) do io
+        measure = ShellMeasure()
+        last = Ref("")
+        while !isready(run.done)
+            refresh!(callback, io, file, measure, saved, last)
+            sleep(0.1)
+        end
+        outcome = take!(run.done)
+        waitfor(watcher, outcome)
+        finishoutput!(callback, io, file, measure, saved, last)
+        outcome
+    end
+end
+
+function execute(tool::Union{Bash, PowerShell}, args; cancel=nothing, on_update=nothing)
+    update(on_update, ShellUpdate("", nothing))
     timeout = get(args, :timeout, nothing)
-    execute(tool, args, cancel, timeout, timeoutcheck(timeout))
+    execute(tool, args, cancel, timeout, on_update, timeoutcheck(timeout))
 end
 
 timeoutcheck(::Nothing) = nothing
@@ -257,18 +371,18 @@ windowoptions(::Nothing, ::Nothing) = nothing
 windowoptions(::Nothing, cancel) = ToolFailure("Cancellation is not supported on Windows")
 windowoptions(timeout, cancel) = ToolFailure("Timeout is not supported on Windows")
 
-execute(tool::Union{Bash, PowerShell}, args, cancel, timeout, failure::ToolFailure) = failure
-execute(tool::Union{Bash, PowerShell}, args, cancel, timeout, ::Nothing) = shelloptions(tool, args, cancel, timeout, windowsupport(timeout, cancel))
-shelloptions(tool, args, cancel, timeout, failure::ToolFailure) = failure
-function shelloptions(tool, args, cancel, timeout, ::Nothing)
+execute(tool::Union{Bash, PowerShell}, args, cancel, timeout, on_update, failure::ToolFailure) = failure
+execute(tool::Union{Bash, PowerShell}, args, cancel, timeout, on_update, ::Nothing) = shelloptions(tool, args, cancel, timeout, on_update, windowsupport(timeout, cancel))
+shelloptions(tool, args, cancel, timeout, on_update, failure::ToolFailure) = failure
+function shelloptions(tool, args, cancel, timeout, on_update, ::Nothing)
     !isdir(tool.cwd) && return ToolFailure("Working directory does not exist: $(tool.cwd)\nCannot execute $(shellname(tool)) commands.")
-    shell(tool, args, cancel, timeout, config(tool))
+    shell(tool, args, cancel, timeout, config(tool), on_update)
 end
 
-shell(tool::Bash, args, cancel, timeout, ::Nothing) = ToolFailure("No $(shellname(tool)) executable found.")
-shell(tool::PowerShell, args, cancel, timeout, ::Nothing) = ToolFailure(Sys.iswindows() ? "No $(shellname(tool)) executable found." : "The powershell tool is only available on Windows.")
+shell(tool::Bash, args, cancel, timeout, ::Nothing, on_update) = ToolFailure("No $(shellname(tool)) executable found.")
+shell(tool::PowerShell, args, cancel, timeout, ::Nothing, on_update) = ToolFailure(Sys.iswindows() ? "No $(shellname(tool)) executable found." : "The powershell tool is only available on Windows.")
 
-function shell(tool::Union{Bash, PowerShell}, args, cancel, timeout, settings::Tuple)
+function shell(tool::Union{Bash, PowerShell}, args, cancel, timeout, settings::Tuple, on_update)
     executable, arguments = settings
     env = copy(ENV)
     for key in ("PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL")
@@ -277,6 +391,7 @@ function shell(tool::Union{Bash, PowerShell}, args, cancel, timeout, settings::T
     command = Cmd(Cmd([executable; arguments; shellcommand(tool, args.command)]); dir=tool.cwd, detach=!Sys.iswindows(), env)
     file, io = mktemp(; cleanup=false)
     keep = false
+    saved = Ref{Union{Nothing, String}}(nothing)
     token = cancellation(cancel)
     shellrun = nothing
     watcher = nothing
@@ -296,8 +411,7 @@ function shell(tool::Union{Bash, PowerShell}, args, cancel, timeout, settings::T
             signal!(shellrun, ShellComplete())
         end
         timer = deadline(shellrun, timeout)
-        outcome = take!(shellrun.done)
-        waitfor(watcher, outcome)
+        outcome = waitoutput(shellrun, watcher, on_update, file, saved)
         flush(io)
         output, keep = tail(io, file)
         shellresult(outcome, output, timeout, process)
@@ -305,7 +419,7 @@ function shell(tool::Union{Bash, PowerShell}, args, cancel, timeout, settings::T
         cleanup!(timer)
         cleanup!(token, shellrun, watcher)
         close(io)
-        !keep && rm(file; force=true)
+        !keep && removeoutput(file, saved[])
     end
 end
 

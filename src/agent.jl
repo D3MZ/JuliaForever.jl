@@ -1,5 +1,9 @@
 export steer!, followup!, dequeue!, name!, cancel!, abandon!
 
+struct Truncated
+    completion::Completion
+end
+
 abstract type TurnState end
 struct Idle <: TurnState end
 struct Running <: TurnState end
@@ -194,7 +198,15 @@ function Base.convert(::Type{Dict{String, Any}}, call::Conversation.ToolCall)
 end
 
 function Base.convert(::Type{Dict{String, Any}}, message::Conversation.ToolMessage)
-    Dict{String, Any}("role" => "tool", "tool_call_id" => message.id, "content" => message.content, "is_error" => message.iserror)
+    value = Dict{String, Any}("role" => "tool", "tool_call_id" => message.id, "content" => message.content, "is_error" => message.iserror)
+    attach!(value, message.image)
+end
+
+attach!(value, ::Nothing) = value
+
+function attach!(value, image::Image)
+    value["image"] = Dict("mime" => image.mime, "data" => image.data)
+    value
 end
 
 Base.convert(::Type{Dict{String, Any}}, message::Conversation.RawMessage) = deepcopy(message.value)
@@ -226,7 +238,7 @@ schema(::Read) = Dict("type" => "object", "properties" => Dict("path" => Dict("t
 schema(::Write) = Dict("type" => "object", "properties" => Dict("path" => Dict("type" => "string"), "content" => Dict("type" => "string")), "required" => ["path", "content"])
 schema(::Edit) = Dict("type" => "object", "properties" => Dict("path" => Dict("type" => "string"), "edits" => Dict("type" => "array", "items" => Dict("type" => "object", "properties" => Dict("oldText" => Dict("type" => "string"), "newText" => Dict("type" => "string")), "required" => ["oldText", "newText"]))), "required" => ["path", "edits"])
 
-description(::Read) = "Read a text file. Offset and limit are line based."
+description(::Read) = "Read a text file or a PNG/JPEG image up to 10 MiB. Offset and limit are line based for text."
 description(::Write) = "Create or overwrite a text file."
 description(::Edit) = "Replace unique, non-overlapping text in a file."
 
@@ -406,7 +418,7 @@ function toolresult(agent, call, request, on_agent_event)
     result
 end
 
-toolmessage(call, result::ToolResult) = Dict{String, Any}("role" => "tool", "tool_call_id" => call["id"], "content" => content(result))
+toolmessage(call, result::ToolResult) = convert(Dict{String, Any}, Conversation.ToolMessage(call["id"], content(result), result.iserror, result.image))
 
 function toolobserve!(agent, effect, result, messages, on_agent_event)
     transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ToolReply(result)), agent)
@@ -459,6 +471,9 @@ end
 conversation_reply(message, calls, ::Nothing) = Conversation.ModelReply(Conversation.Assistant(get(message, "content", nothing), calls, nothing, true; metadata=message))
 conversation_reply(message, calls, result::Completion) = Conversation.ModelReply(Conversation.Assistant(get(message, "content", nothing), calls, result.finish, getfield(result, :status); metadata=message))
 conversation_reply(message, calls, result) = Conversation.ModelReply(Conversation.Assistant(get(message, "content", nothing), calls, result.finish, result.done; metadata=message))
+
+finish(message, result) = message["content"]
+finish(message, result::Completion) = result.finish == "length" ? Truncated(result) : message["content"]
 
 function modelresponse(agent, effect, parameters, on_event, on_agent_event)
     returned = false
@@ -589,12 +604,12 @@ function direct_complete!(run, answer, transition, added)
     emit(run.callback, (; type=:turn_end, message=deepcopy(message), tool_results=deepcopy(results)))
     sync!(agent)
     next, added = transition!(revision -> Conversation.Advance(revision), agent)
-    direct_next!(run, message, next, added, turnstate(agent))
+    direct_next!(run, message, answer.result, next, added, turnstate(agent))
 end
 
-direct_next!(run, message, next, added, ::Cancelled) = :cancelled
-function direct_next!(run, message, next, added, ::Union{Idle, Running})
-    isempty(next.effects) && return message["content"]
+direct_next!(run, message, completion, next, added, ::Cancelled) = :cancelled
+function direct_next!(run, message, completion, next, added, ::Union{Idle, Running})
+    isempty(next.effects) && return finish(message, completion)
     emit(run.callback, (; type=:turn_start))
     present!(run.agent, added, run.messages, run.callback)
     only(next.effects)

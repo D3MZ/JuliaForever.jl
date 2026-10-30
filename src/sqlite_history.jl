@@ -92,15 +92,43 @@ end
 
 H.snapshot(history::H.SQLite{SQLite.DB}, status::H.SQLiteStatus) = H.Rejected(status)
 
+formaterror(exception) = false
+formaterror(::ArgumentError) = true
+rawbatch(data) = H.Rejected(:history_format)
+
+function rawbatch(data::AbstractString)
+    depth = length(current_exceptions())
+    try
+        JSON3.read(data, Vector{Any})
+    finally
+        exceptions = current_exceptions()
+        if length(exceptions) > depth && formaterror(last(exceptions).exception)
+            return H.Rejected(:history_format)
+        end
+    end
+end
+
+readrow(rejected::H.Rejected, row) = rejected
+validrevision(value, expected) = false
+validrevision(value::Integer, expected) = value == expected
+
+function readrow(batches::Vector{Vector{Any}}, row)
+    validrevision(row.revision, length(batches) + 1) || return H.Rejected(:history_format)
+    readrow(batches, rawbatch(row.data))
+end
+
+readrow(batches::Vector{Vector{Any}}, rejected::H.Rejected) = rejected
+
+function readrow(batches::Vector{Vector{Any}}, batch::Vector)
+    H.addbatch!(batches, H.decodebatch(batch))
+end
+
+snapshot(rejected::H.Rejected) = rejected
+snapshot(batches::Vector{Vector{Any}}) = H.Snapshot(length(batches), batches)
+
 function H.snapshot(history::H.SQLite{SQLite.DB}, ::H.Open)
     DBI.execute(history.db, "SELECT revision, data FROM jf_history ORDER BY revision") do rows
-        batches = Vector{Any}[]
-        for row in rows
-            row.revision == length(batches) + 1 || return H.Rejected(:history_format)
-            batch = JSON3.read(row.data, Vector{Any})
-            push!(batches, Any[H.decode(item) for item in batch])
-        end
-        H.Snapshot(length(batches), batches)
+        snapshot(foldl(readrow, rows; init=Vector{Any}[]))
     end
 end
 

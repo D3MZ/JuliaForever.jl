@@ -120,13 +120,13 @@ end
                 snapshot = History.snapshot(store)
                 close(store)
                 before = length(requests)
-                recovered = history_process(base, workspace, ["--history", interrupted, "again"])
+                recovered = history_process(base, workspace, ["--provider", "openai", "--model", "recovery-model", "--history", interrupted, "again"])
                 @test recovered.status == 1
                 @test occursin("uncertain", recovered.diagnostics)
                 @test occursin("not retried", recovered.diagnostics)
                 @test length(requests) == before
                 @test read(joinpath(workspace, "effect.txt"), String) == "x"
-                inspected = history_process(base, workspace, ["--history", interrupted, "--inspect-history"]; configured=false)
+                inspected = history_process(base, workspace, ["--provider", "openai", "--model", "recovery-model", "--history", interrupted, "--inspect-history"]; configured=false)
                 @test inspected.status == 0
                 @test occursin("uncertain_effect", inspected.output)
                 @test occursin("bash", inspected.output)
@@ -138,12 +138,13 @@ end
                 blocked = history_process(base, workspace, ["--history", interrupted, "--abandon", "effect inspected", "extra"]; configured=false)
                 @test blocked.status == 2
                 @test length(requests) == before
-                abandoned = history_process(base, workspace, ["--history", interrupted, "--abandon", "effect inspected"]; configured=false)
+                abandoned = history_process(base, workspace, ["--provider", "openai", "--model", "recovery-model", "--history", interrupted, "--abandon", "effect inspected"]; configured=false)
                 @test abandoned == (; status=0, output="Interrupted turn abandoned. No effect was retried or undone.\n", diagnostics="")
                 @test length(requests) == before
                 @test read(joinpath(workspace, "effect.txt"), String) == "x"
-                continued = history_process(base, workspace, ["--history", interrupted, "after"])
+                continued = history_process(base, workspace, ["--provider", "openai", "--model", "recovery-model", "--history", interrupted, "after"])
                 @test continued == (; status=0, output="reply:after\n", diagnostics="")
+                @test requests[end].model == "recovery-model"
                 @test requests[end].messages[end-1].tool_call_id == "one"
                 @test requests[end].messages[end-1].content == "Error: Tool outcome unknown; abandoned: effect inspected"
                 @test read(joinpath(workspace, "effect.txt"), String) == "x"

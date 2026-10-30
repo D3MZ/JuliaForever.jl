@@ -34,7 +34,8 @@ end
             reason[] = value
             result = JuliaForever.complete(model, [], Dict())
             @test !result.done && result.finish == value
-            @test occursin(isnothing(value) ? "missing" : value, result.error)
+            @test result.error isa ProviderError
+            @test result.error.kind == (isnothing(value) ? :unknown : :content_filter)
         end
     finally
         close(server)

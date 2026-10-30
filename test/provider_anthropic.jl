@@ -18,7 +18,7 @@ using HTTP, JSON3
         @test !result.done && occursin("invalid content", result.error)
         reason[] = "unknown"
         result = JuliaForever.complete(model, [], Dict())
-        @test !result.done && occursin("unknown", result.error)
+        @test !result.done && result.error isa ProviderError && result.error.provider == :anthropic && result.error.kind == :unknown
     finally
         close(server)
         wait(server)
@@ -97,7 +97,7 @@ end
 
 @testset "Anthropic streaming" begin
     events = anthropic_events()
-    replies = [events, events[1:end-1], [events[1], Dict("type" => "error", "error" => Dict("message" => "overloaded"))], [events[1:end-3]..., Dict("type" => "message_delta", "delta" => Dict("stop_reason" => "refusal"), "usage" => Dict("output_tokens" => 4)), events[end]]]
+    replies = [events, events[1:end-1], [events[1], Dict("type" => "error", "error" => Dict("type" => "overloaded_error", "message" => "overloaded"))], [events[1:end-3]..., Dict("type" => "message_delta", "delta" => Dict("stop_reason" => "refusal"), "usage" => Dict("output_tokens" => 4)), events[end]]]
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
         HTTP.Response(200, ["Content-Type" => "text/event-stream"], join(anthropicsse.(popfirst!(replies))))
     end
@@ -117,7 +117,7 @@ end
         @test join(event.arguments for event in seen if event.type == :tool_call) == "{\"path\":\"a.txt\",\"content\":\"ok\"}"
         @test !JuliaForever.stream(model, [], Dict()).done
         failed = JuliaForever.stream(model, [], Dict())
-        @test !failed.done && occursin("overloaded", failed.error)
+        @test !failed.done && failed.error isa ProviderError && failed.error.kind == :overloaded
         refused = JuliaForever.stream(model, [], Dict())
         @test !refused.done
     finally
@@ -153,10 +153,10 @@ end
             @test interrupted isa Completion && !interrupted.done
             @test !isfile(joinpath(dir, "a.txt"))
             failed = JuliaForever.complete(model, [Dict("role" => "user", "content" => "hi")], Dict())
-            @test !failed.done && occursin("401", failed.error)
+            @test !failed.done && failed.error isa ProviderStatus && failed.error.status == 401
             @test !occursin("synthetic-secret", sprint(show, failed))
             failedstream = JuliaForever.stream(model, [Dict("role" => "user", "content" => "hi")], Dict())
-            @test !failedstream.done && occursin("401", failedstream.error)
+            @test !failedstream.done && failedstream.error isa ProviderStatus && failedstream.error.status == 401
             @test !occursin("synthetic-secret", sprint(show, failedstream))
         end
         tool = Dict("role" => "tool", "content" => "failed", "tool_call_id" => "id", "is_error" => true)

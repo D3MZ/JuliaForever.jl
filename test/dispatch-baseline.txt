@@ -1,27 +1,26 @@
 JuliaForever.jl	:(SessionCatalog.recovery(session))
 JuliaForever.jl	:(SessionCatalog.recovery(session))
-JuliaForever.jl	:(isnothing(code))
-JuliaForever.jl	:(isnothing(key))
-JuliaForever.jl	:(isnothing(model))
+JuliaForever.jl	:(compatible(auth, selected))
+JuliaForever.jl	:(haslogin(auth))
+JuliaForever.jl	:(haslogin(auth))
+JuliaForever.jl	:(haslogin(auth))
 JuliaForever.jl	:(isnothing(path))
 JuliaForever.jl	:(isnothing(path))
 JuliaForever.jl	:(isnothing(reason))
 JuliaForever.jl	:(isnothing(reason))
-JuliaForever.jl	:(key isa InvalidResponse)
 JuliaForever.jl	:(recoveryname(sessionname))
 JuliaForever.jl	:(recoveryname(sessionname))
 JuliaForever.jl	:(result.status == 0)
-JuliaForever.jl	:callback_requested
-JuliaForever.jl	:callback_requested
+JuliaForever.jl	:(selected == "openrouter")
+JuliaForever.jl	:(validprovider(selected))
 JuliaForever.jl	:codemode
 JuliaForever.jl	:inspect
-JuliaForever.jl	:login
-JuliaForever.jl	:login_requested
 agent.jl	:(Kernel.same(recorded, agent.messages))
 agent.jl	:(name === :cancelled)
 agent.jl	:(name === :events)
 agent.jl	:(name === :running)
 agent.jl	:(requestcancelled((last(exceptions)).exception, turnstate(agent)))
+agent.jl	:(result.finish == "length")
 agent.jl	:returned
 agent_history.jl	:complete
 codemode.jl	:(call.status == :running)
@@ -51,7 +50,7 @@ conversation.jl	:(name === :automatic)
 conversation.jl	:(name === :cancelled)
 conversation.jl	:(name === :done)
 conversation.jl	:(name in (:messages, :order, :calls, :steering, :followups))
-conversation.jl	:(name in (:text, :iserror))
+conversation.jl	:(name in (:text, :iserror, :image))
 conversation_codec.jl	:(code isa Rejected)
 conversation_codec.jl	:(code isa Rejected)
 conversation_codec.jl	:(event isa K.Event)
@@ -69,7 +68,9 @@ conversation_codec.jl	:(record isa Dict)
 conversation_codec.jl	:(record["automatic"] isa Bool)
 conversation_codec.jl	:(state.phase == C.Ready)
 conversation_codec.jl	:(xs isa Vector)
-durable.jl	:(apply!(state, record) === nothing)
+durable.jl	:(document(record, conversation))
+durable.jl	:(entry(record, conversation, upper))
+durable.jl	:(hasdocuments(state, conversation))
 durable.jl	:(matches(T, record, conversation))
 durable.jl	:(name === :active)
 durable.jl	:(name === :active)
@@ -85,6 +86,10 @@ durable.jl	:(record isa Record)
 durable.jl	:(result === nothing)
 durable.jl	:(seq isa Int)
 durable.jl	:(state isa Rejected)
+durable.jl	:(valid(apply!(state, record)))
+durable.jl	:(valid(forkcheck(state, record)))
+durable.jl	:(valid(forkcheck(state, records)))
+durable.jl	:(visible(state, conversation, at))
 durable.jl	:(writes isa AbstractVector)
 durable.jl	:adopted
 durable.jl	:created
@@ -92,6 +97,7 @@ durable.jl	:success
 execution.jl	:(cancelled(cancellation))
 execution.jl	:(cancelled(handle.cancellation))
 execution_conversation.jl	:(name === :detailed)
+extensions.jl	:(hook.event == event.type)
 history.jl	:(key isa String)
 history.jl	:(name === :batches)
 history.jl	:(name === :batches)
@@ -113,6 +119,7 @@ kernel.jl	:(same(x, y, seen))
 kernel.jl	:found
 logs.jl	:empty
 logs.jl	:first
+mcp.jl	:(available(capability(client)))
 mcp.jl	:(cursor isa AbstractString)
 mcp.jl	:(detail isa AbstractDict)
 mcp.jl	:(detail["code"] isa Bool)
@@ -146,8 +153,11 @@ mcp.jl	:(page isa Failure)
 mcp.jl	:(received(client, message))
 mcp.jl	:(result["content"] isa AbstractVector)
 mcp.jl	:(result["isError"] isa Bool)
+mcp.jl	:(stringvalue(get(value, "text", nothing)))
+mcp.jl	:(stringvalue(get(value, "uri", nothing)))
 mcp.jl	:(timedwait((()->begin                   process_exited(client.process)               end), client.grace; pollint = 0.01) != :ok)
 mcp.jl	:(timedwait((()->begin                   process_exited(client.process)               end), client.grace; pollint = 0.01) != :ok)
+mcp.jl	:(visible(item))
 provider.jl	:((last(current_exceptions())).exception isa ArgumentError)
 provider.jl	:(get(data, "is_byok", false))
 provider.jl	:(isnothing(delta))
@@ -205,6 +215,8 @@ search.jl	:truncatedlines
 search.jl	:truncatedlines
 search.jl	:windows
 search.jl	:windows
+session_terminal.jl	:(history === selected)
+session_terminal.jl	:(history === selected)
 sessions.jl	:(entryid isa AbstractString)
 sessions.jl	:(get(header, "type", nothing) == "session")
 sessions.jl	:(get(header, key, nothing) isa AbstractString)
@@ -219,6 +231,7 @@ sessions.jl	:(name === :flushed)
 sessions.jl	:(name === :terminated)
 sessions.jl	:(name === :terminated)
 sessions.jl	:(parent isa AbstractString)
+sqlite_history.jl	:(formaterror((last(exceptions)).exception))
 sqlite_history.jl	:(mode in ("delete", "truncate", "persist", "wal"))
 sqlite_history.jl	:(result isa H.Rejected)
 sqlite_history.jl	:complete
@@ -240,21 +253,19 @@ terminal.jl	:(name === :streamed)
 terminal.jl	:(name === :streamed)
 terminal.jl	:(result.status == 0)
 terminal_live.jl	:(continuation!(state, mode))
+terminal_live.jl	:(matches(item, mode))
 tools.jl	:(duplicate(edit.fuzzy, comparable))
 tools.jl	:(duplicate(edit.old, originalcontent))
 tools.jl	:(isnothing(content))
-tools.jl	:(isnothing(entry.owner))
 tools.jl	:(isnothing(findfirst(edit.old, originalcontent)))
 tools.jl	:(isnothing(findfirst(edit.old, originalcontent)))
 tools.jl	:(isnothing(match))
 tools.jl	:(isnothing(match))
 tools.jl	:(isnothing(output))
+tools.jl	:(isopen(signal))
+tools.jl	:(kind == codeunits("IDAT"))
+tools.jl	:(kind == codeunits("acTL"))
 tools.jl	:(name === :iserror)
-tools.jl	:acquired
 tools.jl	:iserror
-tools.jl	:queued
-tools.jl	:queued
-tools.jl	:queued
-tools.jl	:queued
 tools.jl	:usedfuzzy
 tools.jl	:usedfuzzy

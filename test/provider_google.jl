@@ -17,7 +17,7 @@ googlesse(data) = "data: $(JSON3.write(data))\n\n"
         end
         reason[] = "SAFETY"
         result = JuliaForever.complete(model, [], Dict())
-        @test !result.done && occursin("SAFETY", result.error)
+        @test !result.done && result.error isa ProviderError && result.error.provider == :google && result.error.kind == :safety
     finally
         close(server)
         wait(server)
@@ -140,10 +140,10 @@ end
             malformed = JuliaForever.stream(model, [], Dict())
             @test !malformed.done && malformed.error isa InvalidResponse
             failed = JuliaForever.complete(model, [], Dict())
-            @test !failed.done && occursin("401", failed.error)
+            @test !failed.done && failed.error isa ProviderStatus && failed.error.status == 401
             @test !occursin("test-secret", sprint(show, failed))
             failedstream = JuliaForever.stream(model, [], Dict())
-            @test !failedstream.done && occursin("401", failedstream.error)
+            @test !failedstream.done && failedstream.error isa ProviderStatus && failedstream.error.status == 401
             @test !occursin("test-secret", sprint(show, failedstream))
         end
     finally

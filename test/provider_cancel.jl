@@ -97,7 +97,7 @@ end
     JuliaForever.unregister!(agent, context)
 end
 
-@testset "provider errors still propagate" begin
+@testset "provider HTTP failures remain typed" begin
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
         HTTP.Response(401, [], "unauthorized")
     end
@@ -105,7 +105,9 @@ end
         model = OpenAI("http://$(HTTP.server_addr(server))/v1", "fixture", "synthetic")
         for callback in (nothing, identity)
             agent = Agent(model, [])
-            @test_throws HTTP.StatusError respond!(agent, "start"; on_event=callback)
+            result = respond!(agent, "start"; on_event=callback)
+            @test result isa Completion && result.error isa ProviderStatus && result.error.status == 401
+            @test !occursin("unauthorized", sprint(show, result))
             @test !agent.running
         end
     finally

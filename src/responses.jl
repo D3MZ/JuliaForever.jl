@@ -4,12 +4,16 @@ struct OpenAIResponses
     key::String
 end
 
-Base.show(io::IO, provider::OpenAIResponses) = print(io, "OpenAIResponses(", repr(provider.base), ", ", repr(provider.model), ", [redacted])")
+Base.show(io::IO, provider::OpenAIResponses) = print(io, "OpenAIResponses(", repr(provider.model), ", [redacted])")
+StructTypes.StructType(::Type{OpenAIResponses}) = StructTypes.CustomStruct()
+StructTypes.lower(provider::OpenAIResponses) = (; model=provider.model, credentials="[redacted]")
 
 headers(provider::OpenAIResponses) = ["Authorization" => "Bearer $(provider.key)", "Content-Type" => "application/json"]
 endpoint(provider::OpenAIResponses) = "$(rstrip(provider.base, '/'))/responses"
 
 const inputtypes = Dict("tool" => Conversation.ToolMessage, "assistant" => Conversation.Assistant)
+tooloutput(content, ::Nothing) = content
+tooloutput(content, image) = [Dict("type" => "input_text", "text" => content), Dict("type" => "input_image", "detail" => "auto", "image_url" => "data:$(image["mime"]);base64,$(image["data"])")]
 
 function input(messages)
     items = Any[]
@@ -18,7 +22,7 @@ function input(messages)
 end
 
 input!(items, ::Nothing, message) = inputcontent!(items, message["role"], get(message, "content", nothing))
-input!(items, ::Type{Conversation.ToolMessage}, message) = push!(items, Dict("type" => "function_call_output", "call_id" => message["tool_call_id"], "output" => message["content"]))
+input!(items, ::Type{Conversation.ToolMessage}, message) = push!(items, Dict("type" => "function_call_output", "call_id" => message["tool_call_id"], "output" => tooloutput(message["content"], get(message, "image", nothing))))
 
 function input!(items, ::Type{Conversation.Assistant}, message)
     haskey(message, "response_output") && return append!(items, message["response_output"])
@@ -132,13 +136,14 @@ responsecalls!(calls, item, type) = nothing
 responsecalls!(calls, item, ::Type{Conversation.ToolCall}) = push!(calls, item)
 
 completion(provider::OpenAIResponses, data::InvalidResponse; failure=nothing) = incomplete(data)
-detail(value::AbstractString) = value
-detail(value) = JSON3.write(value)
+const saferesponsestatuses = Dict(status => status for status in ("failed", "incomplete", "cancelled", "canceled", "queued", "in_progress"))
+saferesponsestatus(status) = nothing
+saferesponsestatus(status::AbstractString) = get(saferesponsestatuses, status, nothing)
 
 responsefailure(data, raw, status, failure) = failure
 function responsefailure(data, raw, ::Unfinished, ::Nothing)
     reason = something(get(data, "error", nothing), get(data, "incomplete_details", nothing), raw, "missing status")
-    "Responses $(raw): $(detail(reason))"
+    providererror(:openai_responses, reason)
 end
 
 callfailure(calls, failure) = failure
@@ -148,7 +153,7 @@ function callfailure(calls, ::Nothing)
     nothing
 end
 
-responsefinish(raw, ::Unfinished, calls) = raw
+responsefinish(raw, ::Unfinished, calls) = saferesponsestatus(raw)
 responsefinish(raw, ::Finished, ::Nothing) = "stop"
 responsefinish(raw, ::Finished, calls) = "tool_calls"
 responsecomplete(status, failure) = false
@@ -169,7 +174,8 @@ end
 requestcontext(::OpenAIResponses) = HTTP.RequestContext()
 
 function complete(provider::OpenAIResponses, messages, tools; parameters=Dict())
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false, context=requestcontext())
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
+    200 <= response.status < 300 || return incomplete(ProviderStatus(response.status))
     completion(provider, decode(String(response.body)))
 end
 
@@ -198,7 +204,7 @@ struct ResponseEnded <: ResponseEvent
     response::Any
 end
 struct ResponseError <: ResponseEvent
-    message::String
+    failure::ProviderError
 end
 
 const responseevents = Dict(
@@ -217,14 +223,14 @@ responseevent(::Type{OutputAdded}, data) = OutputAdded(get(data, "output_index",
 responseevent(::Type{ArgumentDelta}, data) = ArgumentDelta(get(data, "output_index", nothing), get(data, "item_id", nothing), data)
 responseevent(::Type{OutputDone}, data) = OutputDone(get(data, "output_index", nothing), data["item"])
 responseevent(::Type{ResponseEnded}, data) = ResponseEnded(data["response"])
-responseevent(::Type{ResponseError}, data) = ResponseError(JSON3.write(data))
+responseevent(::Type{ResponseError}, data) = ResponseError(providererror(:openai_responses, data))
 
 mutable struct ResponseStream{F}
     partial::Dict{String, Any}
     active::Dict{Any, Any}
     finished::Dict{Any, Any}
     terminal::Any
-    failure::Union{Nothing, String, InvalidResponse}
+    failure::Union{Nothing, String, InvalidResponse, ProviderError}
     callback::F
 end
 
@@ -311,12 +317,12 @@ function record!(stream::ResponseStream, index, item)
 end
 
 handle!(stream::ResponseStream, event::ResponseEnded) = (stream.terminal = event.response; nothing)
-handle!(stream::ResponseStream, event::ResponseError) = (stream.failure = event.message; nothing)
+handle!(stream::ResponseStream, event::ResponseError) = (stream.failure = event.failure; nothing)
 
 function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), on_event=identity)
     state = ResponseStream(on_event)
-    HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, context=requestcontext(), sse_callback=event -> receive!(state, event.data))
-    result = finish(provider, state, state.terminal)
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=event -> receive!(state, event.data))
+    result = 200 <= response.status < 300 ? finish(provider, state, state.terminal) : incomplete(ProviderStatus(response.status))
     on_event((; type=completionevent(result), result))
     result
 end

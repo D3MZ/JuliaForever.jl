@@ -8,6 +8,8 @@ using JuliaForever: CodeMode, CodeCancellation, cancel!, codeexecute
     @test returned isa JuliaForever.CodeReturned
     @test failed isa JuliaForever.CodeErrored
     @test returned.value == 3 && returned.writes == Dict("x" => 1)
+    @test isempty(returned.deletes)
+    @test JuliaForever.codeevent((; type="result", ok=true, value=nothing, writes=Dict(), deletes=["old"])).deletes == ["old"]
     @test failed.message == "script failed"
 end
 

@@ -12,23 +12,36 @@ struct Edit <: Tool
     cwd::String
 end
 
+struct Image
+    mime::String
+    data::String
+end
+
+Base.isequal(a::Image, b::Image) = isequal((a.mime, a.data), (b.mime, b.data))
+Base.hash(image::Image, h::UInt) = hash((image.mime, image.data), hash(Image, h))
+
 abstract type ToolResult end
 
 struct ToolSuccess <: ToolResult
     text::String
+    image::Union{Nothing, Image}
 end
 
 struct ToolFailure <: ToolResult
     text::String
+    image::Union{Nothing, Image}
 end
 
+ToolSuccess(text) = ToolSuccess(text, nothing)
+ToolFailure(text) = ToolFailure(text, nothing)
 ToolResult(text) = ToolSuccess(text)
-ToolResult(text, iserror::Bool) = iserror ? ToolFailure(text) : ToolSuccess(text)
+ToolResult(text, iserror::Bool) = ToolResult(text, iserror, nothing)
+ToolResult(text, iserror::Bool, image) = iserror ? ToolFailure(text, image) : ToolSuccess(text, image)
 
 iserror(::ToolSuccess) = false
 iserror(::ToolFailure) = true
 Base.getproperty(result::ToolResult, name::Symbol) = name === :iserror ? iserror(result) : getfield(result, name)
-Base.propertynames(::ToolResult, private::Bool=false) = (:text, :iserror)
+Base.propertynames(::ToolResult, private::Bool=false) = (:text, :iserror, :image)
 
 content(result::ToolSuccess) = result.text
 content(result::ToolFailure) = "Error: " * result.text
@@ -54,8 +67,7 @@ toolfailures(exception) = ()
 path(tool::Tool, name) = normpath(joinpath(tool.cwd, expanduser(name)))
 
 mutable struct Mutation
-    condition::Threads.Condition
-    waiters::Vector{Task}
+    waiters::Channel{Tuple{Task, Channel{Nothing}}}
     owner::Union{Task, Nothing}
     depth::Int
     users::Int
@@ -90,44 +102,56 @@ function mutationkey(destination::AbstractString)
     current
 end
 
+function resume!(entry::Mutation)
+    entry.owner = nothing
+    while isready(entry.waiters)
+        task, signal = take!(entry.waiters)
+        isopen(signal) || continue
+        entry.owner = task
+        entry.depth = 1
+        put!(signal, nothing)
+        break
+    end
+end
+
+function acquire!(entry::Mutation, task::Task, ::Nothing)
+    entry.owner = task
+    entry.depth += 1
+    nothing
+end
+
+function acquire!(entry::Mutation, task::Task, owner::Task)
+    owner === task && return acquire!(entry, task, nothing)
+    signal = Channel{Nothing}(1)
+    put!(entry.waiters, (task, signal))
+    signal
+end
+
+await(::Nothing) = nothing
+await(signal::Channel{Nothing}) = take!(signal)
+
 function mutate(f, destination::AbstractString)
     task = current_task()
-    key, entry, queued = lock(mutationguard) do
+    key, entry, signal = lock(mutationguard) do
         key = mutationkey(destination)
-        entry = get!(() -> Mutation(Threads.Condition(mutationguard), Task[], nothing, 0, 0), mutations, key)
-        queued = entry.owner !== task
-        queued && push!(entry.waiters, task)
+        entry = get!(() -> Mutation(Channel{Tuple{Task, Channel{Nothing}}}(Inf), nothing, 0, 0), mutations, key)
+        signal = acquire!(entry, task, entry.owner)
         entry.users += 1
-        key, entry, queued
+        key, entry, signal
     end
-    acquired = false
     try
-        lock(mutationguard) do
-            while queued && (!isnothing(entry.owner) || first(entry.waiters) !== task)
-                wait(entry.condition)
-            end
-            if queued
-                popfirst!(entry.waiters)
-                entry.owner = task
-            end
-            entry.depth += 1
-            acquired = true
-        end
+        await(signal)
         f()
     finally
         lock(mutationguard) do
-            if acquired
+            if entry.owner === task
                 entry.depth -= 1
-                entry.depth == 0 && (entry.owner = nothing)
-            elseif queued
-                filter!(waiter -> waiter !== task, entry.waiters)
+                entry.depth == 0 && resume!(entry)
+            else
+                close(signal)
             end
             entry.users -= 1
-            if entry.users == 0
-                delete!(mutations, key)
-            else
-                notify(entry.condition; all=true)
-            end
+            entry.users == 0 && delete!(mutations, key)
         end
     end
 end
@@ -141,8 +165,89 @@ function execute(tool::Write, args)
     end
 end
 
-function execute(tool::Read, args)
-    content = read(path(tool, args.path), String)
+const imagelimit = 10 * 1024 * 1024
+const pngsignature = UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+# Candidate first bytes for the signatures recognized by imageformat.
+const imageheads = (0x89, 0xff, 0x47, 0x52, 0x42)
+
+prefix(bytes, signature) = length(bytes) >= length(signature) && @view(bytes[1:length(signature)]) == signature
+
+little(bytes, start, count) = foldl((n, byte) -> 256 * n + Int(byte), Iterators.reverse(@view(bytes[start:start+count-1])); init=0)
+
+function bmp(bytes)
+    length(bytes) >= 26 && prefix(bytes, codeunits("BM")) || return false
+    size = little(bytes, 3, 4)
+    offset = little(bytes, 11, 4)
+    header = little(bytes, 15, 4)
+    (size == 0 || size >= 26 && offset < size) && offset >= 14 + header || return false
+    if header == 12
+        planes, bits = little(bytes, 23, 2), little(bytes, 25, 2)
+    elseif 40 <= header <= 124 && length(bytes) >= 30
+        planes, bits = little(bytes, 27, 2), little(bytes, 29, 2)
+    else
+        return false
+    end
+    planes == 1 && bits in (1, 4, 8, 16, 24, 32)
+end
+
+function imageformat(bytes)
+    prefix(bytes, pngsignature) && return MIME"image/png"()
+    prefix(bytes, UInt8[0xff, 0xd8, 0xff]) && return length(bytes) >= 4 && bytes[4] == 0xf7 ? MIME"image/jls"() : MIME"image/jpeg"()
+    (prefix(bytes, codeunits("GIF87a")) || prefix(bytes, codeunits("GIF89a"))) && return MIME"image/gif"()
+    (length(bytes) >= 12 && prefix(bytes, codeunits("RIFF")) && @view(bytes[9:12]) == codeunits("WEBP")) && return MIME"image/webp"()
+    bmp(bytes) && return MIME"image/bmp"()
+    MIME"text/plain"()
+end
+
+function pngproblem(bytes)
+    length(bytes) >= 33 || return "PNG structure is not supported"
+    bytes[9:16] == UInt8[0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52] || return "PNG structure is not supported"
+    offset = 9
+    while offset + 7 <= length(bytes)
+        size = foldl((n, byte) -> n * 256 + Int(byte), @view(bytes[offset:offset+3]); init=0)
+        stop = offset + size + 11
+        stop <= length(bytes) || return "PNG structure is not supported"
+        kind = @view bytes[offset+4:offset+7]
+        kind == codeunits("acTL") && return "Animated PNG is not supported"
+        kind == codeunits("IDAT") && return nothing
+        offset = stop + 1
+    end
+    "PNG structure is not supported"
+end
+
+imageproblem(::MIME"image/png", bytes) = pngproblem(bytes)
+imageproblem(::MIME"image/jpeg", bytes) = nothing
+
+function readimage(io, format::Union{MIME"image/png", MIME"image/jpeg"}, bytes)
+    append!(bytes, read(io, imagelimit + 1 - length(bytes)))
+    length(bytes) <= imagelimit || return ToolResult("Image exceeds the 10 MiB limit", true)
+    imagefile(format, bytes, imageproblem(format, bytes))
+end
+
+readimage(io, ::MIME, bytes) = ToolResult("Image format is not supported", true)
+
+function imagefile(format::MIME, bytes, ::Nothing)
+    mime = string(format)
+    ToolResult("Read image file [$mime]", false, Image(mime, base64encode(bytes)))
+end
+
+imagefile(::MIME, bytes, problem::String) = ToolResult(problem, true)
+
+function readfile(io)
+    if !eof(io) && peek(io, UInt8) in imageheads
+        bytes = read(io, 32)
+        return readfile(io, bytes, imageformat(bytes))
+    end
+    read(io, String)
+end
+
+readfile(io, bytes, ::MIME"text/plain") = String(bytes) * read(io, String)
+readfile(io, bytes, format::MIME) = readimage(io, format, bytes)
+
+execute(tool::Read, args) = readresult(open(readfile, path(tool, args.path)), args)
+readresult(result::ToolResult, args) = result
+
+function readresult(content::String, args)
     if !haskey(args, :offset) && !haskey(args, :limit) && ncodeunits(content) <= 51200 && count(==('\n'), content) + (!isempty(content) && !endswith(content, '\n')) <= 2000
         return ToolResult(content)
     end
