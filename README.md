@@ -14,6 +14,8 @@ Julia 1.12 or newer runs the package and its native tests. Node.js is needed onl
 
 For Anthropic set `JF_PROVIDER=anthropic`, `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`; for Google set `JF_PROVIDER=google`, `GEMINI_API_KEY` and `GEMINI_MODEL`.
 
+Use `jf --list-models [search]` to browse the bundled catalog for providers with keys, and `jf --model provider/model` to select a model. See [models](docs/models.md) for snapshot age and compatibility limits.
+
 ```sh
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
 julia --project=. -m JuliaForever 'Create a hello.txt file'
