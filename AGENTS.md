@@ -1,3 +1,7 @@
+# Documentation
+
+- Only the user writes or updates documentation. Agents must not create or edit documentation. The codebase is the source of truth for how the software works.
+
 # Julia conventions
 
 - Use small, clear Julia APIs, generic verbs, typed multiple dispatch, and `!` for mutation. Avoid artificial wrappers and type tags when dispatch expresses the behavior.
