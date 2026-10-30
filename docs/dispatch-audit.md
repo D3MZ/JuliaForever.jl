@@ -153,3 +153,5 @@ Terminal completion adds 22 branch entries for fuzzy scoring, matching, list ite
 MCP JSON-RPC routing dispatches on message fields, request IDs, and error values; Boolean IDs and error codes remain invalid.
 
 MCP resource-content validation dispatches on URI, text, and blob values; the remaining predicate checks whether all decoded contents are valid.
+
+The provider-alias routing update adds no branch or dispatch entries.
