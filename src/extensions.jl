@@ -98,9 +98,19 @@ end
 struct Listener{F}
     lock::ReentrantLock
     hooks::Tuple
+    events::Dict{Symbol, Tuple}
     errors::Vector{Failure}
     on_event::F
 end
+
+function hookevents(hooks)
+    events = Dict{Symbol, Tuple}()
+    for hook in hooks
+        events[hook.event] = (get(events, hook.event, ())..., hook)
+    end
+    events
+end
+Listener(lock, hooks, errors, on_event) = Listener(lock, hooks, hookevents(hooks), errors, on_event)
 
 "Create a synchronous lifecycle observer and optional host callback."
 listen(snapshot::Snapshot; on_event=nothing) = Listener(ReentrantLock(), snapshot.hooks, Failure[], on_event)
@@ -110,8 +120,7 @@ deliver(callback, event) = callback(event)
 
 function (listener::Listener)(event)
     lock(listener.lock) do
-        for hook in listener.hooks
-            hook.event == event.type || continue
+        for hook in get(listener.events, event.type, ())
             try
                 hook.handler(deepcopy(event))
             catch exception
@@ -143,8 +152,7 @@ Agent(provider, snapshot::Extensions.Snapshot, messages::Vector{Conversation.Mes
 function interceptresult(listener::Extensions.Listener, call, args, result::ToolResult)
     lock(listener.lock) do
         current = result
-        for hook in listener.hooks
-            hook.event == :tool_result || continue
+        for hook in get(listener.events, :tool_result, ())
             event = (; type=:tool_result, tool_call_id=call["id"], tool_name=callinfo(call).name, args, result=current)
             try
                 current = resultvalue(current, hook.handler(deepcopy(event)))
@@ -166,15 +174,12 @@ resultvalue(current::ToolResult, result::ToolResult) = result
 function interceptcall(listener::Extensions.Listener, call, input)
     lock(listener.lock) do
         event = (; type=:tool_call, tool_call_id=call["id"], tool_name=callinfo(call).name, input)
-        callhooks(listener.hooks, event)
+        callhooks(get(listener.events, :tool_call, ()), event)
     end
 end
 callhooks(::Tuple{}, event) = nothing
-callhooks(hooks::Tuple, event) = callhooks(first(hooks), Base.tail(hooks), event)
-callhooks(hook, hooks, event) = get(callhandlers, hook.event, skipcall)(hook, hooks, event)
-skipcall(hook, hooks, event) = callhooks(hooks, event)
+callhooks(hooks::Tuple, event) = callhook(first(hooks), Base.tail(hooks), event)
 callhook(hook, hooks, event) = nextcall(hook.handler(event), hooks, event)
-const callhandlers = Dict(:tool_call => callhook)
 nextcall(block::Extensions.Block, hooks, event) = block
 nextcall(value, hooks, event) = callhooks(hooks, event)
 prepare(tool::Tool, input, block::Extensions.Block) = ToolFailure(isempty(block.reason) ? "Tool execution was blocked" : block.reason)
