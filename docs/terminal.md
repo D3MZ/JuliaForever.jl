@@ -1,5 +1,7 @@
 # Terminal
 
+The `Terminal` compatibility properties `streamed` and `lineopen` remain Boolean and writable. Its internal presentation and line fields now use typed states, so direct field access and old Julia `Serialization` layouts are not compatible.
+
 The `jf` command accepts a prompt in its arguments. With no prompt, an interactive terminal uses Julia's line editor: Enter sends; Ctrl+J, Shift+Enter where supported, or a trailing backslash followed by Enter adds a line; and arrow keys edit or recall prompts. Bracketed paste preserves multiline text. Ctrl+C clears the editor; pressing it again exits. Ctrl+D deletes forward, or exits when the editor is empty. The banner and editor are written to stderr. Piped input reads one message per line without a banner; `/exit` ends either session. The same agent and conversation are retained between messages.
 
 While a request is running, Enter queues a steering message and Alt+Enter queues a follow-up; Ctrl+Q also queues a follow-up. Alt+Up returns queued messages to the editor. Escape cancels the request and restores queued messages ahead of the current draft. Built-in provider requests and in-process Unix shell calls are interrupted; other work stops at its next cancellation boundary. A cancelled partial assistant response is displayed but is not retained in the conversation context. `/resume` and `/tree` interrupt the current request before opening their selectors. A prompt supplied as a command-line argument remains non-interactive.

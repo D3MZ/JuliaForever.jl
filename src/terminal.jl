@@ -1,12 +1,40 @@
+abstract type TerminalPresentation end
+struct Unstreamed <: TerminalPresentation end
+struct Streamed <: TerminalPresentation end
+abstract type TerminalLine end
+struct LineClosed <: TerminalLine end
+struct LineOpen <: TerminalLine end
+
+streamstate(value::Bool) = (Unstreamed(), Streamed())[Int(value) + 1]
+linestate(value::Bool) = (LineClosed(), LineOpen())[Int(value) + 1]
+streamed(::Unstreamed) = false
+streamed(::Streamed) = true
+lineopen(::LineClosed) = false
+lineopen(::LineOpen) = true
+
 mutable struct Terminal{O<:IO, E<:IO}
     output::O
     diagnostics::E
     secrets::Vector{String}
-    streamed::Bool
-    lineopen::Bool
+    presentation::TerminalPresentation
+    line::TerminalLine
 end
 
-Terminal(output, diagnostics, secrets) = Terminal(output, diagnostics, secrets, false, false)
+Terminal(output, diagnostics, secrets) = Terminal(output, diagnostics, secrets, Unstreamed(), LineClosed())
+Terminal(output, diagnostics, secrets, streamed::Bool, lineopen::Bool) = Terminal(output, diagnostics, secrets, streamstate(streamed), linestate(lineopen))
+
+function Base.getproperty(terminal::Terminal, name::Symbol)
+    name === :streamed && return streamed(getfield(terminal, :presentation))
+    name === :lineopen && return lineopen(getfield(terminal, :line))
+    getfield(terminal, name)
+end
+
+function Base.setproperty!(terminal::Terminal, name::Symbol, value)
+    name === :streamed && return (setfield!(terminal, :presentation, streamstate(convert(Bool, value))); value)
+    name === :lineopen && return (setfield!(terminal, :line, linestate(convert(Bool, value))); value)
+    setfield!(terminal, name, convert(fieldtype(typeof(terminal), name), value))
+end
+Base.propertynames(::Terminal, private::Bool=false) = (:output, :diagnostics, :secrets, :streamed, :lineopen, :presentation, :line)
 
 function redact(terminal::Terminal, text)
     result = string(text)
@@ -20,15 +48,17 @@ function text!(terminal::Terminal, text)
     isempty(text) && return
     print(terminal.output, text)
     flush(terminal.output)
-    terminal.streamed = true
-    terminal.lineopen = !endswith(text, '\n')
+    terminal.presentation = Streamed()
+    terminal.line = linestate(!endswith(text, '\n'))
 end
 
 function line!(terminal::Terminal)
-    terminal.lineopen && println(terminal.output)
+    line!(terminal, terminal.line)
     flush(terminal.output)
-    terminal.lineopen = false
+    terminal.line = LineClosed()
 end
+line!(terminal::Terminal, ::LineOpen) = println(terminal.output)
+line!(terminal::Terminal, ::LineClosed) = nothing
 
 status(::Terminal, ::ToolSuccess) = "ok"
 status(terminal::Terminal, result::ToolFailure) = "error: " * redact(terminal, result.text)
@@ -61,11 +91,13 @@ render!(terminal::Terminal, ::Nothing) = nothing
 function render!(terminal::Terminal, event::AssistantEnded)
     showcontent!(terminal, event.content)
     line!(terminal)
-    terminal.streamed = false
+    terminal.presentation = Unstreamed()
 end
 
 showcontent!(terminal::Terminal, content) = nothing
-showcontent!(terminal::Terminal, content::AbstractString) = terminal.streamed || text!(terminal, content)
+showcontent!(terminal::Terminal, content::AbstractString) = showcontent!(terminal, content, terminal.presentation)
+showcontent!(terminal::Terminal, content::AbstractString, ::Unstreamed) = text!(terminal, content)
+showcontent!(terminal::Terminal, content::AbstractString, ::Streamed) = nothing
 
 function render!(terminal::Terminal, event::ToolStarted)
     println(terminal.diagnostics, "[tool] ", redact(terminal, something(event.name, "unknown")), ": started")
@@ -197,7 +229,7 @@ end
 
 function request!(terminal::Terminal, task, exception::Union{HTTP.HTTPError, InterruptException})
     line!(terminal)
-    terminal.streamed = false
+    terminal.presentation = Unstreamed()
     (; value=nothing, status=failure!(terminal, exception))
 end
 

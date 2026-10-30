@@ -234,9 +234,11 @@ system.jl	:partial
 system.jl	:partial
 system.jl	:reached
 system.jl	:truncated
+terminal.jl	:(name === :lineopen)
+terminal.jl	:(name === :lineopen)
+terminal.jl	:(name === :streamed)
+terminal.jl	:(name === :streamed)
 terminal.jl	:(result.status == 0)
-terminal.jl	:(terminal.lineopen)
-terminal.jl	:(terminal.streamed)
 tools.jl	:(isnothing(content))
 tools.jl	:(isnothing(entry.owner))
 tools.jl	:(isnothing(findfirst(edit.old, originalcontent)))
