@@ -193,7 +193,8 @@ with tempfile.TemporaryDirectory(prefix="jf-live-pty-") as directory:
         send("/exit")
         key("Enter")
         wait_for(lambda: run("display-message", "-p", "-t", "live", "#{pane_dead}").stdout.strip() == "1", "terminal failed to exit", 15)
-        assert run("display-message", "-p", "-t", "live", "#{pane_dead_status}").stdout.strip() == "0", screen()
+        status = run("display-message", "-p", "-t", "live", "#{pane_dead_status}").stdout.strip()
+        assert status == "0", f"exit status={status!r}; history={history()!r}"
         assert len(list(pathlib.Path(directory).glob("*.sqlite"))) == 1
         resumed = shlex.join([julia, "--startup-file=no", "--compiled-modules=existing", f"--project={root}", "-e", "using JuliaForever; exit(JuliaForever.main(ARGS))", "--", "--continue"])
         run("new-window", "-t", "live", "-n", "resumed", "-c", directory, resumed)
