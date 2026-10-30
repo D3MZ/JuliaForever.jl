@@ -18,6 +18,21 @@ function JuliaForever.stream(provider::QueueProvider, messages, tools; parameter
     Completion(Dict{String, Any}("role" => "assistant", "content" => text), nothing, "stop", true, nothing)
 end
 
+function queuestart(provider, task)
+    @test timedwait(() -> isready(provider.started) || istaskdone(task), 10; pollint=0.01) == :ok
+    @test isready(provider.started)
+    isready(provider.started) || return false
+    take!(provider.started)
+    true
+end
+
+queuerelease!(provider) = isready(provider.release) || put!(provider.release, nothing)
+function queuefinish(provider, task)
+    queuerelease!(provider)
+    @test timedwait(() -> istaskdone(task), 10; pollint=0.01) == :ok
+    istaskdone(task) ? fetch(task) : nothing
+end
+
 @testset "restore queued messages" begin
     for recorded in (false, true)
         history = recorded ? QueueHistory.Memory() : nothing
@@ -93,21 +108,28 @@ end
     steeringmode!(agent, :all)
     followupmode!(agent, :all)
     task = Threads.@spawn respond!(agent, "start"; on_event=identity)
-    take!(provider.started)
-    put!(provider.release, nothing)
-    @test fetch(task) == "answer"
-    users(request) = [message["content"] for message in request if message["role"] == "user"]
-    @test users.(provider.requests) == [["start", "s1", "s2"], ["start", "s1", "s2", "f1", "f2"]]
-    close(history)
-    history = open(QueueHistory.SQLite, path)
-    restored = Agent(provider, []; history)
-    @test restored.fault === nothing
-    @test restored.state.steeringmode == agent.state.steeringmode
-    @test restored.state.followupmode == agent.state.followupmode
-    @test restored.messages == agent.messages
-    exported = JSON3.read(JuliaForever.Logs.json(restored.events))
-    @test [row.mode for row in exported if row.type in ("steering_mode", "followup_mode")] == ["all", "all"]
-    close(history)
+    try
+        if queuestart(provider, task)
+            answer = queuefinish(provider, task)
+            @test answer == "answer"
+            if answer == "answer"
+                users(request) = [message["content"] for message in request if message["role"] == "user"]
+                @test users.(provider.requests) == [["start", "s1", "s2"], ["start", "s1", "s2", "f1", "f2"]]
+                close(history)
+                history = open(QueueHistory.SQLite, path)
+                restored = Agent(provider, []; history)
+                @test restored.fault === nothing
+                @test restored.state.steeringmode == agent.state.steeringmode
+                @test restored.state.followupmode == agent.state.followupmode
+                @test restored.messages == agent.messages
+                exported = JSON3.read(JuliaForever.Logs.json(restored.events))
+                @test [row.mode for row in exported if row.type in ("steering_mode", "followup_mode")] == ["all", "all"]
+            end
+        end
+    finally
+        queuerelease!(provider)
+        close(history)
+    end
   end
 end
 
@@ -117,13 +139,20 @@ end
     steeringmode!(agent, :all)
     followupmode!(agent, :all)
     task = Threads.@spawn respond!(agent, "start"; on_event=identity)
-    take!(provider.started)
-    steer!(agent, "s1"); steer!(agent, "s2")
-    followup!(agent, "f1"); followup!(agent, "f2")
-    steeringmode!(agent, :one_at_a_time)
-    followupmode!(agent, :one_at_a_time)
-    put!(provider.release, nothing)
-    @test fetch(task) == "answer"
-    users(request) = [message["content"] for message in request if message["role"] == "user"]
-    @test users.(provider.requests) == [["start"], ["start", "s1"], ["start", "s1", "s2"], ["start", "s1", "s2", "f1"], ["start", "s1", "s2", "f1", "f2"]]
+    try
+        if queuestart(provider, task)
+            steer!(agent, "s1"); steer!(agent, "s2")
+            followup!(agent, "f1"); followup!(agent, "f2")
+            steeringmode!(agent, :one_at_a_time)
+            followupmode!(agent, :one_at_a_time)
+            answer = queuefinish(provider, task)
+            @test answer == "answer"
+            if answer == "answer"
+                users(request) = [message["content"] for message in request if message["role"] == "user"]
+                @test users.(provider.requests) == [["start"], ["start", "s1"], ["start", "s1", "s2"], ["start", "s1", "s2", "f1"], ["start", "s1", "s2", "f1", "f2"]]
+            end
+        end
+    finally
+        queuerelease!(provider)
+    end
 end

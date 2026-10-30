@@ -202,6 +202,13 @@ JSON3.StructTypes.construct(::Type{Cancellation}, value::Bool) = cancellation(va
 abstract type QueueMode end
 struct OneAtATime <: QueueMode end
 struct AllAtOnce <: QueueMode end
+queuecode(::OneAtATime) = "one-at-a-time"
+queuecode(::AllAtOnce) = "all"
+const queuetypes = Dict("one-at-a-time" => OneAtATime, "all" => AllAtOnce)
+JSON3.StructTypes.StructType(::Type{<:QueueMode}) = JSON3.StructTypes.CustomStruct()
+JSON3.StructTypes.lowertype(::Type{<:QueueMode}) = String
+JSON3.StructTypes.lower(mode::QueueMode) = queuecode(mode)
+JSON3.StructTypes.construct(::Type{QueueMode}, value::String) = queuetypes[value]()
 
 struct State
     kernel::K.State
