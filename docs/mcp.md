@@ -2,6 +2,8 @@
 
 `JuliaForever.MCP` is an optional, native Julia stdio client and adapter for the existing in-process `Tool` API. No server is started by the CLI and no MCP tool is exposed automatically. Choose a trusted executable and its environment explicitly:
 
+`Client.shutting` remains a Boolean property; its internal shutdown field now uses typed states, so direct field access and old Julia `Serialization` layouts are not compatible.
+
 ```julia
 using JuliaForever
 const MCP = JuliaForever.MCP

@@ -20,6 +20,13 @@ state(::Connecting) = :connecting
 state(::Open) = :open
 state(::Closed) = :closed
 
+abstract type Shutdown end
+struct ShutdownReady <: Shutdown end
+struct ShuttingDown <: Shutdown end
+shutdownstate(value::Bool) = (ShutdownReady(), ShuttingDown())[Int(value) + 1]
+shutting(::ShutdownReady) = false
+shutting(::ShuttingDown) = true
+
 mutable struct Client
     process::Base.Process
     lock::ReentrantLock
@@ -30,17 +37,25 @@ mutable struct Client
     server::Any
     timeout::Float64
     grace::Float64
-    shutting::Bool
+    shutdown::Shutdown
     done::Base.Event
     reader::Union{Nothing, Task}
 end
 
+Client(process, lock, writer, pending, nextid, connection, server, timeout, grace, shutting::Bool, done, reader) = Client(process, lock, writer, pending, nextid, connection, server, timeout, grace, shutdownstate(shutting), done, reader)
+
 function Base.getproperty(client::Client, name::Symbol)
     name === :state && return state(getfield(client, :connection))
+    name === :shutting && return shutting(getfield(client, :shutdown))
     getfield(client, name)
 end
 
-Base.propertynames(client::Client, private::Bool=false) = (fieldnames(typeof(client))..., :state)
+function Base.setproperty!(client::Client, name::Symbol, value)
+    name === :shutting && return (setfield!(client, :shutdown, shutdownstate(convert(Bool, value))); value)
+    setfield!(client, name, convert(fieldtype(typeof(client), name), value))
+end
+
+Base.propertynames(client::Client, private::Bool=false) = (fieldnames(typeof(client))..., :state, :shutting)
 
 const versions = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
@@ -82,15 +97,15 @@ function takepending!(client::Client, ::Connection)
 end
 
 function shutdown(client::Client)
-    owner = lock(client.lock) do
-        client.shutting && return false
-        client.shutting = true
-        true
-    end
-    if !owner
-        wait(client.done)
-        return nothing
-    end
+    pending = lock(() -> claim!(client, client.shutdown), client.lock)
+    finishshutdown!(client, pending)
+end
+
+claim!(client::Client, ::ShutdownReady) = (client.shutdown = ShuttingDown(); nothing)
+claim!(client::Client, ::ShuttingDown) = client.done
+finishshutdown!(client::Client, done::Base.Event) = (wait(done); nothing)
+
+function finishshutdown!(client::Client, ::Nothing)
     try
         try
             close(client.process.in)
@@ -113,12 +128,15 @@ function shutdown(client::Client)
             close(client.process.out)
         catch
         end
-        isnothing(client.reader) || wait(client.reader)
+        joinreader(client.reader)
     finally
         notify(client.done)
     end
     nothing
 end
+
+joinreader(::Nothing) = nothing
+joinreader(reader::Task) = wait(reader)
 
 function Base.close(client::Client)
     fail!(client, Failure(:closed, "MCP connection closed"))
@@ -232,7 +250,7 @@ function connect(command::Cmd; timeout=30.0, grace=0.5)
     catch exception
         return Failure(:start, sprint(showerror, exception))
     end
-    client = Client(process, ReentrantLock(), ReentrantLock(), Dict{Int, Channel{Any}}(), 0, Connecting(), nothing, Float64(timeout), Float64(grace), false, Base.Event(), nothing)
+    client = Client(process, ReentrantLock(), ReentrantLock(), Dict{Int, Channel{Any}}(), 0, Connecting(), nothing, Float64(timeout), Float64(grace), ShutdownReady(), Base.Event(), nothing)
     client.reader = @async readmessages(client)
     params = Dict("protocolVersion" => first(versions), "capabilities" => Dict(), "clientInfo" => Dict("name" => "JuliaForever", "version" => "0.1.0"))
     initialize!(client, request(client, "initialize", params, Connecting()))
