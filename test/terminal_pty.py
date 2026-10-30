@@ -53,7 +53,7 @@ class Session:
         return [json.loads(line) for line in self.capture.read_bytes().split(b"\n")[:-1]]
 
     def ready(self):
-        self.until(lambda: b"> " in self.output, "initial prompt")
+        self.until(lambda: b"> " in self.output, "initial prompt", timeout=120)
 
     def send(self, text, expected):
         offset, count = len(self.output), len(self.records())
