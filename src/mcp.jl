@@ -709,10 +709,16 @@ end
 toolresponse(failure::Failure) = failure
 toolresponse(result) = Failure(:protocol, "Invalid MCP tools/call result")
 
-function toolresponse(result::AbstractDict)
-    (!haskey(result, "content") || result["content"] isa AbstractVector) && (!haskey(result, "isError") || result["isError"] isa Bool) && (haskey(result, "content") || haskey(result, "structuredContent")) || return Failure(:protocol, "Invalid MCP tools/call result")
-    result
-end
+toolfield(result, key) = haskey(result, key) ? Some(result[key]) : nothing
+toolresponse(result::AbstractDict) = toolcontent(result, toolfield(result, "content"))
+toolcontent(result, ::Nothing) = toolstructured(result, toolfield(result, "structuredContent"))
+toolcontent(result, ::Some) = Failure(:protocol, "Invalid MCP tools/call result")
+toolcontent(result, ::Some{<:AbstractVector}) = toolerror(result, toolfield(result, "isError"))
+toolstructured(result, ::Nothing) = Failure(:protocol, "Invalid MCP tools/call result")
+toolstructured(result, ::Some) = toolerror(result, toolfield(result, "isError"))
+toolerror(result, ::Nothing) = result
+toolerror(result, ::Some) = Failure(:protocol, "Invalid MCP tools/call result")
+toolerror(result, ::Some{Bool}) = result
 
 struct RemoteTool <: Tool
     client::Client

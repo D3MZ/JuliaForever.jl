@@ -7,6 +7,11 @@ const MCP = JuliaForever.MCP
     @test MCP.toolresponse(failure) === failure
     @test MCP.toolresponse(Dict("content" => Any[])) == Dict("content" => Any[])
     @test MCP.toolresponse(Dict("content" => "bad")) isa MCP.Failure
+    @test MCP.toolresponse(JSON3.read("{\"content\":[],\"isError\":false}")) isa AbstractDict
+    @test MCP.toolresponse(Dict("structuredContent" => nothing)) == Dict("structuredContent" => nothing)
+    for bad in (Dict(), Dict("content" => nothing), Dict("content" => missing, "structuredContent" => 1), Dict("content" => [], "isError" => nothing), Dict("content" => [], "isError" => 1))
+        @test MCP.toolresponse(bad) isa MCP.Failure
+    end
     @test MCP.cursorparams(nothing) == Dict()
     @test MCP.cursorparams("next") == Dict("cursor" => "next")
     blocks = Any[Dict("type" => "text", "text" => "ok"), Dict("type" => "text", "text" => 3), Dict("type" => "resource_link", "uri" => "file:///item"), false]
