@@ -10,6 +10,7 @@ using Test, JSON3
         globalprompts = joinpath(agentdir, "prompts")
         projectprompts = joinpath(cwd, ".pi", "prompts")
         mkpath.((globalprompts, projectprompts))
+        cwd = cd(pwd, cwd)
         write(joinpath(globalprompts, "review.md"), "---\ndescription: Review changes\nargument-hint: '[focus]'\n---\nReview \$1 | \${2:-everything} | \$@")
         write(joinpath(globalprompts, "same.md"), "global \$1")
         write(joinpath(projectprompts, "same.md"), "project \$1")
