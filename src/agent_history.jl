@@ -66,15 +66,18 @@ function record!(agent::Agent, revision::Integer)
 end
 
 function persist!(agent::Agent, history::History.Store, event)
-    complete = false
+    saved = nothing
     try
         result = persist!(history, agent.history_revision, History.encode(event))
-        complete = true
+        saved = Some(result)
         record!(agent, result)
     finally
-        complete || (agent.fault = History.Rejected(:uncertain))
+        persistended!(agent, saved)
     end
 end
+
+persistended!(agent, ::Some) = nothing
+persistended!(agent, ::Nothing) = (agent.fault = History.Rejected(:uncertain))
 
 fault(agent::Agent) = lock(() -> agent.fault, agent.lock)
 

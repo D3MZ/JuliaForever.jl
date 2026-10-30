@@ -1,6 +1,6 @@
 module Logs
 
-using JSON3
+using JSON3, Markdown
 import ..Kernel
 import ..Conversation
 
@@ -67,6 +67,7 @@ end
 json(history; project=record) = sprint(io -> json(io, history; project))
 
 escape(text::AbstractString) = replace(text, '&' => "&amp;", '<' => "&lt;", '>' => "&gt;", '"' => "&quot;", '\'' => "&#39;")
+include("logs_markdown.jl")
 
 """
     html([io,] history; project=record, title="Julia Forever history")
@@ -91,14 +92,67 @@ end
 
 html(history; project=record, title="Julia Forever history") = sprint(io -> html(io, history; project, title))
 
+const conversationstyle = raw"""
+body{font:16px system-ui,sans-serif;line-height:1.55;max-width:72rem;margin:2rem auto;padding:0 1rem;color:#1b1b1b}
+nav{display:flex;flex-wrap:wrap;align-items:center;gap:.6rem;margin:1rem 0}input[type=search]{flex:1 1 14rem;padding:.45rem}
+button{padding:.4rem .65rem;cursor:pointer}button:disabled{cursor:default}article{border-top:1px solid #ddd;padding:1rem 0}
+article.current{border-left:3px solid #5079df;padding-left:.75rem}h2{font-size:1rem;margin:0 0 .5rem}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font:inherit}details{margin:.5rem 0;padding:.6rem;background:#f4f4f4}
+summary{cursor:pointer;font-weight:600}[hidden]{display:none!important}output{min-width:8rem}output:empty{display:none}
+.markdown p{margin:.5rem 0}.markdown code{font-family:ui-monospace,monospace}.markdown pre{background:#f4f4f4;padding:.75rem;overflow:auto}
+.markdown table{border-collapse:collapse}.markdown th,.markdown td{border:1px solid #ddd;padding:.35rem .6rem;text-align:left}
+.markdown blockquote{border-left:3px solid #ddd;margin:.5rem 0;padding-left:.8rem}
+@media(max-width:36rem){input[type=search]{flex-basis:100%}output{min-width:0}}
+"""
+
+const conversationscript = raw"""
+(() => {
+  const search = document.getElementById("conversation-search");
+  const status = document.getElementById("search-status");
+  const showTools = document.getElementById("show-tools");
+  const previous = document.getElementById("previous-match");
+  const next = document.getElementById("next-match");
+  const expand = document.getElementById("expand-tools");
+  const articles = Array.from(document.querySelectorAll("article[data-role]"));
+  let matches = [], selected = 0, expanded = false;
+  function update(scroll) {
+    const query = search.value.trim().toLocaleLowerCase();
+    matches = [];
+    for (const article of articles) {
+      const visible = (showTools.checked || article.dataset.role !== "tool") && (!query || article.textContent.toLocaleLowerCase().includes(query));
+      article.hidden = !visible;
+      if (visible && query) matches.push(article);
+    }
+    selected = Math.min(selected, Math.max(0, matches.length - 1));
+    status.textContent = !query ? "" : matches.length ? (selected + 1) + " of " + matches.length + " matches" : "No matches";
+    previous.disabled = next.disabled = matches.length === 0;
+    for (const article of articles) article.classList.toggle("current", article === matches[selected] && matches.length > 0);
+    if (scroll && matches.length) matches[selected].scrollIntoView({ block: "center" });
+  }
+  search.addEventListener("input", () => { selected = 0; update(false); });
+  showTools.addEventListener("change", () => { selected = 0; update(false); });
+  previous.addEventListener("click", () => { selected = (selected + matches.length - 1) % matches.length; update(true); });
+  next.addEventListener("click", () => { selected = (selected + 1) % matches.length; update(true); });
+  search.addEventListener("keydown", event => {
+    if (event.key === "Enter" && matches.length) { event.preventDefault(); (event.shiftKey ? previous : next).click(); }
+  });
+  expand.addEventListener("click", () => {
+    expanded = !expanded;
+    for (const details of document.querySelectorAll("article details")) details.open = expanded;
+    expand.textContent = expanded ? "Collapse tool calls" : "Expand tool calls";
+  });
+  update(false);
+})();
+"""
 
 function conversationhtml(io::IO, messages; title="Julia Forever conversation")
     heading = escape(title)
-    print(io, "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>", heading, "</title><style>body{font:16px system-ui,sans-serif;line-height:1.55;max-width:72rem;margin:2rem auto;padding:0 1rem;color:#1b1b1b}article{border-top:1px solid #ddd;padding:1rem 0}h2{font-size:1rem;margin:0 0 .5rem}pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font:inherit}details{margin:.5rem 0;padding:.6rem;background:#f4f4f4}summary{cursor:pointer;font-weight:600}</style></head><body><main><h1>", heading, "</h1>\n")
+    print(io, "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>", heading, "</title><style>", conversationstyle, "</style></head><body><main><h1>", heading, "</h1>\n")
+    print(io, """<nav aria-label="Conversation controls"><input id="conversation-search" type="search" aria-label="Search conversation" placeholder="Search conversation"><button id="previous-match" type="button" disabled>Previous match</button><button id="next-match" type="button" disabled>Next match</button><output id="search-status" role="status" aria-live="polite"></output><label><input id="show-tools" type="checkbox" checked> Show tool results</label><button id="expand-tools" type="button">Expand tool calls</button></nav>\n""")
     for message in messages
         conversationmessage(io, get(message, "role", ""), message)
     end
-    print(io, "</main></body></html>\n")
+    print(io, "</main><script>", conversationscript, "</script></body></html>\n")
     nothing
 end
 
@@ -109,8 +163,8 @@ function conversationmessage(io, role::AbstractString, message)
 end
 conversationmessage(io, ::Nothing, message, role) = nothing
 function conversationmessage(io, label::AbstractString, message, role)
-    print(io, "<article><h2>", escape(label), "</h2>")
-    conversationcontent(io, get(message, "content", nothing))
+    print(io, "<article data-role=\"", escape(role), "\"><h2>", escape(label), "</h2>")
+    conversationcontent(io, role, get(message, "content", nothing))
     foreach(image -> conversationimage(io, image), get(message, "images", []))
     conversationimage(io, get(message, "image", nothing))
     for call in get(message, "tool_calls", [])
@@ -119,9 +173,11 @@ function conversationmessage(io, label::AbstractString, message, role)
     print(io, "</article>\n")
     nothing
 end
-conversationcontent(io, ::Nothing) = nothing
-conversationcontent(io, text::AbstractString) = print(io, "<pre>", escape(text), "</pre>")
-conversationcontent(io, content) = print(io, "<pre>", escape(JSON3.write(content)), "</pre>")
+conversationcontent(io, role, ::Nothing) = nothing
+conversationcontent(io, role, text::AbstractString) = get(conversationrenderers, role, plaintext)(io, text)
+conversationcontent(io, role, content) = plaintext(io, JSON3.write(content))
+plaintext(io, text) = print(io, "<pre>", escape(text), "</pre>")
+const conversationrenderers = Dict("user" => markdowncontent, "assistant" => markdowncontent)
 conversationimage(io, image) = nothing
 conversationimage(io, image::AbstractDict) = conversationimage(io, get(image, "mime", nothing), get(image, "data", nothing))
 conversationimage(io, mime, data) = nothing

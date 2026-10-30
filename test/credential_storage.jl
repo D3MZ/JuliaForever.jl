@@ -23,7 +23,7 @@ using Test, JuliaForever, JSON3
             info = JuliaForever.providerinfo(selected)
             isnothing(info) && continue
             write(path, JSON3.write(Dict(stored => Dict("type" => "api_key", "key" => "fixture-stored"))))
-            other = Dict("PI_CODING_AGENT_DIR" => dir, "JF_PROVIDER" => selected, info.model => "fixture", variable => "fixture-env")
+            other = Dict("PI_CODING_AGENT_DIR" => dir, "JF_OPENROUTER_DIR" => joinpath(dir, "router"), "JF_PROVIDER" => selected, info.model => "fixture", variable => "fixture-env")
             @test JuliaForever.configured(other, info, nothing)
             @test JuliaForever.provider(other).key == "fixture-stored"
         end

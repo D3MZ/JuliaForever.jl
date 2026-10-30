@@ -77,7 +77,7 @@ end
     try
         project = dirname(@__DIR__)
         base = "http://$(HTTP.server_addr(server))/api/v1"
-        cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever --no-session --provider openrouter --login-openrouter-callback --model cli/model hello`, "OPENROUTER_BASE_URL" => base, "OPENROUTER_MODEL" => "fixture/model")
+        cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever --no-session --provider openrouter --login-openrouter-callback --model cli/model hello`, "OPENROUTER_BASE_URL" => base, "OPENROUTER_MODEL" => "fixture/model", "JF_OPENROUTER_DIR" => joinpath(mktempdir(), "router"))
         output = open(cmd, "r") do io
             line = readline(io)
             url = match(r"https://openrouter\.ai/auth\?\S+", line).match

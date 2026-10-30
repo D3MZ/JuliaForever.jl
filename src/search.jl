@@ -44,6 +44,14 @@ function searchpath(tool, name)
     abspath(path(tool, name))
 end
 
+globclass!(out, chars, i, ::Nothing) = (print(out, "\\["); i)
+function globclass!(out, chars, i, stop::Integer)
+    part = String(chars[(i + 1):(stop - 1)])
+    startswith(part, '!') && (part = "^" * part[nextind(part, firstindex(part)):end])
+    print(out, "[", part, "]")
+    stop
+end
+
 # Convert the common glob syntax to a regular expression without invoking another tool.
 function globsource(pattern)
     chars = collect(pattern)
@@ -66,15 +74,7 @@ function globsource(pattern)
         elseif c == '?'
             print(out, "[^/]")
         elseif c == '['
-            stop = findnext(==(']'), chars, i + 1)
-            if isnothing(stop)
-                print(out, "\\[")
-            else
-                part = String(chars[(i + 1):(stop - 1)])
-                startswith(part, '!') && (part = "^" * part[nextind(part, firstindex(part)):end])
-                print(out, "[", part, "]")
-                i = stop
-            end
+            i = globclass!(out, chars, i, findnext(==(']'), chars, i + 1))
         elseif c == '{'
             print(out, "(?:")
         elseif c == '}'
@@ -213,13 +213,13 @@ function walksearch(visit, root, tool::Union{Find, Grep}; whitelist=(target -> f
     walk(root, inherited, inside)
 end
 
-function searchresult(lines, limit, label; truncatedlines=false)
-    isempty(lines) && return ToolResult(label == "results" ? "No files found matching pattern" : "No matches found")
-    output, truncated = head(lines)
+function findresult(lines, limit)
+    isempty(lines) && return ToolResult("No files found matching pattern")
+    bounded = head(lines)
     notices = String[]
-    length(lines) >= limit && push!(notices, "$limit $label limit reached. Use limit=$(limit * 2) for more, or refine pattern")
-    truncated && push!(notices, "50.0KB limit reached")
-    truncatedlines && push!(notices, "Some lines truncated to 500 chars. Use read tool to see full lines")
+    length(lines) >= limit && push!(notices, "$limit results limit reached. Use limit=$(limit * 2) for more, or refine pattern")
+    headnotice!(notices, bounded)
+    output = headtext(bounded)
     !isempty(notices) && (output *= "\n\n[$(join(notices, ". "))]")
     ToolResult(output)
 end
@@ -245,16 +245,25 @@ function execute(tool::Find, args)
         end
         true
     end
-    searchresult(found, limit, "results")
+    findresult(found, limit)
 end
+
+struct ShortenedLine
+    text::String
+end
+
+linetext(line::AbstractString) = line
+linetext(line::ShortenedLine) = line.text
+linenotice!(notices, ::AbstractString) = nothing
+linenotice!(notices, ::ShortenedLine) = push!(notices, "Some lines truncated to 500 chars. Use read tool to see full lines")
 
 function shortline(line)
     units = transcode(UInt16, line)
-    length(units) <= 500 && return line, false
+    length(units) <= 500 && return line
     units = units[1:500]
     # Julia strings cannot encode an unpaired UTF-16 surrogate.
     0xd800 <= units[end] <= 0xdbff && (units[end] = 0xfffd)
-    String(transcode(UInt8, units)) * "... [truncated]", true
+    ShortenedLine(String(transcode(UInt8, units)) * "... [truncated]")
 end
 
 struct GlobFilter
@@ -297,7 +306,7 @@ function execute(tool::Grep, args)
     end
     output = String[]
     count = 0
-    truncatedlines = false
+    linenotices = Set{String}()
     directory = isdir(root)
     function visit(target, isdirectory)
         isdirectory && return true
@@ -317,9 +326,10 @@ function execute(tool::Grep, args)
             matched || continue
             count += 1
             for n in max(1, number - context):min(length(lines), number + context)
-                shown, shortened = shortline(replace(lines[n], '\r' => ""))
-                truncatedlines |= shortened
-                push!(output, n == number ? "$relative:$n: $shown" : "$relative-$n- $shown")
+                shown = shortline(replace(lines[n], '\r' => ""))
+                linenotice!(linenotices, shown)
+                text = linetext(shown)
+                push!(output, n == number ? "$relative:$n: $text" : "$relative-$n- $text")
             end
             count >= limit && return false
         end
@@ -329,12 +339,12 @@ function execute(tool::Grep, args)
     directory ? walksearch(visit, root, tool; whitelist) : visit(root, false)
     isempty(output) && return ToolResult("No matches found")
     # Match limits count matches, not context rows.
-    limited = count >= limit
-    text, truncated = head(output)
+    bounded = head(output)
     notices = String[]
-    limited && push!(notices, "$limit matches limit reached. Use limit=$(limit * 2) for more, or refine pattern")
-    truncated && push!(notices, "50.0KB limit reached")
-    truncatedlines && push!(notices, "Some lines truncated to 500 chars. Use read tool to see full lines")
+    count >= limit && push!(notices, "$limit matches limit reached. Use limit=$(limit * 2) for more, or refine pattern")
+    headnotice!(notices, bounded)
+    text = headtext(bounded)
+    append!(notices, linenotices)
     !isempty(notices) && (text *= "\n\n[$(join(notices, ". "))]")
     ToolResult(text)
 end

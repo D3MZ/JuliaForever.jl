@@ -177,8 +177,8 @@ const replayroles = Dict("user" => replayuser!, "assistant" => replayassistant!,
 viewkeys(::Regular, reference) = Dict{Any, Any}()
 function viewkeys(::Fullscreen, reference)
     Dict{Any, Any}(
-        "\e[5~" => (state, args...) -> scroll!(reference[], -1),
-        "\e[6~" => (state, args...) -> scroll!(reference[], 1),
+        "\e[5~" => (state, args...) -> pagecompletion!(reference[], state, -1),
+        "\e[6~" => (state, args...) -> pagecompletion!(reference[], state, 1),
         "\e[1;5H" => (state, args...) -> top!(reference[]),
         "\e[1;5F" => (state, args...) -> bottom!(reference[]),
         "^O" => (state, args...) -> detail!(reference[]),
@@ -200,7 +200,7 @@ function scroll!(session, direction)
     rows, cols = displaysize(session.physical)
     rows, cols = max(rows, 3), max(cols, 2)
     width = cols - 1
-    _, _, _, _, height = viewport(session, width, rows)
+    _, _, _, _, _, height = viewport(session, width, rows)
     all = transcript(screen, width)
     bottom = max(1, length(all) - height + 1)
     top = iszero(screen.top) ? bottom : screen.top
@@ -298,11 +298,13 @@ function editorlines(session, width, height)
 end
 
 function viewport(session, width, rows)
+    synccompletion!(session, session.editor.state)
     editor, cursorrow, cursorcol = editorlines(session, width, rows)
+    menu = completionlines(session, width, max(0, min(5, rows - length(editor) - 2)))
     queued = reduce(vcat, (wrap(line, width) for line in queuelines(session)); init=String[])
-    queued = last(queued, min(length(queued), max(0, rows - length(editor) - 2)))
-    height = max(1, rows - length(editor) - length(queued) - 1)
-    editor, cursorrow, cursorcol, queued, height
+    queued = last(queued, min(length(queued), max(0, rows - length(editor) - length(menu) - 2)))
+    height = max(1, rows - length(editor) - length(queued) - length(menu) - 1)
+    editor, cursorrow, cursorcol, queued, menu, height
 end
 
 paint!(::Nothing) = nothing
@@ -325,7 +327,7 @@ function paint!(session, screen::Fullscreen)
     rows, cols = max(rows, 3), max(cols, 2)
     screen.size = (rows, cols)
     width = cols - 1
-    editor, cursorrow, cursorcol, queued, height = viewport(session, width, rows)
+    editor, cursorrow, cursorcol, queued, menu, height = viewport(session, width, rows)
     all = transcript(screen, width)
     bottom = max(1, length(all) - height + 1)
     top = iszero(screen.top) ? bottom : clamp(screen.top, 1, bottom)
@@ -335,7 +337,7 @@ function paint!(session, screen::Fullscreen)
     for (row, line) in enumerate(visible)
         print(out, "\e[", row, ";1H", line)
     end
-    statusrow = rows - length(editor)
+    statusrow = rows - length(editor) - length(menu)
     for (index, line) in enumerate(queued)
         print(out, "\e[", statusrow - length(queued) + index - 1, ";1H", line)
     end
@@ -343,6 +345,9 @@ function paint!(session, screen::Fullscreen)
     print(out, "\e[", statusrow, ";1H", first(wrap(status, width)))
     for (index, line) in enumerate(editor)
         print(out, "\e[", statusrow + index, ";1H", line)
+    end
+    for (index, line) in enumerate(menu)
+        print(out, "\e[", statusrow + length(editor) + index, ";1H", line)
     end
     print(out, "\e[", statusrow + cursorrow, ";", cursorcol, "H\e[?25h")
     write(session.physical, take!(out))

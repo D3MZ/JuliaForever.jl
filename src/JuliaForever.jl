@@ -12,8 +12,8 @@ include("tools.jl")
 include("tool_search.jl")
 include("file_arguments.jl")
 include("system.jl")
-include("provider.jl")
 include("models.jl")
+include("provider.jl")
 include("chatgpt.jl")
 include("kernel.jl")
 include("conversation.jl")
@@ -83,8 +83,10 @@ struct HistoryAbandonment
 end
 struct HistoryConflict end
 include("cli_models.jl")
+include("model_config.jl")
 include("chatgpt_cli.jl")
 include("history_export.jl")
+include("openrouter_credentials.jl")
 
 historyinspect(::Nothing) = HistoryInspection()
 historyinspect(action::HistoryInspection) = action
@@ -126,7 +128,10 @@ end
 
 authenticated(failure::InvalidResponse, base, model) = failure!(Terminal(stdout, stderr, String[]), failure)
 authenticated(failure::ProviderStatus, base, model) = failure!(Terminal(stdout, stderr, String[]), failure)
-authenticated(key::AbstractString, base, model) = OpenAI(base, model, key)
+function authenticated(key::AbstractString, base, model)
+    reportremembered(rememberopenrouter(key, ENV))
+    OpenAI(base, model, key)
+end
 
 function login!(login::OpenRouterLogin, ::Nothing, info, model)
     println(stderr, "OpenRouter authorization was denied or timed out.")
@@ -170,10 +175,12 @@ launch(output, status::Integer, packages, environments, codemode, session, sessi
 
 function launch(output, model::Union{OpenAI, OpenAIResponses, Anthropic, Google, UnconfiguredProvider}, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode)
     tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), PowerShell(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
-    terminal = Terminal(output, stderr, [model.key], mode)
+    terminal = Terminal(output, stderr, terminalkeys(model), mode)
     registry = plugins(terminal, tools, packages, environments)
     Base.invokelatest(terminal!, terminal, model, registry, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
 end
+terminalkeys(model) = [model.key; last.(model.extra)]
+terminalkeys(::UnconfiguredProvider) = String[]
 
 pluginfailure!(terminal::Terminal, name, exception::InterruptException) = failure!(terminal, exception)
 
@@ -227,7 +234,7 @@ registered(terminal, registry, name, ::Bool) = registry
 registered(terminal, registry, name, result::Extensions.Rejected) = pluginfailure!(terminal, name, result)
 
 function help!(io=stdout)
-    println(io, "jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --export PATH [OUTPUT.html|OUTPUT.json] | jf --history PATH --abandon REASON | jf [options] --login-chatgpt [prompt] | jf --logout-chatgpt | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
+    println(io, "jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --export PATH [OUTPUT.html|OUTPUT.json] | jf --history PATH --abandon REASON | jf [options] --login-chatgpt [prompt] | jf --logout-chatgpt | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt] | jf --logout-openrouter\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
     println(io, "Sessions: --continue (-c), --resume (-r), --session PATH|ID, --fork PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
     println(io, "Tools: --tools (-t) LIST, --exclude-tools (-xt) LIST, --no-builtin-tools (-nbt), --no-tools (-nt).")
     println(io, "Terminal: --tui-mode fullscreen|regular (default: fullscreen).")
@@ -294,7 +301,11 @@ end
 selectedprovider(action, options, ::Nothing) = historyaction(action, options)
 selectedprovider(action, options, selected::AbstractString) = providerselection(action, options, providerinfo(selected))
 providerselection(action, options, ::NamedTuple) = historyaction(action, options)
-function providerselection(action, options, ::Nothing)
+providerselection(action, options, ::Nothing) = customselection(action, options, modelconfig(ENV))
+customselection(action, options, ::Models.InvalidConfig) = invalidmodelconfig()
+customselection(action, options, registry::Models.Registry) = customselection(action, options, get(registry.providers, options.selected, nothing))
+customselection(action, options, ::AbstractDict) = historyaction(action, options)
+function customselection(action, options, ::Nothing)
     println(stderr, "Unknown provider; choose openai, openai-responses, openrouter, anthropic, or google.")
     2
 end
@@ -304,7 +315,35 @@ historyaction(action::ModelListing, options) = listmodels!(options.output, actio
 loginprovider(::APIKeyAuth, selected, options) = resolveprovider(options, options.requested_model)
 loginprovider(::APIKeyAuth, ::Nothing, options) = defaultchatgpt(options, stdin)
 defaultchatgpt(options, input::IO) = resolveprovider(options, options.requested_model)
-function defaultchatgpt(options, input::Base.TTY)
+defaultchatgpt(options, input::Base.TTY) = defaultchatgpt(options, options.requested_model)
+defaultchatgpt(options, ::Nothing) = defaultconfiguredchatgpt(options, modelconfig(ENV))
+defaultconfiguredchatgpt(options, ::Models.InvalidConfig) = fallbackchatgpt(options)
+defaultconfiguredchatgpt(options, registry::Models.Registry) = defaultconfiguredchatgpt(options, registry, get(registry.providers, "openai", nothing))
+defaultconfiguredchatgpt(options, registry, ::Nothing) = fallbackchatgpt(options)
+defaultconfiguredchatgpt(options, registry, settings::AbstractDict) = configureddefault(options, registry, configuredkey("openai", settings, providerinfo("openai"), ENV))
+configureddefault(options, registry, ::Nothing) = configuredfallback(options, registry, get(ENV, "JF_PROVIDER", nothing))
+configureddefault(options, registry, key::AbstractString) = configureddefaultkey(options, registry, envvalue(key))
+configureddefaultkey(options, registry, ::Nothing) = configuredfallback(options, registry, get(ENV, "JF_PROVIDER", nothing))
+configureddefaultkey(options, registry, key::AbstractString) = resolveprovider(options, options.requested_model, registry)
+configuredfallback(options, registry, ::Nothing) = launchchatgpt(options, ResumeChatGPT())
+configuredfallback(options, registry, selected::AbstractString) = resolveprovider(options, options.requested_model, registry)
+defaultchatgpt(options, text::AbstractString) = configuredchatgpt(options, text, modelconfig(ENV))
+configuredchatgpt(options, text, ::Models.InvalidConfig) = invalidmodelconfig()
+function configuredchatgpt(options, text, registry::Models.Registry)
+    result = Models.resolve(text, registry.models, usableproviders(ENV, registry))
+    configuredchatgpt(options, registry, result)
+end
+configuredchatgpt(options, registry, result::Models.Resolution) = fallbackchatgpt(options)
+configuredchatgpt(options, registry, result::Models.Resolved) = configuredchatgpt(options, registry, result, get(registry.providers, result.model.provider, nothing))
+configuredchatgpt(options, registry, result, ::Nothing) = fallbackchatgpt(options)
+function configuredchatgpt(options, registry, result, settings::AbstractDict)
+    builtin = providerinfo(result.model.provider)
+    key = configuredkey(result.model.provider, settings, builtin, ENV)
+    configuredchatgpt(options, registry, result, key, builtin)
+end
+configuredchatgpt(options, registry, result, ::Nothing, ::NamedTuple) = fallbackchatgpt(options)
+configuredchatgpt(options, registry, result, key, builtin) = resolveprovider(merge(options, (; modelconfig=registry)), result)
+function fallbackchatgpt(options)
     if !haskey(ENV, "JF_PROVIDER") && isempty(something(keyvalue(ENV, providerinfos["openai"]), ""))
         return launchchatgpt(options, ResumeChatGPT())
     end
@@ -325,12 +364,14 @@ end
 function launchprovider(options)
     (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, outputmode, output) = options
     name = providername(auth, selected)
-    info = providerinfo(name)
+    info = launchinfo(auth, options.modelconfig, name, requested_model)
     model = acquire(auth, info, requested_model, outputmode)
     Base.ScopedValues.with(tuimode => LiveTerminal.withprovider(options.tui, name)) do
         launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, provider(outputmode, name))
     end
 end
+launchinfo(::APIKeyAuth, registry::Models.Registry, name, model) = configuredinfo(registry, name, model, ENV)
+launchinfo(::OpenRouterAuth, registry::Models.Registry, name, model) = providerinfo(name)
 
 historyaction(::HistoryInspection, options) = inspectrequest!(options.session, options.auth, options.sessionname, options.args)
 historyaction(::HistoryConflict, options) = invalidinspection()

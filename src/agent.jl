@@ -254,7 +254,8 @@ function bashtext(message::Conversation.BashMessage)
     "Ran `$(message.command)`\n$content$status$truncation"
 end
 bashexit(::Nothing) = ""
-bashexit(code::Int) = code == 0 ? "" : "\n\nCommand exited with code $code"
+const bashcodes = Dict(0 => "")
+bashexit(code::Int) = get(bashcodes, code, "\n\nCommand exited with code $code")
 bashstatus(::Conversation.FinishedBash, code) = bashexit(code)
 bashstatus(::Conversation.CancelledBash, code) = "\n\n(command cancelled)"
 bashtruncation(::Conversation.FullBash, file) = ""
@@ -679,19 +680,19 @@ finish(message, result::Completion, ::Nothing) = message["content"]
 finish(message, result::Completion, ::Type{Truncated}) = Truncated(result)
 
 function modelresponse(agent, effect, parameters, on_event, on_agent_event)
-    returned = false
+    answer = nothing
     try
         messages = modelmessages(effect.effect.messages)
-        answer = response(agent, messages, parameters, on_event, on_agent_event)
-        rememberusage!(answer.result)
-        returned = true
-        answer
+        received = response(agent, messages, parameters, on_event, on_agent_event)
+        rememberusage!(received.result)
+        answer = received
     finally
-        if !returned
-            transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("provider did not return")), agent)
-        end
+        modelreturned!(agent, effect, answer)
     end
 end
+
+modelreturned!(agent, effect, ::NamedTuple) = nothing
+modelreturned!(agent, effect, ::Nothing) = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("provider did not return")), agent)
 
 interrupt!(agent::Agent, ::Conversation.Phase) = nothing
 interrupt!(agent::Agent, ::Union{Conversation.ReadyModelPhase, Conversation.ReadyDecisionPhase, Conversation.WaitingModelPhase, Conversation.WaitingToolsPhase}) = transition!(revision -> Conversation.Interrupt(revision, "turn interrupted"), agent)

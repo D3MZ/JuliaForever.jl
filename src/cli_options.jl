@@ -93,6 +93,7 @@ cliresume!(state, value) = (state.options.session = SessionCatalog.assign(state.
 cliephemeral!(state, value) = (state.options.session = SessionCatalog.assign(state.options.session, SessionCatalog.Ephemeral()); state)
 cliinspect!(state, value) = (state.options.action = historyinspect(state.options.action); state)
 clilogout!(state, value) = (state.options.action = logoutaction(state.options.action); state)
+clirouterlogout!(state, value) = (state.options.action = routerlogoutaction(state.options.action); state)
 climodels!(state, value) = (state.options.action = ModelListing(""); CLIModelQuery(state.options))
 
 clilogin(state, auth) = clilogin(state, state.options.auth, auth)
@@ -136,6 +137,7 @@ const cliactions = Dict{String, Function}(
     "--login-openrouter-callback" => (state, option) -> clilogin(state, CallbackAuth()),
     "--login-chatgpt" => (state, option) -> clilogin(state, ChatGPTAuth()),
     "--logout-chatgpt" => clilogout!,
+    "--logout-openrouter" => clirouterlogout!,
     "--plugin" => clivalue(setplugin!, clioptionvalue, option -> "$option requires a package name."),
     "--plugin-env" => clivalue(setenvironment!, clioptionvalue, option -> "$option requires a path."),
     "--history" => clivalue(sethistory!, clipathvalue, option -> "--history requires a path."),

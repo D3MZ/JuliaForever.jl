@@ -2,13 +2,17 @@ struct OpenAIResponses
     base::String
     model::String
     key::String
+    extra::Vector{Pair{String, String}}
+    route::Union{DirectRoute, CatalogRoute}
 end
+OpenAIResponses(base, model, key) = OpenAIResponses(base, model, key, Pair{String, String}[], DirectRoute())
+OpenAIResponses(base, model, key, extra) = OpenAIResponses(base, model, key, extra, DirectRoute())
 
 Base.show(io::IO, provider::OpenAIResponses) = print(io, "OpenAIResponses(", repr(provider.model), ", [redacted])")
 StructTypes.StructType(::Type{OpenAIResponses}) = StructTypes.CustomStruct()
 StructTypes.lower(provider::OpenAIResponses) = (; model=provider.model, credentials="[redacted]")
 
-headers(provider::OpenAIResponses) = ["Authorization" => "Bearer $(provider.key)", "Content-Type" => "application/json"]
+headers(provider::OpenAIResponses) = mergeheaders(["Authorization" => "Bearer $(provider.key)", "Content-Type" => "application/json"], provider.extra)
 endpoint(provider::OpenAIResponses) = "$(rstrip(provider.base, '/'))/responses"
 
 const inputtypes = Dict("tool" => Conversation.ToolMessage, "assistant" => Conversation.Assistant, "user" => Conversation.User)

@@ -9,6 +9,9 @@ using Test, JuliaForever
 
     initial = H.encode_initial(C.State("codec"; automatic=false, messages=C.Message[C.User("hello")]))
     @test H.encode_initial(H.decode_initial(initial)) == initial
+    seed = C.State("not-ready")
+    waiting = C.State(seed.kernel, 0, seed.messages, C.WaitingModel, seed.order, seed.calls, seed.steering, seed.followups, seed.mode, seed.cancellation, seed.flushed)
+    @test H.encode_initial(waiting) == unsupported
     @test H.decode_initial(nothing) == invalid
     @test H.decode_initial(merge(initial, Dict("automatic" => 1))) == invalid
     @test H.decode_initial(merge(initial, Dict("messages" => [H.pack(K.Call("not a message", 1))]))) == invalid

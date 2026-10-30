@@ -1,18 +1,22 @@
 module GoogleAPI
 
 using HTTP, JSON3, Random, SHA
-import ..JuliaForever: requestcontext, complete, stream, payload, headers, endpoint, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Finished, Unfinished, Usage
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute
 
 struct Google
     base::String
     model::String
     key::String
+    extra::Vector{Pair{String, String}}
+    route::Union{DirectRoute, CatalogRoute}
 end
+Google(base, model, key) = Google(base, model, key, Pair{String, String}[], DirectRoute())
+Google(base, model, key, extra) = Google(base, model, key, extra, DirectRoute())
 
 Base.show(io::IO, provider::Google) = print(io, "Google(", repr(provider.model), ", [redacted])")
 JSON3.StructTypes.StructType(::Type{Google}) = JSON3.StructTypes.CustomStruct()
 JSON3.StructTypes.lower(provider::Google) = (; model=provider.model, credentials="[redacted]")
-headers(provider::Google) = ["x-goog-api-key" => provider.key, "content-type" => "application/json"]
+headers(provider::Google) = mergeheaders(["x-goog-api-key" => provider.key, "content-type" => "application/json"], provider.extra)
 endpoint(provider::Google) = "$(rstrip(provider.base, '/'))/models/$(HTTP.escapeuri(provider.model)):generateContent"
 endpoint(provider::Google, ::typeof(stream)) = "$(rstrip(provider.base, '/'))/models/$(HTTP.escapeuri(provider.model)):streamGenerateContent?alt=sse"
 origin(provider::Google) = bytes2hex(sha256(provider.base)) * ":" * provider.model

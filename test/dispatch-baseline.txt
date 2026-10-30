@@ -5,18 +5,12 @@ agent.jl	:(name === :cancelled)
 agent.jl	:(name === :events)
 agent.jl	:(name === :running)
 agent.jl	:(requestcancelled((last(exceptions)).exception, turnstate(agent)))
-agent.jl	:returned
-agent_history.jl	:complete
-codemode.jl	:(call.status == :running)
+chatgpt_store.jl	:(code == Base.Libc.EAGAIN)
 codemode.jl	:(cancel.cancelled[])
 codemode.jl	:(cancel.cancelled[])
 codemode.jl	:(cancel.cancelled[])
 codemode.jl	:(context.done[])
-codemode.jl	:(isnothing(failure))
-codemode.jl	:(isnothing(failure))
-codemode.jl	:(isnothing(failure))
-codemode.jl	:(isnothing(failure))
-codemode.jl	:(isnothing(result))
+codemode.jl	:(isopen(context.events))
 codemode.jl	:(name === :ok)
 codemode.jl	:(timedout[])
 codemode_worker.jl	:(connected[])
@@ -30,7 +24,7 @@ conversation.jl	:(name === :cancelled)
 conversation.jl	:(name === :done)
 conversation.jl	:(name in (:messages, :order, :calls, :steering, :followups))
 conversation.jl	:(name in (:text, :iserror, :image))
-conversation_codec.jl	:(state.phase == C.Ready)
+durable.jl	:(code == Base.Libc.EAGAIN)
 durable.jl	:(document(record, conversation))
 durable.jl	:(entry(record, conversation, upper))
 durable.jl	:(hasdocuments(state, conversation))
@@ -91,8 +85,6 @@ mcp.jl	:(name === :state)
 mcp.jl	:(received(client, message))
 mcp.jl	:(received(client, value))
 mcp.jl	:(received(client, value))
-mcp.jl	:(result["content"] isa AbstractVector)
-mcp.jl	:(result["isError"] isa Bool)
 mcp.jl	:(stringvalue(get(value, "text", nothing)))
 mcp.jl	:(stringvalue(get(value, "uri", nothing)))
 mcp.jl	:(timedwait((()->begin                   process_exited(client.process)               end), client.grace; pollint = 0.01) != :ok)
@@ -118,7 +110,6 @@ scheduler.jl	:(typeof(b))
 scheduler.jl	:(view.kind == name(handler))
 scheduler.jl	:cancelled
 scheduler.jl	:success
-search.jl	:(isnothing(stop))
 search.jl	:(rule.directory)
 search.jl	:(selectglob(filter, target))
 search.jl	:anchored
@@ -132,14 +123,9 @@ search.jl	:directory
 search.jl	:directory
 search.jl	:directory
 search.jl	:isdirectory
-search.jl	:limited
 search.jl	:matched
 search.jl	:negate
 search.jl	:smartcase
-search.jl	:truncated
-search.jl	:truncated
-search.jl	:truncatedlines
-search.jl	:truncatedlines
 search.jl	:windows
 search.jl	:windows
 session_terminal.jl	:(Kernel.same(agent.messages, plan.original))
@@ -166,11 +152,10 @@ sqlite_history.jl	:complete
 sqlite_history.jl	:create
 sqlite_history.jl	:create
 sqlite_history.jl	:create
+system.jl	:(code != 0)
 system.jl	:bybytes
 system.jl	:partial
 system.jl	:partial
-system.jl	:reached
-system.jl	:truncated
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :streamed)

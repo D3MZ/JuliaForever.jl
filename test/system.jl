@@ -23,6 +23,7 @@ end
         write(joinpath(dir, ".hidden"), "h")
         mkpath(joinpath(dir, "alpha"))
         @test execute(listing, (;)).text == ".hidden\nalpha/\nbeta.txt"
+        @test execute(listing, (; limit=3)).text == ".hidden\nalpha/\nbeta.txt"
         @test execute(listing, (; limit=2)).text == ".hidden\nalpha/\n\n[2 entries limit reached. Use limit=4 for more]"
         @test execute(listing, (; path="missing")).iserror
         @test execute(listing, (; path="beta.txt")).iserror
