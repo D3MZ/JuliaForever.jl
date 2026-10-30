@@ -14,7 +14,7 @@ async function piExport(root, source) {
     const rows = [
         { type: "session", version: 3, id: "11111111-1111-4111-8111-111111111111", timestamp, cwd: root },
         { type: "message", id: "u1", parentId: null, timestamp, message: { role: "user", content: [{ type: "text", text: "hello" }], timestamp: 0 } },
-        { type: "message", id: "a1", parentId: "u1", timestamp, message: { role: "assistant", content: [{ type: "text", text }], api: "openai-completions", provider: "openai", model: "fixture", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 0 } },
+        { type: "message", id: "a1", parentId: "u1", timestamp, message: { role: "assistant", content: [{ type: "thinking", thinking: "Inspect <img src=x onerror=globalThis.injected=true>" }, { type: "text", text }], api: "openai-completions", provider: "openai", model: "fixture", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 0 } },
     ];
     const session = path.join(root, "pi-session.jsonl");
     const html = path.join(root, "pi-export.html");
@@ -39,6 +39,13 @@ async function piExport(root, source) {
         assert.equal(await articles.count(), 4);
         assert.equal(await page.evaluate(() => globalThis.injected), undefined);
         const assistant = page.locator('article[data-role="assistant"]');
+        const thinking = assistant.locator("details.thinking");
+        assert.equal(await thinking.locator("pre").textContent(), "Inspect <img src=x onerror=globalThis.injected=true>");
+        assert.equal(await thinking.evaluate(node => node.open), true);
+        await page.getByRole("button", { name: "Collapse thinking" }).click();
+        assert.equal(await thinking.evaluate(node => node.open), false);
+        await page.getByRole("button", { name: "Expand thinking" }).click();
+        assert.equal(await thinking.evaluate(node => node.open), true);
         assert.equal(await assistant.locator("strong").textContent(), "violet");
         assert.equal(await assistant.locator("p code").textContent(), "notes.txt");
         assert.equal(await assistant.locator("ol li").count(), 2);
@@ -72,13 +79,16 @@ async function piExport(root, source) {
         await page.getByRole("checkbox", { name: "Show tool results" }).uncheck();
         assert.equal(await articles.count(), 3);
         await page.getByRole("button", { name: "Expand tool calls" }).click();
-        assert.equal(await page.locator("details[open]").count(), 1);
+        assert.equal(await page.locator("details.tool-call[open]").count(), 1);
+        assert.equal(await thinking.evaluate(node => node.open), true);
         await page.getByRole("button", { name: "Collapse tool calls" }).click();
-        assert.equal(await page.locator("details[open]").count(), 0);
+        assert.equal(await page.locator("details.tool-call[open]").count(), 0);
+        assert.equal(await thinking.evaluate(node => node.open), true);
         if (process.env.PI_SOURCE) {
             const pi = await piExport(profile, process.env.PI_SOURCE);
             await page.goto(pathToFileURL(pi).href);
             await page.locator("strong").first().waitFor();
+            assert.equal(await page.locator(".thinking-text").textContent(), "Inspect <img src=x onerror=globalThis.injected=true>");
             assert.equal(await page.locator("strong").first().textContent(), "violet");
             assert.equal(await page.locator("p code").first().textContent(), "notes.txt");
             assert.equal(await page.locator("ol li").count(), 2);
