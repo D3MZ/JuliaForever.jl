@@ -310,7 +310,7 @@ function bound(snapshot::ShellTail, file, text::String)
     ShellTail(limited.text, notice(snapshot, limited, snapshot.file), file)
 end
 
-function publish!(callback::F, snapshot::ShellTail, text, saved, last) where {F}
+function shellupdate!(callback::F, snapshot::ShellTail, text, saved, last) where {F}
     remember!(saved, snapshot.file)
     last[] = text
     update(callback, ShellUpdate(text, snapshot.file))
@@ -322,7 +322,7 @@ function refresh!(callback::F, io, file, measure::ShellMeasure, saved, last) whe
     size == measure.bytes && return
     snapshot = tail(io, file, measure!(measure, io, size)...)
     snapshot = bound(snapshot, file, live(snapshot.text))
-    publish!(callback, snapshot, snapshot.text, saved, last)
+    shellupdate!(callback, snapshot, snapshot.text, saved, last)
 end
 
 function finishoutput!(callback::F, io, file, measure::ShellMeasure, saved, last) where {F}
@@ -331,7 +331,7 @@ function finishoutput!(callback::F, io, file, measure::ShellMeasure, saved, last
     snapshot = bound(snapshot, file, shelltext(snapshot.text))
     text = snapshot.text
     before == measure.bytes && text == last[] && return
-    publish!(callback, snapshot, text, saved, last)
+    shellupdate!(callback, snapshot, text, saved, last)
 end
 
 function waitoutput(run::ShellRun, watcher, ::Nothing, file, saved)
