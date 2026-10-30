@@ -78,6 +78,24 @@ initial() = Dict{String, Any}[
             end
         end
     end
+    mktempdir() do dir
+        skill = joinpath(dir, ".pi", "skills", "context", "SKILL.md")
+        mkpath(dirname(skill))
+        write(skill, "---\nname: context\ndescription: preserve this skill during recovery\n---\n")
+        cd(dir) do
+            withenv("HOME" => dir, "PI_CODING_AGENT_DIR" => joinpath(dir, "agent"), "JF_INSTRUCTIONS_DIR" => nothing) do
+                provider = Provider(Any[failure(), answer()], Any[])
+                seed = Agent(provider, [Read(dir)])
+                messages = JuliaForever.initial(seed, nothing)
+                append!(messages, C.Message[C.RawMessage(Dict("role" => "user", "content" => "old request")), C.RawMessage(Dict("role" => "assistant", "content" => "old answer"))])
+                history = H.Memory()
+                agent = Agent(provider, seed.tools, messages; history)
+                @test respond!(agent, "current"; auto_compaction=policy(), summarize=_ -> "checkpoint") == "done"
+                @test any(message -> message["role"] == "system" && occursin("preserve this skill during recovery", message["content"]), provider.requests[2])
+                @test Agent(provider, []; history).messages == agent.messages
+            end
+        end
+    end
 end
 
 @testset "overflow: tool results and lifecycle events survive retry" begin
