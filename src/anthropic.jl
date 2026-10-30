@@ -1,7 +1,7 @@
 module AnthropicAPI
 
 using HTTP, JSON3, SHA
-import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, provider, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute, Models, contextkey
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, provider, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute, Models, contextkey, price, priceevent
 import ..Conversation
 
 abstract type ThinkingMode end
@@ -285,7 +285,9 @@ function usage(data::AbstractDict)
     write = something(get(data, "cache_creation_input_tokens", nothing), 0)
     details = something(get(data, "output_tokens_details", nothing), Dict())
     reasoning = get(details, "thinking_tokens", 0)
-    Usage(input, output, read, write, reasoning, input + output + read + write, nothing)
+    cache = something(get(data, "cache_creation", nothing), Dict())
+    longwrite = something(get(cache, "ephemeral_1h_input_tokens", nothing), 0)
+    Usage(input, output, read, write, reasoning, input + output + read + write, nothing, nothing, longwrite)
 end
 usage(::Nothing) = nothing
 
@@ -395,7 +397,7 @@ end
 function complete(provider::Anthropic, body::AbstractString, requestheaders=headers(provider))
     response = HTTP.post(endpoint(provider), requestheaders, body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
     200 <= response.status < 300 || return incomplete(ProviderStatus(response.status))
-    tagged(completion(decode(String(response.body))), provider)
+    price(provider, tagged(completion(decode(String(response.body))), provider))
 end
 incomplete(failure::String) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, Unfinished(), failure)
 tagged(answer::Completion, provider::Anthropic) = (answer.message["anthropic_origin"] = origin(provider); answer)
@@ -450,8 +452,26 @@ State() = State(Block[], Dict{Int, Block}(), Set{Int}(), Dict{String, Any}(), no
 
 function receive!(state::State, ::Waiting, event::Start, callback)
     state.phase = Running()
-    merge!(state.used, get(event.data["message"], "usage", Dict()))
+    mergeusage!(state.used, get(event.data["message"], "usage", Dict()))
 end
+
+function mergeusage!(used, update)
+    previous = get(used, "cache_creation", nothing)
+    current = get(update, "cache_creation", nothing)
+    merge!(used, update)
+    mergecache!(used, previous, current)
+    nothing
+end
+mergecache!(used, previous, current) = nothing
+mergecache!(used, previous::AbstractDict, ::Nothing) = (used["cache_creation"] = previous; nothing)
+function mergecache!(used, previous::AbstractDict, current::AbstractDict)
+    values = merge(previous, current)
+    retaincache!(values, get(previous, "ephemeral_1h_input_tokens", nothing), get(current, "ephemeral_1h_input_tokens", nothing))
+    used["cache_creation"] = values
+    nothing
+end
+retaincache!(values, previous, current) = nothing
+retaincache!(values, previous::Integer, ::Nothing) = (values["ephemeral_1h_input_tokens"] = previous; nothing)
 
 function receive!(state::State, ::Running, event::BlockStart, callback)
     index = event.data["index"]
@@ -544,7 +564,7 @@ close!(state, block::Call, input::AbstractDict) = (block.data["input"] = input)
 
 function receive!(state::State, ::Running, event::Delta, callback)
     state.reason = get(event.data["delta"], "stop_reason", state.reason)
-    merge!(state.used, get(event.data, "usage", Dict()))
+    mergeusage!(state.used, get(event.data, "usage", Dict()))
     reported = usage(state.used)
     callback((; type=:usage, usage=reported))
     reason = finish(state.reason)
@@ -561,14 +581,15 @@ function stream(provider::Anthropic, input, tools; parameters=Dict(), on_event=i
     remembercontext!(stream(provider, payload(provider, input, tools, parameters; streaming=true), on_event, headers(provider, tools)), input, tools, provider)
 end
 function stream(provider::Anthropic, body::AbstractString, on_event, requestheaders=headers(provider))
+    callback = event -> on_event(priceevent(provider, event))
     state = State()
-    response = HTTP.post(endpoint(provider), requestheaders, body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=raw -> receive!(state, decode(raw.data), on_event))
+    response = HTTP.post(endpoint(provider), requestheaders, body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=raw -> receive!(state, decode(raw.data), callback))
     if !(200 <= response.status < 300)
         answer = incomplete(ProviderStatus(response.status))
-        on_event((; type=:incomplete, result=answer))
+        callback((; type=:incomplete, result=answer))
         return answer
     end
-    finish!(state, on_event, provider)
+    price(provider, finish!(state, callback, provider))
 end
 receive!(state::State, failure::InvalidResponse, callback) = fail!(state, state.failure, failure)
 fail!(state, ::Nothing, failure) = (state.failure = failure)

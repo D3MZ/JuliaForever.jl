@@ -173,7 +173,7 @@ function printinfo(io, report::Report, clean)
     println(io, "Assistant: ", number(counts.assistant))
     println(io, "Tools: ", number(counts.calls), " calls, ", number(counts.results), " results\n")
     printusage(io, counts.usage)
-    println(io, "\nResponse usage excludes compaction requests.")
+    println(io, "\nResponse usage excludes compaction requests. Cost may be estimated from model prices.")
     nothing
 end
 function printusage(io, usage::UnknownUsage)

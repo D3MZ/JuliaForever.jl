@@ -1,5 +1,4 @@
 const NativeModelProvider = Union{J.OpenAI, J.OpenAIResponses, J.Anthropic, J.Google}
-const defaultcost = (; input=0, output=0, cacheRead=0, cacheWrite=0)
 const ModelWire = @NamedTuple{id::String, name::String, api::String, provider::String, baseUrl::String, reasoning::Bool, input::Vector{String}, cost::Dict{String, Any}, contextWindow::Int, maxTokens::Int}
 const modelinputs = Dict(false => ["text"], true => ["text", "image"])
 struct BuiltinModel
@@ -20,10 +19,8 @@ struct ModelCatalog
     providers::Vector{String}
 end
 Base.show(io::IO, value::ModelCatalog) = print(io, "ModelCatalog(", length(value.models), " models)")
-const modelpath = joinpath(@__DIR__, "..", "data", "pi-rpc-models.json")
-Base.include_dependency(modelpath)
 const catalog = Base.OncePerProcess{ModelCatalog}() do
-    models = BuiltinModel.(JSON3.read(read(modelpath), Vector{Dict{String, Any}}))
+    models = BuiltinModel.(J.Models.metadata())
     groups = Dict{String, Vector{BuiltinModel}}()
     for model in models
         push!(get!(groups, model.provider, BuiltinModel[]), model)
@@ -58,6 +55,7 @@ function builtinwire(model::BuiltinModel, settings::AbstractDict)
     for name in modeloverrides
         copyoverride!(data, name, get(fields, name, nothing))
     end
+    data["cost"] = J.mergeprice(model.data["cost"], get(fields, "cost", nothing))
     BuiltinModel(model.provider, model.id, model.api, data)
 end
 copyoverride!(data, name, ::Nothing) = nothing
@@ -71,7 +69,7 @@ function configuredwire(registry, model, settings, definition::AbstractDict)
     fields = merge(definition, J.modeloverride(settings, model.id))
     info = J.configuredinfo(registry, model.provider, model.id, ENV, model.provider)
     input = String.(get(fields, "input", modelinputs[model.images]))
-    cost = Dict{String, Any}(String(key) => value for (key, value) in pairs(get(fields, "cost", defaultcost)))
+    cost = Dict{String, Any}(String(key) => value for (key, value) in pairs(J.pricebook(model.provider, model.id, settings)))
     ModelWire((model.id, model.name, model.api, model.provider, String(J.modelbase(info, ENV)), model.reasoning, input, cost, model.context, model.maxoutput))
 end
 

@@ -1,7 +1,7 @@
 module GoogleAPI
 
 using HTTP, JSON3, Random, SHA
-import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, protocolfield, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, protocolfield, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute, price, priceevent
 
 struct Google
     base::String
@@ -335,21 +335,22 @@ function complete(provider::Google, body::AbstractString)
     200 <= response.status < 300 || return httpfailure(response.status)
     state = State()
     receive!(state, decode(String(response.body)), identity)
-    finish(state, provider)
+    price(provider, finish(state, provider))
 end
 function stream(provider::Google, input, tools; parameters=Dict(), on_event=identity)
     stream(provider, payload(provider, input, tools, parameters; streaming=true), on_event)
 end
 function stream(provider::Google, body::AbstractString, on_event)
+    callback = event -> on_event(priceevent(provider, event))
     state = State()
-    response = HTTP.post(endpoint(provider, stream), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=raw -> receive!(state, decode(raw.data), on_event))
+    response = HTTP.post(endpoint(provider, stream), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=raw -> receive!(state, decode(raw.data), callback))
     if !(200 <= response.status < 300)
         answer = httpfailure(response.status)
-        on_event((; type=:incomplete, result=answer))
+        callback((; type=:incomplete, result=answer))
         return answer
     end
-    answer = finish(state, provider)
-    report!(on_event, answer, answer.error)
+    answer = price(provider, finish(state, provider))
+    report!(callback, answer, answer.error)
     answer
 end
 report!(callback, answer, ::Nothing) = callback((; type=:done, result=answer))

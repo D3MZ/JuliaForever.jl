@@ -503,6 +503,7 @@ function response(agent, messages, parameters, ::Nothing, on_agent_event)
     info = responseinfo(agent.provider, round(Int, 1000time()))
     result = request!(agent, partial, Ref{MessagePresentation}(Unannounced())) do
         message = isempty(parameters) ? complete(agent.provider, messages, agent.tools) : complete(agent.provider, messages, agent.tools; parameters)
+        message = price(agent.provider, message)
         response(message)
     end
     merge(result, (; info))
@@ -515,12 +516,13 @@ function response(agent, messages, parameters, on_event, on_agent_event)
     calls = Dict{Any, Any}()
     started = Ref{MessagePresentation}(Unannounced())
     callback = event -> begin
-        on_event(event)
-        publish!(partial, calls, started, on_agent_event, agentupdate(event))
+        priced = priceevent(agent.provider, event)
+        on_event(priced)
+        publish!(partial, calls, started, on_agent_event, agentupdate(priced))
     end
     info = responseinfo(agent.provider, round(Int, 1000time()))
     answer = request!(agent, partial, started) do
-        result = stream(agent.provider, messages, agent.tools; parameters, on_event=callback)
+        result = price(agent.provider, stream(agent.provider, messages, agent.tools; parameters, on_event=callback))
         providercomplete!(on_event, result)
         (; message=result.message, result, started=started[])
     end

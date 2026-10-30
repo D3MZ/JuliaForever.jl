@@ -1,3 +1,6 @@
+function price end
+function priceevent end
+
 struct DirectRoute end
 struct CatalogRoute
     name::String
@@ -237,6 +240,14 @@ apikey(data::AbstractDict) = apikeyvalue(get(data, "key", nothing))
 apikeyvalue(value) = nothing
 apikeyvalue(value::AbstractString) = isempty(value) ? nothing : value
 
+struct CostBreakdown
+    input::Float64
+    output::Float64
+    cache_read::Float64
+    cache_write::Float64
+    reported::Union{Nothing, Float64}
+end
+
 struct Usage
     input::Int
     output::Int
@@ -245,7 +256,10 @@ struct Usage
     reasoning::Int
     total::Int
     cost::Union{Nothing, Float64}
+    breakdown::Union{Nothing, CostBreakdown}
+    cache_write_1h::Int
 end
+Usage(input, output, cache_read, cache_write, reasoning, total, cost) = Usage(input, output, cache_read, cache_write, reasoning, total, cost, nothing, 0)
 
 abstract type CompletionStatus end
 struct Finished <: CompletionStatus end
@@ -307,14 +321,22 @@ finishstatus(::Union{ChatAccepted, ChatRejected}, marker, failure) = Unfinished(
 usage(::Nothing) = nothing
 details(::Nothing) = Dict()
 details(data) = data
-upstream(::Nothing) = 0
-upstream(data) = get(data, "upstream_inference_cost", 0)
 usagecost(::Nothing, data) = nothing
-usagecost(cost, data) = usagecost(cost, data, get(data, "is_byok", false))
-plaincost(cost, data) = cost
-byokcost(cost, data) = cost + upstream(get(data, "cost_details", nothing))
+usagecost(cost, data) = usagecost(cost, data, get(data, "is_byok", nothing))
+usagecost(cost, data, mode) = nothing
+plaincost(cost, data) = money(cost)
+byokcost(cost, data) = addmoney(money(cost), upstream(get(data, "cost_details", nothing)))
 const costcalculators = Dict(false => plaincost, true => byokcost)
-usagecost(cost, data, byok::Bool) = Float64(costcalculators[byok](cost, data))
+usagecost(cost, data, byok::Bool) = costcalculators[byok](cost, data)
+money(value) = nothing
+money(::Bool) = nothing
+money(value::Real) = isfinite(value) && value >= 0 ? Float64(value) : nothing
+addmoney(a, b) = nothing
+addmoney(a::Float64, b::Float64) = a + b
+upstream(data) = nothing
+upstream(data::AbstractDict) = haskey(data, "upstream_inference_cost") ? upstream(data["upstream_inference_cost"], data) : nothing
+upstream(::Nothing, data) = addmoney(money(get(data, "upstream_inference_prompt_cost", nothing)), money(get(data, "upstream_inference_completions_cost", nothing)))
+upstream(value, data) = money(value)
 
 function usage(data)
     prompt = get(data, "prompt_tokens", 0)
@@ -444,7 +466,7 @@ function complete(provider::OpenAI, data::AbstractDict)
     reason = get(choice, "finish_reason", nothing)
     raw_usage = get(data, "usage", nothing)
     used = usage(raw_usage)
-    chatcompletion(choice["message"], used, chatfinish(reason))
+    price(provider, chatcompletion(choice["message"], used, chatfinish(reason)))
 end
 
 receivechat!(process, failure, marker, text, ::InvalidResponse) = nothing
@@ -504,6 +526,7 @@ function chatdelta!(message, calls, order, selected, on_event, delta)
 end
 
 function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=identity)
+    callback = event -> on_event(priceevent(provider, event))
     message = Dict{String, Any}("role" => "assistant", "content" => nothing)
     calls = Dict{Any, Dict{String, Any}}()
     order = Any[]
@@ -513,28 +536,28 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
     marker = Ref{CompletionStatus}(Unfinished())
     reasoningfield = Ref{Union{Nothing, String}}(nothing)
     function process(data)
-        on_event((; type=:provider, data))
+        callback((; type=:provider, data))
         process(data, protocolfield(data, "error"))
     end
     process(data, error::Some) = (failure[] = providererror(:openai_compatible, something(error)); nothing)
     function process(data, ::Nothing)
-        recordusage!(reported_usage, on_event, get(data, "usage", nothing))
+        recordusage!(reported_usage, callback, get(data, "usage", nothing))
         choices = get(data, "choices", [])
         isempty(choices) && return
         choice = first(choices)
-        recordfinish!(finish, on_event, get(choice, "finish_reason", nothing))
-        chatdelta!(message, calls, order, reasoningfield, on_event, get(choice, "delta", nothing))
+        recordfinish!(finish, callback, get(choice, "finish_reason", nothing))
+        chatdelta!(message, calls, order, reasoningfield, callback, get(choice, "delta", nothing))
     end
     response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters, streamedchat!); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=event -> receivechat!(process, failure, marker, event.data, failure[]))
     if !(200 <= response.status < 300)
         result = incomplete(ProviderStatus(response.status))
-        on_event((; type=:incomplete, result))
+        callback((; type=:incomplete, result))
         return result
     end
     isempty(order) || (message["tool_calls"] = [calls[index] for index in order])
     status = chatfinish(finish[])
     finishfailure!(failure, status, failure[])
-    result = Completion(message, reported_usage[], safefinish(finish[]), finishstatus(status, marker[], failure[]), failure[])
-    on_event((; type=completionevent(result), result))
+    result = price(provider, Completion(message, reported_usage[], safefinish(finish[]), finishstatus(status, marker[], failure[]), failure[]))
+    callback((; type=completionevent(result), result))
     result
 end

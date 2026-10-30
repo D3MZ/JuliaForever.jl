@@ -262,7 +262,7 @@ function completion(provider::Union{OpenAIResponses, ChatGPT.Plan}, data; failur
     failure = callfailure(responsecalls(output), failure)
     used = usage(provider, get(data, "usage", nothing))
     finish = responsefinish(raw, status, get(msg, "tool_calls", nothing))
-    Completion(msg, used, finish, responsecomplete(status, failure), failure)
+    price(provider, Completion(msg, used, finish, responsecomplete(status, failure), failure))
 end
 
 requestcontext(::OpenAIResponses) = HTTP.RequestContext()
@@ -432,7 +432,7 @@ requeststream(provider::OpenAIResponses, body, callback) = HTTP.post(endpoint(pr
 stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), on_event=identity) = streamresponse(provider, messages, tools; parameters, on_event)
 
 function streamresponse(provider::Union{OpenAIResponses, ChatGPT.Plan}, messages, tools; parameters=Dict(), on_event=identity)
-    state = ResponseStream(on_event)
+    state = ResponseStream(event -> on_event(priceevent(provider, event)))
     response = requeststream(provider, payload(provider, messages, tools, parameters; streaming=true), event -> receive!(state, event.data))
     result = 200 <= response.status < 300 ? finish(provider, state, state.terminal) : incomplete(ProviderStatus(response.status))
     on_event((; type=completionevent(result), result))

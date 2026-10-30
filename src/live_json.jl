@@ -1,7 +1,7 @@
 module LiveJSON
 
 using JSON3, Dates, Random, SHA
-import ..JuliaForever: Terminal, JSONMode, RPCMode, Agent, OpenAI, OpenAIResponses, Anthropic, Google, ManagedChatGPT, ChatGPT, UnconfiguredProvider, Usage, Completion, Finished, Unfinished, Truncated, History, SessionCatalog, Extensions, FileArguments, Prompts, Skills, Image, ToolResult, ToolFailure, ShellUpdate, PendingInputs, Unannounced, Announced, providercomplete!, run!, runmode!, starttemplates!, request!, respond!, failures!, result!, redact, attempt, fileinput, fileprompt, iserror, modelcatalogname
+import ..JuliaForever: Terminal, JSONMode, RPCMode, Agent, OpenAI, OpenAIResponses, Anthropic, Google, ManagedChatGPT, ChatGPT, UnconfiguredProvider, Usage, CostBreakdown, Completion, Finished, Unfinished, Truncated, History, SessionCatalog, Extensions, FileArguments, Prompts, Skills, Image, ToolResult, ToolFailure, ShellUpdate, PendingInputs, Unannounced, Announced, providercomplete!, run!, runmode!, starttemplates!, request!, respond!, failures!, result!, redact, attempt, fileinput, fileprompt, iserror, modelcatalogname
 
 function write!(io, event)
     JSON3.write(io, event)
@@ -38,10 +38,15 @@ providername(mode::Union{JSONMode, RPCMode}, provider) = mode.provider
 
 usage(::Nothing) = (; input=0, output=0, cacheRead=0, cacheWrite=0, totalTokens=0, cost=(; input=0, output=0, cacheRead=0, cacheWrite=0, total=0))
 function usage(value::Usage)
-    cost = something(value.cost, 0.0)
-    base = (; input=value.input, output=value.output, cacheRead=value.cache_read, cacheWrite=value.cache_write, totalTokens=value.total, cost=(; input=0, output=0, cacheRead=0, cacheWrite=0, total=cost))
-    iszero(value.reasoning) ? base : merge(base, (; reasoning=value.reasoning))
+    base = (; input=value.input, output=value.output, cacheRead=value.cache_read, cacheWrite=value.cache_write, totalTokens=value.total, cost=usagecost(value, value.breakdown))
+    base = iszero(value.reasoning) ? base : merge(base, (; reasoning=value.reasoning))
+    iszero(value.cache_write_1h) ? base : merge(base, (; cacheWrite1h=value.cache_write_1h))
 end
+usagecost(value, ::Nothing) = usagecost(value.cost)
+usagecost(::Nothing) = (; input=0, output=0, cacheRead=0, cacheWrite=0, total=0.0)
+usagecost(value::Float64) = (; input=0, output=0, cacheRead=0, cacheWrite=0, total=value, totalFromProvider=true)
+const costorigins = Dict{Any, Bool}(nothing => false)
+usagecost(value, breakdown::CostBreakdown) = (; input=breakdown.input, output=breakdown.output, cacheRead=breakdown.cache_read, cacheWrite=breakdown.cache_write, total=something(value.cost, 0.0), totalFromProvider=get(costorigins, breakdown.reported, true))
 
 abstract type Block end
 function buffer(text::AbstractString)

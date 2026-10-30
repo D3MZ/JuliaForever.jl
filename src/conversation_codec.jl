@@ -120,7 +120,10 @@ pack(x::C.Assistant, ::Nothing) = node("assistant", x.content, packall(x.calls),
 pack(x::C.Assistant, info::C.ResponseInfo) = node("assistant", x.content, packall(x.calls), x.finish, x.done, packvalue(x.metadata), pack(info))
 pack(x::C.ResponseInfo) = node("response_info", packusage(x.usage), x.api, x.provider, x.model, x.timestamp)
 packusage(::Nothing) = nothing
-packusage(x::Usage) = node("usage", x.input, x.output, x.cache_read, x.cache_write, x.reasoning, x.total, x.cost)
+packusage(x::Usage) = packusage(x, x.breakdown, x.cache_write_1h)
+packusage(x::Usage, ::Nothing, write) = iszero(write) ? node("usage", x.input, x.output, x.cache_read, x.cache_write, x.reasoning, x.total, x.cost) : node("usage", x.input, x.output, x.cache_read, x.cache_write, x.reasoning, x.total, x.cost, nothing, write)
+packusage(x::Usage, value::CostBreakdown, write) = node("usage", x.input, x.output, x.cache_read, x.cache_write, x.reasoning, x.total, x.cost, pack(value), write)
+pack(x::CostBreakdown) = node("cost_breakdown", x.input, x.output, x.cache_read, x.cache_write, x.reported)
 pack(x::C.ToolMessage) = pack(x, x.image)
 pack(x::C.ToolMessage, ::Nothing) = node("tool_message", x.id, x.content, x.iserror)
 pack(x::C.ToolMessage, image::C.Image) = node("tool_message", x.id, x.content, x.iserror, pack(image))
@@ -175,7 +178,7 @@ unpacked(items::Vector, item) = Rejected(:invalid_record)
 unpacked(items::Vector{T}, item::T) where T = push!(items, item)
 
 const nodetypes = Dict(
-    "user" => C.User, "user_images" => C.ImageUser, "summary" => C.Summary, "skill_context" => C.SkillContext, "raw" => C.RawMessage, "bash_message" => C.BashMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant, "response_info" => C.ResponseInfo, "usage" => Usage,
+    "user" => C.User, "user_images" => C.ImageUser, "summary" => C.Summary, "skill_context" => C.SkillContext, "raw" => C.RawMessage, "bash_message" => C.BashMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant, "response_info" => C.ResponseInfo, "usage" => Usage, "cost_breakdown" => CostBreakdown,
     "tool_message" => C.ToolMessage, "model_request" => C.ModelRequest, "tool_request" => C.ToolRequest,
     "skip_request" => C.SkipRequest, "model_reply" => C.ModelReply, "tool_reply" => C.ToolReply,
     "tool_search_reply" => ToolLoaded, "tool_discovery_reply" => ToolDiscovery,
@@ -199,7 +202,8 @@ unpack(::Type{C.Assistant}, f::Vector) = C.Assistant(f[1], unpackall(f[2], C.Too
 unpackinfo(::Nothing) = nothing
 unpackinfo(value) = unpack(value)
 unpack(::Type{C.ResponseInfo}, f::Vector) = C.ResponseInfo(unpackinfo(f[1]), f[2], f[3], f[4], f[5])
-unpack(::Type{Usage}, f::Vector) = Usage(f[1], f[2], f[3], f[4], f[5], f[6], f[7])
+unpack(::Type{Usage}, f::Vector) = Usage(f[1], f[2], f[3], f[4], f[5], f[6], f[7], unpackinfo(get(f, 8, nothing)), get(f, 9, 0))
+unpack(::Type{CostBreakdown}, f::Vector) = CostBreakdown(f[1], f[2], f[3], f[4], f[5])
 unpackimage(::Nothing) = nothing
 unpackimage(value) = unpack(value)
 unpack(::Type{C.ToolMessage}, f::Vector) = C.ToolMessage(f[1], f[2], f[3], unpackimage(get(f, 4, nothing)))
