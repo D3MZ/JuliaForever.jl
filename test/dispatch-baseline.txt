@@ -80,7 +80,6 @@ scheduler.jl	:(view.kind == name(handler))
 scheduler.jl	:cancelled
 search.jl	:(selectglob(filter, target))
 search.jl	:anchored
-search.jl	:anywhere
 search.jl	:directory
 search.jl	:directory
 search.jl	:directory
@@ -89,7 +88,6 @@ search.jl	:directory
 search.jl	:directory
 search.jl	:isdirectory
 search.jl	:matched
-search.jl	:smartcase
 search.jl	:windows
 search.jl	:windows
 session_terminal.jl	:(Kernel.same(agent.messages, plan.original))

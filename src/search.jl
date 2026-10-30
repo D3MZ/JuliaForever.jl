@@ -91,11 +91,14 @@ function globsource(pattern)
     String(take!(out))
 end
 
-function glob(pattern; smartcase=false, anywhere=false)
-    source = globsource(pattern)
-    prefix = anywhere ? "(?:.*/)?" : ""
-    Regex("^" * prefix * source * "\$", smartcase && !any(isuppercase, pattern) ? "i" : "")
-end
+rootglob(source) = source
+anyglob(source) = "(?:.*/)?" * source
+caseflags(pattern) = ""
+smartflags(pattern) = any(isuppercase, pattern) ? "" : "i"
+const globprefixes = Dict(false => rootglob, true => anyglob)
+const globcases = Dict(false => caseflags, true => smartflags)
+glob(pattern; smartcase::Bool=false, anywhere::Bool=false) = glob(pattern, globprefixes[anywhere], globcases[smartcase])
+glob(pattern, scope, flags) = Regex("^" * scope(globsource(pattern)) * "\$", flags(pattern))
 
 posix(path) = Sys.iswindows() ? replace(path, '\\' => '/') : path
 
@@ -152,7 +155,7 @@ function rules(file, ::Type{T}; base=dirname(file)) where {T <: IgnoreRule}
         anchored = startswith(line, '/')
         line = chopprefix(line, "/")
         isempty(line) && continue
-        pattern = scope(glob(line; anywhere=!anchored && !occursin('/', line)))
+        pattern = scope(glob(line, globprefixes[!anchored && !occursin('/', line)], caseflags))
         push!(result, T(base, action(pattern)))
     end
     result
@@ -244,7 +247,7 @@ function execute(tool::Find, args)
     limit >= 0 || return ToolFailure("Invalid result limit: $limit")
     pattern = args.pattern
     regex = try
-        glob(pattern; smartcase=true, anywhere=occursin('/', pattern) && !startswith(pattern, '/'))
+        glob(pattern, globprefixes[occursin('/', pattern) && !startswith(pattern, '/')], smartflags)
     catch exception
         return ToolFailure(sprint(showerror, exception))
     end
@@ -291,7 +294,7 @@ end
 function globfilter(raw::AbstractString)
     pattern = chopprefix(raw, "!")
     isempty(pattern) && return nothing
-    filter = GlobFilter(pattern, glob(pattern))
+    filter = GlobFilter(pattern, glob(pattern, rootglob, caseflags))
     (identity, ExcludedGlob)[Int(startswith(raw, "!")) + 1](filter)
 end
 
