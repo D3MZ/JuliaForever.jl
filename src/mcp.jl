@@ -246,11 +246,11 @@ end
 cancelrequest!(client::Client, id, ::Connection) = nothing
 cancelrequest!(client::Client, id, ::Open) = send(client, Dict("jsonrpc" => "2.0", "method" => "notifications/cancelled", "params" => Dict("requestId" => id, "reason" => "Request timed out"))) || fail!(client, Failure(:transport, "Could not write to MCP server"))
 
-activate!(client::Client, ::Connection) = false
+activate!(client::Client, ::Connection) = Failure(:closed, "MCP connection closed during initialization")
 
 function activate!(client::Client, ::Connecting)
     client.connection = Open()
-    true
+    client
 end
 
 function connect(command::Cmd; timeout=30.0, grace=0.5)
@@ -284,11 +284,9 @@ function initialize!(client::Client, result::AbstractDict)
         close(client)
         return Failure(:transport, "Could not finish MCP initialization")
     end
-    opened = lock(client.lock) do
+    lock(client.lock) do
         activate!(client, client.connection)
     end
-    opened || return Failure(:closed, "MCP connection closed during initialization")
-    client
 end
 
 function call(client::Client, tool::AbstractString, args; timeout=client.timeout)
