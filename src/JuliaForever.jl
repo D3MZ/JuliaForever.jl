@@ -380,6 +380,7 @@ end
 applythinking(model, ::Nothing) = model
 applythinking(model::Integer, thinking::AbstractString) = model
 applythinking(model::OpenAIResponses, thinking::AbstractString) = responselevel(model, model.model, thinking)
+applythinking(model::Google, thinking::AbstractString) = googlelevel(model, model.model, thinking)
 applythinking(model, thinking) = unsupportedthinking()
 launchinfo(::APIKeyAuth, registry::Models.Registry, name, model, ::Nothing) = configuredinfo(registry, name, model, ENV)
 launchinfo(::APIKeyAuth, registry::Models.Registry, name, model, provider::AbstractString) = configuredinfo(registry, name, model, ENV, provider)

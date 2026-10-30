@@ -61,7 +61,12 @@ Base.include_dependency(responsepath)
 const responselevels = JSON3.read(read(responsepath), Dict{String, Any})
 supportedthinking(::DirectThinking, effort) = Models.ValidConfig()
 supportedthinking(::UpdateThinking, effort) = Models.ValidConfig()
-resolveprovider(options, model::Models.Model, thinking::AbstractString) = selectthinking(options, model, thinking, get(responselevels, model.id, nothing))
+const googlelevels = Dict(
+    "gemini-3-flash-preview" => Dict("off" => "minimal", "minimal" => "minimal", "low" => "low", "medium" => "medium", "high" => "high"),
+    "gemini-3.1-pro-preview" => Dict("off" => "low", "low" => "low", "medium" => "medium", "high" => "high"),
+)
+const thinkingcatalogs = Dict(("openai", "openai-responses") => responselevels, ("google", "google-generative-ai") => googlelevels)
+resolveprovider(options, model::Models.Model, thinking::AbstractString) = selectthinking(options, model, thinking, get(get(thinkingcatalogs, (model.provider, model.api), Dict()), model.id, nothing))
 selectthinking(options, model, thinking, ::Nothing) = unsupportedthinking()
 function selectthinking(options, model, thinking, levels::AbstractDict)
     effort = get(levels, thinking, nothing)
@@ -69,7 +74,7 @@ function selectthinking(options, model, thinking, levels::AbstractDict)
     configuredthinking(merge(options, (; requested_thinking=String(thinking))), model, effort, selected, thinkingwire(levels))
 end
 configuredthinking(options, model, effort, selected::AbstractDict, wire) = unsupportedthinking()
-configuredthinking(options, model, effort, ::Nothing, wire) = selectthinking(options, model, effort, Models.combine(Models.check(model.provider == "openai" && model.api == "openai-responses" && model.reasoning), supportedthinking(wire, effort)))
+configuredthinking(options, model, effort, ::Nothing, wire) = selectthinking(options, model, effort, Models.combine(Models.check(model.reasoning), supportedthinking(wire, effort)))
 selectthinking(options, model, effort, ::Models.InvalidConfig) = unsupportedthinking()
 selectthinking(options, model, ::Nothing, ::Models.ValidConfig) = unsupportedthinking()
 function selectthinking(options, model, effort::AbstractString, ::Models.ValidConfig)

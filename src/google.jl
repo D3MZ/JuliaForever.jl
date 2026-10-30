@@ -9,7 +9,9 @@ struct Google
     key::String
     extra::Vector{Pair{String, String}}
     route::Union{DirectRoute, CatalogRoute}
+    thinking::Union{Nothing, String}
 end
+Google(base, model, key, extra, route) = Google(base, model, key, extra, route, nothing)
 Google(base, model, key) = Google(base, model, key, Pair{String, String}[], DirectRoute())
 Google(base, model, key, extra) = Google(base, model, key, extra, DirectRoute())
 
@@ -145,6 +147,7 @@ function payload(provider::Google, input, tools, parameters; streaming=false)
     end
     flush!(transcript)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(parameters))
+    thinking!(data, provider.thinking)
     data["contents"] = transcript.contents
     isempty(transcript.system) || (data["systemInstruction"] = Dict("parts" => [Dict("text" => join(transcript.system, "\n\n"))]))
     delete!(data, "tools")
@@ -153,6 +156,14 @@ function payload(provider::Google, input, tools, parameters; streaming=false)
     end
     JSON3.write(data)
 end
+
+thinking!(data, ::Nothing) = nothing
+function thinking!(data, level::AbstractString)
+    generation = Dict{String, Any}(string(key) => value for (key, value) in pairs(get(data, "generationConfig", NamedTuple())))
+    generation["thinkingConfig"] = thinkingconfig(level)
+    data["generationConfig"] = generation
+end
+thinkingconfig(level) = Dict("includeThoughts" => true, "thinkingLevel" => uppercase(level))
 
 function usage(data::AbstractDict)
     input = something(get(data, "promptTokenCount", nothing), 0)
