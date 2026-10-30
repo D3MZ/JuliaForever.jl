@@ -36,7 +36,19 @@ mutable struct HttpTransport
     requests::Dict{Int, HTTP.RequestContext}
 end
 
-mutable struct Client
+struct NoRoots end
+struct Roots{T}
+    value::T
+end
+
+rootsource(::Nothing) = NoRoots()
+rootsource(value) = Roots(value)
+rootvalues(values::AbstractVector) = values
+rootvalues(callback) = callback()
+rootcapabilities(::NoRoots) = Dict{String, Any}()
+rootcapabilities(::Roots) = Dict("roots" => Dict{String, Any}())
+
+mutable struct Client{R}
     process::Union{Base.Process, HttpTransport}
     lock::ReentrantLock
     writer::ReentrantLock
@@ -49,9 +61,10 @@ mutable struct Client
     shutdown::Shutdown
     done::Base.Event
     reader::Union{Nothing, Task}
+    roots::R
 end
 
-Client(process, lock, writer, pending, nextid, connection, server, timeout, grace, shutting::Bool, done, reader) = Client(process, lock, writer, pending, nextid, connection, server, timeout, grace, shutdownstate(shutting), done, reader)
+Client(process, lock, writer, pending, nextid, connection, server, timeout, grace, shutting::Bool, done, reader, roots) = Client(process, lock, writer, pending, nextid, connection, server, timeout, grace, shutdownstate(shutting), done, reader, roots)
 
 function Base.getproperty(client::Client, name::Symbol)
     name === :state && return state(getfield(client, :connection))
@@ -260,6 +273,29 @@ function Base.close(client::Client)
     shutdown(client)
 end
 
+pingrequest(client, id) = sent(send(client, Dict("jsonrpc" => "2.0", "id" => id, "result" => Dict())))
+missingrequest(client, id) = sent(send(client, Dict("jsonrpc" => "2.0", "id" => id, "error" => Dict("code" => -32601, "message" => "Method not found"))))
+rootrequest(client, id) = rootrequest(client, id, client.roots)
+rootrequest(client, id, ::NoRoots) = missingrequest(client, id)
+
+function rootrequest(client, id, roots::Roots)
+    @async rootresponse!(client, id, roots)
+    true
+end
+
+function rootresponse!(client, id, roots::Roots)
+    response = try
+        Dict("result" => Dict("roots" => rootvalues(roots.value)))
+    catch exception
+        Dict("error" => Dict("code" => -32603, "message" => sprint(showerror, exception)))
+    end
+    message = Dict{String, Any}("jsonrpc" => "2.0", "id" => id)
+    merge!(message, response)
+    transmitted!(client, send(client, message))
+end
+
+const serverrequests = Dict{String, Function}("ping" => pingrequest, "roots/list" => rootrequest)
+
 function received(client::Client, message)
     message isa AbstractDict && get(message, "jsonrpc", nothing) == "2.0" || return false
     if haskey(message, "method")
@@ -268,8 +304,7 @@ function received(client::Client, message)
         if haskey(message, "id")
             id = message["id"]
             (id isa AbstractString || (id isa Integer && !(id isa Bool))) || return false
-            response = method == "ping" ? Dict("jsonrpc" => "2.0", "id" => id, "result" => Dict()) : Dict("jsonrpc" => "2.0", "id" => id, "error" => Dict("code" => -32601, "message" => "Method not found"))
-            return sent(send(client, response))
+            return get(serverrequests, method, missingrequest)(client, id)
         end
         return true
     end
@@ -377,23 +412,23 @@ function activate!(client::Client, ::Connecting)
     client
 end
 
-function connect(url::AbstractString; timeout=30.0, headers=Pair{String, String}[])
+initparams(client::Client) = Dict("protocolVersion" => first(versions), "capabilities" => rootcapabilities(client.roots), "clientInfo" => Dict("name" => "JuliaForever", "version" => "0.1.0"))
+
+function connect(url::AbstractString; timeout=30.0, headers=Pair{String, String}[], roots=nothing)
     transport = HttpTransport(String(url), Pair{String, String}[String(k) => String(v) for (k, v) in headers], "", "", Dict{Int, HTTP.RequestContext}())
-    client = Client(transport, ReentrantLock(), ReentrantLock(), Dict{Int, Channel{Any}}(), 0, Connecting(), nothing, Float64(timeout), 0.0, false, Base.Event(), nothing)
-    params = Dict("protocolVersion" => first(versions), "capabilities" => Dict(), "clientInfo" => Dict("name" => "JuliaForever", "version" => "0.1.0"))
-    initialize!(client, request(client, "initialize", params, Connecting()))
+    client = Client(transport, ReentrantLock(), ReentrantLock(), Dict{Int, Channel{Any}}(), 0, Connecting(), nothing, Float64(timeout), 0.0, false, Base.Event(), nothing, rootsource(roots))
+    initialize!(client, request(client, "initialize", initparams(client), Connecting()))
 end
 
-function connect(command::Cmd; timeout=30.0, grace=0.5)
+function connect(command::Cmd; timeout=30.0, grace=0.5, roots=nothing)
     process = try
         open(pipeline(command; stderr=stderr), "r+")
     catch exception
         return Failure(:start, sprint(showerror, exception))
     end
-    client = Client(process, ReentrantLock(), ReentrantLock(), Dict{Int, Channel{Any}}(), 0, Connecting(), nothing, Float64(timeout), Float64(grace), ShutdownReady(), Base.Event(), nothing)
+    client = Client(process, ReentrantLock(), ReentrantLock(), Dict{Int, Channel{Any}}(), 0, Connecting(), nothing, Float64(timeout), Float64(grace), ShutdownReady(), Base.Event(), nothing, rootsource(roots))
     client.reader = @async readmessages(client)
-    params = Dict("protocolVersion" => first(versions), "capabilities" => Dict(), "clientInfo" => Dict("name" => "JuliaForever", "version" => "0.1.0"))
-    initialize!(client, request(client, "initialize", params, Connecting()))
+    initialize!(client, request(client, "initialize", initparams(client), Connecting()))
 end
 
 function initialize!(client::Client, failure::Failure)

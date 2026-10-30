@@ -171,6 +171,7 @@ if haskey(ENV, "PI_SOURCE")
     include("tool_search_differential.jl")
     include("mcp_differential.jl")
     include("mcp_resources_differential.jl")
+    include("mcp_roots_differential.jl")
 end
 include("scheduler.jl")
 if haskey(ENV, "PI_SOURCE")
