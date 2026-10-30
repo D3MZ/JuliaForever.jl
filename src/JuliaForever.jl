@@ -61,6 +61,18 @@ abstract type OpenRouterAuth <: Authentication end
 struct CodeAuth <: OpenRouterAuth end
 struct CallbackAuth <: OpenRouterAuth end
 
+struct HistoryInspection end
+struct HistoryAbandonment
+    reason::String
+end
+struct HistoryConflict end
+
+historyinspect(::Nothing) = HistoryInspection()
+historyinspect(action::HistoryInspection) = action
+historyinspect(::Union{HistoryAbandonment, HistoryConflict}) = HistoryConflict()
+historyabandon(::Union{Nothing, HistoryAbandonment}, reason) = HistoryAbandonment(reason)
+historyabandon(::Union{HistoryInspection, HistoryConflict}, reason) = HistoryConflict()
+
 haslogin(::APIKeyAuth) = false
 haslogin(::OpenRouterAuth) = true
 validprovider(::Nothing) = true
@@ -198,9 +210,7 @@ function (@main)(args)
     codemode = false
     packages = String[]
     environments = String[]
-    path = nothing
-    reason = nothing
-    inspect = false
+    action = nothing
     selected = nothing
     requested_model = nothing
     auth = APIKeyAuth()
@@ -243,8 +253,7 @@ function (@main)(args)
                 println(stderr, "--history requires a path.")
                 return 2
             end
-            path = args[2]
-            session = SessionCatalog.assign(session, SessionCatalog.Explicit(path))
+            session = SessionCatalog.assign(session, SessionCatalog.Explicit(args[2]))
             args = args[3:end]
         elseif first(args) in ("--session", "--session-dir", "--fork")
             if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
@@ -280,10 +289,10 @@ function (@main)(args)
                 println(stderr, "--abandon requires a reason.")
                 return 2
             end
-            reason = args[2]
+            action = historyabandon(action, args[2])
             args = args[3:end]
         elseif first(args) == "--inspect-history"
-            inspect = true
+            action = historyinspect(action)
             args = args[2:end]
         else
             break
@@ -298,20 +307,12 @@ function (@main)(args)
         println(stderr, "Unknown provider; choose openai, openai-responses, openrouter, anthropic, or google.")
         return 2
     end
-    if inspect
-        if isnothing(path) || !isnothing(reason) || haslogin(auth) || !isempty(args) || !SessionCatalog.recovery(session) || !recoveryname(sessionname)
-            println(stderr, "--inspect-history requires --history PATH and no prompt or --abandon.")
-            return 2
-        end
-        return inspecthistory!(Terminal(stdout, stderr, String[]), path)
-    end
-    if !isnothing(reason)
-        if isnothing(path) || haslogin(auth) || !isempty(args) || !SessionCatalog.recovery(session) || !recoveryname(sessionname)
-            println(stderr, "--abandon requires --history PATH and no prompt.")
-            return 2
-        end
-        return abandonhistory!(Terminal(stdout, stderr, String[]), path, reason)
-    end
+    options = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname)
+    historyaction(action, options)
+end
+
+function historyaction(::Nothing, options)
+    (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname) = options
     if !compatible(auth, selected)
         println(stderr, "OpenRouter login requires --provider openrouter.")
         return 2
@@ -320,9 +321,28 @@ function (@main)(args)
     model = acquire(auth, info, requested_model)
     launch(model, packages, environments, codemode, session, sessiondir, args, sessionname)
 end
+historyaction(::HistoryInspection, options) = inspectrequest!(options.session, options.auth, options.sessionname, options.args)
+historyaction(::HistoryConflict, options) = invalidinspection()
+historyaction(action::HistoryAbandonment, options) = abandonrequest!(options.session, options.auth, options.sessionname, options.args, action.reason)
 
-recoveryname(::Nothing) = true
-recoveryname(::String) = false
+function invalidinspection()
+    println(stderr, "--inspect-history requires --history PATH and no prompt or --abandon.")
+    2
+end
+function invalidabandon()
+    println(stderr, "--abandon requires --history PATH and no prompt.")
+    2
+end
+inspectrequest!(session, auth, name, args) = invalidinspection()
+function inspectrequest!(session::SessionCatalog.Explicit, ::APIKeyAuth, ::Nothing, args)
+    isempty(args) || return invalidinspection()
+    inspecthistory!(Terminal(stdout, stderr, String[]), session.path)
+end
+abandonrequest!(session, auth, name, args, reason) = invalidabandon()
+function abandonrequest!(session::SessionCatalog.Explicit, ::APIKeyAuth, ::Nothing, args, reason)
+    isempty(args) || return invalidabandon()
+    abandonhistory!(Terminal(stdout, stderr, String[]), session.path, reason)
+end
 terminal!(terminal::Terminal, model, registry::Integer, codemode, session, sessiondir, args, sessionname) = registry
 
 function initial(extensions)
