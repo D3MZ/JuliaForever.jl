@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import shlex
@@ -8,6 +9,7 @@ import time
 from tmux_exit import wait_for_exit
 
 root, julia = Path(sys.argv[1]).resolve(), sys.argv[2]
+oracle = json.loads(subprocess.check_output(["node", str(root / "test/fullscreen_pi.mjs")])) if os.environ.get("PI_SOURCE") else None
 socket = f"jf-screen-{os.getpid()}"
 tmux = ["tmux", "-f", "/dev/null", "-L", socket]
 
@@ -69,9 +71,13 @@ try:
         key("screen", "PageDown")
         wait_for("screen", lambda s: "marker-09" in s and "fixture | ready" in s, "page down")
         key("screen", "C-Home")
-        wait_for("screen", lambda s: "marker-00" in s and "fixture | ready" in s, "scroll to top")
+        top = wait_for("screen", lambda s: "marker-00" in s and "fixture | ready" in s, "scroll to top")
+        if oracle:
+            assert ("marker-00" in top and "marker-09" not in top) == oracle["top"], top
         key("screen", "C-End")
-        wait_for("screen", lambda s: "marker-09" in s and "fixture | ready" in s, "scroll to bottom")
+        bottom = wait_for("screen", lambda s: "marker-09" in s and "fixture | ready" in s, "scroll to bottom")
+        if oracle:
+            assert ("marker-09" in bottom) == oracle["bottom"], bottom
         run("resize-window", "-t", "screen", "-x", "40", "-y", "12")
         wait_for("screen", lambda s: "marker-09" in s and "fixture | ready" in s, "resize")
         run("resize-window", "-t", "screen", "-x", "72", "-y", "16")

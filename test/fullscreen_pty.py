@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory(prefix="jf-fullscreen-pty-") as directory:
                 break
         actual = {"enter": b"\x1b[?1049h" in session.output, "exit": b"\x1b[?1049l" in session.output}
         assert session.process.returncode == 0, session.output
-        assert actual == oracle, (actual, oracle, session.output)
+        assert actual == {key: oracle[key] for key in actual}, (actual, oracle, session.output)
     finally:
         session.close()
 with tempfile.TemporaryDirectory(prefix="jf-fullscreen-failure-") as directory:
