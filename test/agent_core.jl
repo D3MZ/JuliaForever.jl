@@ -57,15 +57,18 @@ call(id, name, args) = Dict("id" => id, "type" => "function", "function" => Dict
 end
 
 @testset "agent rejects truncated tool calls" begin
-    mktempdir() do dir
-        calls = [call("one", "write", (; path="a.txt", content="partial"))]
-        provider = AgentFixture([completion(nothing; calls, finish="length"), completion("recovered")], [])
-        agent = Agent(provider, [Write(dir)])
-        events = []
-        @test respond!(agent, "start"; on_event=identity, on_agent_event=event -> push!(events, event)) == "recovered"
-        @test !isfile(joinpath(dir, "a.txt"))
-        @test occursin("output token limit", provider.requests[2][end]["content"])
-        @test only(event for event in events if event.type == :tool_execution_end).iserror
+    for streaming in (false, true)
+        mktempdir() do dir
+            calls = [call("one", "write", (; path="a.txt", content="partial"))]
+            provider = AgentFixture([completion(nothing; calls, finish="length"), completion("recovered")], [])
+            agent = Agent(provider, [Write(dir)])
+            events = []
+            result = streaming ? respond!(agent, "start"; on_event=identity, on_agent_event=event -> push!(events, event)) : respond!(agent, "start")
+            @test result == "recovered"
+            @test !isfile(joinpath(dir, "a.txt"))
+            @test occursin("output token limit", provider.requests[2][end]["content"])
+            streaming && @test only(event for event in events if event.type == :tool_execution_end).iserror
+        end
     end
 end
 
@@ -187,17 +190,6 @@ end
     @test [event.tool_call_id for event in events if event.type == :tool_execution_end] == ["two", "one"]
     @test [event.message["tool_call_id"] for event in events if event.type == :message_end && event.message["role"] == "tool"] == ["one", "two"]
     @test [message["tool_call_id"] for message in provider.requests[2] if message["role"] == "tool"] == ["one", "two"]
-end
-
-@testset "nonstreaming truncated tool calls" begin
-    mktempdir() do dir
-        calls = [call("one", "write", (; path="a.txt", content="partial"))]
-        provider = AgentFixture([completion(nothing; calls, finish="length"), completion("done")], [])
-        agent = Agent(provider, [Write(dir)])
-        @test respond!(agent, "start") == "done"
-        @test !isfile(joinpath(dir, "a.txt"))
-        @test occursin("output token limit", provider.requests[2][end]["content"])
-    end
 end
 
 @testset "executor truncated final model response" begin

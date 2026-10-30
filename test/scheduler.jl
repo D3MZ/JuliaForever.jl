@@ -324,7 +324,6 @@ end
     @test active isa D.Running && !active.cancelled
     @test cancelling isa D.Running && cancelling.cancelled
     @test typeof(active) !== typeof(cancelling)
-    @test hasproperty(active, :cancelled) && hasproperty(cancelling, :cancelled)
 end
 
 if Sys.isunix()
