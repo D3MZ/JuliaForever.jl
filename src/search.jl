@@ -120,6 +120,16 @@ glob(pattern, scope, flags) = Regex("^" * scope(globsource(pattern)) * "\$", fla
 
 posix(path) = Sys.iswindows() ? replace(path, '\\' => '/') : path
 
+abstract type SearchEntry end
+struct SearchFile{P<:AbstractString} <: SearchEntry
+    path::P
+end
+struct SearchDirectory{P<:AbstractString} <: SearchEntry
+    path::P
+end
+const searchentries = Dict(false => SearchFile, true => SearchDirectory)
+searchentry(path, directory::Bool) = searchentries[directory](path)
+
 abstract type IgnoreRule end
 
 struct GitRule{P} <: IgnoreRule
@@ -144,10 +154,11 @@ end
 const ignorescopes = Dict(true => DirectoryPattern, false => identity)
 const ignoreactions = Dict(true => IncludePattern, false => IgnorePattern)
 
-matchesignore(pattern::Regex, relative, directory) = occursin(pattern, relative)
-matchesignore(pattern::DirectoryPattern, relative, directory) = directory && occursin(pattern.regex, relative)
-ignorevalue(previous, pattern::IgnorePattern, relative, directory) = matchesignore(pattern.pattern, relative, directory) ? true : previous
-ignorevalue(previous, pattern::IncludePattern, relative, directory) = matchesignore(pattern.pattern, relative, directory) ? false : previous
+matchesignore(pattern::Regex, relative, entry::SearchEntry) = occursin(pattern, relative)
+matchesignore(pattern::DirectoryPattern, relative, ::SearchFile) = false
+matchesignore(pattern::DirectoryPattern, relative, ::SearchDirectory) = occursin(pattern.regex, relative)
+ignorevalue(previous, pattern::IgnorePattern, relative, entry) = matchesignore(pattern.pattern, relative, entry) ? true : previous
+ignorevalue(previous, pattern::IncludePattern, relative, entry) = matchesignore(pattern.pattern, relative, entry) ? false : previous
 
 function cleargit!(rules)
     kept = 0
@@ -179,22 +190,23 @@ function rules(file, ::Type{T}; base=dirname(file)) where {T <: IgnoreRule}
     result
 end
 
-ignorevalue(value, rule::IgnoreRule, target, directory, ::Type{T}) where {T <: IgnoreRule} = value
-function ignorevalue(value, rule::T, target, directory, ::Type{T}) where {T <: IgnoreRule}
-    relative = posix(relpath(target, rule.base))
+ignorevalue(value, rule::IgnoreRule, entry, ::Type{T}) where {T <: IgnoreRule} = value
+function ignorevalue(value, rule::T, entry, ::Type{T}) where {T <: IgnoreRule}
+    relative = posix(relpath(entry.path, rule.base))
     startswith(relative, "../") && return value
-    ignorevalue(value, rule.pattern, relative, directory)
+    ignorevalue(value, rule.pattern, relative, entry)
 end
 
-function ignored(kind::Type{T}, rules, target, directory, value) where {T <: IgnoreRule}
+function ignored(kind::Type{T}, rules, entry, value) where {T <: IgnoreRule}
     for rule in rules
-        value = ignorevalue(value, rule, target, directory, kind)
+        value = ignorevalue(value, rule, entry, kind)
     end
     value
 end
 
 # .ignore rules take precedence over .gitignore, even across directory levels.
-ignored(rules, target, directory) = ignored(FileRule, rules, target, directory, ignored(GitRule, rules, target, directory, false))
+ignored(rules, target, directory::Bool) = ignored(rules, searchentry(target, directory))
+ignored(rules, entry::SearchEntry) = ignored(FileRule, rules, entry, ignored(GitRule, rules, entry, false))
 
 function ancestors(root)
     dirs = String[]
@@ -244,15 +256,19 @@ function walksearch(visit, root, tool::Union{Find, Grep}; whitelist=(target -> f
         for entry in readdir(dir)
             entry == ".git" && continue
             target = joinpath(dir, entry)
-            directory = isdir(target) && !islink(target)
-            ignored(ruleset, target, directory) && (directory || !whitelist(target)) && continue
-            visit(target, directory) || return false
-            directory && !walk(target, ruleset, inside) && return false
+            item = searchentry(target, isdir(target) && !islink(target))
+            skipentry(ruleset, item, whitelist) && continue
+            visit(item) || return false
+            walkentry(walk, item, ruleset, inside) || return false
         end
         true
     end
     walk(root, inherited, inside)
 end
+skipentry(rules, entry::SearchDirectory, whitelist) = ignored(rules, entry)
+skipentry(rules, entry::SearchFile, whitelist) = ignored(rules, entry) && !whitelist(entry.path)
+walkentry(walk, entry::SearchDirectory, rules, inside) = walk(entry.path, rules, inside)
+walkentry(walk, entry::SearchFile, rules, inside) = true
 
 function findresult(lines, limit)
     isempty(lines) && return ToolResult("No files found matching pattern")
@@ -277,17 +293,20 @@ function execute(tool::Find, args)
         return ToolFailure(sprint(showerror, exception))
     end
     found = String[]
-    walksearch(root, tool) do target, directory
+    walksearch(root, tool) do entry
+        target = entry.path
         relative = posix(relpath(target, root))
         candidate = occursin('/', pattern) ? (startswith(pattern, '/') ? posix(target) : relative) : basename(target)
         if occursin(regex, candidate)
-            push!(found, directory ? relative * "/" : rstrip(relative))
+            push!(found, findpath(entry, relative))
             limit > 0 && length(found) >= limit && return false
         end
         true
     end
     findresult(found, limit)
 end
+findpath(::SearchDirectory, relative) = relative * "/"
+findpath(::SearchFile, relative) = rstrip(relative)
 
 struct ShortenedLine
     text::String
@@ -348,11 +367,12 @@ function execute(tool::Grep, args)
     output = String[]
     count = 0
     linenotices = Set{String}()
-    directory = isdir(root)
-    function visit(target, isdirectory)
-        isdirectory && return true
+    rootentry = searchentry(root, isdir(root))
+    visit(::SearchDirectory) = true
+    function visit(entry::SearchFile)
+        target = entry.path
         isfile(target) || return true
-        relative = directory ? posix(relpath(target, root)) : basename(target)
+        relative = searchrelative(rootentry, target)
         selectglob(filter, target) || return true
         bytes = read(target)
         0x00 in bytes && return true
@@ -377,7 +397,7 @@ function execute(tool::Grep, args)
         true
     end
     whitelist = target -> whitelistglob(filter, target)
-    directory ? walksearch(visit, root, tool; whitelist) : visit(root, false)
+    visitroot(visit, rootentry, tool, whitelist)
     isempty(output) && return ToolResult("No matches found")
     # Match limits count matches, not context rows.
     bounded = head(output)
@@ -389,3 +409,7 @@ function execute(tool::Grep, args)
     !isempty(notices) && (text *= "\n\n[$(join(notices, ". "))]")
     ToolResult(text)
 end
+searchrelative(root::SearchDirectory, target) = posix(relpath(target, root.path))
+searchrelative(root::SearchFile, target) = basename(target)
+visitroot(visit, root::SearchDirectory, tool, whitelist) = walksearch(visit, root.path, tool; whitelist)
+visitroot(visit, root::SearchFile, tool, whitelist) = visit(root)

@@ -225,16 +225,15 @@ function scanentry!(entries, directories, root, dir, name, query, rules, ::Searc
 end
 scanentry!(entries, directories, root, target, query, rules, ::Nothing) = nothing
 function scanentry!(entries, directories, root, target, query, rules, kind::FileKind)
-    directory = folder(kind)
-    JuliaForever.ignored(rules, target, directory) && return
+    ignored(rules, target, kind) && return
     relative = JuliaForever.posix(relpath(target, root))
     if matchesquery(relative, query) && length(entries) < 100
         push!(entries, Entry(relative, kind))
     end
     scanfolder!(directories, target, kind)
 end
-folder(::File) = false
-folder(::Directory) = true
+ignored(rules, target, ::File) = JuliaForever.ignored(rules, JuliaForever.SearchFile(target))
+ignored(rules, target, ::Directory) = JuliaForever.ignored(rules, JuliaForever.SearchDirectory(target))
 scanfolder!(directories, target, ::File) = nothing
 scanfolder!(directories, target, ::Directory) = push!(directories, target)
 const entrykinds = Dict((false, false) => nothing, (false, true) => File(), (true, false) => Directory(), (true, true) => Directory())

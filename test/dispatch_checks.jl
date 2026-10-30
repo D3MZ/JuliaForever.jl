@@ -195,6 +195,10 @@ function dispatchchecks!(checks, expression, condition=false, direct=true, predi
     if expression.head in (:(=), :function) && length(expression.args) == 2 && dispatchconstructor(first(expression.args))
         dispatchsignature!(checks, first(expression.args), predicates)
         dispatchchecks!(checks, last(expression.args), false, true, predicates)
+    elseif expression.head == :(=) && length(expression.args) == 2 && first(expression.args) isa Symbol
+        value = last(expression.args)
+        boolvalue = value isa Expr && value.head == :call && dispatchcallee(first(value.args)) in predicates.booleans
+        dispatchchecks!(checks, value, boolvalue, false, predicates)
     elseif condition && expression.head == :block
         foreach(arg -> dispatchchecks!(checks, arg, false, true, predicates), expression.args[1:end-1])
         dispatchchecks!(checks, last(expression.args), true, direct, predicates)
