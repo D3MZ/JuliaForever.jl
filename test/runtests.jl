@@ -189,3 +189,4 @@ if haskey(ENV, "PI_SOURCE")
 end
 
 include("extension_interception.jl")
+include("before_tool.jl")

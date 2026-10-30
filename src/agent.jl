@@ -262,6 +262,19 @@ function invoke(agent, call, update, callback)
     catch exception
         return ToolFailure(sprint(showerror, exception))
     end
+    input = JSON3.read(JSON3.write(args), Dict{String, Any})
+    before = try
+        interceptcall(callback, call, input)
+    catch exception
+        return ToolFailure(sprint(showerror, exception))
+    end
+    invokeprepared(agent, call, tool, input, update, callback, before)
+end
+
+interceptcall(callback, call, input) = nothing
+invokeprepared(agent, call, tool, input, update, callback, ::Nothing) = runprepared(agent, call, tool, input, update, callback)
+function runprepared(agent, call, tool, input, update, callback)
+    args = JSON3.read(JSON3.write(input))
     result = attempt(() -> invoke(tool, args, agent.shell, update))
     interceptresult(callback, call, args, result)
 end
@@ -273,6 +286,7 @@ struct EventSink{F}
     callback::F
 end
 (sink::EventSink)(event) = lock(() -> emit(sink.callback, event), sink.lock)
+interceptcall(sink::EventSink, call, input) = lock(() -> interceptcall(sink.callback, call, input), sink.lock)
 interceptresult(sink::EventSink, call, args, result) = lock(() -> interceptresult(sink.callback, call, args, result), sink.lock)
 
 emit(::Nothing, event) = nothing

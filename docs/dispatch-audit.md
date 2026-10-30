@@ -2,7 +2,7 @@
 
 The audit covers Julia source in `src/`. `test/branch_scan.jl` uses JuliaSyntax to list source locations for conditionals, short-circuit expressions, loops, exception handlers, comprehension filters, `ifelse`, and calls that may take predicates. The predicate list can include calls whose first argument is a search value rather than a function. The inventory is a static review aid; it cannot see branches produced by arbitrary macro expansion or dynamic code.
 
-At revision `b1a598e`, the inventory contained 1,268 points, including 73 `for` loops, 36 exception handlers, and 29 possible predicate calls under the current scanner. The integrated tree has 1,233 points. Counts include nested expressions, so they are not counts of independent decisions. `test/branch-baseline.txt` ratchets the normalized inventory, so added, removed, or changed entries require review and an explicit baseline update. It does not detect changes confined to branch bodies or moves of identical entries.
+At revision `b1a598e`, the inventory contained 1,268 points, including 73 `for` loops, 36 exception handlers, and 29 possible predicate calls under the current scanner. The integrated tree has 1,235 points. Counts include nested expressions, so they are not counts of independent decisions. `test/branch-baseline.txt` ratchets the normalized inventory, so added, removed, or changed entries require review and an explicit baseline update. It does not detect changes confined to branch bodies or moves of identical entries.
 
 The dispatch check is a separate heuristic. With the expanded rules it reports 253 candidates in the integrated tree. The exact multiset is in `test/dispatch-baseline.txt`; tests fail if it grows or changes without updating the baseline. Compatibility properties for terminal state and MCP shutdown account for some matches.
 
@@ -31,3 +31,5 @@ File argument and user-image support initially added 25 branch entries and remov
 CLI history actions and provider selection now dispatch on typed outcomes. Durable store opening also dispatches on lock and recovery outcomes, while releasing locks on failure.
 
 Continuation adds four branch entries for queue availability and revision checks, with no new dispatch candidates; role decoding dispatches on the resulting domain types.
+
+Before-tool hooks add two branch entries for the hook error boundary and an empty block reason, with no new dispatch candidates; hook selection uses a registration lookup.
