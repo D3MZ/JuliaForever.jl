@@ -23,6 +23,11 @@ resource_server(mode, marker) = `$(Base.julia_cmd()) --startup-file=no --project
         @test client isa ResourceMCP.Client
         if client isa ResourceMCP.Client
             try
+                selected = Dict{String, ResourceMCP.Client}()
+                ResourceMCP.selectresource!(selected, "docs", client, nothing)
+                @test isempty(selected)
+                ResourceMCP.selectresource!(selected, "docs", client, Dict())
+                @test selected["docs"] === client
                 page = ResourceMCP.resourcepage(client)
                 @test page["nextCursor"] == "opaque/+="
                 @test ResourceMCP.resources(client)[end]["name"] == "docs://image"

@@ -118,7 +118,6 @@ kernel.jl	:(same(x, y, seen))
 kernel.jl	:found
 logs.jl	:empty
 logs.jl	:first
-mcp.jl	:(available(capability(client)))
 mcp.jl	:(cursor isa AbstractString)
 mcp.jl	:(detail isa AbstractDict)
 mcp.jl	:(detail["code"] isa Bool)
