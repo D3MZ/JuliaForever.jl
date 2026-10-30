@@ -1,6 +1,6 @@
 module Logs
 
-using JSON3
+using JSON3, Markdown
 import ..Kernel
 import ..Conversation
 
@@ -65,6 +65,7 @@ end
 json(history; project=record) = sprint(io -> json(io, history; project))
 
 escape(text::AbstractString) = replace(text, '&' => "&amp;", '<' => "&lt;", '>' => "&gt;", '"' => "&quot;", '\'' => "&#39;")
+include("logs_markdown.jl")
 
 """
     html([io,] history; project=record, title="Julia Forever history")
@@ -96,6 +97,9 @@ button{padding:.4rem .65rem;cursor:pointer}button:disabled{cursor:default}articl
 article.current{border-left:3px solid #5079df;padding-left:.75rem}h2{font-size:1rem;margin:0 0 .5rem}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font:inherit}details{margin:.5rem 0;padding:.6rem;background:#f4f4f4}
 summary{cursor:pointer;font-weight:600}[hidden]{display:none!important}output{min-width:8rem}output:empty{display:none}
+.markdown p{margin:.5rem 0}.markdown code{font-family:ui-monospace,monospace}.markdown pre{background:#f4f4f4;padding:.75rem;overflow:auto}
+.markdown table{border-collapse:collapse}.markdown th,.markdown td{border:1px solid #ddd;padding:.35rem .6rem;text-align:left}
+.markdown blockquote{border-left:3px solid #ddd;margin:.5rem 0;padding-left:.8rem}
 @media(max-width:36rem){input[type=search]{flex-basis:100%}output{min-width:0}}
 """
 
@@ -158,7 +162,7 @@ end
 conversationmessage(io, ::Nothing, message, role) = nothing
 function conversationmessage(io, label::AbstractString, message, role)
     print(io, "<article data-role=\"", escape(role), "\"><h2>", escape(label), "</h2>")
-    conversationcontent(io, get(message, "content", nothing))
+    conversationcontent(io, role, get(message, "content", nothing))
     foreach(image -> conversationimage(io, image), get(message, "images", []))
     conversationimage(io, get(message, "image", nothing))
     for call in get(message, "tool_calls", [])
@@ -167,9 +171,11 @@ function conversationmessage(io, label::AbstractString, message, role)
     print(io, "</article>\n")
     nothing
 end
-conversationcontent(io, ::Nothing) = nothing
-conversationcontent(io, text::AbstractString) = print(io, "<pre>", escape(text), "</pre>")
-conversationcontent(io, content) = print(io, "<pre>", escape(JSON3.write(content)), "</pre>")
+conversationcontent(io, role, ::Nothing) = nothing
+conversationcontent(io, role, text::AbstractString) = get(conversationrenderers, role, plaintext)(io, text)
+conversationcontent(io, role, content) = plaintext(io, JSON3.write(content))
+plaintext(io, text) = print(io, "<pre>", escape(text), "</pre>")
+const conversationrenderers = Dict("user" => markdowncontent, "assistant" => markdowncontent)
 conversationimage(io, image) = nothing
 conversationimage(io, image::AbstractDict) = conversationimage(io, get(image, "mime", nothing), get(image, "data", nothing))
 conversationimage(io, mime, data) = nothing
