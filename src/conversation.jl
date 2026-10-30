@@ -1,7 +1,7 @@
 module Conversation
 
 import ..Kernel as K
-import ..JuliaForever: Image, ToolResult, content, loaded, CompletionStatus, Finished, Unfinished, completionstatus, finished, JSON3
+import ..JuliaForever: Image, ToolResult, tooltype, content, loaded, CompletionStatus, Finished, Unfinished, completionstatus, finished, JSON3
 
 abstract type Message end
 
@@ -86,8 +86,8 @@ struct ToolReply <: K.Observation
     result::ToolResult
 end
 
-ToolReply(text, iserror::Bool) = ToolReply(ToolResult(text, iserror))
-ToolReply(text, iserror::Bool, image) = ToolReply(ToolResult(text, iserror, image))
+ToolReply(text, iserror::Bool) = ToolReply(tooltype(iserror)(text))
+ToolReply(text, iserror::Bool, image) = ToolReply(tooltype(iserror)(text, image))
 
 function Base.getproperty(reply::ToolReply, name::Symbol)
     name in (:text, :iserror, :image) && return getproperty(getfield(reply, :result), name)

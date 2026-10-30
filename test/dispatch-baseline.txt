@@ -206,4 +206,3 @@ tools.jl	:(isopen(signal))
 tools.jl	:(kind == codeunits("IDAT"))
 tools.jl	:(kind == codeunits("acTL"))
 tools.jl	:(name === :iserror)
-tools.jl	:iserror

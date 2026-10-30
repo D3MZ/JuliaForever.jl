@@ -34,9 +34,11 @@ end
 
 ToolSuccess(text) = ToolSuccess(text, nothing)
 ToolFailure(text) = ToolFailure(text, nothing)
+const tooltypes = Dict(false => ToolSuccess, true => ToolFailure)
+tooltype(iserror::Bool) = tooltypes[iserror]
 ToolResult(text) = ToolSuccess(text)
-ToolResult(text, iserror::Bool) = ToolResult(text, iserror, nothing)
-ToolResult(text, iserror::Bool, image) = iserror ? ToolFailure(text, image) : ToolSuccess(text, image)
+ToolResult(text, iserror::Bool) = tooltype(iserror)(text)
+ToolResult(text, iserror::Bool, image) = tooltype(iserror)(text, image)
 
 iserror(::ToolSuccess) = false
 iserror(::ToolFailure) = true
