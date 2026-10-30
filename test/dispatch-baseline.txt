@@ -30,12 +30,7 @@ codemode_worker.jl	:(connected[])
 codemode_worker.jl	:(isnothing(channel))
 codemode_worker.jl	:(isnothing(id))
 codemode_worker.jl	:(value isa AbstractString)
-compaction.jl	:(!issystem)
-compaction.jl	:(!issystem)
 compaction.jl	:(Kernel.same(agent.messages, plan.original))
-compaction.jl	:issystem
-compaction.jl	:isuser
-compaction.jl	:summarizable
 conversation.jl	:(index === nothing)
 conversation.jl	:(name === :automatic)
 conversation.jl	:(name === :cancelled)

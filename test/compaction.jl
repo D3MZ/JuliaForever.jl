@@ -31,10 +31,11 @@ end
 @testset "compaction retains all system context" begin
     messages = compactmessages()
     insert!(messages, 2, Dict{String, Any}("role" => "system", "content" => "<skills>metadata</skills>"))
+    push!(messages, Dict{String, Any}("role" => "system", "content" => "late system"))
     provider = CompactProvider(Dict{String, Any}("role" => "assistant", "content" => "done"), Any[])
     agent = Agent(provider, Dict{String, JuliaForever.Tool}(), messages; history=CompactHistory.Memory())
     @test compact!(agent, _ -> "checkpoint") == "checkpoint"
-    @test [message["content"] for message in agent.messages if message["role"] == "system"] == ["instructions", "<skills>metadata</skills>"]
+    @test [message["content"] for message in agent.messages if message["role"] == "system"] == ["instructions", "<skills>metadata</skills>", "late system"]
 end
 
 @testset "compaction retains the latest image turn" begin
