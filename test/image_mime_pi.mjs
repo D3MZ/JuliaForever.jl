@@ -4,6 +4,8 @@ import { pathToFileURL } from "node:url";
 const [source, fixtures] = process.argv.slice(2);
 const { normalizeToolResultImages } = await import(pathToFileURL(`${source}/packages/coding-agent/src/utils/tool-result-images.ts`));
 const cases = [
+    ["animated.gif", "IMAGE/GIF"],
+    ["animated.webp", "IMAGE/WEBP; name=inline.webp"],
     ["static.gif", "IMAGE/GIF"],
     ["static.gif", " image/gif; name=static.gif "],
     ["static.webp", "IMAGE/WEBP; name=inline.webp"],
