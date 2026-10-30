@@ -71,13 +71,11 @@ end
 append!(history::Deferred, store::H.SQLite, revision, batch) = append!(store, revision, batch)
 append!(history::Deferred, store::H.Memory, revision, batch) = materialize!(history, store, revision, batch, append!(store, revision, batch))
 materialize!(history, store::H.Memory, revision, batch, rejected::H.Rejected) = rejected
-materialize!(history, store::H.Memory, revision, batch, saved::Integer) = revision == 0 || namebatch(batch) ? saved : materialize!(history, store, H.snapshot(store))
-
-namebatch(batch::Vector) = namebatch(H.treenode(batch, 0))
-namebatch(::H.Rejected) = false
-namebatch(node::H.TreeNode) = length(node.batch) == 1 && nameevent(H.decode_event(only(node.batch)))
-nameevent(::Any) = false
-nameevent(::C.SessionName) = true
+materialize!(history, store::H.Memory, revision, batch, saved::Integer) = revision == 0 ? saved : materialize!(history, store, saved, H.treenode(batch, 0))
+materialize!(history, store::H.Memory, saved::Integer, ::H.Rejected) = materialize!(history, store, H.snapshot(store))
+materialize!(history, store::H.Memory, saved::Integer, node::H.TreeNode) = length(node.batch) == 1 ? materialize!(history, store, saved, H.decode_event(only(node.batch))) : materialize!(history, store, H.snapshot(store))
+materialize!(history, store::H.Memory, saved::Integer, ::C.SessionName) = saved
+materialize!(history, store::H.Memory, saved::Integer, event) = materialize!(history, store, H.snapshot(store))
 
 function materialize!(history, store::H.Memory, snapshot::H.Snapshot)
     mkpath(dirname(history.path))

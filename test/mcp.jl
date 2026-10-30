@@ -46,6 +46,8 @@ end
         client = MCP.connect(mcpserver("normal", marker); timeout=10, grace=0.2)
         @test client isa MCP.Client
         if client isa MCP.Client
+            @test client.shutdown isa MCP.ShutdownReady
+            @test !client.shutting
             @test client.state === :open
             @test client.connection isa MCP.Open
             @test client.server["serverInfo"]["name"] == "mock"
@@ -91,7 +93,11 @@ end
             rm(marker; force=true)
             pending = Threads.@spawn MCP.call(client, "hold", Dict())
             @test timedwait(() -> isfile(marker), 5) == :ok
-            close(client)
+            closers = [Threads.@spawn close(client) for _ in 1:6]
+            @test timedwait(() -> all(istaskdone, closers), 10) == :ok
+            foreach(fetch, filter(istaskdone, closers))
+            @test client.shutdown isa MCP.ShuttingDown
+            @test client.shutting
             @test client.state === :closed
             @test client.connection isa MCP.Closed
             @test timedwait(() -> istaskdone(pending), 5) == :ok

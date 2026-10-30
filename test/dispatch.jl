@@ -45,6 +45,11 @@ end
     request = JuliaForever.Conversation.ToolCall("call", "count", "{}")
     run = JuliaForever.Conversation.ToolRequest(request)
     skip = JuliaForever.Conversation.SkipRequest(request)
+    @test JuliaForever.toolmode(JuliaForever.Parallel(), run) isa JuliaForever.Parallel
+    @test JuliaForever.toolmode(JuliaForever.Parallel(), skip) isa JuliaForever.Sequential
+    @test JuliaForever.toolmode(JuliaForever.Sequential(), run) isa JuliaForever.Sequential
+    @test JuliaForever.batchmode([(effect=run,), (effect=run,)]) isa JuliaForever.Parallel
+    @test JuliaForever.batchmode([(effect=run,), (effect=skip,), (effect=run,)]) isa JuliaForever.Sequential
     events = []
 
     @test JuliaForever.toolresult(agent, call, run, event -> push!(events, event)) == ToolSuccess("ran")

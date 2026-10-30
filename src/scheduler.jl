@@ -267,17 +267,15 @@ end
 
 reserve!(tx::Transaction, id::Integer, record::Task, ::TaskStatus, now) = Rejected(:not_pending)
 
-terminal(::TaskStatus) = false
-terminal(::Union{Completed, Failed, Cancelled}) = true
-settled(tx, id) = settled(taskview(get(tx, Task, id)))
-settled(::Nothing) = false
-settled(::Rejected) = false
-settled(view::TaskView) = terminal(view.status)
+joinstatus(tx::Transaction, ids) = foldl((status, id) -> joinstatus(status, tx, id), ids; init=Pending())
+joinstatus(rejected::Rejected, tx::Transaction, id) = rejected
+joinstatus(status::Pending, tx::Transaction, id) = joinstatus(status, taskview(get(tx, Task, id)))
+joinstatus(status::Pending, view::TaskView) = joinstatus(status, view.status)
+joinstatus(status::Pending, ::Union{Completed, Failed, Cancelled}) = status
+joinstatus(::Pending, ::Union{TaskStatus, Nothing, Rejected}) = Rejected(:waiting)
 
-function reserve!(tx::Transaction, id::Integer, record::Task, status::Waiting, now)
-    all(child -> settled(tx, child), status.on) || return Rejected(:waiting)
-    reserve!(tx, id, record, Pending(), now)
-end
+reserve!(tx::Transaction, id::Integer, record::Task, rejected::Rejected, now) = rejected
+reserve!(tx::Transaction, id::Integer, record::Task, status::Waiting, now) = reserve!(tx, id, record, joinstatus(tx, status.on), now)
 
 function reserve!(tx::Transaction, id::Integer, record::Task, status::Sleeping, now)
     now() < status.until && return Rejected(:sleeping)
@@ -380,21 +378,23 @@ end
 step!(tx::Transaction, id::Integer, outcome, result) = result
 
 function step!(tx::Transaction, id::Integer, outcome, record::Task)
-    state = record.state
-    valid = validate_join(tx, id, outcome, Running(state["cancelled"]))
-    valid === nothing || return valid
-    advance!(state, outcome, Running(state["cancelled"]))
+    status = Running(record.state["cancelled"])
+    step!(tx, id, outcome, record, status, validate_join(tx, id, outcome, status))
+end
+step!(tx, id, outcome, record, status, rejected::Rejected) = rejected
+function step!(tx, id, outcome, record, status, ::Nothing)
+    advance!(record.state, outcome, status)
     taskview(tx, id, put!(tx, record))
 end
 
 validate_join(tx, id, outcome, status) = nothing
-function validate_join(tx, id, outcome::Join, ::Active)
-    for child in outcome.on
-        view = taskview(get(tx, Task, child))
-        view === nothing && return Rejected(:task_missing)
-        view isa Rejected && return view
-        reaches(tx, child, id, Set{Int}()) && return Rejected(:wait_cycle)
-    end
+validate_join(tx, id, outcome::Join, ::Active) = foldl((result, child) -> validate_child(tx, id, child, result), outcome.on; init=nothing)
+validate_child(tx, id, child, rejected::Rejected) = rejected
+validate_child(tx, id, child, ::Nothing) = check_child(tx, id, child, taskview(get(tx, Task, child)))
+check_child(tx, id, child, ::Nothing) = Rejected(:task_missing)
+check_child(tx, id, child, rejected::Rejected) = rejected
+function check_child(tx, id, child, ::TaskView)
+    reaches(tx, child, id, Set{Int}()) && return Rejected(:wait_cycle)
     nothing
 end
 function reaches(tx, current::Integer, target, seen)
