@@ -16,12 +16,6 @@ struct ProviderStatus
 end
 struct UnsupportedImage end
 
-imagecheck(::Nothing, message) = imagecheck(get(Dict(string(key) => value for (key, value) in pairs(message)), "image", nothing))
-imagecheck(unsupported::UnsupportedImage, message) = unsupported
-imagecheck(::Nothing) = nothing
-imagecheck(image) = UnsupportedImage()
-images(input) = foldl(imagecheck, input; init=nothing)
-
 "A provider-reported failure without its untrusted message or request details."
 struct ProviderError
     provider::Symbol
