@@ -21,6 +21,20 @@ const imagejpeg = read(joinpath(@__DIR__, "fixtures", "pixel.jpg"))
         @test jpeg.text == "Read image file [image/jpeg]"
         @test jpeg.image.mime == "image/jpeg"
         @test base64decode(jpeg.image.data) == imagejpeg
+        if haskey(ENV, "PI_SOURCE")
+            source = ENV["PI_SOURCE"]
+            @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
+            reference = JSON3.read(read(`node $(joinpath(@__DIR__, "image_reference.mjs")) $source $dir`, String))
+            @test length(reference) == 2
+            for (actual, expected) in zip((result, jpeg), reference)
+                text = only(filter(block -> block.type == "text", expected))
+                image = only(filter(block -> block.type == "image", expected))
+                @test !actual.iserror
+                @test actual.text == text.text
+                @test actual.image.mime == image.mimeType
+                @test actual.image.data == image.data
+            end
+        end
         text = execute(reader, (; path="text.png"))
         @test text.text == "ordinary text\n"
         @test text.image === nothing
