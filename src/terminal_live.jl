@@ -78,12 +78,12 @@ function Base.empty!(queue::DeferredQueue)
     queue
 end
 
-mutable struct Session{V<:View}
+mutable struct Session{V<:View, T}
     editor::TerminalEditor.Editor
     physical::IO
     agent::JuliaForever.Agent
     terminal::JuliaForever.Terminal
-    templates::Dict{String, String}
+    templates::T
     extensions::Union{Nothing, JuliaForever.Extensions.Snapshot}
     activity::Activity
     visibility::Visibility

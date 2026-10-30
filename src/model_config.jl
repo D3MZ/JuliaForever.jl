@@ -45,9 +45,13 @@ end
 envvalue(::Nothing) = nothing
 envvalue(value::AbstractString) = isempty(value) ? nothing : String(value)
 
-configuredkey(name, settings, builtin, env) = configcredential(get(storedcredentials(env), name, nothing), get(settings, "apiKey", nothing), builtin, env)
+configuredkey(name, settings, builtin, env) = configcredential(storedmodelkey(name, builtin, env), get(settings, "apiKey", nothing), builtin, env)
+storedmodelkey(name, ::Nothing, env) = get(storedcredentials(env), name, nothing)
+function storedmodelkey(name, builtin::NamedTuple, env)
+    get(credentialreaders, builtin.key, readpicredential)(storedcredentials(env), env, builtin)
+end
 configcredential(::Nothing, ::Nothing, ::Nothing, env) = nothing
-configcredential(::Nothing, ::Nothing, builtin::NamedTuple, env) = keyvalue(env, builtin)
+configcredential(::Nothing, ::Nothing, builtin::NamedTuple, env) = get(env, builtin.key, "")
 configcredential(::Nothing, value::AbstractString, builtin, env) = configvalue(value, env)
 configcredential(::Nothing, value, builtin, env) = nothing
 configcredential(value::AbstractDict, fallback, builtin, env) = get(credentialhandlers, get(value, "type", ""), unsupportedcredential)(value, env)

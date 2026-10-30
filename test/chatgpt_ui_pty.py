@@ -32,6 +32,8 @@ for mode in ("fullscreen", "regular"):
             if predicate():
                 return
             if process.poll() is not None:
+                if predicate():
+                    return
                 raise RuntimeError("process exited early: " + output.decode(errors="replace")[-1500:])
         raise RuntimeError("terminal timed out: " + output.decode(errors="replace")[-1500:])
     try:

@@ -1,8 +1,9 @@
 module Skills
 
 import YAML
+import ..Prompts
 using ..Prompts: frontmatter
-import ..JuliaForever: FileRule, ignored, rules
+import ..JuliaForever: FileRule, ToolFailure, attempt, ignored, rules
 import ..Conversation
 
 struct Automatic end
@@ -14,6 +15,17 @@ struct Skill
     path::String
     dir::String
     invocation::Union{Automatic, Explicit}
+end
+
+struct Resources
+    templates::Dict{String, String}
+    skills::Vector{Skill}
+end
+
+function refresh!(resources::Resources, skills::Vector{Skill})
+    empty!(resources.skills)
+    append!(resources.skills, skills)
+    resources
 end
 
 struct PiDirectory end
@@ -149,6 +161,37 @@ function render(skills)
     end
     append!(lines, ["</available_skills>", "</skills>"])
     join(lines, "\n")
+end
+
+const command = r"\A/skill:([^ ]*)(?: ([\s\S]*))?\z"
+expand(text::AbstractString, skills::Vector{Skill}) = expand(text, skills, match(command, text))
+expand(text, skills, ::Nothing) = String(text)
+function expand(text, skills, found::RegexMatch)
+    name = something(found[1], "")
+    args = strip(something(found[2], ""))
+    expand(text, skills, args, findfirst(skill -> skill.name == name, skills))
+end
+expand(text, skills, args, ::Nothing) = String(text)
+function expand(text, skills, args, index::Integer)
+    skill = skills[index]
+    expand(text, skill, args, attempt(() -> read(skill.path, String)))
+end
+function expand(text, skill::Skill, args, ::ToolFailure)
+    @warn "Could not read requested skill; sending the original input."
+    String(text)
+end
+expand(text, skill::Skill, args, raw::AbstractString) = expandbody(text, skill, args, Prompts.body(raw))
+function expandbody(text, skill, args, ::Nothing)
+    @warn "Could not parse requested skill; sending the original input."
+    String(text)
+end
+function expandbody(text, skill, args, body::AbstractString)
+    block = "<skill name=\"$(skill.name)\" location=\"$(skill.path)\">\nReferences are relative to $(skill.dir).\n\n$(strip(body))\n</skill>"
+    isempty(args) ? block : block * "\n\n" * args
+end
+
+function Prompts.expand(text::AbstractString, resources::Resources)
+    Prompts.expand(expand(text, resources.skills), resources.templates)
 end
 
 available!(available, skill, ::Automatic) = push!(available, skill)
