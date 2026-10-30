@@ -341,7 +341,7 @@ function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), o
     result
 end
 
-finish(provider::OpenAIResponses, state::ResponseStream, ::Nothing) = Completion(state.partial, nothing, nothing, false, something(state.failure, "Responses stream ended before a terminal event"))
+finish(provider::OpenAIResponses, state::ResponseStream, ::Nothing) = Completion(state.partial, nothing, nothing, Unfinished(), something(state.failure, "Responses stream ended before a terminal event"))
 
 function finish(provider::OpenAIResponses, state::ResponseStream, data)
     finished = state.finished
