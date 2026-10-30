@@ -149,7 +149,7 @@ millis() = floor(UInt64, time() * 1000)
 Base.open(::Type{Scheduler}, path::AbstractString; now=millis) = open_scheduler(open(Store, path), now)
 open_scheduler(rejected::Rejected, now) = rejected
 function open_scheduler(store::Store, now)
-    success = false
+    outcome = nothing
     try
         records = scan(store, Task)
         result = commit!(store) do tx
@@ -158,19 +158,17 @@ function open_scheduler(store::Store, now)
             end
             nothing
         end
-        finish_open!(store, result, now) do
-            success = true
-        end
+        outcome = finish_open!(store, result, now)
     finally
-        success || close(store)
+        closefailed!(store, outcome)
     end
 end
-finish_open!(f, store::Store, rejected::Rejected, now) = rejected
-function finish_open!(f, store::Store, ::Nothing, now)
+closefailed!(store, ::Scheduler) = nothing
+closefailed!(store, ::Union{Nothing, Rejected}) = close(store)
+finish_open!(store::Store, rejected::Rejected, now) = rejected
+function finish_open!(store::Store, ::Nothing, now)
     mutex = ReentrantLock()
-    scheduler = Scheduler(store, mutex, 0, now, Threads.Condition(mutex))
-    f()
-    scheduler
+    Scheduler(store, mutex, 0, now, Threads.Condition(mutex))
 end
 
 function Base.close(scheduler::Scheduler)
