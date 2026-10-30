@@ -507,11 +507,11 @@ function request!(f, agent::Agent, partial, started)
     end
 end
 
-function response(agent, messages, parameters, ::Nothing, on_agent_event)
+function response(agent, request, parameters, ::Nothing, on_agent_event)
     partial = Dict{String, Any}("role" => "assistant", "content" => nothing)
     info = responseinfo(agent.provider, round(Int, 1000time()))
     result = request!(agent, partial, Ref{MessagePresentation}(Unannounced())) do
-        message = isempty(parameters) ? complete(agent.provider, messages, agent.tools) : complete(agent.provider, messages, agent.tools; parameters)
+        message = isempty(parameters) ? complete(agent.provider, request.messages, request.tools) : complete(agent.provider, request.messages, request.tools; parameters)
         message = price(agent.provider, message)
         response(message)
     end
@@ -520,7 +520,7 @@ end
 
 providercomplete!(callback, result) = nothing
 
-function response(agent, messages, parameters, on_event, on_agent_event)
+function response(agent, request, parameters, on_event, on_agent_event)
     partial = Dict{String, Any}("role" => "assistant", "content" => nothing)
     calls = Dict{Any, Any}()
     started = Ref{MessagePresentation}(Unannounced())
@@ -531,7 +531,7 @@ function response(agent, messages, parameters, on_event, on_agent_event)
     end
     info = responseinfo(agent.provider, round(Int, 1000time()))
     answer = request!(agent, partial, started) do
-        result = price(agent.provider, stream(agent.provider, messages, agent.tools; parameters, on_event=callback))
+        result = price(agent.provider, stream(agent.provider, request.messages, request.tools; parameters, on_event=callback))
         providercomplete!(on_event, result)
         (; message=result.message, result, started=started[])
     end
@@ -724,18 +724,25 @@ finish(message, result::Completion, ::Type{Truncated}) = Truncated(result)
 function modelresponse(agent, effect, parameters, on_event, on_agent_event)
     answer = nothing
     try
-        messages = modelmessages(effect.effect.messages)
-        received = withcontext(effect.effect.messages) do
-            response(agent, messages, parameters, on_event, on_agent_event)
-        end
-        rememberusage!(received.result)
+        request = requestview(on_agent_event, effect.effect.messages, agent.tools, agent.provider)
+        received = modelresponse(agent, effect, request, parameters, on_event, on_agent_event, turnstate(agent))
+        remembermodel!(received)
         answer = received
     finally
         modelreturned!(agent, effect, answer)
     end
 end
 
+modelresponse(agent, effect, request, parameters, on_event, on_agent_event, ::Cancelled) = Cancelled()
+function modelresponse(agent, effect, request, parameters, on_event, on_agent_event, ::Union{Idle, Running})
+    withcontext(effect.effect.messages) do
+        response(agent, request, parameters, on_event, on_agent_event)
+    end
+end
+remembermodel!(::Cancelled) = nothing
+remembermodel!(answer::NamedTuple) = rememberusage!(answer.result)
 modelreturned!(agent, effect, ::NamedTuple) = nothing
+modelreturned!(agent, effect, ::Cancelled) = nothing
 modelreturned!(agent, effect, ::Nothing) = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("provider did not return")), agent)
 
 interrupt!(agent::Agent, ::Conversation.Phase) = nothing
@@ -838,6 +845,10 @@ end
 
 function direct_step!(run, effect, ::Union{Idle, Running})
     answer = modelresponse(run.agent, effect, run.parameters, run.on_event, run.callback)
+    direct_answer!(run, effect, answer)
+end
+direct_answer!(run, effect, ::Cancelled) = direct_step!(run, effect, Cancelled())
+function direct_answer!(run, effect, answer)
     outcome = conversation_reply(answer)
     result, added = transition!(revision -> Kernel.Observe(revision, effect.id, outcome), run.agent)
     direct_result!(run, answer, result, added, answer.result)

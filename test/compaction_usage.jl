@@ -161,4 +161,23 @@ reply(text, usage) = Completion(Dict{String, Any}("role" => "assistant", "conten
     @test JuliaForever.SessionInfo.counts(agent, history).usage isa JuliaForever.SessionInfo.UnknownUsage
 end
 
+@testset "terminal compaction preserves history on interruption" begin
+    normal = Usage(100, 10, 0, 0, 0, 110, nothing)
+    summary = Usage(10, 1, 0, 0, 0, 11, nothing)
+    for (action, expected) in ((agent -> steer!(agent, "queued"), 1), (agent -> cancel!(agent), 130))
+        provider = UsageProvider([reply("first answer", normal), reply("second answer", normal), reply("checkpoint", summary)], () -> nothing)
+        history = JuliaForever.History.Tree(JuliaForever.History.Memory())
+        agent = Agent(provider, []; history)
+        respond!(agent, "first")
+        respond!(agent, "second")
+        before = deepcopy(agent.messages)
+        provider.action = () -> action(agent)
+        terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), String[])
+        _, _, status = JuliaForever.command!(JuliaForever.terminalcommands["/compact"], terminal, agent, history, IOBuffer(), "", nothing)
+        @test status == expected && agent.messages == before && !agent.running
+        @test !any(event -> event isa JuliaForever.Conversation.SessionRecord{JuliaForever.Conversation.CompactionEntry}, agent.events)
+        @test Agent(provider, []; history).messages == before
+    end
+end
+
 end
