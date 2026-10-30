@@ -29,3 +29,9 @@ L.json(records; project = item -> (; revision=item.revision))
 HTML displays escaped, formatted JSON with no external resources or script. Exporting kernel events or replay results does not run the effects they describe. Exporters do invoke the supplied iterator and projection, so those must be passive if read-only behavior is required. JSON3 must be able to encode the projected data, including nested plugin payloads.
 
 These are views, not a versioned persistence format: there is no decoder, history capture, backend connection, redaction, or durability guarantee. An I/O or encoding failure may leave a partially written stream. The caller owns access control and any sensitive data in the records.
+
+## Export a terminal session
+
+Use `jf --export session.sqlite` to write `session.html`, or `jf --export session.sqlite output.json` for JSON. The command replays the active branch without running tools or requiring a provider. It refuses to overwrite an existing destination, including the source session. The HTML shows the user and assistant messages, tool calls and tool results; the JSON is an array of those messages. System and skill instructions are omitted. PNG and JPEG attachments are retained in JSON and embedded in the HTML. Both files can contain private conversation and tool data.
+
+These exports are Julia Forever views, not Pi's JSONL session format. Pi's HTML export additionally offers search, navigation, timestamps, and display controls that Julia Forever's static HTML does not provide.

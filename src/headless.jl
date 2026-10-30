@@ -8,6 +8,7 @@ abstract type Command end
 struct GetState <: Command end
 struct GetMessages <: Command end
 struct GetAvailableModels <: Command end
+struct GetCommands <: Command end
 struct GetSessionStats <: Command end
 struct ClearQueue <: Command end
 struct CloneSession <: Command end
@@ -80,14 +81,14 @@ const newstatuses = Dict(0 => SessionStarted())
 
 const unsupportedcommands = (
     "set_model", "cycle_model", "compact", "bash",
-    "get_entries", "get_tree", "get_commands",
+    "get_entries", "get_tree",
 )
 const commands = merge(
     Dict(name => Unsupported for name in unsupportedcommands),
     Dict(
         "prompt" => Prompt, "steer" => Queue{Steering}, "follow_up" => Queue{FollowUp}, "abort" => Abort,
         "clear_queue" => ClearQueue, "clone" => CloneSession, "fork" => ForkSession, "get_fork_messages" => GetForkMessages, "new_session" => NewSession, "switch_session" => SwitchSession, "export_html" => ExportHTML, "get_state" => GetState, "get_session_stats" => GetSessionStats,
-        "get_messages" => GetMessages, "get_available_models" => GetAvailableModels, "get_last_assistant_text" => GetLastText, "set_session_name" => SetName,
+        "get_messages" => GetMessages, "get_available_models" => GetAvailableModels, "get_commands" => GetCommands, "get_last_assistant_text" => GetLastText, "set_session_name" => SetName,
         "get_available_thinking_levels" => GetThinkingLevels, "cycle_thinking_level" => CycleThinking, "set_thinking_level" => SetThinking,
         "set_steering_mode" => SetSteeringMode, "set_follow_up_mode" => SetFollowUpMode,
         "set_auto_compaction" => SetAutoCompaction, "set_auto_retry" => SetAutoRetry, "abort_retry" => AbortRetry, "abort_bash" => AbortBash,
@@ -179,6 +180,7 @@ sessionname(value::J.History.Rejected) = nothing
 include("headless_events.jl")
 include("headless_statistics.jl")
 include("headless_history.jl")
+include("headless_commands.jl")
 
 function write!(session, value)
     lock(session.lock) do
@@ -277,7 +279,7 @@ handle!(session, command::NewSession) = newsession!(session, command.parent)
 newsession!(session, parent::String) = Failure("Parent session tracking is not supported")
 function newsession!(session, ::Nothing)
     handle!(session, Abort())
-    agent, history, status = J.new!(session.terminal, session.agent, session.store[], session.directory, session.extensions)
+    agent, history, status = J.new!(session.terminal, session.agent, session.store[], session.directory, session.extensions, session.templates)
     newresult!(session, agent, history, get(newstatuses, status, nothing))
 end
 newresult!(session, agent, history, ::Nothing) = Failure("Could not start a new session")

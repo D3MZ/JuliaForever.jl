@@ -224,12 +224,18 @@ end
     source = ENV["PI_SOURCE"]
     @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
     mktempdir() do workspace
+        skill = joinpath(workspace, ".pi", "skills", "demo", "SKILL.md")
+        template = joinpath(workspace, ".pi", "prompts", "fix.md")
+        mkpath(dirname(skill))
+        mkpath(dirname(template))
+        write(skill, "---\nname: demo\ndescription: Demo skill\n---\n\nUse the demo.\n")
+        write(template, "---\ndescription: Fix it\n---\n\nFix \$1.\n")
         project = dirname(@__DIR__)
         oracle = joinpath(@__DIR__, "headless_reference.mjs")
-        pi = Cmd(`node $oracle $source --mode rpc --no-session --provider openai --model gpt-4.1-mini`; dir=workspace)
+        pi = Cmd(`node $oracle $source --mode rpc --no-session --provider openai --model gpt-4.1-mini --approve`; dir=workspace)
         jf = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session`; dir=workspace)
         env = ["PI_SOURCE" => source, "HOME" => workspace, "PI_CODING_AGENT_DIR" => joinpath(workspace, "agent"), "PI_OFFLINE" => "1", "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "gpt-4.1-mini", "OPENAI_API_KEY" => "fixture", "JF_FIXTURE" => "text", "JF_INSTRUCTIONS_DIR" => workspace]
-        commands = [(; id="state", type="get_state"), (; id="messages", type="get_messages"), (; id="clear", type="clear_queue"), (; id="bad", type="no_such_command"), (; id="export-empty", type="export_html", outputPath=joinpath(workspace, "report.html")), (; id="levels", type="get_available_thinking_levels"), (; id="cycle", type="cycle_thinking_level"), (; id="thinking", type="set_thinking_level", level="off"), (; id="steering-mode", type="set_steering_mode", mode="one-at-a-time"), (; id="follow-mode", type="set_follow_up_mode", mode="one-at-a-time"), (; id="compaction", type="set_auto_compaction", enabled=false), (; id="retry", type="set_auto_retry", enabled=false), (; id="abort-retry", type="abort_retry"), (; id="abort-bash", type="abort_bash")]
+        commands = [(; id="state", type="get_state"), (; id="messages", type="get_messages"), (; id="commands", type="get_commands"), (; id="clear", type="clear_queue"), (; id="bad", type="no_such_command"), (; id="export-empty", type="export_html", outputPath=joinpath(workspace, "report.html")), (; id="levels", type="get_available_thinking_levels"), (; id="cycle", type="cycle_thinking_level"), (; id="thinking", type="set_thinking_level", level="off"), (; id="steering-mode", type="set_steering_mode", mode="one-at-a-time"), (; id="follow-mode", type="set_follow_up_mode", mode="one-at-a-time"), (; id="compaction", type="set_auto_compaction", enabled=false), (; id="retry", type="set_auto_retry", enabled=false), (; id="abort-retry", type="abort_retry"), (; id="abort-bash", type="abort_bash")]
         input = join(JSON3.write.(commands), "\n") * "\n{\n"
         expected = runprocess(pi, input, env)
         actual = runprocess(jf, input, env)
@@ -247,6 +253,8 @@ end
         end
         @test actual_state["model"]["id"] == expected_state["model"]["id"]
         @test actual_state["model"]["provider"] == expected_state["model"]["provider"]
+        projectcommands(response) = Dict(item["name"] => item for item in get(get(response, "data", Dict()), "commands", []) if item["name"] in ("fix", "skill:demo"))
+        @test projectcommands(get(result, "commands", Dict())) == projectcommands(reference["commands"])
         parseerror(output) = only(record for record in records(output) if get(record, "command", "") == "parse")
         @test parseerror(actual.output)["success"] == parseerror(expected.output)["success"] == false
         @test startswith(parseerror(actual.output)["error"], "Failed to parse command")

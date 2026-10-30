@@ -66,6 +66,16 @@ modelrow(model) = (; provider=String(model.provider), id=String(model.id), conte
         jsoncmd = addenv(jsoncmd, "PI_CODING_AGENT_DIR" => dir, "ANTHROPIC_API_KEY" => "fixture", "OPENAI_API_KEY" => nothing, "OPENROUTER_API_KEY" => nothing, "GEMINI_API_KEY" => nothing)
         process = run(pipeline(ignorestatus(jsoncmd); stdout=output, stderr=diagnostics))
         @test (process.exitcode, read(output, String), read(diagnostics, String)) == (0, expected, "")
+        unfiltered = modelreference(source, (; models=available, listing=""))
+        for next in ("--no-session", "@ignored", "--")
+            cmd = `$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --list-models $next`
+            cmd = addenv(cmd, "PI_CODING_AGENT_DIR" => dir, "ANTHROPIC_API_KEY" => "fixture", "OPENAI_API_KEY" => nothing, "OPENROUTER_API_KEY" => nothing, "GEMINI_API_KEY" => nothing)
+            process = run(pipeline(ignorestatus(cmd); stdout=output, stderr=diagnostics))
+            @test (process.exitcode, read(output, String), read(diagnostics, String)) == (0, unfiltered, "")
+        end
+        help = `$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --list-models --help`
+        process = run(pipeline(ignorestatus(help); stdout=output, stderr=diagnostics))
+        @test process.exitcode == 0 && startswith(read(output, String), "jf [") && isempty(read(diagnostics, String))
     end
 
     router = filter(model -> model.provider == "openrouter", catalog)
