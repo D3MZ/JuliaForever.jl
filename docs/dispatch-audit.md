@@ -75,3 +75,5 @@ Document fork policies add 17 branch entries for selection, validation, and repl
 The model-catalog integration adds 54 net branch entries before the document-fork merge; the dispatch scanner also recognizes additional result-flag patterns.
 
 The RPC and shared JSON stream changes add 25 branch entries and remove two, bringing the inventory from 1,308 to 1,331. The additions include iteration over history entries and protocol records, input validation, and protection for the active session file. They add no dispatch candidates.
+
+Unconfigured RPC startup adds two collection checks and no dispatch candidates, bringing the inventory to 1,333.

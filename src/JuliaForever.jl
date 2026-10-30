@@ -153,9 +153,17 @@ function acquire(auth::OpenRouterAuth, info::NamedTuple, model)
     login!(login, code, info, model)
 end
 
+acquire(auth, info, model, ::TerminalMode) = acquire(auth, info, model)
+function acquire(::APIKeyAuth, info::NamedTuple, model, ::RPCMode)
+    missing = missingmodel(ENV, info, model)
+    missingkey!(missing, keyvalue(ENV, info), info)
+    isempty(missing) || return UnconfiguredProvider()
+    provider(info, ENV, model)
+end
+
 launch(output, status::Integer, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode) = status
 
-function launch(output, model::Union{OpenAI, OpenAIResponses, Anthropic, Google}, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode)
+function launch(output, model::Union{OpenAI, OpenAIResponses, Anthropic, Google, UnconfiguredProvider}, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode)
     tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), PowerShell(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
     terminal = Terminal(output, stderr, [model.key], mode)
     registry = plugins(terminal, tools, packages, environments)
@@ -434,7 +442,7 @@ function launchprovider(options)
     (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, outputmode, output) = options
     name = providername(auth, selected)
     info = providerinfo(name)
-    model = acquire(auth, info, requested_model)
+    model = acquire(auth, info, requested_model, outputmode)
     launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, provider(outputmode, name))
 end
 

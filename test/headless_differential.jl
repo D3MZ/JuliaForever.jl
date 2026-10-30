@@ -257,6 +257,18 @@ end
         @test pi_metadata.status == jf_metadata.status == 0
         @test isempty(pi_metadata.output) && isempty(jf_metadata.output)
         @test !isempty(pi_metadata.diagnostics) && !isempty(jf_metadata.diagnostics)
+
+        cleanenv = Dict("PATH" => ENV["PATH"], "HOME" => workspace, "PI_SOURCE" => source, "PI_CODING_AGENT_DIR" => joinpath(workspace, "empty-agent"), "PI_OFFLINE" => "1", "JF_FIXTURE" => "text", "JF_INSTRUCTIONS_DIR" => workspace, "JULIA_DEPOT_PATH" => get(ENV, "JULIA_DEPOT_PATH", ""))
+        empty_pi = setenv(Cmd(`node $oracle $source --mode rpc --no-session`; dir=workspace), cleanenv)
+        empty_jf = setenv(Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session`; dir=workspace), cleanenv)
+        empty_input = join(JSON3.write.([(; id="state", type="get_state"), (; id="models", type="get_available_models"), (; id="prompt", type="prompt", message="hello")]), "\n") * "\n"
+        pi_unconfigured = runprocess(empty_pi, empty_input, [])
+        jf_unconfigured = runprocess(empty_jf, empty_input, [])
+        @test jf_unconfigured.status == pi_unconfigured.status == 0
+        expected_empty, actual_empty = responses(pi_unconfigured.output), responses(jf_unconfigured.output)
+        @test get(get(get(actual_empty, "state", Dict()), "data", Dict()), "model", nothing) == expected_empty["state"]["data"]["model"]
+        @test get(actual_empty, "models", nothing) == expected_empty["models"]
+        @test get(get(actual_empty, "prompt", Dict()), "success", nothing) == expected_empty["prompt"]["success"] == false
     end
 end
 

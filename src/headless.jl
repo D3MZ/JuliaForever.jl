@@ -7,6 +7,7 @@ const LiveJSON = J.LiveJSON
 abstract type Command end
 struct GetState <: Command end
 struct GetMessages <: Command end
+struct GetAvailableModels <: Command end
 struct GetSessionStats <: Command end
 struct ClearQueue <: Command end
 struct CloneSession <: Command end
@@ -78,7 +79,7 @@ struct UnavailableStatistics <: StatisticsState end
 const newstatuses = Dict(0 => SessionStarted())
 
 const unsupportedcommands = (
-    "set_model", "cycle_model", "get_available_models", "compact", "bash",
+    "set_model", "cycle_model", "compact", "bash",
     "get_entries", "get_tree", "get_commands",
 )
 const commands = merge(
@@ -86,7 +87,7 @@ const commands = merge(
     Dict(
         "prompt" => Prompt, "steer" => Queue{Steering}, "follow_up" => Queue{FollowUp}, "abort" => Abort,
         "clear_queue" => ClearQueue, "clone" => CloneSession, "fork" => ForkSession, "get_fork_messages" => GetForkMessages, "new_session" => NewSession, "switch_session" => SwitchSession, "export_html" => ExportHTML, "get_state" => GetState, "get_session_stats" => GetSessionStats,
-        "get_messages" => GetMessages, "get_last_assistant_text" => GetLastText, "set_session_name" => SetName,
+        "get_messages" => GetMessages, "get_available_models" => GetAvailableModels, "get_last_assistant_text" => GetLastText, "set_session_name" => SetName,
         "get_available_thinking_levels" => GetThinkingLevels, "cycle_thinking_level" => CycleThinking, "set_thinking_level" => SetThinking,
         "set_steering_mode" => SetSteeringMode, "set_follow_up_mode" => SetFollowUpMode,
         "set_auto_compaction" => SetAutoCompaction, "set_auto_retry" => SetAutoRetry, "abort_retry" => AbortRetry, "abort_bash" => AbortBash,
@@ -216,7 +217,9 @@ function state(session)
     optional!(data, "sessionName", name)
     optional!(data, "sessionFile", sessionfile(session.store[]))
 end
-modelinfo(session) = (; id=session.agent.provider.model, api=LiveJSON.api(session.agent.provider), provider=session.terminal.mode.provider, baseUrl=session.agent.provider.base)
+modelinfo(session) = modelinfo(session.agent.provider, session.terminal.mode)
+modelinfo(provider, mode) = (; id=provider.model, api=LiveJSON.api(provider), provider=LiveJSON.providername(mode, provider), baseUrl=provider.base)
+modelinfo(::J.UnconfiguredProvider, mode) = (; id="unknown", name="unknown", api="unknown", provider="unknown", baseUrl="", reasoning=false, input=String[], cost=(; input=0, output=0, cacheRead=0, cacheWrite=0), contextWindow=0, maxTokens=0)
 sessionfile(::Nothing) = nothing
 sessionfile(::J.History.Memory) = nothing
 sessionfile(history::J.History.Tree) = sessionfile(history.store)
@@ -231,6 +234,10 @@ optional!(data, key, value) = (data[key] = value; data)
 
 handle!(session, ::GetState) = Success((; data=state(session)))
 handle!(session, ::GetMessages) = Success((; data=(; messages=lock(() -> copy(session.messages), session.lock))))
+handle!(session, ::GetAvailableModels) = availablemodels(session.agent.provider)
+availablemodels(::J.UnconfiguredProvider) = availablemodels(J.usableproviders(ENV))
+availablemodels(providers::Set{String}) = isempty(providers) ? Success((; data=(; models=NamedTuple[],))) : Failure("Model listing is not yet available over RPC")
+availablemodels(provider) = Failure("Model listing is not yet available over RPC")
 handle!(session, ::GetSessionStats) = lock(() -> statistics(session, session.statistics), session.lock)
 handle!(session, ::GetThinkingLevels) = Success((; data=(; levels=["off"])))
 handle!(session, ::CycleThinking) = Success((; data=nothing))
@@ -372,6 +379,10 @@ function queues!(session)
 end
 
 function handle!(session, command::Prompt)
+    promptprovider!(session, command, session.agent.provider)
+end
+promptprovider!(session, command, ::J.UnconfiguredProvider) = Failure("No configured model or API key is available.")
+function promptprovider!(session, command, provider)
     lock(session.lock) do
         prompt!(session, command, session.task)
     end

@@ -1,7 +1,7 @@
 module LiveJSON
 
 using JSON3, Dates, Random, SHA
-import ..JuliaForever: Terminal, JSONMode, RPCMode, Agent, OpenAI, OpenAIResponses, Anthropic, Google, Usage, Completion, Finished, Unfinished, Truncated, History, SessionCatalog, Extensions, FileArguments, Prompts, Image, ToolResult, ToolFailure, ShellUpdate, PendingInputs, Unannounced, Announced, providercomplete!, run!, runmode!, starttemplates!, request!, respond!, failures!, result!, redact, attempt, fileinput, fileprompt, iserror
+import ..JuliaForever: Terminal, JSONMode, RPCMode, Agent, OpenAI, OpenAIResponses, Anthropic, Google, UnconfiguredProvider, Usage, Completion, Finished, Unfinished, Truncated, History, SessionCatalog, Extensions, FileArguments, Prompts, Image, ToolResult, ToolFailure, ShellUpdate, PendingInputs, Unannounced, Announced, providercomplete!, run!, runmode!, starttemplates!, request!, respond!, failures!, result!, redact, attempt, fileinput, fileprompt, iserror
 
 function write!(io, event)
     JSON3.write(io, event)
@@ -30,7 +30,9 @@ api(::OpenAI) = "openai-completions"
 api(::OpenAIResponses) = "openai-responses"
 api(::Anthropic) = "anthropic-messages"
 api(::Google) = "google-generative-ai"
+api(::UnconfiguredProvider) = "unknown"
 providername(::Union{JSONMode, RPCMode}, ::OpenAIResponses) = "openai"
+providername(::RPCMode, ::UnconfiguredProvider) = "unknown"
 providername(mode::Union{JSONMode, RPCMode}, provider) = mode.provider
 
 usage(::Nothing) = (; input=0, output=0, cacheRead=0, cacheWrite=0, totalTokens=0, cost=(; input=0, output=0, cacheRead=0, cacheWrite=0, total=0))

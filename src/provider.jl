@@ -4,6 +4,13 @@ struct OpenAI
     key::String
 end
 
+struct UnconfiguredProvider
+    base::String
+    model::String
+    key::String
+end
+UnconfiguredProvider() = UnconfiguredProvider("", "unknown", "")
+
 # Keep request cancellation scoped to the calling task without changing provider APIs.
 const requestkey = gensym(:request_context)
 requestcontext() = get(task_local_storage(), requestkey, nothing)
