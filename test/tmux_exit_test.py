@@ -14,6 +14,22 @@ from tmux_exit import wait_for_exit
 
 
 class TerminalExitTest(unittest.TestCase):
+    def test_nudges_again_when_child_exits_after_first_signal(self):
+        signals = 0
+
+        def run(*args):
+            if args[-1] == "#{pid}":
+                return SimpleNamespace(stdout="123\n")
+            return SimpleNamespace(stdout="1|0|\n" if signals >= 2 else "1||\n")
+
+        def nudge(pid, sig):
+            nonlocal signals
+            self.assertEqual((pid, sig), (123, signal.SIGCHLD))
+            signals += 1
+
+        with patch("os.kill", side_effect=nudge):
+            self.assertEqual(wait_for_exit(run, "probe", seconds=.8), ("0", ""))
+
     def test_missed_sigchld_still_reports_failure(self):
         signalled = False
 
