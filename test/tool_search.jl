@@ -203,11 +203,32 @@ end
 
 @testset "executor boundary" begin
     executor = JuliaForever.Execution.Executor(1)
+    provider = searchprovider(searchreply(searchcall("1", "tool_search", (; query="issue"))), searchreply(searchcall("2", "github_get_issue", (;))), searchdone(), searchdone())
+    history = SearchHistory.Memory()
+    E = JuliaForever.Execution
+    @test E.install!("search-test", provider, catalog())
     try
-        agent = Agent(nothing, catalog())
-        @test respond!(agent, "find"; executor, context="test") == JuliaForever.Execution.Rejected(:dynamic_tools_unsupported)
-        @test isempty(agent.events)
+        agent = Agent(nothing, catalog(); history)
+        @test respond!(agent, "find"; executor, context="search-test").value == "done"
+        @test provider.offered == [["alpha", "omega", "tool_search"], ["alpha", "omega", "tool_search", "github_get_issue"], ["alpha", "omega", "tool_search", "github_get_issue"]]
+        @test [m["content"] for m in agent.messages if m["role"] == "tool"][end] == "github_get_issue ran"
+        restored = Agent(nothing, catalog(); history)
+        @test toolnames(restored.tools) == ["alpha", "omega", "tool_search", "github_get_issue"]
+        @test respond!(restored, "again"; executor, context="search-test").value == "done"
+        @test last(provider.offered) == ["alpha", "omega", "tool_search", "github_get_issue"]
+        rejected_provider = searchprovider(searchreply(searchcall("3", "tool_search", (; query="issue"))))
+        @test E.install!("search-rejected", rejected_provider, catalog())
+        try
+            store = SearchHistory.Memory()
+            rejected = Agent(nothing, catalog(); history=RejectSearchHistory(store))
+            @test respond!(rejected, "find"; executor, context="search-rejected").value == SearchHistory.Rejected(:search_rejected)
+            @test toolnames(rejected.tools) == ["alpha", "omega", "tool_search"]
+            @test toolnames(Agent(nothing, catalog(); history=store).tools) == ["alpha", "omega", "tool_search"]
+        finally
+            E.uninstall!("search-rejected")
+        end
     finally
+        E.uninstall!("search-test")
         close(executor)
     end
 end
