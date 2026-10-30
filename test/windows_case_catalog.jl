@@ -131,4 +131,48 @@ end
     end
 end
 
+@testset "Stale and inaccessible case candidates do not interrupt discovery" begin
+    mktempdir() do root
+        workspace = joinpath(root, "Project")
+        missing = joinpath(root, "Missing Project")
+        malformed = joinpath(root, "Invalid\0Path")
+        mkpath(workspace)
+        current = session(root, workspace, repeat("1", 32), "current")
+        stale = session(root, missing, repeat("2", 32), "stale")
+        invalid = session(root, malformed, repeat("3", 32), "malformed")
+        paths = (workspace, uppercase(missing))
+        files = [current, stale, invalid]
+        if !Sys.iswindows()
+            loop = joinpath(root, "Loop Project")
+            symlink("Loop Project", loop)
+            inaccessible = session(root, loop, repeat("4", 32), "inaccessible")
+            push!(files, inaccessible)
+            paths = (paths..., uppercase(loop))
+        end
+        before = Dict(file => bytes2hex(sha256(read(file))) for file in files)
+        @test Set(item.path for item in Catalog.listcase(root, paths)) == Set((current,))
+        @test Dict(file => bytes2hex(sha256(read(file))) for file in files) == before
+    end
+end
+
+@testset "Windows case-sensitive projects remain separate" begin
+    if Sys.iswindows() && haskey(ENV, "JF_CASE_SENSITIVE_TEST_ROOT")
+        mktempdir(ENV["JF_CASE_SENSITIVE_TEST_ROOT"]) do root
+            workspace = joinpath(root, "Case Project")
+            alternate = joinpath(root, "cASE pROJECT")
+            mkpath(workspace)
+            @test !ispath(alternate)
+            current = session(root, workspace, repeat("1", 32), "current")
+            stale = session(root, alternate, repeat("2", 32), "other case")
+            files = (current, stale)
+            before = Dict(file => bytes2hex(sha256(read(file))) for file in files)
+            @test Set(item.path for item in Catalog.list(root, workspace)) == Set((current,))
+            mkpath(alternate)
+            @test !samefile(workspace, alternate)
+            @test Set(item.path for item in Catalog.list(root, workspace)) == Set((current,))
+            @test Dict(file => bytes2hex(sha256(read(file))) for file in files) == before
+        end
+    end
+end
+
 end

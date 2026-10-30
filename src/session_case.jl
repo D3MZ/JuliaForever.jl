@@ -96,8 +96,21 @@ function casecandidate(db, path, id, prefix, paths, forms, recorded::String)
     directory = abspath(recorded)
     any(form -> caseequal(directory, form), forms) || return nothing
     project(directory) == prefix || return nothing
-    samefile(first(paths), directory) || return nothing
+    sameproject(first(paths), directory) || return nothing
     caseinfo(path, id, historyrows(db, historyquery))
+end
+pathfailures(exceptions, depth) = length(exceptions) > depth ? pathfailures(last(exceptions).exception) : ()
+pathfailures(::Base.IOError) = (false,)
+pathfailures(exception) = ()
+function sameproject(a, b)
+    depth = length(current_exceptions())
+    try
+        samefile(a, b)
+    finally
+        for failure in pathfailures(current_exceptions(), depth)
+            return failure
+        end
+    end
 end
 caseinfo(path, id, rejected::H.Rejected) = info(path, id, rejected)
 function caseinfo(path, id, snapshot::H.Snapshot)
