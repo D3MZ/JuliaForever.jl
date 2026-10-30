@@ -31,6 +31,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '25'
+      - name: Install Pi search tools
+        run: |
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get update && sudo apt-get install -y fd-find ripgrep ;;
+            macOS) brew install fd ripgrep ;;
+            Windows) choco install fd ripgrep --yes --no-progress ;;
+          esac
+          (command -v fd || command -v fdfind) && command -v rg
       - name: Prepare pinned Pi reference
         run: |
           git clone --filter=blob:none https://github.com/earendil-works/pi.git "$RUNNER_TEMP/pi-source"
