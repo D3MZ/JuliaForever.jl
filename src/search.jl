@@ -44,6 +44,14 @@ function searchpath(tool, name)
     abspath(path(tool, name))
 end
 
+globclass!(out, chars, i, ::Nothing) = (print(out, "\\["); i)
+function globclass!(out, chars, i, stop::Integer)
+    part = String(chars[(i + 1):(stop - 1)])
+    startswith(part, '!') && (part = "^" * part[nextind(part, firstindex(part)):end])
+    print(out, "[", part, "]")
+    stop
+end
+
 # Convert the common glob syntax to a regular expression without invoking another tool.
 function globsource(pattern)
     chars = collect(pattern)
@@ -66,15 +74,7 @@ function globsource(pattern)
         elseif c == '?'
             print(out, "[^/]")
         elseif c == '['
-            stop = findnext(==(']'), chars, i + 1)
-            if isnothing(stop)
-                print(out, "\\[")
-            else
-                part = String(chars[(i + 1):(stop - 1)])
-                startswith(part, '!') && (part = "^" * part[nextind(part, firstindex(part)):end])
-                print(out, "[", part, "]")
-                i = stop
-            end
+            i = globclass!(out, chars, i, findnext(==(']'), chars, i + 1))
         elseif c == '{'
             print(out, "(?:")
         elseif c == '}'
@@ -213,13 +213,12 @@ function walksearch(visit, root, tool::Union{Find, Grep}; whitelist=(target -> f
     walk(root, inherited, inside)
 end
 
-function searchresult(lines, limit, label; truncatedlines=false)
-    isempty(lines) && return ToolResult(label == "results" ? "No files found matching pattern" : "No matches found")
+function findresult(lines, limit)
+    isempty(lines) && return ToolResult("No files found matching pattern")
     output, truncated = head(lines)
     notices = String[]
-    length(lines) >= limit && push!(notices, "$limit $label limit reached. Use limit=$(limit * 2) for more, or refine pattern")
+    length(lines) >= limit && push!(notices, "$limit results limit reached. Use limit=$(limit * 2) for more, or refine pattern")
     truncated && push!(notices, "50.0KB limit reached")
-    truncatedlines && push!(notices, "Some lines truncated to 500 chars. Use read tool to see full lines")
     !isempty(notices) && (output *= "\n\n[$(join(notices, ". "))]")
     ToolResult(output)
 end
@@ -245,7 +244,7 @@ function execute(tool::Find, args)
         end
         true
     end
-    searchresult(found, limit, "results")
+    findresult(found, limit)
 end
 
 function shortline(line)

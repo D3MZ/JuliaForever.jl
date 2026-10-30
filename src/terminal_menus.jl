@@ -96,7 +96,7 @@ uicommand!(session, ::Fullscreen, command, terminal, history, input, directory, 
 
 function modeloptions(session, provider)
     name = JuliaForever.modelconstraint(session.view.provider)
-    sort!(JuliaForever.Models.pool(JuliaForever.Models.catalog(), name); by=model -> JuliaForever.Models.collation(model.id))
+    sort!(JuliaForever.Models.pool(JuliaForever.modelcatalog(provider), name); by=model -> JuliaForever.Models.collation(model.id))
 end
 
 function uicommand!(session, ::Fullscreen, ::JuliaForever.SelectModel, terminal, history, input, directory, snapshot, draft)

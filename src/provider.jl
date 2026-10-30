@@ -1,8 +1,21 @@
+struct DirectRoute end
+struct CatalogRoute
+    name::String
+    registry::Models.Registry
+end
+Base.show(io::IO, ::CatalogRoute) = print(io, "Catalog route ([redacted])")
+StructTypes.StructType(::Type{CatalogRoute}) = StructTypes.CustomStruct()
+StructTypes.lower(::CatalogRoute) = "[redacted]"
+
 struct OpenAI
     base::String
     model::String
     key::String
+    extra::Vector{Pair{String, String}}
+    route::Union{DirectRoute, CatalogRoute}
 end
+OpenAI(base, model, key) = OpenAI(base, model, key, Pair{String, String}[], DirectRoute())
+OpenAI(base, model, key, extra) = OpenAI(base, model, key, extra, DirectRoute())
 
 # Keep request cancellation scoped to the calling task without changing provider APIs.
 const requestkey = gensym(:request_context)
@@ -112,7 +125,8 @@ credentialkey(::Val{:api_key}, value, env, info) = literalkey(get(value, "key", 
 literalkey(::Nothing, env, info) = get(env, info.key, "")
 literalkey(value, env, info) = nothing
 literalkey(value::AbstractString, env, info) = isempty(value) ? get(env, info.key, "") : (occursin(r"[\$]", value) || startswith(value, "!") ? nothing : value)
-keyvalue(env, info) = credentialkey(get(storedcredentials(env), credentialproviders[info.key], nothing), env, info)
+readpicredential(pi, env, info) = get(pi, credentialproviders[info.key], nothing)
+keyvalue(env, info) = credentialkey(get(credentialreaders, info.key, readpicredential)(storedcredentials(env), env, info), env, info)
 
 provider(::Nothing, env, model) = nothing
 provider(info::NamedTuple, env, model) = provider(info, env, model, keyvalue(env, info))
@@ -368,7 +382,15 @@ function payload(provider::OpenAI, messages, tools, parameters; streaming=false)
     JSON3.write(data)
 end
 
-headers(provider::OpenAI) = ["Authorization" => "Bearer $(provider.key)", "Content-Type" => "application/json"]
+function mergeheaders(defaults, extra)
+    result = copy(defaults)
+    for (name, value) in extra
+        filter!(item -> lowercase(first(item)) != lowercase(name), result)
+        push!(result, name => value)
+    end
+    result
+end
+headers(provider::OpenAI) = mergeheaders(["Authorization" => "Bearer $(provider.key)", "Content-Type" => "application/json"], provider.extra)
 endpoint(provider::OpenAI) = "$(rstrip(provider.base, '/'))/chat/completions"
 
 function complete(provider::OpenAI, messages, tools; parameters=Dict())
