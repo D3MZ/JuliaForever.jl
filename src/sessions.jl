@@ -147,7 +147,7 @@ function Base.open(::Type{Session}, path::AbstractString)
     for line in eachline(IOBuffer(text))
         isempty(strip(line)) && continue
         row = try
-            JSON3.read(line, Dict{String, Any})
+            JSON3.read(codeunits(line), Dict{String, Any})
         catch
             return Rejected(:invalid_session)
         end
@@ -255,7 +255,7 @@ function persist_role!(session, entry, path, ::Type{<:C.Message})
 end
 
 function record!(session::Session, type::AbstractString, fields::AbstractDict)
-    entry = JSON3.read(JSON3.write(fields), Dict{String, Any})
+    entry = JSON3.read(codeunits(JSON3.write(fields)), Dict{String, Any})
     entryid = id(4)
     while haskey(session.index, entryid)
         entryid = id(4)

@@ -61,6 +61,24 @@ function conversation(scheduler)
 end
 
 if Sys.isunix()
+@testset "request lookup skips unrelated tasks" begin
+    mktempdir() do dir
+        scheduler = open(D.Scheduler, joinpath(dir, "tasks.jsonl"))
+        convo = conversation(scheduler)
+        raw = D.commit!(scheduler.store) do tx
+            id = D.mint!(tx)
+            D.put!(tx, D.Task(id, convo, Dict("kind" => "unrelated")))
+            id
+        end
+        id = D.enqueue!(scheduler, convo, TestHandler(), TestPhase(1), "input"; request="same")
+        @test id != raw
+        @test D.enqueue!(scheduler, convo, TestHandler(), TestPhase(1), "input"; request="same") == id
+        @test D.enqueue!(scheduler, convo, TestHandler(), TestPhase(1), "changed"; request="same").reason == :request_conflict
+        @test D.enqueue!(scheduler, convo, TestHandler(), TestPhase(1), "input") != id
+        close(scheduler)
+    end
+end
+
 @testset "typed durable phases and admission" begin
     mktempdir() do dir
         path = joinpath(dir, "tasks.jsonl")

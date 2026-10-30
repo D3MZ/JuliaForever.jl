@@ -84,7 +84,7 @@ function add!(transcript::Transcript, data, ::Nothing)
     addtext!(parts, get(data, "content", nothing))
     for call in get(data, "tool_calls", [])
         fn = call["function"]
-        result = Dict("name" => fn["name"], "args" => JSON3.read(fn["arguments"], Dict{String, Any}))
+        result = Dict("name" => fn["name"], "args" => JSON3.read(codeunits(fn["arguments"]), Dict{String, Any}))
         callid!(result, call["id"], transcript.ids)
         push!(parts, Dict("functionCall" => result))
     end
