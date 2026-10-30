@@ -80,6 +80,7 @@ materialize!(history, store::H.Memory, revision, batch, rejected::H.Rejected) = 
 materialize!(history, store::H.Memory, revision, batch, saved::Integer) = revision == 0 ? saved : materialize!(history, store, saved, H.treenode(batch, 0))
 materialize!(history, store::H.Memory, saved::Integer, ::H.Rejected) = materialize!(history, store, H.snapshot(store))
 materialize!(history, store::H.Memory, saved::Integer, node::H.TreeNode) = length(node.batch) == 1 ? materialize!(history, store, saved, H.decode_event(only(node.batch))) : materialize!(history, store, H.snapshot(store))
+materialize!(history, store::H.Memory, saved::Integer, ::C.SessionParent) = saved
 materialize!(history, store::H.Memory, saved::Integer, ::C.SessionName) = saved
 materialize!(history, store::H.Memory, saved::Integer, ::C.BashOutput) = saved
 materialize!(history, store::H.Memory, saved::Integer, ::C.SessionRecord) = saved
@@ -138,6 +139,12 @@ function firstprompt(entries::Vector)
         end
     end
 end
+
+parent(current, event) = current
+parent(current, event::C.SessionParent) = event.path
+parent(current, batch::AbstractVector) = foldl((value, record) -> parent(value, H.decode_event(record)), batch; init=current)
+parent(entries::AbstractVector{<:NamedTuple}) = foldl((value, entry) -> parent(value, entry.batch), entries; init=nothing)
+parent(history::H.Tree) = parent(H.entries(history))
 
 sessionname(current, ::Any) = current
 sessionname(current, event::C.SessionName) = isempty(event.name) ? nothing : event.name

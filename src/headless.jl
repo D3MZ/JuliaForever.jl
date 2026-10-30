@@ -326,17 +326,18 @@ end
 named!(session, name, failure::J.History.Rejected) = Failure(string(failure.reason))
 
 handle!(session, command::NewSession) = newsession!(session, command.parent)
-newsession!(session, parent::String) = Failure("Parent session tracking is not supported")
-function newsession!(session, ::Nothing)
+function newsession!(session, parent)
     pending = lock(() -> J.Conversation.queuecontent(session.agent.state), session.agent.lock)
-    newsession!(session, pending)
+    newsession!(session, parent, pending)
 end
-newsession!(session, ::J.Conversation.ContainsImages) = Failure("Session has pending inputs")
-function newsession!(session, ::J.Conversation.TextOnly)
+newsession!(session, parent, ::J.Conversation.ContainsImages) = Failure("Session has pending inputs")
+function newsession!(session, parent, ::J.Conversation.TextOnly)
     handle!(session, Abort())
-    agent, history, status = J.new!(session.terminal, session.agent, session.store[], session.directory, session.extensions, session.templates)
+    agent, history, status = J.new!(session.terminal, session.agent, session.store[], session.directory, session.extensions, session.templates; parent=parentvalue(parent))
     newresult!(session, agent, history, get(newstatuses, status, nothing), NewBinding())
 end
+parentvalue(::Nothing) = nothing
+parentvalue(parent::String) = isempty(parent) ? nothing : parent
 newresult!(session, agent, history, ::Nothing, binding) = Failure("Could not start a new session")
 function newresult!(session, agent, history, ::SessionStarted, binding)
     rebind!(session, agent, history, binding)

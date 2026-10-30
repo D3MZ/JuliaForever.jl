@@ -254,10 +254,10 @@ fresh(::History.Tree{<:History.Memory}, directory) = History.Tree(History.Memory
 fresh(history::History.Store, directory) = SessionCatalog.new(directory, pwd())
 
 new!(terminal::Terminal, agent::Agent, history, directory, snapshot) = new!(terminal, agent, history, directory, snapshot, nothing)
-new!(terminal::Terminal, agent::Agent, history, directory, snapshot, resources) = newchecked!(terminal, agent, history, directory, snapshot, resources, sourcecheck!(terminal, agent, history))
-newchecked!(terminal, agent, history, directory, snapshot, resources, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
+new!(terminal::Terminal, agent::Agent, history, directory, snapshot, resources; parent=nothing) = newchecked!(terminal, agent, history, directory, snapshot, resources, parent, sourcecheck!(terminal, agent, history))
+newchecked!(terminal, agent, history, directory, snapshot, resources, parent, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
 
-function newchecked!(terminal, agent, history, directory, snapshot, resources, ::Nothing)
+function newchecked!(terminal, agent, history, directory, snapshot, resources, parent, ::Nothing)
     selected = fresh(history, directory)
     pending = Ref{Union{Nothing, History.Tree}}(selected)
     loaded = Ref{Union{Nothing, Vector{Skills.Skill}}}(nothing)
@@ -265,7 +265,8 @@ function newchecked!(terminal, agent, history, directory, snapshot, resources, :
         replacement = attempt(() -> begin
             skills = Skills.load(pwd())
             loaded[] = skills
-            Agent(agent.provider, agent.tools, initial(agent, snapshot, skills); history=selected)
+            replacement = Agent(agent.provider, agent.tools, initial(agent, snapshot, skills); history=selected)
+            newparent!(replacement, parent)
         end)
         result = newresult!(terminal, agent, history, selected, replacement, pending)
         updateskills!(resources, loaded[], result[3])
@@ -274,6 +275,11 @@ function newchecked!(terminal, agent, history, directory, snapshot, resources, :
         release!(history, pending[])
     end
 end
+
+newparent!(agent::Agent, ::Nothing) = agent
+newparent!(agent::Agent, path::String) = newparent!(agent, first(transition!(revision -> Conversation.SessionParent(revision, path), agent)))
+newparent!(agent::Agent, result::Kernel.Applied) = agent
+newparent!(agent::Agent, result) = result
 
 initial(agent::Agent, snapshot::Extensions.Snapshot, skills::Vector{Skills.Skill}) = initial(snapshot, skills)
 initial(agent::Agent, ::Nothing) = initial(agent, nothing, Skills.load(pwd()))
