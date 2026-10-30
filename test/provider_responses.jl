@@ -36,6 +36,24 @@ end
     @test !result.done && result.error == "earlier failure"
 end
 
+@testset "Responses completion callbacks and reconciliation" begin
+    model = OpenAIResponses("http://localhost/v1", "fixture", "synthetic")
+    events = []
+    state = JuliaForever.ResponseStream(event -> push!(events, event))
+    result = JuliaForever.finish(model, state, response_done([response_text("ok")]; usage=Dict("input_tokens" => 2, "output_tokens" => 3)))
+    @test result.done
+    @test [event.type for event in events] == [:usage, :finish]
+    @test events[1].usage.total == 5 && events[2].reason == "stop"
+
+    empty!(events)
+    result = JuliaForever.finish(model, JuliaForever.ResponseStream(event -> push!(events, event)), response_done([]; status=nothing))
+    @test !result.done && isempty(events)
+
+    call = response_call("fc_1", "call_1", "one.txt", "one")
+    result = JuliaForever.finish(model, JuliaForever.ResponseStream(identity), response_done([call]))
+    @test !result.done && occursin("mismatched function call", result.error)
+end
+
 @testset "Responses nonstreamed function loop and replay" begin
     requests = Any[]
     calls = [response_call("fc_1", "call_1", "a.txt", "first"), response_call("fc_2", "call_2", "b.txt", "second")]

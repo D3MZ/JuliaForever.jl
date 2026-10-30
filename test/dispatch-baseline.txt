@@ -94,9 +94,7 @@ durable.jl	:created
 durable.jl	:success
 execution.jl	:(cancelled(cancellation))
 execution.jl	:(cancelled(handle.cancellation))
-execution_conversation.jl	:(work.detailed)
-execution_conversation.jl	:detailed
-execution_conversation.jl	:detailed
+execution_conversation.jl	:(name === :detailed)
 history.jl	:(key isa String)
 history.jl	:(name === :batches)
 history.jl	:(name === :batches)
@@ -168,11 +166,8 @@ responses.jl	:(get(call, key, nothing) isa AbstractString)
 responses.jl	:(get(done, "type", nothing) == "reasoning")
 responses.jl	:(get(item, "type", nothing) == "reasoning")
 responses.jl	:(isnothing(done))
-responses.jl	:(isnothing(done))
 responses.jl	:(isnothing(get(done, "encrypted_content", nothing)))
 responses.jl	:(isnothing(get(item, "encrypted_content", nothing)))
-responses.jl	:(isnothing(result.finish))
-responses.jl	:(isnothing(result.usage))
 scheduler.jl	:(key !== nothing)
 scheduler.jl	:(name === :cancelled)
 scheduler.jl	:(typeof(a))

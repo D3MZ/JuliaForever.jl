@@ -20,6 +20,10 @@ function conversation_execution(pid)
             input = CK.step(CC.State("session"), CC.Input(0, "create"))
             pending = only(input.effects)
             work = CE.Work(context, pending.effect)
+            detailed_work = CE.Work(context, pending.effect; detailed=true)
+            @test !work.detailed && detailed_work.detailed
+            @test work.result === CK.Observation && detailed_work.result === CE.ModelResult
+            @test CE.Work(context, pending.effect, true).detailed
             bytes = IOBuffer()
             serialize(bytes, work)
             @test !occursin("private-fixture-marker", String(take!(bytes)))
@@ -82,6 +86,12 @@ function conversation_execution(pid)
             @test failure isa CE.Completed && failure.value isa CC.ModelFailure
             @test failure.value.reason == "provider did not return"
             @test !occursin("private-fixture-marker", repr(failure))
+            take!(requests)
+            detailed_failure = fetch(CE.submit!(pool, only(fail_input.effects), 1, context; detailed=true))
+            @test detailed_failure.value isa CE.ModelResult
+            @test detailed_failure.value.observation isa CC.ModelFailure
+            @test detailed_failure.value.usage === nothing && detailed_failure.value.error === nothing
+            @test !occursin("private-fixture-marker", repr(detailed_failure))
             take!(requests)
             failed_state = CK.step(fail_input.state, CK.Observe(fail_input.state.revision, failure.id, failure.value))
             @test failed_state.state.phase == CC.Incomplete
