@@ -38,6 +38,8 @@ Continuation adds four branch entries for queue availability and revision checks
 
 Queue modes and model completion add six net branch entries for revision, queue, and menu data checks, with no new dispatch candidates.
 
+Saved-provider startup routing adds no branch or dispatch entries; it selects behavior using the resolved provider and credential values.
+
 Before-tool hooks add two branch entries for the hook error boundary and an empty block reason, with no new dispatch candidates; hook selection uses a registration lookup.
 
 Durable replay dispatches on decoded records and rejection outcomes. The `Val` check also recognizes Boolean constants and annotations; compaction uses enabled and disabled policy types. Tool selection added 19 branch entries and removed one. Skill prompt visibility dispatches on invocation type.
