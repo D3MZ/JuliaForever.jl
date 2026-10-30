@@ -19,6 +19,10 @@ struct GetThinkingLevels <: Command end
 struct CycleThinking <: Command end
 struct AbortRetry <: Command end
 struct AbortBash <: Command end
+struct BashCommand{C<:J.Conversation.BashContext} <: Command
+    command::String
+    context::C
+end
 struct SetThinking <: Command
     level::String
 end
@@ -80,7 +84,7 @@ struct UnavailableStatistics <: StatisticsState end
 const newstatuses = Dict(0 => SessionStarted())
 
 const unsupportedcommands = (
-    "set_model", "cycle_model", "compact", "bash",
+    "set_model", "cycle_model", "compact",
     "get_entries", "get_tree",
 )
 const commands = merge(
@@ -91,7 +95,7 @@ const commands = merge(
         "get_messages" => GetMessages, "get_available_models" => GetAvailableModels, "get_commands" => GetCommands, "get_last_assistant_text" => GetLastText, "set_session_name" => SetName,
         "get_available_thinking_levels" => GetThinkingLevels, "cycle_thinking_level" => CycleThinking, "set_thinking_level" => SetThinking,
         "set_steering_mode" => SetSteeringMode, "set_follow_up_mode" => SetFollowUpMode,
-        "set_auto_compaction" => SetAutoCompaction, "set_auto_retry" => SetAutoRetry, "abort_retry" => AbortRetry, "abort_bash" => AbortBash,
+        "set_auto_compaction" => SetAutoCompaction, "set_auto_retry" => SetAutoRetry, "abort_retry" => AbortRetry, "abort_bash" => AbortBash, "bash" => BashCommand,
     ),
 )
 const queuemodes = Dict("steer" => Steering(), "followUp" => FollowUp())
@@ -134,6 +138,7 @@ command(::Type{SetSteeringMode}, data) = SetSteeringMode(String(data["mode"]))
 command(::Type{SetFollowUpMode}, data) = SetFollowUpMode(String(data["mode"]))
 command(::Type{SetAutoCompaction}, data) = SetAutoCompaction(data["enabled"])
 command(::Type{SetAutoRetry}, data) = SetAutoRetry(data["enabled"])
+command(::Type{BashCommand}, data) = BashCommand(String(data["command"]), J.Conversation.bashcontext(get(data, "excludeFromContext", nothing)))
 images(data) = [J.Image(String(image["mimeType"]), String(image["data"])) for image in get(data, "images", [])]
 command(::Type{Prompt}, data) = Prompt(String(data["message"]), get(queuemodes, get(data, "streamingBehavior", ""), NoQueue()), images(data))
 command(::Type{Queue{M}}, data) where {M<:QueueMode} = Queue(String(data["message"]), M(), images(data))
@@ -166,11 +171,14 @@ mutable struct Session{A, T, E, S, P, L}
     started::Base.Event
     outputstate::Union{OpenOutput, ClosedOutput}
     statistics::Union{AvailableStatistics, UnavailableStatistics}
+    bashcancel::J.ShellCancellation
+    bashtasks::Set{Task}
+    pendingbash::Vector{J.Conversation.BashMessage}
 end
 
 function Session(terminal, agent, extensions, store, templates, directory)
     stream = LiveJSON.Stream(terminal, agent, terminal.mode)
-    session = Session(agent, terminal, extensions, store, templates, directory, ReentrantLock(), Dict{String, Any}[], LiveJSON.id(store[]), sessionname(J.SessionCatalog.sessionname(store[])), stream, nothing, String[], String[], nothing, Base.Event(), OpenOutput(), AvailableStatistics())
+    session = Session(agent, terminal, extensions, store, templates, directory, ReentrantLock(), Dict{String, Any}[], LiveJSON.id(store[]), sessionname(J.SessionCatalog.sessionname(store[])), stream, nothing, String[], String[], nothing, Base.Event(), OpenOutput(), AvailableStatistics(), J.ShellCancellation(), Set{Task}(), J.Conversation.BashMessage[])
     restore!(session, agent)
 end
 sessionname(::Nothing) = nothing
@@ -181,6 +189,7 @@ include("headless_events.jl")
 include("headless_statistics.jl")
 include("headless_history.jl")
 include("headless_commands.jl")
+include("headless_bash.jl")
 
 function write!(session, value)
     lock(session.lock) do
@@ -243,7 +252,7 @@ availablemodels(provider) = Failure("Model listing is not yet available over RPC
 handle!(session, ::GetSessionStats) = lock(() -> statistics(session, session.statistics), session.lock)
 handle!(session, ::GetThinkingLevels) = Success((; data=(; levels=["off"])))
 handle!(session, ::CycleThinking) = Success((; data=nothing))
-handle!(session, ::Union{AbortRetry, AbortBash}) = Success()
+handle!(session, ::AbortRetry) = Success()
 handle!(session, command::SetThinking) = get(thinkingoptions, command.level, Failure("Thinking levels are not available"))
 handle!(session, command::Union{SetSteeringMode, SetFollowUpMode}) = get(queueoptions, command.mode, Failure("Only one-at-a-time queue mode is available"))
 handle!(session, command::SetAutoCompaction) = get(compactionoptions, command.enabled, Failure("Automatic compaction is not available in headless mode"))
@@ -403,6 +412,7 @@ function prompt!(session, command::Prompt, ::Nothing, ::Nothing)
             notify(started)
             lock(session.lock) do
                 session.task = nothing
+                flushbash!(session)
                 settled!(session, result)
             end
         end
@@ -439,6 +449,7 @@ function rpc!(terminal, agent, extensions, store, args, sessiondir, templates)
         respond!(session, request(line))
     end
     handle!(session, Abort())
+    finishbash!(session)
     lock(() -> (session.outputstate = ClosedOutput()), session.lock)
     0
 end

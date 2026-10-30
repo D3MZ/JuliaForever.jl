@@ -11,6 +11,7 @@ end
 restore!(session, value::J.Conversation.Message) = nothing
 restore!(session, value::Union{J.Conversation.User, J.Conversation.ImageUser, J.Conversation.ToolMessage, J.Conversation.Summary, J.Conversation.SkillContext}) = restore!(session, convert(Dict{String, Any}, value))
 restore!(session, value::J.Conversation.RawMessage) = restore!(session, value.value)
+restore!(session, value::J.Conversation.BashMessage) = push!(session.messages, convert(Dict{String, Any}, value))
 restore!(session, raw::AbstractDict) = restore!(session, LiveJSON.role(raw), raw)
 restore!(session, role::LiveJSON.Role, raw) = nothing
 restore!(session, ::LiveJSON.AssistantRole, raw) = restore!(session, J.conversation_reply((; message=raw, result=nothing)).message)

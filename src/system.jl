@@ -29,6 +29,48 @@ struct ShellCancelled <: ShellOutcome end
 struct ShellStopFailed <: ShellOutcome end
 struct Signalled end
 
+struct ShellReport
+    output::String
+    file::Union{Nothing, String}
+    truncated::Bool
+    outcome::Union{ShellComplete, ShellTimeout, ShellCancelled, ShellStopFailed}
+    exitcode::Union{Nothing, Int}
+end
+
+abstract type ShellEscape end
+struct ShellText <: ShellEscape end
+struct ShellEsc <: ShellEscape end
+struct ShellCSI <: ShellEscape end
+struct ShellOSC <: ShellEscape end
+struct ShellOSCEsc <: ShellEscape end
+abstract type ShellChunkEnd end
+struct ShellMore <: ShellChunkEnd end
+struct ShellFinal <: ShellChunkEnd end
+
+mutable struct ShellChunks{F}
+    callback::F
+    offset::Int
+    pending::Vector{UInt8}
+    escape::Union{ShellText, ShellEsc, ShellCSI, ShellOSC, ShellOSCEsc}
+    file::String
+    io::IOStream
+    report::Union{Nothing, ShellReport}
+end
+
+function ShellChunks(callback)
+    file, io = mktemp(; cleanup=false)
+    ShellChunks(callback, 0, UInt8[], ShellText(), file, io, nothing)
+end
+(chunks::ShellChunks)(::ShellUpdate) = nothing
+
+function closechunks!(chunks::ShellChunks)
+    close(chunks.io)
+    keepchunks!(chunks.file, chunks.report)
+    nothing
+end
+keepchunks!(file, ::Nothing) = rm(file; force=true)
+keepchunks!(file, report::ShellReport) = removeoutput(file, report.file)
+
 mutable struct ShellRun
     process::Base.Process
     lock::ReentrantLock
@@ -356,6 +398,78 @@ function waitoutput(run::ShellRun, watcher, callback::F, file, saved) where {F}
     end
 end
 
+chunk!(chunks::ShellChunks, io) = chunk!(chunks, io, ShellMore())
+function chunk!(chunks::ShellChunks, io, ending::ShellChunkEnd)
+    seek(io, chunks.offset)
+    data = read(io)
+    chunks.offset += length(data)
+    append!(chunks.pending, data)
+    text = String(copy(chunks.pending))
+    ready = chunktext(text, ending)
+    consumed = chunkcount(text, ready, ending)
+    deleteat!(chunks.pending, 1:consumed)
+    cleaned = sanitize!(chunks, ready)
+    if !isempty(cleaned)
+        write(chunks.io, cleaned)
+        chunks.callback(cleaned)
+    end
+    nothing
+end
+chunktext(text, ::ShellMore) = live(text)
+chunktext(text, ::ShellFinal) = shelltext(text)
+chunkcount(text, ready, ::ShellFinal) = ncodeunits(text)
+chunkcount(text, ready, ::ShellMore) = ready == shelltext(text) ? ncodeunits(text) : lastindex(text) - 1
+
+function sanitize!(chunks::ShellChunks, text)
+    buffer = IOBuffer()
+    escape = chunks.escape
+    for char in text
+        escape = sanitize!(buffer, escape, char)
+    end
+    chunks.escape = escape
+    String(take!(buffer))
+end
+
+function sanitize!(io, ::ShellText, char)
+    char == '\e' && return ShellEsc()
+    (char == '\r' || '\x00' <= char <= '\x08' || '\x0b' <= char <= '\x0c' || '\x0e' <= char <= '\x1f' || '\ufff9' <= char <= '\ufffb') || print(io, char)
+    ShellText()
+end
+const shellescapes = Dict('[' => ShellCSI(), ']' => ShellOSC())
+sanitize!(io, ::ShellEsc, char) = get(shellescapes, char, ShellText())
+sanitize!(io, ::ShellCSI, char) = '@' <= char <= '~' ? ShellText() : ShellCSI()
+sanitize!(io, ::ShellOSC, char) = char == '\a' ? ShellText() : char == '\e' ? ShellOSCEsc() : ShellOSC()
+sanitize!(io, ::ShellOSCEsc, char) = char == '\\' ? ShellText() : ShellOSC()
+
+function waitoutput(run::ShellRun, watcher, chunks::ShellChunks, file, saved)
+    open(file) do io
+        while !isready(run.done)
+            chunk!(chunks, io)
+            sleep(0.1)
+        end
+        outcome = take!(run.done)
+        waitfor(watcher, outcome)
+        chunk!(chunks, io, ShellFinal())
+        outcome
+    end
+end
+
+finishreport!(callback, outcome, io, file, process) = nothing
+function finishreport!(chunks::ShellChunks, outcome, io, file, process)
+    flush(chunks.io)
+    snapshot = tail(chunks.io, chunks.file, measure(chunks.io)...)
+    snapshot = bound(snapshot, chunks.file, shelltext(snapshot.text))
+    retained = retainedfile(snapshot.file, chunks)
+    chunks.report = ShellReport(snapshot.text, retained, truncatedfile(snapshot.file), outcome, shellexit(outcome, process))
+    nothing
+end
+retainedfile(file::String, chunks) = file
+retainedfile(::Nothing, chunks) = chunks.offset > 51200 && filesize(chunks.io) > 0 ? chunks.file : nothing
+truncatedfile(::Nothing) = false
+truncatedfile(::String) = true
+shellexit(::ShellOutcome, process) = nothing
+shellexit(::ShellComplete, process) = process.termsignal == 0 ? process.exitcode : 128 + process.termsignal
+
 function execute(tool::Union{Bash, PowerShell}, args; cancel=nothing, on_update=nothing)
     update(on_update, ShellUpdate("", nothing))
     timeout = get(args, :timeout, nothing)
@@ -406,6 +520,7 @@ function shellrun!(shellrun::ShellRun, token, timeout, on_update, file, io, save
         timer = deadline(shellrun, timeout)
         outcome = waitoutput(shellrun, watcher, on_update, file, saved)
         flush(io)
+        finishreport!(on_update, outcome, io, file, process)
         output, keep[] = tail(io, file)
         shellresult(outcome, output, timeout, process)
     finally

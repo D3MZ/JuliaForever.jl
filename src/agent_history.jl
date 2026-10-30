@@ -275,7 +275,7 @@ function recorded_cancel_observed!(run, ::Kernel.Applied)
 end
 
 function recorded_step!(run, effect, ::Union{Idle, Running})
-    request = [convert(Dict{String, Any}, message) for message in effect.effect.messages]
+    request = modelmessages(effect.effect.messages)
     answer = response(run.agent, request, run.parameters, run.on_event, run.callback)
     rememberusage!(answer.result)
     recorded_answer!(run, effect, answer, run.agent.fault)

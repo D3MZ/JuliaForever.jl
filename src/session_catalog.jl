@@ -81,6 +81,7 @@ materialize!(history, store::H.Memory, revision, batch, saved::Integer) = revisi
 materialize!(history, store::H.Memory, saved::Integer, ::H.Rejected) = materialize!(history, store, H.snapshot(store))
 materialize!(history, store::H.Memory, saved::Integer, node::H.TreeNode) = length(node.batch) == 1 ? materialize!(history, store, saved, H.decode_event(only(node.batch))) : materialize!(history, store, H.snapshot(store))
 materialize!(history, store::H.Memory, saved::Integer, ::C.SessionName) = saved
+materialize!(history, store::H.Memory, saved::Integer, ::C.BashOutput) = saved
 materialize!(history, store::H.Memory, saved::Integer, event) = materialize!(history, store, H.snapshot(store))
 
 function materialize!(history, store::H.Memory, snapshot::H.Snapshot)

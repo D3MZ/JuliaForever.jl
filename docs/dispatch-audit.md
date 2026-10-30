@@ -113,3 +113,5 @@ Unconfigured RPC startup adds two collection checks and no dispatch candidates, 
 After integrating the newer terminal and skill work, the combined inventory is 1,453 versus 1,429 on that main branch: 26 entries added and two removed. The dispatch inventory is unchanged relative to that branch.
 
 RPC command discovery adds five data and file-search checks, bringing the inventory to 1,458 without adding dispatch candidates.
+
+RPC shell execution adds 22 branch entries for process output, escape decoding, iteration, and revision checks, bringing the inventory to 1,480 with no new dispatch candidates. Context inclusion, cancellation, and truncation are represented by types.
