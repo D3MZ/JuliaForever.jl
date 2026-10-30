@@ -130,8 +130,8 @@ end
             @test occursin("project fixture", original) && !occursin("later project instructions", original)
             @test occursin("- greet:", original) && occursin("- codemode:", original)
 
-            for initial in (Dict{String, Any}[], [Dict{String, Any}("role" => "system", "content" => "legacy context")])
-                path = joinpath(dir, "legacy-$(length(initial)).sqlite")
+            for initial in (Dict{String, Any}[], [Dict{String, Any}("role" => "system", "content" => "explicit context")])
+                path = joinpath(dir, "explicit-$(length(initial)).sqlite")
                 store = open(History.SQLite, path)
                 agent = Agent(nothing, Dict{String, JuliaForever.Tool}(), initial; history=store)
                 @test agent isa Agent

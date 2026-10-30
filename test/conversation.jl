@@ -7,7 +7,7 @@ function reply(text; calls=C.ToolCall[], finish="stop", done=true)
     C.ModelReply(C.Assistant(text, calls, finish, done))
 end
 
-@testset "assistant completion compatibility" begin
+@testset "assistant completion serialization" begin
     for done in (true, false)
         message = C.Assistant("answer", C.ToolCall[], "stop", done; metadata=Dict("note" => "kept"))
         encoded = JSON3.write(message)
@@ -16,8 +16,6 @@ end
         @test restored.done == done && restored.content == "answer" && restored.metadata["note"] == "kept"
         @test isequal(restored, message)
     end
-    @test C.Assistant(nothing, C.ToolCall[], nothing, 1).done
-    @test !C.Assistant(nothing, C.ToolCall[], nothing, 0).done
 end
 
 @testset "conversation state properties" begin

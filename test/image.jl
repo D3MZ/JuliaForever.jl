@@ -55,13 +55,16 @@ function JuliaForever.complete(provider::ImageProvider, messages, tools)
     popfirst!(provider.replies)
 end
 
-@testset "legacy text history records" begin
-    initial = Dict{String, Any}("format" => "JuliaForever.Agent/1", "id" => "legacy", "automatic" => false, "messages" => Any[Dict{String, Any}("kind" => "tool_message", "fields" => Any["old", "text", false])])
+@testset "text-only history records" begin
+    initial = Dict{String, Any}("format" => "JuliaForever.Agent/1", "id" => "text-only", "automatic" => false, "messages" => Any[Dict{String, Any}("kind" => "tool_message", "fields" => Any["read", "text", false])])
+    current = ImageConversation.State("text-only"; automatic=false, messages=ImageConversation.Message[ImageConversation.ToolMessage("read", "text", false)])
+    @test ImageHistory.encode_initial(current) == initial
     restored = ImageHistory.decode_initial(initial)
     @test restored isa ImageConversation.State
     @test only(restored.messages).image === nothing
     @test ImageHistory.encode_initial(restored) == initial
     record = Dict{String, Any}("format" => "JuliaForever.AgentEvent/1", "event" => Dict{String, Any}("kind" => "observe", "fields" => Any[2, "t", Dict{String, Any}("kind" => "tool_reply", "fields" => Any["read", false])]))
+    @test ImageHistory.encode(ImageKernel.Observe(2, "t", ImageConversation.ToolReply("read", false))) == record
     event = ImageHistory.decode_event(record)
     @test event.observation.image === nothing
     @test ImageHistory.encode(event) == record

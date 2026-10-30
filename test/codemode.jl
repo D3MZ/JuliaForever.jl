@@ -3,7 +3,7 @@ using Test, JuliaForever, HTTP, JSON3, TOML
 using JuliaForever: CodeMode, CodeCancellation, cancel!, codeexecute
 
 @testset "worker result decoding" begin
-    returned = JuliaForever.codeevent((; type="result", ok=true, value=3, writes=Dict("x" => 1)))
+    returned = JuliaForever.codeevent((; type="result", ok=true, value=3, writes=Dict("x" => 1), deletes=String[]))
     failed = JuliaForever.codeevent((; type="result", ok=false, message="script failed"))
     @test returned isa JuliaForever.CodeReturned
     @test failed isa JuliaForever.CodeErrored

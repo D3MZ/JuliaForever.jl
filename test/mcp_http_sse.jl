@@ -7,7 +7,7 @@ server = HTTP.serve!("127.0.0.1", 0; listenany=true) do req
     method = get(body, "method", "response")
     put!(seen, method)
     haskey(body, "id") || return HTTP.Response(202)
-    result = method == "initialize" ? Dict("protocolVersion" => "2025-06-18", "capabilities" => Dict("tools" => Dict()), "serverInfo" => Dict("name" => "test", "version" => "1")) : Dict("content" => [Dict("type" => "text", "text" => "streamed")])
+    result = method == "initialize" ? Dict("protocolVersion" => "2025-11-25", "capabilities" => Dict("tools" => Dict()), "serverInfo" => Dict("name" => "test", "version" => "1")) : Dict("content" => [Dict("type" => "text", "text" => "streamed")])
     message = JSON3.write(Dict("jsonrpc" => "2.0", "id" => body["id"], "result" => result))
     payload = method == "missing" ? ": keepalive\n\n" : ": keepalive\n\nevent: ignored\ndata: not json\n\ndata: $message\n\n"
     HTTP.Response(200, ["Content-Type" => "text/event-stream; charset=utf-8", "Mcp-Session-Id" => "sse-session"], payload)
@@ -38,7 +38,7 @@ server = HTTP.listen!("127.0.0.1", 0; listenany=true) do io
     body = JSON3.read(String(read(io)), Dict{String, Any})
     method = get(body, "method", "")
     if method == "initialize"
-        result = Dict("protocolVersion" => "2025-06-18", "capabilities" => Dict("tools" => Dict()), "serverInfo" => Dict("name" => "test", "version" => "1"))
+        result = Dict("protocolVersion" => "2025-11-25", "capabilities" => Dict("tools" => Dict()), "serverInfo" => Dict("name" => "test", "version" => "1"))
         HTTP.setheader(io, "Content-Type" => "application/json")
         HTTP.setheader(io, "Mcp-Session-Id" => "session")
         HTTP.startwrite(io)

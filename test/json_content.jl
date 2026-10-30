@@ -210,7 +210,7 @@ end
                     message = JSON3.read(codeunits(String(request.body)), Dict{String, Any})
                     haskey(message, "id") || return HTTP.Response(202)
                     result = if message["method"] == "initialize"
-                        Dict("protocolVersion" => "2025-06-18", "capabilities" => Dict("tools" => Dict()), "serverInfo" => Dict("name" => "fixture", "version" => "1"))
+                        Dict("protocolVersion" => "2025-11-25", "capabilities" => Dict("tools" => Dict()), "serverInfo" => Dict("name" => "fixture", "version" => "1"))
                     else
                         Dict("content" => [Dict("type" => "text", "text" => value)])
                     end

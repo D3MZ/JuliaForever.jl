@@ -5,7 +5,7 @@ for line in eachline(stdin)
     request = JSON3.read(codeunits(line), Dict{String, Any})
     haskey(request, "id") || continue
     result = if request["method"] == "initialize"
-        Dict("protocolVersion" => "2025-06-18", "capabilities" => Dict("tools" => Dict()), "serverInfo" => Dict("name" => "fixture", "version" => "1"))
+        Dict("protocolVersion" => "2025-11-25", "capabilities" => Dict("tools" => Dict()), "serverInfo" => Dict("name" => "fixture", "version" => "1"))
     else
         Dict("content" => [Dict("type" => "text", "text" => value)])
     end
