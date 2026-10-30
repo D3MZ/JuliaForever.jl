@@ -79,6 +79,7 @@ include("provider_invalid.jl")
 
 if haskey(ENV, "PI_SOURCE")
     include("prompt_differential.jl")
+    include("skills_differential.jl")
     include("instructions_differential.jl")
     include("agent_core_differential.jl")
     include("differential.jl")
