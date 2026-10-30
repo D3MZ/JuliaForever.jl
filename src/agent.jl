@@ -96,9 +96,15 @@ end
 function dequeue!(agent::Agent)
     lock(agent.lock) do
         queued = (; steering=agent.state.steering, followups=agent.state.followups)
-        result, _ = transition!(revision -> Conversation.Dequeue(revision), agent)
-        outcome(result, queued)
+        dequeue!(agent, queued, agent.fault)
     end
+end
+
+dequeue!(agent::Agent, queued, fault::History.Rejected) = fault
+function dequeue!(agent::Agent, queued, ::Nothing)
+    isempty(queued.steering) && isempty(queued.followups) && return queued
+    result, _ = transition!(revision -> Conversation.Dequeue(revision), agent)
+    outcome(result, queued)
 end
 
 "Cancel native provider requests and in-flight Unix shell calls; other work stops at the next boundary."

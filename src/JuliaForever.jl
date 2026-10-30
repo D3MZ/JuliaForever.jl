@@ -35,6 +35,7 @@ include("terminal.jl")
 include("terminal_editor.jl")
 include("tree_terminal.jl")
 include("session_terminal.jl")
+include("terminal_live.jl")
 include("mcp.jl")
 
 missingmodel(env, info, ::Nothing) = isempty(strip(get(env, info.model, ""))) ? [info.model] : String[]
@@ -414,7 +415,7 @@ interact!(terminal, agent, extensions, input, output, store, sessiondir, templat
 
 function interact!(terminal, agent, extensions, input::Base.TTY, output::Base.TTY, store, sessiondir, templates)
     get(ENV, "TERM", "") in ("", "dumb") && return readloop!(terminal, agent, extensions, input, output, store, sessiondir, templates)
-    edit!(terminal, agent, extensions, input, output, store, sessiondir, templates)
+    LiveTerminal.loop!(terminal, agent, extensions, store, input, sessiondir, templates)
 end
 
 function readloop!(terminal, agent, extensions, input, output, store, sessiondir, templates)

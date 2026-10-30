@@ -292,32 +292,21 @@ failures!(::Terminal, ::Function) = nothing
 observer(terminal::Terminal, ::Nothing) = event -> render!(terminal, event)
 observer(terminal::Terminal, snapshot::Extensions.Snapshot) = Extensions.listen(snapshot; on_event=event -> render!(terminal, event))
 
-run!(terminal::Terminal, agent::Agent, prompt, snapshot=nothing) = run!(terminal, agent, prompt, snapshot, checkqueues!(terminal, agent.state, agent.history))
-run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::PendingInputs) = 1
+run!(terminal::Terminal, agent::Agent, prompt, snapshot=nothing; on_agent_event=identity) = run!(terminal, agent, prompt, snapshot, checkqueues!(terminal, agent.state, agent.history), on_agent_event)
+run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::PendingInputs, on_agent_event) = 1
 
-function run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::Nothing)
+function run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::Nothing, on_agent_event)
     callback = observer(terminal, snapshot)
     result = try
         request!(terminal) do
-            respond!(agent, prompt; on_event=event -> streamrender!(terminal, event), on_agent_event=callback)
+            respond!(agent, prompt; on_event=event -> streamrender!(terminal, event), on_agent_event=event -> begin
+                callback(event)
+                on_agent_event(event)
+            end)
         end
     finally
         failures!(terminal, callback)
     end
     result.status == 0 || return result.status
     result!(terminal, result.value)
-end
-
-function edit!(terminal::Terminal, agent::Agent, snapshot, input, output, store, sessiondir, templates)
-    status = 0
-    for text in terminalinput(input, output)
-        text == "/exit" && break
-        if haskey(terminalcommands, text)
-            agent, store[], result = command!(terminalcommands[text], terminal, agent, store[], input, sessiondir, snapshot)
-            status = max(status, result)
-            continue
-        end
-        status = max(status, run!(terminal, agent, Prompts.expand(text, templates), snapshot))
-    end
-    status
 end

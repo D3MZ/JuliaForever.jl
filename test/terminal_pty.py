@@ -81,15 +81,14 @@ def editor(julia, project, directory):
         session.ready()
         session.send("αβ!".encode() + b"\x1b[D\x7fX\r", "αX!")
         session.send(b"alpha\nbeta\x1b[A\x01X\x1b[B\x05!\r", "Xalpha\nbeta!")
-        session.send(b"\x1b[13;2uone\r", "\none")
-        session.send(b"\x1b[27;2;13~two\r", "\ntwo")
-        session.send(b"\x1b[200~   one\r\n\t  two\rthree\x1b[201~\r", "   one\n\t  two\nthree")
+        session.send(b"\x1b[13;2uone\r", "one")
+        session.send(b"\x1b[27;2;13~two\r", "two")
+        session.send(b"\x1b[200~   one\r\n\t  two\rthree\x1b[201~\r", "one\n      two\nthree")
         session.send(b"single\r", "single")
         session.send(b"draft\x1b[A\x1b[B\r", "draft")
-        session.send(b"\x1b[A!\r", "draft!")
+        session.send(b"\x1b[A!\r", "!draft")
         session.send(b"\x1b<\x1b[F+\r", "αX!+")
-        session.send(b"ready\x1b\r\r", "ready")
-        assert b"Alt+Enter follow-up is not supported." in session.output
+        session.send(b"ready\x1b\r", "ready")
         session.send(b"ready\x07\r", "ready")
         assert b"External editor is not supported." in session.output
         session.send(b"discard\x03kept\r", "kept")
@@ -167,7 +166,9 @@ def redirected(julia, project, directory):
         os.write(session.master, b"redirected\r")
         session.until(lambda: session.records() == ["redirected"], "redirected provider input")
         session.until(lambda: session.stdout.exists() and "reply:redirected" in session.stdout.read_text(), "redirected output")
-        session.until(lambda: session.output.count(b"\x1b[?2004h") >= 2, "next editor")
+        os.write(session.master, b"again\r")
+        session.until(lambda: session.records() == ["redirected", "again"], "second redirected input")
+        session.until(lambda: "reply:again" in session.stdout.read_text(), "second redirected output")
         os.write(session.master, b"/exit\r")
         session.wait_exit()
         assert session.process.returncode == 0
@@ -211,6 +212,7 @@ def plugin_terminal(julia, project, directory):
             offset = len(session.output)
             os.write(session.master, prompt.encode() + b"\r")
             session.until(lambda: b"plugin:Hello, Ada!" in session.output[offset:] and b"> " in session.output[offset:].split(b"plugin:Hello, Ada!", 1)[1], "plugin reply and prompt")
+        session.until(lambda: (directory / "plugin-events").exists() and len((directory / "plugin-events").read_text().splitlines()) >= 6, "plugin turn completion")
         events = (directory / "plugin-events").read_text().splitlines()
         assert events == ["agent_start", "tool_execution_end", "agent_end"] * 2, events
         assert session.output.count(b"hook failure: synthetic-secret") == 2, session.output

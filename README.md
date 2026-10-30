@@ -19,7 +19,7 @@ julia --project=. -e 'using Pkg; Pkg.instantiate()'
 julia --project=. -m JuliaForever 'Create a hello.txt file'
 ```
 
-To install the `jf` command from the checkout, run `julia -e 'using Pkg; Pkg.Apps.add(path=pwd())'` and put the Julia depot's `bin` directory on your `PATH`. Julia's app support is experimental. Run `jf` without a prompt for a session; `/exit` ends it. On a supported terminal, Enter sends and Ctrl+J inserts a line. See [terminal](docs/terminal.md) for input and platform limitations.
+To install the `jf` command from the checkout, run `julia -e 'using Pkg; Pkg.Apps.add(path=pwd())'` and put the Julia depot's `bin` directory on your `PATH`. Julia's app support is experimental. Run `jf` without a prompt for a session; `/exit` ends it. On a supported terminal, Enter sends, Ctrl+J inserts a line, Alt+Enter queues a follow-up, and Escape interrupts an active request. See [terminal](docs/terminal.md) for input and platform limitations.
 
 Sessions are saved automatically. Use `jf --continue` for the most recent session, `jf --resume` to choose one, or `jf --session PATH|ID` to open a specific session. In the terminal, `/resume` switches sessions and `/tree` selects an earlier message while retaining other branches. `--no-session` starts an ephemeral session; `/resume` can then select a saved session. `--history session.sqlite` still records and resumes an explicitly chosen history file. Resume from the original project directory with the intended tool and plugin options: the saved context is not regenerated, and explicit paths can open histories from a different project. See [terminal sessions and recovery](docs/terminal.md) for details.
 

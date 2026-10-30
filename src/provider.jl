@@ -358,6 +358,14 @@ function complete(provider::OpenAI, data::AbstractDict)
     chatcompletion(choice["message"], used, chatfinish(reason))
 end
 
+receivechat!(process, failure, marker, text, ::InvalidResponse) = nothing
+function receivechat!(process, failure, marker, text, previous)
+    text == "[DONE]" && return (marker[] = true; nothing)
+    receivechat!(process, failure, decode(text))
+end
+receivechat!(process, failure, data::InvalidResponse) = (failure[] = data; nothing)
+receivechat!(process, failure, data) = process(data)
+
 function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=identity)
     message = Dict{String, Any}("role" => "assistant", "content" => nothing)
     calls = Dict{Any, Dict{String, Any}}()
@@ -367,17 +375,7 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
     failure = Ref{Union{Nothing, String, InvalidResponse, ProviderError}}(nothing)
     marker = Ref(false)
     reasoningfield = Ref{Union{Nothing, String}}(nothing)
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=event -> begin
-        failure[] isa InvalidResponse && return
-        if event.data == "[DONE]"
-            marker[] = true
-            return
-        end
-        data = decode(event.data)
-        if data isa InvalidResponse
-            failure[] = data
-            return
-        end
+    process = data -> begin
         on_event((; type=:provider, data))
         if haskey(data, "error")
             failure[] = providererror(:openai_compatible, data["error"])
@@ -421,7 +419,8 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
             output["function"]["arguments"] *= arguments
             on_event((; type=:tool_call, index, id, name, arguments))
         end
-    end)
+    end
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=event -> receivechat!(process, failure, marker, event.data, failure[]))
     if !(200 <= response.status < 300)
         result = incomplete(ProviderStatus(response.status))
         on_event((; type=:incomplete, result))

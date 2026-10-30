@@ -108,11 +108,12 @@ abandon!(agent::Agent, reason, ::Union{Running, Cancelled}, history, fault) = Hi
 abandon!(agent::Agent, reason, ::Idle, ::Nothing, fault) = History.Rejected(:no_history)
 abandon!(agent::Agent, reason, ::Idle, ::History.Store, ::Nothing) = History.Rejected(:not_interrupted)
 
-function abandon!(agent::Agent, reason, ::Idle, ::History.Store, fault::History.Rejected)
-    fault.reason in (:uncertain_effect, :incomplete_turn) || return fault
-    event = Conversation.Abandon(agent.state.revision, String(reason))
-    abandon!(agent, event, Kernel.step(agent.state, event))
-end
+const abandonable = Dict(:uncertain_effect => Conversation.Abandon, :incomplete_turn => Conversation.Abandon)
+abandon!(agent::Agent, reason, ::Idle, ::History.Store, fault::History.Rejected) = abandon!(agent, abandon_event(agent, reason, fault, get(abandonable, fault.reason, nothing)))
+abandon_event(agent, reason, fault, ::Nothing) = fault
+abandon_event(agent, reason, fault, constructor) = constructor(agent.state.revision, String(reason))
+abandon!(agent::Agent, rejected::History.Rejected) = rejected
+abandon!(agent::Agent, event::Conversation.Abandon) = abandon!(agent, event, Kernel.step(agent.state, event))
 
 abandon!(agent::Agent, event::Conversation.Abandon, result) = History.Rejected(result.reason)
 

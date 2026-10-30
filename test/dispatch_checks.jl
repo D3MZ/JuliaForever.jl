@@ -38,12 +38,16 @@ function dispatchstatuscheck(expression)
     any(dispatchstatus, args) || any(arg -> dispatchfield(arg) in dispatchfields, args)
 end
 
+dispatchdynamic(value) = !(value isa Union{Number, AbstractString, Char, QuoteNode} || value in (:true, :false, :nothing))
+
 function dispatchprobe(expression)
     expression isa Expr && expression.head == :call || return false
     callee = dispatchcallee(first(expression.args))
     if callee === :Val && length(expression.args) == 2
-        value = last(expression.args)
-        return !(value isa Union{Number, AbstractString, Char, QuoteNode} || value in (:true, :false, :nothing))
+        return dispatchdynamic(last(expression.args))
+    end
+    if callee isa Expr && callee.head == :curly && length(callee.args) == 2 && dispatchcallee(first(callee.args)) === :Val
+        return dispatchdynamic(last(callee.args))
     end
     callee in (:isa, :isnothing, :ismissing) && return true
     callee in (:(===), :(!==), :(==), :(!=)) || return false

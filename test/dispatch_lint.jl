@@ -42,6 +42,9 @@ include("dispatch_checks.jl")
     @test length(dispatchchecks(Meta.parse("f(flag) = handle(Val(flag))"))) == 1
     @test length(dispatchchecks(Meta.parse("f(x) = handle(Val(x == 0))"))) == 1
     @test isempty(dispatchchecks(Meta.parse("f() = handle(Val(1))")))
+    @test length(dispatchchecks(Meta.parse("f(flag) = handle(Val{flag}())"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(flag) = handle(Base.Val{flag}())"))) == 1
+    @test isempty(dispatchchecks(Meta.parse("f() = handle(Val{1}())")))
     @test length(dispatchchecks(Meta.parse("f(value) = value == \"stop\""))) == 1
     @test length(dispatchchecks(Meta.parse("f(selected) = selected == \"future-provider\" ? 1 : 0"))) == 1
     @test length(dispatchchecks(Meta.parse("f(event) = event.status == \"custom\""))) == 1
