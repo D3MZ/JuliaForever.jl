@@ -82,7 +82,7 @@ jobs:
           git apply "$GITHUB_WORKSPACE/scripts/coverage-baseline-recovery.patch"
           git apply "$GITHUB_WORKSPACE/scripts/coverage-baseline-pty.patch"
           git apply "$GITHUB_WORKSPACE/scripts/coverage-baseline-boundary.patch"
-          julia --startup-file=no --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test(; coverage=true, julia_args=`--startup-file=no --threads=4`)'
+          julia --startup-file=no --project=. -e 'using Pkg; Pkg.instantiate(); using JuliaForever; Pkg.test(; coverage=true, julia_args=`--startup-file=no --threads=4`)'
           cp Manifest.toml "$GITHUB_WORKSPACE/Manifest.toml"
           python3 scripts/coverage.py --output "$GITHUB_WORKSPACE/coverage/baseline.json" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Julia tests and differential cases
@@ -92,6 +92,7 @@ jobs:
           JULIA_PKG_PRECOMPILE_AUTO: '0'
         run: |
           if [ "$RUNNER_OS" = Linux ]; then
+            julia --startup-file=no --project=. -e 'using Pkg; Pkg.instantiate(); using JuliaForever'
             julia --startup-file=no --project=. scripts/ci.jl --coverage
           else
             julia --startup-file=no --project=. scripts/ci.jl
