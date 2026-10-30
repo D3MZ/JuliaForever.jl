@@ -222,16 +222,23 @@ end
 emit(::Nothing, event) = nothing
 emit(callback, event) = callback(event)
 
-function record!(agent, message, messages, on_agent_event; started=false)
-    started || emit(on_agent_event, (; type=:message_start, message=deepcopy(message)))
+abstract type MessagePresentation end
+struct Unannounced <: MessagePresentation end
+struct Announced <: MessagePresentation end
+
+message_start!(callback, message, ::Unannounced) = emit(callback, (; type=:message_start, message=deepcopy(message)))
+message_start!(callback, message, ::Announced) = nothing
+
+function record!(agent, message, messages, on_agent_event; started=Unannounced())
+    message_start!(on_agent_event, message, started)
     push!(agent.messages, message)
     push!(messages, message)
     emit(on_agent_event, (; type=:message_end, message=deepcopy(message)))
 end
 
-function present!(agent, added, messages, on_agent_event; started=false)
+function present!(agent, added, messages, on_agent_event; started=Unannounced())
     for (index, message) in enumerate(added)
-        record!(agent, convert(Dict{String, Any}, message), messages, on_agent_event; started=started && index == 1)
+        record!(agent, convert(Dict{String, Any}, message), messages, on_agent_event; started=index == 1 ? started : Unannounced())
     end
 end
 
@@ -275,17 +282,19 @@ end
 
 publish!(partial, calls, started, on_agent_event, ::Nothing) = nothing
 
-function publish!(partial, calls, started, on_agent_event, update::AgentUpdate)
-    if !started[]
-        emit(on_agent_event, (; type=:message_start, message=deepcopy(partial)))
-        started[] = true
-    end
+publish!(partial, calls, started, on_agent_event, update::AgentUpdate) = publish!(partial, calls, started, on_agent_event, update, started[])
+function publish!(partial, calls, started, on_agent_event, update::AgentUpdate, ::Unannounced)
+    message_start!(on_agent_event, partial, Unannounced())
+    started[] = Announced()
+    publish!(partial, calls, started, on_agent_event, update, Announced())
+end
+function publish!(partial, calls, started, on_agent_event, update::AgentUpdate, ::Announced)
     update!(partial, calls, update)
     emit(on_agent_event, (; type=:message_update, assistant_event=update.event, message=deepcopy(partial)))
 end
 
-response(message::Completion) = (; message=message.message, result=message, started=false)
-response(message) = (; message, result=nothing, started=false)
+response(message::Completion) = (; message=message.message, result=message, started=Unannounced())
+response(message) = (; message, result=nothing, started=Unannounced())
 
 register!(agent::Agent, ::Nothing) = nothing
 
@@ -324,7 +333,7 @@ end
 
 function response(agent, messages, parameters, ::Nothing, on_agent_event)
     partial = Dict{String, Any}("role" => "assistant", "content" => nothing)
-    request!(agent, partial, Ref(false)) do
+    request!(agent, partial, Ref{MessagePresentation}(Unannounced())) do
         message = isempty(parameters) ? complete(agent.provider, messages, agent.tools) : complete(agent.provider, messages, agent.tools; parameters)
         response(message)
     end
@@ -333,7 +342,7 @@ end
 function response(agent, messages, parameters, on_event, on_agent_event)
     partial = Dict{String, Any}("role" => "assistant", "content" => nothing)
     calls = Dict{Any, Any}()
-    started = Ref(false)
+    started = Ref{MessagePresentation}(Unannounced())
     callback = event -> begin
         on_event(event)
         publish!(partial, calls, started, on_agent_event, agentupdate(event))
@@ -529,15 +538,12 @@ end
 
 direct_result!(run, answer, transition, added, ::Nothing) = direct_complete!(run, answer, transition, added)
 direct_result!(run, answer, transition, added, result::Completion) = direct_result!(run, answer, transition, added, result, getfield(result, :status))
-direct_result!(run, answer, transition, added, result::Completion, ::Finished) = direct_complete!(run, answer, transition, added)
-direct_result!(run, answer, transition, added, result::Completion, ::Unfinished) = direct_partial!(run, answer, result)
-function direct_result!(run, answer, transition, added, result)
-    result.done && return direct_complete!(run, answer, transition, added)
-    direct_partial!(run, answer, result)
-end
+direct_result!(run, answer, transition, added, result) = direct_result!(run, answer, transition, added, result, completionstatus(result.done))
+direct_result!(run, answer, transition, added, result, ::Finished) = direct_complete!(run, answer, transition, added)
+direct_result!(run, answer, transition, added, result, ::Unfinished) = direct_partial!(run, answer, result)
 
 function direct_partial!(run, answer, result)
-    answer.started || emit(run.callback, (; type=:message_start, message=deepcopy(answer.message)))
+    message_start!(run.callback, answer.message, answer.started)
     emit(run.callback, (; type=:message_end, message=deepcopy(answer.message)))
     emit(run.callback, (; type=:turn_end, message=deepcopy(answer.message), tool_results=Dict{String, Any}[]))
     direct_partial!(result, turnstate(run.agent))

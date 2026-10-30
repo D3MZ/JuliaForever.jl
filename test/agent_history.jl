@@ -349,3 +349,14 @@ JuliaForever.complete(::BrokenHistoryProvider, messages, tools) = error("provide
     restored = Agent(KeyedProvider("secret", 0), []; history)
     @test respond!(restored, "again") == H.Rejected(:uncertain_effect)
 end
+
+@testset "recorded custom streamed completion states" begin
+    message = Dict{String, Any}("role" => "assistant", "content" => "answer")
+    complete = CustomCompletion(message, "stop", true)
+    @test respond!(Agent(CustomStreaming(complete), []; history=H.Memory()), "start"; on_event=identity) == "answer"
+    partial = CustomCompletion(message, "incomplete", false)
+    history = H.Memory()
+    agent = Agent(CustomStreaming(partial), []; history)
+    @test respond!(agent, "start"; on_event=identity) === partial
+    @test Agent(CustomStreaming(partial), []; history).state.phase == C.Incomplete
+end

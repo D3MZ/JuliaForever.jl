@@ -21,18 +21,11 @@ JuliaForever.jl	:codemode
 JuliaForever.jl	:inspect
 JuliaForever.jl	:login
 JuliaForever.jl	:login_requested
-agent.jl	:(answer.started)
 agent.jl	:(name === :cancelled)
 agent.jl	:(name === :events)
 agent.jl	:(name === :running)
-agent.jl	:(result.done)
-agent.jl	:(started[])
 agent.jl	:returned
-agent.jl	:started
-agent.jl	:started
-agent_history.jl	:(answer.started)
 agent_history.jl	:(fault.reason in (:uncertain_effect, :incomplete_turn))
-agent_history.jl	:(result.done)
 agent_history.jl	:complete
 codemode.jl	:(call.status == :running)
 codemode.jl	:(cancel.cancelled[])
