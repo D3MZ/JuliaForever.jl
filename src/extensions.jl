@@ -126,6 +126,13 @@ end
 "Return the hook failures captured by a listener."
 failures(listener::Listener) = lock(() -> copy(listener.errors), listener.lock)
 
+"A tool-call hook response that blocks execution."
+struct Block
+    reason::String
+end
+Block() = Block("Tool execution was blocked")
+
+
 end
 
 Agent(provider, snapshot::Extensions.Snapshot; history=nothing) = Agent(provider, Extensions.tools(snapshot); history)
@@ -154,3 +161,19 @@ discovery(original::ToolLoaded, result::ToolResult) = ToolDiscovery(result, load
 
 resultvalue(current::ToolResult, ::Nothing) = current
 resultvalue(current::ToolResult, result::ToolResult) = result
+
+function interceptcall(listener::Extensions.Listener, call, input)
+    lock(listener.lock) do
+        event = (; type=:tool_call, tool_call_id=call["id"], tool_name=callinfo(call).name, input)
+        callhooks(listener.hooks, event)
+    end
+end
+callhooks(::Tuple{}, event) = nothing
+callhooks(hooks::Tuple, event) = callhooks(first(hooks), Base.tail(hooks), event)
+callhooks(hook, hooks, event) = get(callhandlers, hook.event, skipcall)(hook, hooks, event)
+skipcall(hook, hooks, event) = callhooks(hooks, event)
+callhook(hook, hooks, event) = nextcall(hook.handler(event), hooks, event)
+const callhandlers = Dict(:tool_call => callhook)
+nextcall(block::Extensions.Block, hooks, event) = block
+nextcall(value, hooks, event) = callhooks(hooks, event)
+invokeprepared(agent, call, tool, input, update, callback, block::Extensions.Block) = ToolFailure(isempty(block.reason) ? "Tool execution was blocked" : block.reason)
