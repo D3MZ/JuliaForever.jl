@@ -450,3 +450,39 @@ end
 if Sys.isunix() && haskey(ENV, "PI_SOURCE")
     include("scheduler_differential.jl")
 end
+
+struct JoinHandler <: D.Handler end
+D.name(::JoinHandler) = "join"
+D.decode(::JoinHandler, checkpoint::D.Checkpoint) = TestPhase(checkpoint.value)
+Base.run(::JoinHandler, phase::TestPhase, input, ::D.Invocation) = phase.value == 1 ? D.Join(TestPhase(2), input) : D.Complete("joined")
+
+@testset "durable all-settled joins" begin
+    mktempdir() do dir
+        path = joinpath(dir, "join.jsonl")
+        scheduler = open(D.Scheduler, path)
+        convo = conversation(scheduler)
+        child = D.enqueue!(scheduler, convo, TestHandler(), TestPhase(2), 42)
+        parent = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [child])
+        @test D.step!(scheduler, parent, JoinHandler()).status isa D.Waiting
+        @test D.step!(scheduler, parent, JoinHandler()).reason == :waiting
+        close(scheduler)
+        scheduler = open(D.Scheduler, path)
+        @test get(scheduler, parent).status.on == [child]
+        D.step!(scheduler, child, TestHandler())
+        @test D.step!(scheduler, parent, JoinHandler()).status.value == "joined"
+        cancelled = D.enqueue!(scheduler, convo, TestHandler(), TestPhase(2), 0)
+        waiter = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [cancelled])
+        D.step!(scheduler, waiter, JoinHandler())
+        D.cancel!(scheduler, cancelled)
+        @test D.step!(scheduler, waiter, JoinHandler()).status isa D.Completed
+        cycle = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), Int[])
+        # The persisted input is immutable, so use the next minted task ID as a self-edge.
+        self = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [cycle + 1])
+        @test self == cycle + 1
+        @test D.step!(scheduler, self, JoinHandler()).reason == :wait_cycle
+        invalid = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [99999])
+        @test D.step!(scheduler, invalid, JoinHandler()).reason == :task_missing
+        @test get(scheduler, invalid).status isa D.Running
+        close(scheduler)
+    end
+end

@@ -28,6 +28,11 @@ struct Sleep{T <: Phase} <: PhaseResult
     until::UInt64
 end
 Sleep(phase::T, until::Integer) where {T <: Phase} = Sleep{T}(phase, UInt64(until))
+struct Join{T <: Phase} <: PhaseResult
+    phase::T
+    on::Vector{Int}
+end
+Join(phase::T, on::AbstractVector) where {T <: Phase} = Join{T}(phase, Int[on...])
 struct Complete <: PhaseResult
     value::Any
 end
@@ -42,6 +47,9 @@ abstract type TaskStatus end
 struct Pending <: TaskStatus end
 struct Sleeping <: TaskStatus
     until::UInt64
+end
+struct Waiting <: TaskStatus
+    on::Vector{Int}
 end
 abstract type Running <: TaskStatus end
 struct Active <: Running end
@@ -91,10 +99,11 @@ end
 checkpoint(data) = Checkpoint(data["name"], data["value"])
 checkpoint(value::Checkpoint) = Dict("name" => value.name, "value" => value.value)
 
-const taskstatuses = Dict("pending" => Pending, "sleeping" => Sleeping, "running" => Running, "completed" => Completed, "failed" => Failed, "cancelled" => Cancelled)
+const taskstatuses = Dict("pending" => Pending, "sleeping" => Sleeping, "waiting" => Waiting, "running" => Running, "completed" => Completed, "failed" => Failed, "cancelled" => Cancelled)
 taskstatus(state) = taskstatus(taskstatuses[state["status"]], state)
 taskstatus(::Type{Pending}, state) = Pending()
 taskstatus(::Type{Sleeping}, state) = Sleeping(parse(UInt64, state["until"]))
+taskstatus(::Type{Waiting}, state) = Waiting(Int[state["on"]...])
 taskstatus(::Type{Running}, state) = Running(state["cancelled"])
 taskstatus(::Type{Completed}, state) = Completed(state["result"])
 taskstatus(::Type{Failed}, state) = Failed(Symbol(state["reason"]))
@@ -258,6 +267,18 @@ end
 
 reserve!(tx::Transaction, id::Integer, record::Task, ::TaskStatus, now) = Rejected(:not_pending)
 
+terminal(::TaskStatus) = false
+terminal(::Union{Completed, Failed, Cancelled}) = true
+settled(tx, id) = settled(taskview(get(tx, Task, id)))
+settled(::Nothing) = false
+settled(::Rejected) = false
+settled(view::TaskView) = terminal(view.status)
+
+function reserve!(tx::Transaction, id::Integer, record::Task, status::Waiting, now)
+    all(child -> settled(tx, child), status.on) || return Rejected(:waiting)
+    reserve!(tx, id, record, Pending(), now)
+end
+
 function reserve!(tx::Transaction, id::Integer, record::Task, status::Sleeping, now)
     now() < status.until && return Rejected(:sleeping)
     reserve!(tx, id, record, Pending(), now)
@@ -267,6 +288,7 @@ function reserve!(tx::Transaction, id::Integer, record::Task, ::Pending, now)
     record.state["status"] = "running"
     record.state["attempts"] += 1
     delete!(record.state, "until")
+    delete!(record.state, "on")
     taskview(tx, id, put!(tx, record))
 end
 
@@ -289,6 +311,13 @@ function advance!(state, result::Sleep)
     checkpoint!(state, next)
     state["until"] = string(result.until) # JSON3 can round large JSON numbers while decoding.
     state["status"] = "sleeping"
+end
+
+function advance!(state, result::Join)
+    next = JSON3.read(JSON3.write(checkpoint(encode(result.phase))), Dict{String, Any})
+    checkpoint!(state, next)
+    state["on"] = result.on
+    state["status"] = "waiting"
 end
 
 function advance!(state, result::Complete)
@@ -352,9 +381,31 @@ step!(tx::Transaction, id::Integer, outcome, result) = result
 
 function step!(tx::Transaction, id::Integer, outcome, record::Task)
     state = record.state
+    valid = validate_join(tx, id, outcome, Running(state["cancelled"]))
+    valid === nothing || return valid
     advance!(state, outcome, Running(state["cancelled"]))
     taskview(tx, id, put!(tx, record))
 end
+
+validate_join(tx, id, outcome, status) = nothing
+function validate_join(tx, id, outcome::Join, ::Active)
+    for child in outcome.on
+        view = taskview(get(tx, Task, child))
+        view === nothing && return Rejected(:task_missing)
+        view isa Rejected && return view
+        reaches(tx, child, id, Set{Int}()) && return Rejected(:wait_cycle)
+    end
+    nothing
+end
+function reaches(tx, current::Integer, target, seen)
+    current == target && return true
+    current in seen && return false
+    push!(seen, current)
+    reaches(tx, taskview(get(tx, Task, current)), target, seen)
+end
+reaches(tx, view, target, seen) = false
+reaches(tx, view::TaskView, target, seen) = reaches(tx, view.status, target, seen)
+reaches(tx, status::Waiting, target, seen) = any(id -> reaches(tx, id, target, seen), status.on)
 
 function cancel!(scheduler::Scheduler, id::Integer)
     lock(scheduler.lock) do
@@ -374,9 +425,10 @@ cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView) = cancel!(tx
 cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView, ::Union{Cancelled, Cancelling}) = view
 cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView, ::Union{Completed, Failed}) = Rejected(:finished)
 
-function cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView, ::Union{Pending, Sleeping})
+function cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView, ::Union{Pending, Sleeping, Waiting})
     record.state["status"] = "cancelled"
     delete!(record.state, "until")
+    delete!(record.state, "on")
     taskview(tx, id, put!(tx, record))
 end
 
