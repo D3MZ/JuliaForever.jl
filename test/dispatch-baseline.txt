@@ -26,7 +26,6 @@ codemode.jl	:(isnothing(timer))
 codemode.jl	:(isnothing(writer))
 codemode.jl	:(name === :ok)
 codemode.jl	:(timedout[])
-codemode.jl	:ok
 codemode_worker.jl	:(connected[])
 codemode_worker.jl	:(isnothing(channel))
 codemode_worker.jl	:(isnothing(id))
@@ -212,4 +211,3 @@ tools.jl	:(isopen(signal))
 tools.jl	:(kind == codeunits("IDAT"))
 tools.jl	:(kind == codeunits("acTL"))
 tools.jl	:(name === :iserror)
-tools.jl	:iserror

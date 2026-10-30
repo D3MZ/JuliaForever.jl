@@ -108,7 +108,7 @@ respond_execution!(::Agent, prompt, ::Execution.Executor, context; kwargs...) = 
 
 function finish(message, result::Execution.ModelResult{Conversation.ModelReply})
     reply = result.observation.message
-    finish(message, Completion(message, result.usage, reply.finish, reply.done, result.error))
+    finish(message, Completion(message, result.usage, reply.finish, reply.status, result.error))
 end
 
 function respond_execution!(agent::Agent, prompt, executor::Execution.Executor, context::AbstractString; on_event, on_agent_event, parameters, tool_execution)
