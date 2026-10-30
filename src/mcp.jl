@@ -66,17 +66,22 @@ function send(client::Client, message)
     end
 end
 
-send(client::Client, message, ::Closed) = false
+send(client::Client, message, ::Closed) = Failure(:closed, "MCP connection is not open")
 
 function send(client::Client, message, ::Connection)
     try
         println(client.process, JSON3.write(message))
         flush(client.process)
-        true
+        nothing
     catch
-        false
+        Failure(:transport, "Could not write to MCP server")
     end
 end
+
+sent(::Nothing) = true
+sent(::Failure) = false
+transmitted!(client::Client, ::Nothing) = nothing
+transmitted!(client::Client, ::Failure) = fail!(client, Failure(:transport, "Could not write to MCP server"))
 
 function fail!(client::Client, failure::Failure)
     channels = lock(client.lock) do
@@ -152,7 +157,7 @@ function received(client::Client, message)
             id = message["id"]
             (id isa AbstractString || (id isa Integer && !(id isa Bool))) || return false
             response = method == "ping" ? Dict("jsonrpc" => "2.0", "id" => id, "result" => Dict()) : Dict("jsonrpc" => "2.0", "id" => id, "error" => Dict("code" => -32601, "message" => "Method not found"))
-            send(client, response) || return false
+            return sent(send(client, response))
         end
         return true
     end
@@ -224,7 +229,7 @@ request(client::Client, method, params, timeout, failure::Failure) = failure
 function request(client::Client, method, params, timeout, reservation::Tuple{Int, Channel{Any}})
     id, channel = reservation
     message = Dict("jsonrpc" => "2.0", "id" => id, "method" => method, "params" => params)
-    send(client, message) || fail!(client, Failure(:transport, "Could not write to MCP server"))
+    transmitted!(client, send(client, message))
     timer = Timer(timeout) do _
         pending, connection = lock(client.lock) do
             pop!(client.pending, id, nothing), client.connection
@@ -244,7 +249,7 @@ function expire!(client::Client, id, pending::Channel, connection::Connection)
 end
 
 cancelrequest!(client::Client, id, ::Connection) = nothing
-cancelrequest!(client::Client, id, ::Open) = send(client, Dict("jsonrpc" => "2.0", "method" => "notifications/cancelled", "params" => Dict("requestId" => id, "reason" => "Request timed out"))) || fail!(client, Failure(:transport, "Could not write to MCP server"))
+cancelrequest!(client::Client, id, ::Open) = transmitted!(client, send(client, Dict("jsonrpc" => "2.0", "method" => "notifications/cancelled", "params" => Dict("requestId" => id, "reason" => "Request timed out"))))
 
 activate!(client::Client, ::Connection) = Failure(:closed, "MCP connection closed during initialization")
 
@@ -280,10 +285,15 @@ initialize!(client::Client, result) = invalid!(client)
 function initialize!(client::Client, result::AbstractDict)
     get(result, "protocolVersion", nothing) in versions && get(result, "capabilities", nothing) isa AbstractDict && get(result["capabilities"], "tools", Dict()) isa AbstractDict && get(result, "serverInfo", nothing) isa AbstractDict && get(result["serverInfo"], "name", nothing) isa AbstractString && get(result["serverInfo"], "version", nothing) isa AbstractString || return invalid!(client)
     client.server = result
-    if !send(client, Dict("jsonrpc" => "2.0", "method" => "notifications/initialized"))
-        close(client)
-        return Failure(:transport, "Could not finish MCP initialization")
-    end
+    initialized!(client, send(client, Dict("jsonrpc" => "2.0", "method" => "notifications/initialized")))
+end
+
+function initialized!(client::Client, ::Failure)
+    close(client)
+    Failure(:transport, "Could not finish MCP initialization")
+end
+
+function initialized!(client::Client, ::Nothing)
     lock(client.lock) do
         activate!(client, client.connection)
     end
