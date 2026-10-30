@@ -122,4 +122,50 @@ end
     end
 end
 
+@testset "reasoning model settings select request instruction roles" begin
+    requests = Any[]
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        push!(requests, JSON3.read(String(request.body)))
+        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(response(request.target)))
+    end
+    try
+        mktempdir() do dir
+            path = joinpath(dir, "models.json")
+            write(path, JSON3.write(Dict("providers" => Dict("openai" => Dict("modelOverrides" => Dict("gpt-5.4" => Dict("reasoning" => false))), "openrouter" => Dict("modelOverrides" => Dict("openai/gpt-5.4" => Dict("reasoning" => false)))))))
+            models = J.Models.load(path)
+            route = J.CatalogRoute("openai", models)
+            registry = E.Registry()
+            E.register!(registry, :fixture, E.Plugin(; hooks=(:context_with_system => patch,)))
+            snapshot = E.snapshot(registry)
+            base = "http://$(HTTP.server_addr(server))/v1"
+            for id in ("gpt-5.4", "gpt-5")
+                provider = OpenAIResponses(base, id, "synthetic-key", Pair{String, String}[], route)
+                agent = Agent(provider, snapshot, Dict{String, Any}[Dict("role" => "system", "content" => "base", "timestamp" => 0)])
+                @test respond!(agent, "hello"; on_agent_event=E.listen(snapshot)) == "done"
+            end
+            router = J.CatalogRoute("openrouter", models)
+            provider = OpenAI(base, "openai/gpt-5.4", "synthetic-key", Pair{String, String}[], router)
+            agent = Agent(provider, snapshot, Dict{String, Any}[Dict("role" => "system", "content" => "base", "timestamp" => 0)])
+            @test respond!(agent, "hello"; on_agent_event=E.listen(snapshot)) == "done"
+            roles = [[String(item.role) for item in request.input] for request in requests[1:2]]
+            @test roles == [["developer", "system", "user", "system", "developer", "system"], ["developer", "user"]]
+            chatroles = [String(item.role) for item in requests[3].messages]
+            @test chatroles == ["system", "user", "system"]
+            if haskey(ENV, "PI_SOURCE")
+                source = ENV["PI_SOURCE"]
+                @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
+                for (index, mode) in enumerate(("reasoning", "reasoning_collapsed"))
+                    reference = JSON3.read(read(`node --conditions=source --experimental-strip-types $(joinpath(@__DIR__, "context_providers_pi.mjs")) $source $mode`, String))
+                    @test roles[index] == [String(item.role) for item in reference.responses.input]
+                end
+                reference = JSON3.read(read(`node --conditions=source --experimental-strip-types $(joinpath(@__DIR__, "context_providers_pi.mjs")) $source reasoning_completions`, String))
+                @test chatroles == [String(item.role) for item in reference.openai.messages]
+            end
+        end
+    finally
+        close(server)
+        wait(server)
+    end
+end
+
 end

@@ -18,13 +18,28 @@ struct InlineContext <: ContextPolicy end
 const contextpolicies = Dict(false => CollapsedContext(), true => InlineContext())
 contextpolicy(provider) = contextpolicies[get(contextcompat(provider), "supportsMidConvoSystemMessages", false)]
 const instructionroles = Dict((true, true) => "developer", (true, false) => "system", (false, true) => "system", (false, false) => "system")
-contextinstruction(provider) = instructionroles[(get(contextmetadata(provider), "reasoning", false), get(contextcompat(provider), "supportsDeveloperRole", true))]
+contextreasoning(provider) = contextreasoning(provider.route, provider)
+contextreasoning(::DirectRoute, provider) = get(contextmetadata(provider), "reasoning", false)
+function contextreasoning(route::CatalogRoute, provider)
+    model = Models.findmodel(candidate -> (candidate.provider, candidate.id) == (route.name, provider.model), route.registry.models)
+    contextreasoning(model, provider)
+end
+contextreasoning(::Nothing, provider) = get(contextmetadata(provider), "reasoning", false)
+contextreasoning(model::Models.Model, provider) = model.reasoning
+contextinstruction(provider) = instructionroles[(contextreasoning(provider), get(contextcompat(provider), "supportsDeveloperRole", true))]
 
 providercontext(::Union{OpenAI, OpenAIResponses, Anthropic, Google, ChatGPT.Plan, ManagedChatGPT}, messages, system) = collapsedcontext(messages, system)
 contextdeclarations(tools) = OrderedDict{String, Tool}(String(key) => declaration(tool) for (key, tool) in pairs(tools))
 providerprepared(provider::Union{OpenAI, OpenAIResponses, Anthropic}, messages, system, tools) = providerprepared(contextpolicy(provider), provider, messages, system, contextdeclarations(tools))
 providerprepared(provider::Google, messages, system, tools) = RequestView(collapsedcontext(messages, system), contextdeclarations(tools))
 providerprepared(::CollapsedContext, provider, messages, system, tools) = RequestView(collapsedcontext(messages, system), tools)
+function providerprepared(::CollapsedContext, provider::OpenAIResponses, messages, system, tools)
+    result = collapsedcontext(messages, system)
+    leadinginstruction!(result, contextinstruction(provider), contexthead(result))
+    RequestView(result, tools)
+end
+leadinginstruction!(messages, role, head) = messages
+leadinginstruction!(messages, role, ::ContextSystem) = (first(messages)["role"] = role; messages)
 chatdefinition(provider::OpenAI, tool::ToolDeclaration) = chatdefinition(tool, contextstrict(provider))
 chatdefinition(tool::ToolDeclaration, ::ContextStrictUnsupported) = definition(tool)
 function chatdefinition(tool::ToolDeclaration, ::ContextStrictSupported)
