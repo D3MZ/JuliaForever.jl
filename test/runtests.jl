@@ -69,6 +69,7 @@ include("terminal_history.jl")
 include("terminal_models.jl")
 include("session_catalog.jl")
 include("session_cli.jl")
+include("session_reasoning_estimate.jl")
 
 include("provider.jl")
 include("provider_status.jl")
