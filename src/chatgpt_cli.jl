@@ -160,7 +160,11 @@ function chatgptfailure(message="ChatGPT sign-in failed or was cancelled. Run jf
     2
 end
 
-function launchchatgpt(options, mode::ChatGPTSelection)
+chatgptsuffix(::Nothing) = nothing
+chatgptsuffix(model::AbstractString) = Models.suffix(model)
+launchchatgpt(options, mode::ChatGPTSelection) = launchchatgpt(options, mode, chatgptsuffix(options.requested_model))
+launchchatgpt(options, mode::ChatGPTSelection, ::Models.Suffix) = unsupportedthinking()
+function launchchatgpt(options, mode::ChatGPTSelection, ::Nothing)
     model = acquirechatgpt(options.requested_model, mode)
     Base.ScopedValues.with(tuimode => LiveTerminal.withprovider(options.tui, "chatgpt")) do
         launch(options.output, model, options.packages, options.environments, options.codemode, options.session, options.sessiondir, options.args, options.sessionname, options.baseline, options.rules, options.excluded, provider(options.outputmode, "chatgpt"))
