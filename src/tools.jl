@@ -190,10 +190,11 @@ function fuzzy(text)
     replace(join(lines, '\n'), r"[\u2018\u2019\u201a\u201b]" => "'", r"[\u201c\u201d\u201e\u201f]" => "\"", r"[\u2010-\u2015\u2212]" => "-", r"[\u00a0\u2002-\u200a\u202f\u205f\u3000]" => " ")
 end
 
-function duplicate(text, content)
-    match = findfirst(text, content)
-    !isnothing(match) && !isnothing(findnext(text, content, nextind(content, first(match))))
-end
+duplicate(text, content) = duplicate(text, content, findfirst(text, content))
+duplicate(text, content, ::Nothing) = false
+duplicate(text, content, match) = duplicate(findnext(text, content, nextind(content, first(match))))
+duplicate(::Nothing) = false
+duplicate(match) = true
 
 function apply(content, edits, offset=0)
     for edit in Iterators.reverse(edits)

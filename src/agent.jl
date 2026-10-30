@@ -444,12 +444,14 @@ function direct_begin!(run, prompt)
     direct_ready!(run, next, turnstate(agent))
 end
 
-direct_cancel!(run, ::Union{Idle, Running}) = nothing
-function direct_cancel!(run, ::Cancelled)
-    run.agent.state.cancelled && return nothing
-    transition!(revision -> Conversation.Cancel(revision), run.agent)
-    nothing
+cancel_transition!(agent, ::Union{Idle, Running}) = nothing
+function cancel_transition!(agent, ::Cancelled)
+    agent.state.cancelled && return nothing
+    result, _ = transition!(revision -> Conversation.Cancel(revision), agent)
+    result
 end
+
+direct_cancel!(run, turn) = (cancel_transition!(run.agent, turn); nothing)
 
 function direct_ready!(run, next, ::Cancelled)
     emit(run.callback, (; type=:turn_end, message=nothing, tool_results=Dict{String, Any}[]))

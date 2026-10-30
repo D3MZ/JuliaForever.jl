@@ -23,21 +23,17 @@ JuliaForever.jl	:interactive
 JuliaForever.jl	:interactive
 JuliaForever.jl	:login
 JuliaForever.jl	:login_requested
+agent.jl	:(agent.state.cancelled)
 agent.jl	:(answer.started)
 agent.jl	:(name === :cancelled)
 agent.jl	:(name === :events)
 agent.jl	:(name === :running)
 agent.jl	:(result.done)
-agent.jl	:(run.agent.state.cancelled)
 agent.jl	:(started[])
 agent.jl	:returned
 agent.jl	:started
 agent.jl	:started
-agent_execution.jl	:(agent.state.cancelled)
-agent_execution.jl	:(cancelled(agent))
-agent_history.jl	:(agent.state.cancelled)
 agent_history.jl	:(answer.started)
-agent_history.jl	:(cancelled(agent))
 agent_history.jl	:(fault.reason in (:uncertain_effect, :incomplete_turn))
 agent_history.jl	:(initial.automatic)
 agent_history.jl	:(result.done)
@@ -66,8 +62,6 @@ codemode_worker.jl	:(connected[])
 codemode_worker.jl	:(isnothing(channel))
 codemode_worker.jl	:(isnothing(id))
 codemode_worker.jl	:(value isa AbstractString)
-conversation.jl	:(answer.finish == "length")
-conversation.jl	:(answer.finish == "length")
 conversation.jl	:(index === nothing)
 conversation.jl	:(name === :done)
 conversation.jl	:(name in (:messages, :order, :calls, :steering, :followups))
@@ -297,19 +291,13 @@ system.jl	:partial
 system.jl	:partial
 system.jl	:reached
 system.jl	:truncated
-terminal.jl	:(agent isa History.Rejected)
-terminal.jl	:(history isa History.Rejected)
-terminal.jl	:(isnothing(agent.fault))
-terminal.jl	:(result isa History.Rejected)
 terminal.jl	:(result.status == 0)
-terminal.jl	:(snapshot isa History.Rejected)
 terminal.jl	:(terminal.lineopen)
 terminal.jl	:(terminal.streamed)
 tools.jl	:(isnothing(content))
 tools.jl	:(isnothing(entry.owner))
 tools.jl	:(isnothing(findfirst(edit.old, originalcontent)))
 tools.jl	:(isnothing(findfirst(edit.old, originalcontent)))
-tools.jl	:(isnothing(match))
 tools.jl	:(isnothing(match))
 tools.jl	:(isnothing(match))
 tools.jl	:(isnothing(output))

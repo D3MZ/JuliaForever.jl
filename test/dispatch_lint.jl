@@ -35,6 +35,10 @@ include("dispatch_checks.jl")
     @test length(dispatchchecks(Meta.parse("f(kind) = kind == \"tool\" ? 1 : 0"))) == 1
     @test length(dispatchchecks(Meta.parse("f(value) = value == \"stop\" ? 1 : 0"))) == 1
     @test length(dispatchchecks(Meta.parse("f(value) = value in (\"queued\", \"running\") ? 1 : 0"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(x) = isnothing(x)"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(x) = x isa Int"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(x) = x !== nothing"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(x) = x === false"))) == 1
     @test length(dispatchchecks(Meta.parse("f(value) = value == \"stop\""))) == 1
     @test length(dispatchchecks(Meta.parse("f(selected) = selected == \"future-provider\" ? 1 : 0"))) == 1
     @test length(dispatchchecks(Meta.parse("f(event) = event.status == \"custom\""))) == 1

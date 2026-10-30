@@ -182,6 +182,9 @@ function sessionfault!(terminal, fault, history)
     status
 end
 
+isterminal(::IO) = false
+isterminal(::Base.TTY) = true
+
 function runsession!(history, terminal, model, tools, args, sessiondir)
     history isa History.Rejected && return result!(terminal, history)
     try
@@ -196,7 +199,7 @@ function runsession!(history, terminal, model, tools, args, sessiondir)
         agent isa History.Rejected && return result!(terminal, agent)
         isnothing(agent.fault) || return sessionfault!(terminal, agent.fault, history)
         if isempty(args)
-            interactive = stdin isa Base.TTY
+            interactive = isterminal(stdin)
             interactive && println(stderr, "Julia Forever — enter a message, or /exit to quit")
             status = 0
             while true
