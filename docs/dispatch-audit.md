@@ -221,3 +221,5 @@ RPC thinking controls add nine branch entries, from 1,572 to 1,581, for mapped-l
 After reconciling upstream changes, authorization filtering adds one loop, bringing the inventory from 1,577 to 1,578.
 
 Merging upstream shell, history, and extension refactors adds 14 inventory entries and retires 15, for 1,577 total.
+
+RPC custom-model listing and selection add nine branch entries and retire one, bringing the inventory to 1,585. Model metadata uses a concrete wire type; unsupported catalog entries are handled by dispatch.

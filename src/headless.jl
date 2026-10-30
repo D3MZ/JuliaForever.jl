@@ -8,6 +8,11 @@ abstract type Command end
 struct GetState <: Command end
 struct GetMessages <: Command end
 struct GetAvailableModels <: Command end
+struct CycleModel <: Command end
+struct SetModel <: Command
+    provider::String
+    model::String
+end
 struct GetCommands <: Command end
 struct GetEntries <: Command
     since::Union{Nothing, String}
@@ -88,14 +93,14 @@ struct UnavailableStatistics <: StatisticsState end
 const newstatuses = Dict(0 => SessionStarted())
 
 const unsupportedcommands = (
-    "set_model", "cycle_model", "compact",
+    "compact",
 )
 const commands = merge(
     Dict(name => Unsupported for name in unsupportedcommands),
     Dict(
         "prompt" => Prompt, "steer" => Queue{Steering}, "follow_up" => Queue{FollowUp}, "abort" => Abort,
         "clear_queue" => ClearQueue, "clone" => CloneSession, "fork" => ForkSession, "get_fork_messages" => GetForkMessages, "new_session" => NewSession, "switch_session" => SwitchSession, "export_html" => ExportHTML, "get_state" => GetState, "get_session_stats" => GetSessionStats,
-        "get_messages" => GetMessages, "get_available_models" => GetAvailableModels, "get_commands" => GetCommands, "get_entries" => GetEntries, "get_tree" => GetTree, "get_last_assistant_text" => GetLastText, "set_session_name" => SetName,
+        "get_messages" => GetMessages, "get_available_models" => GetAvailableModels, "set_model" => SetModel, "cycle_model" => CycleModel, "get_commands" => GetCommands, "get_entries" => GetEntries, "get_tree" => GetTree, "get_last_assistant_text" => GetLastText, "set_session_name" => SetName,
         "get_available_thinking_levels" => GetThinkingLevels, "cycle_thinking_level" => CycleThinking, "set_thinking_level" => SetThinking,
         "set_steering_mode" => SetSteeringMode, "set_follow_up_mode" => SetFollowUpMode,
         "set_auto_compaction" => SetAutoCompaction, "set_auto_retry" => SetAutoRetry, "abort_retry" => AbortRetry, "abort_bash" => AbortBash, "bash" => BashCommand,
@@ -137,6 +142,7 @@ command(::Type{NewSession}, data) = NewSession(get(data, "parentSession", nothin
 command(::Type{SwitchSession}, data) = SwitchSession(String(data["sessionPath"]))
 command(::Type{ExportHTML}, data) = ExportHTML(get(data, "outputPath", nothing))
 command(::Type{ForkSession}, data) = ForkSession(String(data["entryId"]))
+command(::Type{SetModel}, data) = SetModel(String(data["provider"]), String(data["modelId"]))
 command(::Type{SetThinking}, data) = SetThinking(String(data["level"]))
 command(::Type{SetSteeringMode}, data) = SetSteeringMode(String(data["mode"]))
 command(::Type{SetFollowUpMode}, data) = SetFollowUpMode(String(data["mode"]))
@@ -202,6 +208,7 @@ include("headless_commands.jl")
 include("headless_bash.jl")
 include("headless_entries.jl")
 include("headless_thinking.jl")
+include("headless_models.jl")
 
 function write!(session, value)
     lock(session.lock) do
@@ -241,7 +248,8 @@ function state(session)
     optional!(data, "sessionFile", sessionfile(session.store[]))
 end
 modelinfo(session) = modelinfo(session.agent.provider, session.terminal.mode)
-modelinfo(provider, mode) = (; id=provider.model, api=LiveJSON.api(provider), provider=LiveJSON.providername(mode, provider), baseUrl=provider.base)
+modelinfo(provider, mode) = basicmodel(provider, mode)
+basicmodel(provider, mode) = (; id=provider.model, api=LiveJSON.api(provider), provider=LiveJSON.providername(mode, provider), baseUrl=provider.base)
 modelinfo(::J.UnconfiguredProvider, mode) = (; id="unknown", name="unknown", api="unknown", provider="unknown", baseUrl="", reasoning=false, input=String[], cost=(; input=0, output=0, cacheRead=0, cacheWrite=0), contextWindow=0, maxTokens=0)
 sessionfile(::Nothing) = nothing
 sessionfile(::J.History.Memory) = nothing
@@ -257,10 +265,6 @@ optional!(data, key, value) = (data[key] = value; data)
 
 handle!(session, ::GetState) = Success((; data=state(session)))
 handle!(session, ::GetMessages) = Success((; data=(; messages=lock(() -> copy(session.messages), session.lock))))
-handle!(session, ::GetAvailableModels) = availablemodels(session.agent.provider)
-availablemodels(::J.UnconfiguredProvider) = availablemodels(J.usableproviders(ENV))
-availablemodels(providers::Set{String}) = isempty(providers) ? Success((; data=(; models=NamedTuple[],))) : Failure("Model listing is not yet available over RPC")
-availablemodels(provider) = Failure("Model listing is not yet available over RPC")
 handle!(session, ::GetSessionStats) = lock(() -> statistics(session, session.statistics), session.lock)
 handle!(session, ::AbortRetry) = Success()
 handle!(session, command::SetSteeringMode) = setqueuemode!(session, J.steeringmode!, get(deliverymodes, command.mode, nothing))

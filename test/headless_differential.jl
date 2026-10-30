@@ -423,6 +423,41 @@ function exchangethinking(cmd, env)
     end
 end
 
+function exchangemodels(cmd, env; prompt=false)
+    mktempdir() do dir
+        process = open(pipeline(addenv(cmd, env...); stderr=joinpath(dir, "error")), "r+")
+        channel = Channel{Any}(Inf)
+        reader = @async for line in eachline(process)
+            put!(channel, JSON3.read(line, Dict{String, Any}))
+        end
+        observed = Any[]
+        try
+            send(value) = (println(process, JSON3.write(value)); flush(process))
+            function request(value)
+                send(value)
+                receive!(channel, observed, item -> get(item, "id", "") == value.id)
+            end
+            listed = request((; id="models", type="get_available_models"))
+            changed = request((; id="set", type="set_model", provider="fixture", modelId="beta"))
+            state = request((; id="state", type="get_state"))
+            if prompt
+                send((; id="prompt", type="prompt", message="hello"))
+                receive!(channel, observed, item -> get(item, "type", "") == "agent_settled")
+            end
+            missing = request((; id="missing", type="set_model", provider="fixture", modelId="missing"))
+            cycled = request((; id="cycle", type="cycle_model"))
+            again = request((; id="again", type="get_state"))
+            entries = request((; id="entries", type="get_entries"))
+            (; listed, changed, state, missing, cycled, again, entries, observed)
+        finally
+            close(process.in)
+            timedwait(() -> process_exited(process), 5) == :ok || kill(process)
+            wait(process)
+            wait(reader)
+        end
+    end
+end
+
 @testset "Pi RPC subprocess protocol" begin
     source = ENV["PI_SOURCE"]
     @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
@@ -499,6 +534,21 @@ end
         @test actual_custom_state["state"]["data"]["model"]["provider"] == expected_custom_state["state"]["data"]["model"]["provider"]
         modelentry(result) = only(entry["provider"] for entry in result["entries"]["data"]["entries"] if entry["type"] == "model_change")
         @test modelentry(actual_custom_state) == modelentry(expected_custom_state)
+
+        modeldir = joinpath(workspace, "rpc-models")
+        mkpath(modeldir)
+        definitions = [(; id="alpha", name="Alpha", cost=(; input=1, output=2, cacheRead=0.1, cacheWrite=0), contextWindow=8000, maxTokens=2048), (; id="beta", name="Beta", contextWindow=16000, maxTokens=4096)]
+        write(joinpath(modeldir, "models.json"), JSON3.write((; providers=(; fixture=(; baseUrl="https://example.invalid/v1", api="openai-responses", apiKey="fixture-key", models=definitions)))))
+        modelenv = merge(cleanenv, Dict("PI_CODING_AGENT_DIR" => modeldir, "JF_PROVIDER" => "fixture"))
+        modelpi = setenv(Cmd(`node $oracle $source --mode rpc --no-session --provider fixture --model alpha --approve`; dir=workspace), modelenv)
+        modeljf = setenv(Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session --provider fixture --model alpha`; dir=workspace), modelenv)
+        expected_models = exchangemodels(modelpi, [])
+        actual_models = exchangemodels(modeljf, [])
+        @test actual_models.listed == expected_models.listed
+        @test actual_models.changed == expected_models.changed && actual_models.missing == expected_models.missing && actual_models.cycled == expected_models.cycled
+        @test [run["data"]["model"] for run in (actual_models.state, actual_models.again)] == [run["data"]["model"] for run in (expected_models.state, expected_models.again)]
+        modelchanges(run) = [(entry["provider"], entry["modelId"]) for entry in run.entries["data"]["entries"] if entry["type"] == "model_change"]
+        @test modelchanges(actual_models) == modelchanges(expected_models)
 
         if Sys.isunix()
             expected_bash = exchangebash(pi, env)
@@ -606,6 +656,24 @@ end
             @test jf_request6["reasoning"] == pi_request6["reasoning"]
             @test updates(jf_request6) == updates(pi_request6) == [Dict("type" => "configuration_update", "reasoning" => Dict("effort" => "low"))]
             @test [result["data"]["thinkingLevel"] for result in (actual6.state, actual6.newstate, actual6.restored)] == [result["data"]["thinkingLevel"] for result in (reference6.state, reference6.newstate, reference6.restored)]
+
+            customdir = joinpath(workspace, "custom-models")
+            mkpath(customdir)
+            definitions = [(; id="alpha", name="Alpha", contextWindow=8000, maxTokens=2048), (; id="beta", name="Beta", contextWindow=16000, maxTokens=4096)]
+            write(joinpath(customdir, "models.json"), JSON3.write((; providers=(; fixture=(; baseUrl=base, api="openai-responses", apiKey="fixture", models=definitions)))))
+            customenv = Dict("PATH" => ENV["PATH"], "HOME" => workspace, "USERPROFILE" => workspace, "PI_SOURCE" => source, "PI_CODING_AGENT_DIR" => customdir, "PI_OFFLINE" => "1", "JF_PROVIDER" => "fixture", "JF_INSTRUCTIONS_DIR" => workspace, "JULIA_DEPOT_PATH" => get(ENV, "JULIA_DEPOT_PATH", ""))
+            for key in ("SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "TMP", "TEMP")
+                haskey(ENV, key) && (customenv[key] = ENV[key])
+            end
+            pi_custom = setenv(Cmd(`node $oracle $source --mode rpc --no-session --provider fixture --model alpha --approve`; dir=workspace), customenv)
+            jf_custom = setenv(Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --no-session --provider fixture --model alpha`; dir=workspace), customenv)
+            pi_models = exchangemodels(pi_custom, []; prompt=true)
+            jf_models = exchangemodels(jf_custom, []; prompt=true)
+            pi_custom_request, jf_custom_request = take!(requests), take!(requests)
+            @test jf_models.changed == pi_models.changed
+            @test jf_custom_request["model"] == pi_custom_request["model"] == "beta"
+            assistantmodels(run) = [event["message"]["model"] for event in run.observed if get(event, "type", "") == "message_end" && get(event["message"], "role", "") == "assistant"]
+            @test assistantmodels(jf_models) == assistantmodels(pi_models) == ["beta"]
         end
     finally
         close(server)
