@@ -1,0 +1,22 @@
+diff --git a/test/agent_history.jl b/test/agent_history.jl
+index ce34ef6..27eb9df 100644
+--- a/test/agent_history.jl
++++ b/test/agent_history.jl
+@@ -184,7 +184,7 @@ end
+ @testset "planning and tool observation failures are boundaries" begin
+     provider = KeyedProvider("secret", 0)
+     store = H.Memory()
+-    agent = Agent(provider, []; history=FailHistory(store, 4))
++    agent = Agent(provider, []; history=FailHistory(store, 3))
+     @test respond!(agent, "hello") == H.Rejected(:failed)
+     @test agent.state.phase == C.ReadyModel
+     @test provider.calls == 0
+@@ -194,7 +194,7 @@ end
+         calls = [Dict{String, Any}("id" => string(i), "type" => "function", "function" => Dict("name" => "write", "arguments" => "{\"path\":\"$(i).txt\",\"content\":\"written\"}")) for i in 1:2]
+         provider = Scripted([Dict{String, Any}("role" => "assistant", "content" => nothing, "tool_calls" => calls)], [])
+         store = H.Memory()
+-        agent = Agent(provider, [Write(dir)]; history=FailHistory(store, 6))
++        agent = Agent(provider, [Write(dir)]; history=FailHistory(store, 5))
+         @test respond!(agent, "go") == H.Rejected(:failed)
+         @test isfile(joinpath(dir, "1.txt"))
+         @test !isfile(joinpath(dir, "2.txt"))
