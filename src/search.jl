@@ -8,12 +8,28 @@ end
 
 struct FoldedPattern
     text::String
+    folded::String
+    ascii::String
 end
 
-Base.occursin(pattern::FoldedPattern, line::AbstractString) = occursin(pattern.text, lowercase(line))
+# Separators keep full-fold expansions inside their original character boundaries.
+const foldescapes = Dict('\0' => "\x01\x02", '\x01' => "\x01\x01")
+function foldliteral(text::AbstractString)
+    output = IOBuffer()
+    for character in text
+        write(output, '\0')
+        isascii(character) ? write(output, get(foldescapes, character, lowercase(character))) : write(output, Unicode.normalize(string(character); casefold=true, compose=false))
+    end
+    write(output, '\0')
+    String(take!(output))
+end
 
+function Base.occursin(pattern::FoldedPattern, line::AbstractString)
+    isascii(pattern.text) && isascii(line) && return occursin(pattern.ascii, lowercase(line))
+    occursin(pattern.folded, foldliteral(line))
+end
 literalpattern(pattern) = pattern
-foldedpattern(pattern) = FoldedPattern(lowercase(pattern))
+foldedpattern(pattern) = FoldedPattern(String(pattern), foldliteral(pattern), lowercase(pattern))
 regexpattern(pattern) = Regex(pattern, "")
 caselesspattern(pattern) = Regex(pattern, "i")
 const searchpatterns = Dict((true, false) => literalpattern, (true, true) => foldedpattern, (false, false) => regexpattern, (false, true) => caselesspattern)
