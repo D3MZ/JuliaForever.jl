@@ -184,11 +184,12 @@ function bashenvironment!(env)
 end
 
 shellgate(::Bash, env, ::Nothing, ::Nothing, command) = nothing
-function bashtrace!(env)
+function bashoptions!(env)
     options = split(get(env, "SHELLOPTS", ""), ':')
-    "xtrace" in options || return "+x"
-    env["SHELLOPTS"] = join(filter(!=("xtrace"), options), ':')
-    "-x"
+    flags = [flag for (option, flag) in (("xtrace", "-x"), ("verbose", "-v")) if option in options]
+    isempty(flags) && return ""
+    env["SHELLOPTS"] = join(filter(option -> option ∉ ("xtrace", "verbose"), options), ':')
+    join(flags, " ")
 end
 function shellgate(::Bash, env, cancel, timeout, command)
     any(name -> startswith(uppercase(name), "BASH_FUNC_") && endswith(name, "%%"), keys(env)) && return ToolFailure("Could not isolate Bash with exported functions; command was not started")
@@ -206,10 +207,10 @@ function shellgate(::Bash, env, cancel, timeout, command)
         env[pidname] = replace(pidfile, '\\' => '/')
         env[commandname] = command
         env["BASH_ENV"] = "\${" * name * "}"
-        trace = bashtrace!(env)
+        flags = bashoptions!(env)
         write(io, "IFS= read -r " * pidvalue * " < /proc/\$\$/winpid || :\n", "printf '%s\\n' \"\${" * pidvalue * "}\" > \"\${" * pidname * "}\"\n", "unset " * pidvalue * " " * pidname * "\n", "(IFS= read -r ready) || exit 1\n", startup, commandvalue * "=\"\${" * commandname * "}\"\n", "unset " * name * " " * commandname * "\n", raw"""
         SHLVL=$((SHLVL - 1))
-        """, "\"\$BASH\" " * trace * " -c \"\${" * commandvalue * "}\" \"\$0\"\nexit \"\$?\"\n")
+        """, "\"\$BASH\" " * flags * " -c \"\${" * commandvalue * "}\" \"\$0\"\nexit \"\$?\"\n")
     finally
         close(io)
     end

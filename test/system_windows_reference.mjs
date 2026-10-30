@@ -39,12 +39,16 @@ if (tools.includes("bash")) {
     const dir = await mkdtemp(join(tmpdir(), "jf-bash-trace-"));
     const saved = Object.fromEntries(["SHELLOPTS", "BASH_ENV", "BASH_XTRACEFD", "PS4"].map(name => [name, process.env[name]]));
     try {
-        process.env.SHELLOPTS = "xtrace";
         process.env.PS4 = "+ ";
         delete process.env.BASH_ENV;
         delete process.env.BASH_XTRACEFD;
-        const result = await createBashToolDefinition(dir).execute("trace", { command: "printf complete >&2", timeout: 30 }, new AbortController().signal);
-        results.push({ text: result.content.find(block => block.type === "text").text, iserror: result.isError === true });
+        const cases = [];
+        for (const options of ["xtrace", "verbose", "verbose:xtrace"]) {
+            process.env.SHELLOPTS = options;
+            const result = await createBashToolDefinition(dir).execute("trace", { command: "printf complete >&2", timeout: 30 }, new AbortController().signal);
+            cases.push({ text: result.content.find(block => block.type === "text").text, iserror: result.isError === true });
+        }
+        results.push({ cases });
     } finally {
         for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : process.env[name] = value;
         await rm(dir, { recursive: true, force: true });

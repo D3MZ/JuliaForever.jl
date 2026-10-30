@@ -350,9 +350,11 @@ end
                     @test read(joinpath(dir, "hook-env"), String) == hook
                 end
                 write(hook, "printf hook >&2\n")
-                withenv("SHELLOPTS" => "xtrace", "BASH_ENV" => hook, "BASH_XTRACEFD" => nothing, "PS4" => "+ ") do
-                    command = "printf complete >&2"
-                    @test execute(bash, (; command, timeout=30)) == execute(bash, (; command))
+                for options in ("xtrace", "verbose", "verbose:xtrace")
+                    withenv("SHELLOPTS" => options, "BASH_ENV" => hook, "BASH_XTRACEFD" => nothing, "PS4" => "+ ") do
+                        command = "printf complete >&2"
+                        @test execute(bash, (; command, timeout=30)) == execute(bash, (; command))
+                    end
                 end
 
                 lowerhook = replace(joinpath(dir, "lowercase startup.sh"), '\\' => '/')
@@ -623,10 +625,12 @@ if Sys.iswindows() && haskey(ENV, "PI_SOURCE")
             end
             if bashenabled == "bash"
                 bash = Bash(dir)
-                withenv("SHELLOPTS" => "xtrace", "BASH_ENV" => nothing, "BASH_XTRACEFD" => nothing, "PS4" => "+ ") do
-                    traced = execute(bash, (; command="printf complete >&2", timeout=30); cancel=ShellCancellation())
-                    @test (traced.text, traced.iserror) == (reference[end - 2].text, reference[end - 2].iserror)
-                    @test startswith(traced.text, "+ printf complete")
+                for (index, options) in enumerate(("xtrace", "verbose", "verbose:xtrace"))
+                    withenv("SHELLOPTS" => options, "BASH_ENV" => nothing, "BASH_XTRACEFD" => nothing, "PS4" => "+ ") do
+                        traced = execute(bash, (; command="printf complete >&2", timeout=30); cancel=ShellCancellation())
+                        @test (traced.text, traced.iserror) == (reference[end - 2].cases[index].text, reference[end - 2].cases[index].iserror)
+                        @test !occursin("JF_BASH_GATE_", traced.text)
+                    end
                 end
                 normal = execute(bash, (; command="printf complete", timeout=30); cancel=ShellCancellation())
                 @test (normal.text, normal.iserror) == (reference[4].text, reference[4].iserror)
