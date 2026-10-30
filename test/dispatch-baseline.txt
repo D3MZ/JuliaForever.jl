@@ -98,6 +98,7 @@ durable.jl	:success
 execution.jl	:(cancelled(cancellation))
 execution.jl	:(cancelled(handle.cancellation))
 execution_conversation.jl	:(name === :detailed)
+extensions.jl	:(hook.event == :tool_result)
 extensions.jl	:(hook.event == event.type)
 history.jl	:(key isa String)
 history.jl	:(name === :batches)
