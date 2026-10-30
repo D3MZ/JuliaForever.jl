@@ -32,6 +32,7 @@ include("terminal.jl")
 include("terminal_editor.jl")
 include("tree_terminal.jl")
 include("session_terminal.jl")
+include("terminal_live.jl")
 include("mcp.jl")
 
 const credentials = Dict("openai" => ("OPENAI_MODEL", "OPENAI_API_KEY"), "openai-responses" => ("OPENAI_MODEL", "OPENAI_API_KEY"), "openrouter" => ("OPENROUTER_MODEL", "OPENROUTER_API_KEY"), "anthropic" => ("ANTHROPIC_MODEL", "ANTHROPIC_API_KEY"), "google" => ("GEMINI_MODEL", "GEMINI_API_KEY"))
@@ -184,8 +185,27 @@ function sessionfault!(terminal, fault, history)
     status
 end
 
+function interactive!(terminal, agent, history, input::IO, sessiondir, templates)
+    status = 0
+    for line in terminalinput(input, terminal.diagnostics)
+        line == "/exit" && break
+        if haskey(terminalcommands, line)
+            agent, selected, result = command!(terminalcommands[line], terminal, agent, history[], input, sessiondir)
+            history[] = selected
+            status = max(status, result)
+            continue
+        end
+        status = max(status, run!(terminal, agent, Prompts.expand(line, templates)))
+    end
+    status
+end
+interactive!(terminal, agent, history, input::Base.TTY, sessiondir, templates) = LiveTerminal.loop!(terminal, agent, history, input, sessiondir, templates)
+finishhistory(::Nothing) = nothing
+finishhistory(history::History.Store) = close(history)
+
 function runsession!(history, terminal, model, tools, args, sessiondir)
     history isa History.Rejected && return result!(terminal, history)
+    selected = Ref{Union{Nothing, History.Store}}(history)
     try
         snapshot = isnothing(history) ? nothing : History.snapshot(history)
         snapshot isa History.Rejected && return result!(terminal, snapshot)
@@ -199,22 +219,12 @@ function runsession!(history, terminal, model, tools, args, sessiondir)
         isnothing(agent.fault) || return sessionfault!(terminal, agent.fault, history)
         templates = Prompts.load(pwd())
         if isempty(args)
-            status = 0
-            for line in terminalinput(stdin, stderr)
-                line == "/exit" && break
-                if haskey(terminalcommands, line)
-                    agent, history, result = command!(terminalcommands[line], terminal, agent, history, stdin, sessiondir)
-                    status = max(status, result)
-                    continue
-                end
-                status = max(status, run!(terminal, agent, Prompts.expand(line, templates)))
-            end
-            return status
+            return interactive!(terminal, agent, selected, stdin, sessiondir, templates)
         else
             return run!(terminal, agent, Prompts.expand(join(args, " "), templates))
         end
     finally
-        isnothing(history) || close(history)
+        finishhistory(selected[])
     end
 end
 

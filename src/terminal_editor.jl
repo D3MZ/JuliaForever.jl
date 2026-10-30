@@ -145,13 +145,13 @@ struct Editor
     history::REPL.REPLHistoryProvider
 end
 
-function Editor(input::Base.TTY, output::IO)
+function Editor(input::Base.TTY, output::IO; extra=Dict{Any, Any}())
     history = REPL.REPLHistoryProvider(Dict{Symbol, LineEdit.Prompt}())
     prompt = LineEdit.Prompt("> "; hist=history)
     history.mode_mapping[:julia] = prompt
     LineEdit.reset_state(history)
     keys = Dict{Any, Any}('\r' => enter!, '\n' => newline!, "\e\r" => newline!, "\e[13;2~" => newline!, "\e[13;2u" => newline!, "\e[200~" => paste!, "\e[A" => up!, "\e[B" => down!, "\e[D" => left!, "\e[C" => right!, "\e[H" => linestart!, "\e[1~" => linestart!, "\e[F" => lineend!, "\e[4~" => lineend!, "^B" => left!, "^F" => right!, '\b' => backspace!, '\x7f' => backspace!, "\e[3~" => forward!, "^C" => clear!, "^D" => delete!, "^L" => ignore!, "^P" => ignore!, "^N" => ignore!, "^T" => ignore!, "\e[1;2A" => ignore!, "\e[1;2B" => ignore!, "\e[1;2C" => ignore!, "\e[1;2D" => ignore!)
-    prompt.keymap_dict = LineEdit.keymap(Dict{Any, Any}[keys, LineEdit.default_keymap, LineEdit.escape_defaults])
+    prompt.keymap_dict = LineEdit.keymap(Dict{Any, Any}[merge(keys, extra), LineEdit.default_keymap, LineEdit.escape_defaults])
     interface = LineEdit.ModalInterface(LineEdit.TextInterface[prompt])
     terminal = REPL.Terminals.TTYTerminal(get(ENV, "TERM", "dumb"), input, output, output)
     Editor(terminal, interface, LineEdit.init_state(terminal, interface), history)
@@ -185,11 +185,16 @@ end
 function next!(editor::Editor, result::Submitted)
     text = String(take!(copy(result.buffer)))
     LineEdit.reset_state(editor.state)
+    remember!(editor)
+    text, nothing
+end
+
+function remember!(editor::Editor)
     excess = max(length(editor.history.history) - 100, 0)
     deleteat!(editor.history.history, 1:excess)
     deleteat!(editor.history.modes, 1:excess)
     LineEdit.reset_state(editor.history)
-    text, nothing
+    nothing
 end
 
 next!(editor::Editor, ::Cancelled) = nothing

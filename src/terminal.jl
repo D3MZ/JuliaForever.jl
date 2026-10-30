@@ -229,9 +229,12 @@ streamrender!(terminal::Terminal, event) = streamrender!(terminal, streamevent(e
 streamrender!(terminal::Terminal, ::Nothing) = nothing
 streamrender!(terminal::Terminal, event::TextDelta) = text!(terminal, event.text)
 
-function run!(terminal::Terminal, agent::Agent, prompt)
+function run!(terminal::Terminal, agent::Agent, prompt; on_agent_event=identity)
     result = request!(terminal) do
-        respond!(agent, prompt; on_event=event -> streamrender!(terminal, event), on_agent_event=event -> render!(terminal, event))
+        respond!(agent, prompt; on_event=event -> streamrender!(terminal, event), on_agent_event=event -> begin
+            render!(terminal, event)
+            on_agent_event(event)
+        end)
     end
     result.status == 0 || return result.status
     result!(terminal, result.value)

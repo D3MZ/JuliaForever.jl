@@ -81,6 +81,7 @@ if haskey(ENV, "PI_SOURCE")
     include("prompt_differential.jl")
     include("instructions_differential.jl")
     include("agent_core_differential.jl")
+    include("queue_differential.jl")
     include("differential.jl")
     include("file_mutations_differential.jl")
 end
