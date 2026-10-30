@@ -29,6 +29,7 @@ include("search.jl")
 include("context.jl")
 include("codemode.jl")
 include("terminal.jl")
+include("tree_terminal.jl")
 include("mcp.jl")
 
 missingmodel(env, info, ::Nothing) = isempty(strip(get(env, info.model, ""))) ? [info.model] : String[]
@@ -316,6 +317,9 @@ end
 initial(extensions, ::Nothing) = initial(extensions)
 initial(extensions, snapshot::History.Snapshot) = iszero(snapshot.revision) ? initial(extensions) : Dict{String, Any}[]
 
+selection(result::ToolFailure) = SessionCatalog.Invalid(result.text)
+selection(result) = result
+
 function terminal!(terminal::Terminal, model, registry::Extensions.Registry, codemode, session, sessiondir, args)
     if codemode
         mode = CodeMode(Extensions.tools(Extensions.snapshot(registry)))
@@ -323,7 +327,7 @@ function terminal!(terminal::Terminal, model, registry::Extensions.Registry, cod
         return terminal!(terminal, model, registered(terminal, registry, "codemode", result), false, session, sessiondir, args)
     end
     extensions = Extensions.snapshot(registry)
-    history = SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr, text -> redact(terminal, text))
+    history = selection(attempt(() -> SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr, text -> redact(terminal, text))))
     runsession!(history, terminal, model, extensions, args)
 end
 
@@ -382,11 +386,17 @@ end
 function readloop!(terminal, agent, extensions, input, output)
     intro!(output, input)
     status = 0
+    history = agent.history
     while true
         prompt!(output, input)
         eof(input) && break
         line = readline(input)
         line == "/exit" && break
+        if line == "/tree"
+            agent, history, result = tree!(terminal, agent, history, input, extensions)
+            status = max(status, result)
+            continue
+        end
         status = max(status, run!(terminal, agent, line, extensions))
     end
     status

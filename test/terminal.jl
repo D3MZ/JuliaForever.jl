@@ -111,7 +111,9 @@ end
 end
 
 @testset "terminal redacts formatted tool errors" begin
-    for (key, suffix) in (("synthetic" * Char(0x80), "a"), ("synthetic" * Char(0x10ffff), "f"), ("synthetic" * Char(0x7f), "0"))
+    cases = [("synthetic" * Char(0x80), "a"), ("synthetic" * Char(0x10ffff), "f"), ("synthetic" * Char(0x7f), "0")]
+    Sys.iswindows() || append!(cases, [("synthetic\\", "a"), ("synthetic" * repeat("\\", 20), "a")])
+    for (key, suffix) in cases
         mktempdir() do dir
             path = "missing-" * key * suffix
             call = Dict("id" => "one", "type" => "function", "function" => Dict("name" => "read", "arguments" => JSON3.write((; path))))
@@ -128,6 +130,10 @@ end
     key = "synthetic" * '\0'
     terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), [key])
     @test JuliaForever.redact(terminal, repr("before " * key * "0 after")) == repr("before [redacted]0 after")
+    for key in ("synthetic\\", "synthetic" * repeat("\\", 20))
+        terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), [key])
+        @test JuliaForever.redact(terminal, repr("before " * key * "a after")) == repr("before [redacted]a after")
+    end
 end
 
 @testset "terminal redacts quoted forms in context" begin
@@ -136,6 +142,11 @@ end
         terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), [key])
         @test JuliaForever.redact(terminal, repr("before " * key * suffix * " after")) == repr("before [redacted]" * suffix * " after")
     end
+end
+
+@testset "terminal request preserves unexpected exceptions" begin
+    terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), String[])
+    @test_throws TaskFailedException JuliaForever.request!(() -> 1 + "synthetic", terminal)
 end
 
 function terminal_process(mode, args; input="", key="synthetic-secret")

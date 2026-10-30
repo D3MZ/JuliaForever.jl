@@ -40,6 +40,72 @@ end
     end
 end
 
+@testset "unreadable session diagnostics redact provider credentials" begin
+    @test_throws MethodError JuliaForever.selection(JuliaForever.attempt(() -> 1 + "synthetic"))
+    Sys.isunix() && mktempdir() do root
+        key = "synthetic" * Char(0x80)
+        workspace = joinpath(root, "project")
+        sessions = joinpath(root, "sessions")
+        requests = joinpath(root, "requests.jsonl")
+        path = joinpath(root, "unreadable-" * key * "a.sqlite")
+        mkpath(workspace)
+        write(path, "synthetic")
+        chmod(path, 0)
+        try
+            result = session_process(requests, workspace, sessions, ["--session", path, "not sent"]; key)
+            @test result.status == 2
+            @test occursin("unreadable-[redacted]a.sqlite", result.diagnostics)
+            @test occursin("permission denied", lowercase(result.diagnostics))
+            @test !occursin(key, result.diagnostics)
+            @test !occursin(chop(repr(key * "a"); head=1, tail=1), result.diagnostics)
+            @test !isfile(requests)
+        finally
+            chmod(path, 0o600)
+        end
+        sessions = joinpath(root, "sessions-" * key * "a")
+        mkpath(sessions)
+        catalog = joinpath(sessions, JuliaForever.SessionCatalog.filename(realpath(workspace), repeat("a", 32)))
+        write(catalog, "synthetic")
+        chmod(catalog, 0)
+        try
+            for option in ("--continue", "--resume")
+                result = session_process(requests, workspace, sessions, [option, "not sent"]; key)
+                @test result.status == 2
+                @test occursin("sessions-[redacted]a", result.diagnostics)
+                @test occursin("permission denied", lowercase(result.diagnostics))
+                @test !occursin(key, result.diagnostics)
+                @test !occursin(chop(repr(key * "a"); head=1, tail=1), result.diagnostics)
+                @test !isfile(requests)
+            end
+        finally
+            chmod(catalog, 0o600)
+        end
+    end
+end
+
+@testset "unwritable deferred session redacts provider credentials" begin
+    Sys.isunix() && mktempdir() do root
+        key = "synthetic" * Char(0x80)
+        workspace = joinpath(root, "project")
+        sessions = joinpath(root, "sessions-" * key * "a")
+        requests = joinpath(root, "requests.jsonl")
+        mkpath.((workspace, sessions))
+        chmod(sessions, 0)
+        try
+            result = session_process(requests, workspace, sessions, ["not sent"]; key)
+            @test result.status == 1
+            @test occursin("sessions-[redacted]a", result.diagnostics)
+            @test occursin("permission denied", lowercase(result.diagnostics))
+            @test !occursin(key, result.diagnostics)
+            @test !occursin(chop(repr(key * "a"); head=1, tail=1), result.diagnostics)
+            @test !isfile(requests)
+        finally
+            chmod(sessions, 0o700)
+        end
+        @test isempty(readdir(sessions))
+    end
+end
+
 @testset "session picker redacts provider credentials" begin
     mktempdir() do root
         workspace = joinpath(root, "project")

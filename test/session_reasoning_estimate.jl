@@ -50,7 +50,7 @@ end
                     @test get(assistant_request, Symbol(field), nothing) == thinking
                     @test [key for key in ("reasoning_content", "reasoning", "reasoning_text") if haskey(assistant_request, Symbol(key))] == [field]
 
-                    history = open(JuliaForever.History.SQLite, path; create=false)
+                    history = JuliaForever.History.Tree(open(JuliaForever.History.SQLite, path; create=false))
                     try
                         restored = Agent(nothing, []; history)
                         messages = restored.state.messages
