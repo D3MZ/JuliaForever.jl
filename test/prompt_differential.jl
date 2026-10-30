@@ -32,7 +32,7 @@ using Test, JSON3
         process = run(pipeline(ignorestatus(cmd); stdin=stdinpath, stdout=output, stderr=diagnostics))
         @test process.exitcode == 0
         @show reference.diagnostics read(diagnostics, String)
-        @test all(path -> occursin(path, read(diagnostics, String)), reference.diagnostics
+        @test all(path -> occursin(path, read(diagnostics, String)), reference.diagnostics)
         @test read(output, String) == join(("reply:" * prompt * "\n" for prompt in reference.expanded))
         oneshot = Cmd(`$cmd $(prompts[1])`; dir=cwd)
         @test read(pipeline(oneshot; stderr=devnull), String) == "reply:$(reference.expanded[1])\n"
