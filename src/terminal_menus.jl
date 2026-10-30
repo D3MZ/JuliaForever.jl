@@ -91,13 +91,17 @@ function menu!(session, title, labels::Vector{String})
     end
 end
 
-uicommand!(session, ::Regular, command, terminal, history, input, directory, snapshot, draft) = JuliaForever.command!(command, terminal, session.agent, history, input, directory, snapshot, draft)
-uicommand!(session, ::Fullscreen, command, terminal, history, input, directory, snapshot, draft) = JuliaForever.command!(command, session.terminal, session.agent, history, input, directory, snapshot, draft)
+uicommand!(session, ::Regular, command, terminal, history, input, directory, snapshot, draft) = JuliaForever.command!(command, terminal, session.agent, history, input, directory, snapshot, draft, session.templates)
+uicommand!(session, ::Fullscreen, command, terminal, history, input, directory, snapshot, draft) = JuliaForever.command!(command, session.terminal, session.agent, history, input, directory, snapshot, draft, session.templates)
+
+function modeloptions(session, provider)
+    name = JuliaForever.modelconstraint(session.view.provider)
+    sort!(JuliaForever.Models.pool(JuliaForever.Models.catalog(), name); by=model -> JuliaForever.Models.collation(model.id))
+end
 
 function uicommand!(session, ::Fullscreen, ::JuliaForever.SelectModel, terminal, history, input, directory, snapshot, draft)
     current = modelname(session.agent.provider)
-    provider = JuliaForever.modelconstraint(session.view.provider)
-    models = sort!(JuliaForever.Models.pool(JuliaForever.Models.catalog(), provider); by=model -> JuliaForever.Models.collation(model.id))
+    models = modeloptions(session, session.agent.provider)
     labels = ["Current: " * current, "Enter a model ID…"]
     append!(labels, (model.id * "  " * model.name for model in models))
     index = menu!(session, "Select model", labels)

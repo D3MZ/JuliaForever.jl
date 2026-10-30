@@ -7,7 +7,7 @@ using HTTP, JSON3, Base64, SHA
     @test openai.key == "synthetic-a"
     @test !occursin("synthetic-a", sprint(show, openai))
     @test !occursin("synthetic-a", sprint(show, MIME("text/plain"), openai))
-    router = JuliaForever.provider(Dict("JF_PROVIDER" => "openrouter", "OPENROUTER_MODEL" => "vendor/model-b", "OPENROUTER_API_KEY" => "synthetic-b", "OPENROUTER_BASE_URL" => "http://localhost/router/", "PI_CODING_AGENT_DIR" => mktempdir()))
+    router = JuliaForever.provider(Dict("JF_PROVIDER" => "openrouter", "OPENROUTER_MODEL" => "vendor/model-b", "OPENROUTER_API_KEY" => "synthetic-b", "OPENROUTER_BASE_URL" => "http://localhost/router/", "PI_CODING_AGENT_DIR" => mktempdir(), "JF_OPENROUTER_DIR" => joinpath(mktempdir(), "router")))
     @test router.base == "http://localhost/router/"
     @test router.model == "vendor/model-b"
     @test router.key == "synthetic-b"
@@ -193,7 +193,7 @@ end
     try
         base = "http://$(HTTP.server_addr(server))/api/v1"
         project = dirname(@__DIR__)
-        cmd = addenv(`$(Base.julia_cmd()) --project=$project -m JuliaForever --no-session --login-openrouter hello`, "OPENROUTER_BASE_URL" => base, "OPENROUTER_MODEL" => "fixture/model")
+        cmd = addenv(`$(Base.julia_cmd()) --project=$project -m JuliaForever --no-session --login-openrouter hello`, "OPENROUTER_BASE_URL" => base, "OPENROUTER_MODEL" => "fixture/model", "JF_OPENROUTER_DIR" => joinpath(mktempdir(), "router"))
         output = mktemp() do path, io
             write(io, "synthetic-code\n")
             flush(io)

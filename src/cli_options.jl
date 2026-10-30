@@ -90,11 +90,15 @@ clicontinue!(state, value) = (state.options.session = SessionCatalog.assign(stat
 cliresume!(state, value) = (state.options.session = SessionCatalog.assign(state.options.session, SessionCatalog.Picker()); state)
 cliephemeral!(state, value) = (state.options.session = SessionCatalog.assign(state.options.session, SessionCatalog.Ephemeral()); state)
 cliinspect!(state, value) = (state.options.action = historyinspect(state.options.action); state)
+clilogout!(state, value) = (state.options.action = logoutaction(state.options.action); state)
+clirouterlogout!(state, value) = (state.options.action = routerlogoutaction(state.options.action); state)
 climodels!(state, value) = (state.options.action = ModelListing(""); CLIModelQuery(state.options))
 
 clilogin(state, auth) = clilogin(state, state.options.auth, auth)
 clilogin(state, ::APIKeyAuth, auth::OpenRouterAuth) = (state.options.auth = auth; state)
+clilogin(state, ::APIKeyAuth, auth::ChatGPTAuth) = (state.options.auth = auth; state)
 clilogin(state, ::OpenRouterAuth, auth) = clierror("Select only one OpenRouter login mode.")
+clilogin(state, ::ChatGPTAuth, auth) = clierror("Select only one login mode.")
 
 settui!(options, value) = (options.tui = tuimodes[value]; nothing)
 setmode!(options, value) = (options.outputmode = assignmode(options.outputmode, terminalmode(value)); nothing)
@@ -110,6 +114,7 @@ setfork!(options, value) = (options.session = SessionCatalog.assign(options.sess
 setsessiondir!(options, value) = (options.sessiondir = abspath(expanduser(value)); nothing)
 setname!(options, value) = (options.sessionname = Conversation.sessionname(value); nothing)
 setabandon!(options, value) = (options.action = historyabandon(options.action, value); nothing)
+setexport!(options, value) = (options.action = exportaction(options.action, value); nothing)
 
 const clituioption = clivalue(settui!, clituivalue, option -> "--tui-mode requires regular or fullscreen.")
 const climodeoption = clivalue(setmode!, climodevalue, option -> "--mode requires text or json.")
@@ -128,6 +133,9 @@ const cliactions = Dict{String, Function}(
     "--model" => clirequired(setmodel!, cliprovidervalue),
     "--login-openrouter" => (state, option) -> clilogin(state, CodeAuth()),
     "--login-openrouter-callback" => (state, option) -> clilogin(state, CallbackAuth()),
+    "--login-chatgpt" => (state, option) -> clilogin(state, ChatGPTAuth()),
+    "--logout-chatgpt" => clilogout!,
+    "--logout-openrouter" => clirouterlogout!,
     "--plugin" => clivalue(setplugin!, clioptionvalue, option -> "$option requires a package name."),
     "--plugin-env" => clivalue(setenvironment!, clioptionvalue, option -> "$option requires a path."),
     "--history" => clivalue(sethistory!, clipathvalue, option -> "--history requires a path."),
@@ -139,6 +147,7 @@ const cliactions = Dict{String, Function}(
     "--no-session" => cliephemeral!, "--name" => clinameoption, "-n" => clinameoption,
     "--abandon" => clivalue(setabandon!, clioptionvalue, option -> "--abandon requires a reason."),
     "--inspect-history" => cliinspect!,
+    "--export" => clivalue(setexport!, clioptionvalue, option -> "--export requires a session path."),
 )
 
 clifinal(state::CLIReady) = clifinal(state.options)
