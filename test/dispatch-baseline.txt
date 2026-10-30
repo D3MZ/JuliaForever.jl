@@ -113,7 +113,6 @@ kernel.jl	:(same(x, y, seen))
 kernel.jl	:found
 logs.jl	:empty
 logs.jl	:first
-mcp.jl	:(admit(client.connection, required))
 mcp.jl	:(cursor isa AbstractString)
 mcp.jl	:(detail isa AbstractDict)
 mcp.jl	:(detail["code"] isa Bool)
@@ -136,7 +135,6 @@ mcp.jl	:(id isa Bool)
 mcp.jl	:(id isa Integer)
 mcp.jl	:(id isa Integer)
 mcp.jl	:(isnothing(channel))
-mcp.jl	:(isnothing(id))
 mcp.jl	:(item isa AbstractDict)
 mcp.jl	:(message isa AbstractDict)
 mcp.jl	:(method isa AbstractString)

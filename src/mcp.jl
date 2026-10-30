@@ -206,14 +206,23 @@ admit(::Open, ::Connection) = true
 request(client::Client, method, params; timeout=client.timeout) = request(client, method, params, Open(); timeout)
 
 function request(client::Client, method, params, required::Connection; timeout=client.timeout)
-    id, channel = lock(client.lock) do
-        admit(client.connection, required) || return nothing, nothing
-        client.nextid += 1
-        channel = Channel{Any}(1)
-        client.pending[client.nextid] = channel
-        client.nextid, channel
-    end
-    isnothing(id) && return Failure(:closed, "MCP connection is not open")
+    reservation = lock(() -> admission!(client, client.connection, required), client.lock)
+    request(client, method, params, timeout, reservation)
+end
+
+admission!(client::Client, ::Connection, ::Connection) = Failure(:closed, "MCP connection is not open")
+admission!(client::Client, ::Connecting, ::Connecting) = reserve!(client)
+admission!(client::Client, ::Open, ::Connection) = reserve!(client)
+function reserve!(client::Client)
+    client.nextid += 1
+    channel = Channel{Any}(1)
+    client.pending[client.nextid] = channel
+    client.nextid, channel
+end
+
+request(client::Client, method, params, timeout, failure::Failure) = failure
+function request(client::Client, method, params, timeout, reservation::Tuple{Int, Channel{Any}})
+    id, channel = reservation
     message = Dict("jsonrpc" => "2.0", "id" => id, "method" => method, "params" => params)
     send(client, message) || fail!(client, Failure(:transport, "Could not write to MCP server"))
     timer = Timer(timeout) do _
