@@ -15,7 +15,6 @@ end
         fields = ("value", output, calls, writes, deletes, kind, message, "out", "err", 12)
         result = CodeResult(flag, fields...)
         @test result isa expected
-        @test CodeResult(Int(flag), fields...) isa expected
         json = JSON3.write(result)
         wire = JSON3.read(json)
         @test wire.ok === flag

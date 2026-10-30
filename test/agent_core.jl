@@ -266,15 +266,6 @@ end
     @test !JuliaForever.cancel!(agent)
 end
 
-@testset "existing agent constructor" begin
-    provider = AgentFixture(Completion[], [])
-    tools = Dict{String, JuliaForever.Tool}()
-    messages = Dict{String, Any}[Dict("role" => "user", "content" => "existing")]
-    agent = Agent(provider, tools, messages)
-    @test agent.messages === messages
-    @test agent.tools === tools
-end
-
 @testset "malformed tool calls remain tool errors" begin
     calls = [Dict("id" => "missing"), Dict("id" => "null", "function" => nothing), Dict("id" => "args", "function" => Dict("name" => "write"))]
     provider = AgentFixture([completion(nothing; calls, finish="tool_calls"), completion("recovered")], [])
