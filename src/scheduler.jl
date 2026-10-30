@@ -267,17 +267,15 @@ end
 
 reserve!(tx::Transaction, id::Integer, record::Task, ::TaskStatus, now) = Rejected(:not_pending)
 
-terminal(::TaskStatus) = false
-terminal(::Union{Completed, Failed, Cancelled}) = true
-settled(tx, id) = settled(taskview(get(tx, Task, id)))
-settled(::Nothing) = false
-settled(::Rejected) = false
-settled(view::TaskView) = terminal(view.status)
+joinstatus(tx::Transaction, ids) = foldl((status, id) -> joinstatus(status, tx, id), ids; init=Pending())
+joinstatus(rejected::Rejected, tx::Transaction, id) = rejected
+joinstatus(status::Pending, tx::Transaction, id) = joinstatus(status, taskview(get(tx, Task, id)))
+joinstatus(status::Pending, view::TaskView) = joinstatus(status, view.status)
+joinstatus(status::Pending, ::Union{Completed, Failed, Cancelled}) = status
+joinstatus(::Pending, ::Union{TaskStatus, Nothing, Rejected}) = Rejected(:waiting)
 
-function reserve!(tx::Transaction, id::Integer, record::Task, status::Waiting, now)
-    all(child -> settled(tx, child), status.on) || return Rejected(:waiting)
-    reserve!(tx, id, record, Pending(), now)
-end
+reserve!(tx::Transaction, id::Integer, record::Task, rejected::Rejected, now) = rejected
+reserve!(tx::Transaction, id::Integer, record::Task, status::Waiting, now) = reserve!(tx, id, record, joinstatus(tx, status.on), now)
 
 function reserve!(tx::Transaction, id::Integer, record::Task, status::Sleeping, now)
     now() < status.until && return Rejected(:sleeping)

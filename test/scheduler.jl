@@ -457,6 +457,11 @@ D.decode(::JoinHandler, checkpoint::D.Checkpoint) = TestPhase(checkpoint.value)
 Base.run(::JoinHandler, phase::TestPhase, input, ::D.Invocation) = phase.value == 1 ? D.Join(TestPhase(2), input) : D.Complete("joined")
 
 @testset "durable all-settled joins" begin
+    @test D.joinstatus(D.Pending(), D.Completed("ok")) isa D.Pending
+    @test D.joinstatus(D.Pending(), D.Failed(:failed)) isa D.Pending
+    @test D.joinstatus(D.Pending(), D.Cancelled()) isa D.Pending
+    @test D.joinstatus(D.Pending(), D.Pending()) == D.Rejected(:waiting)
+    @test D.joinstatus(D.Pending(), nothing) == D.Rejected(:waiting)
     mktempdir() do dir
         path = joinpath(dir, "join.jsonl")
         scheduler = open(D.Scheduler, path)
@@ -474,6 +479,11 @@ Base.run(::JoinHandler, phase::TestPhase, input, ::D.Invocation) = phase.value =
         waiter = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [cancelled])
         D.step!(scheduler, waiter, JoinHandler())
         D.cancel!(scheduler, cancelled)
+        @test D.step!(scheduler, waiter, JoinHandler()).status isa D.Completed
+        failed = D.enqueue!(scheduler, convo, FailingHandler(), TestPhase(2), "bad")
+        waiter = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [failed])
+        D.step!(scheduler, waiter, JoinHandler())
+        @test D.step!(scheduler, failed, FailingHandler()).status isa D.Failed
         @test D.step!(scheduler, waiter, JoinHandler()).status isa D.Completed
         cycle = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), Int[])
         # The persisted input is immutable, so use the next minted task ID as a self-edge.
