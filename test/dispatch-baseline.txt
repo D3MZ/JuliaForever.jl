@@ -5,7 +5,6 @@ agent.jl	:(name === :cancelled)
 agent.jl	:(name === :events)
 agent.jl	:(name === :running)
 agent.jl	:(requestcancelled((last(exceptions)).exception, turnstate(agent)))
-agent.jl	:returned
 agent_history.jl	:complete
 codemode.jl	:(call.status == :running)
 codemode.jl	:(cancel.cancelled[])
