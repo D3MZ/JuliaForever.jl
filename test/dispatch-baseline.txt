@@ -87,8 +87,6 @@ search.jl	:directory
 search.jl	:directory
 search.jl	:isdirectory
 search.jl	:matched
-search.jl	:windows
-search.jl	:windows
 session_terminal.jl	:(Kernel.same(agent.messages, plan.original))
 session_terminal.jl	:(Kernel.same(original, message.value))
 session_terminal.jl	:(Kernel.same(projected, agent.messages))

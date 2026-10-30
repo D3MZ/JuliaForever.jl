@@ -28,13 +28,15 @@ schema(::Grep) = Dict("type" => "object", "properties" => Dict("pattern" => Dict
 description(::Find) = "Find files and directories by glob pattern, respecting ignore files. Output is limited to 1000 results or 50KB."
 description(::Grep) = "Search file contents for a regex or literal pattern, respecting ignore files. Output is limited to 100 matches or 50KB."
 
-function fileurlpath(name, windows=Sys.iswindows())
-    uri = HTTP.URI(name)
+unixfileurl(uri) = HTTP.unescapeuri(uri.path)
+function windowsfileurl(uri)
     path = HTTP.unescapeuri(uri.path)
-    windows && !isempty(uri.host) && lowercase(uri.host) != "localhost" && return "//$(uri.host)$path"
-    windows && occursin(r"^/[A-Za-z]:/", path) && return path[2:end]
+    !isempty(uri.host) && lowercase(uri.host) != "localhost" && return "//$(uri.host)$path"
+    occursin(r"^/[A-Za-z]:/", path) && return path[2:end]
     path
 end
+const fileurlreaders = Dict(false => unixfileurl, true => windowsfileurl)
+fileurlpath(name, windows::Bool=Sys.iswindows()) = fileurlreaders[windows](HTTP.URI(name))
 
 function searchpath(tool, name)
     name = isempty(name) ? "." : name
