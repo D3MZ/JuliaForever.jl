@@ -2,22 +2,19 @@ using Test, JuliaForever
 import JuliaForever.History as NameHistory
 import JuliaForever.SessionCatalog as NameCatalog
 
-@testset "session names survive branches without creating an empty file" begin
+@testset "empty session names and branches" begin
     mktempdir() do root
-        history = NameCatalog.new(joinpath(root, "sessions"), root)
+        history = NameCatalog.new(root, pwd())
         agent = Agent(nothing, []; history)
-        @test name!(agent, "  First\nName  ") === nothing
-        @test NameCatalog.sessionname(history) == "First Name"
-        @test !isfile(NameCatalog.path(history))
+        @test name!(agent, "First") === nothing
         @test name!(agent, "Second") === nothing
         @test NameHistory.branch!(history, 1) == 1
-        @test NameCatalog.sessionname(history) == "Second"
-        branched = Agent(nothing, []; history)
-        @test name!(branched, "Third") === nothing
-        @test NameCatalog.sessionname(history) == "Third"
+        agent = Agent(nothing, []; history)
+        @test name!(agent, "Third") === nothing
         @test !isfile(NameCatalog.path(history))
-        @test name!(branched, " ") === nothing
+        @test name!(agent, " ") === nothing
         @test NameCatalog.sessionname(history) === nothing
+        @test !isfile(NameCatalog.path(history))
         close(history)
     end
 end

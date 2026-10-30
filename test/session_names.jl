@@ -28,7 +28,7 @@ end
         @test occursin("Usage: /name <name>", unnamed.diagnostics)
         @test !isdir(directory) || isempty(readdir(directory))
 
-        before = run(["--name", " Before First "]; input="/name\n/exit\n")
+        before = run(["--name", " Before\nFirst "]; input="/name\n/exit\n")
         @test before.status == 0
         @test occursin("Session name: Before First", before.diagnostics)
         @test !isdir(directory) || isempty(readdir(directory))

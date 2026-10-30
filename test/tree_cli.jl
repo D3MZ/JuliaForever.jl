@@ -59,19 +59,23 @@ end
         texts() = [m.content for m in last(requests()) if m.role in ("user", "assistant")]
 
         @test run(["first"]).output == "reply:first\n"
-        @test run(["--continue", "second"]).output == "reply:second\n"
-        branched = run(["--continue"]; input="/tree\n3\nalternative\n/exit\n")
+        @test only(JuliaForever.SessionCatalog.list(sessions, workspace)).title == "first"
+        @test run(["--continue"]; input="/name First\nsecond\n/exit\n").output == "reply:second\n"
+        branched = run(["--continue"]; input="/tree\n3\nalternative\n/name Second\n/exit\n")
         @test branched.status == 0
         @test branched.output == "reply:alternative\n"
         @test occursin("first", branched.diagnostics)
         @test occursin("second", branched.diagnostics)
         @test texts() == ["first", "reply:first", "alternative"]
+        @test only(JuliaForever.SessionCatalog.list(sessions, workspace)).title == "Second"
         @test run(["--continue", "after"]).output == "reply:after\n"
         @test texts() == ["first", "reply:first", "alternative", "reply:alternative", "after"]
 
-        original = run(["--continue"]; input="/tree\n4\nlater\n/exit\n")
+        original = run(["--continue"]; input="/tree\n4\n/name\nlater\n/exit\n")
         @test original.status == 0
         @test original.output == "reply:later\n"
+        @test occursin("Session name: Second", original.diagnostics)
+        @test only(JuliaForever.SessionCatalog.list(sessions, workspace)).title == "Second"
         @test texts() == ["first", "reply:first", "second", "reply:second", "later"]
         @test run(["--continue", "again"]).output == "reply:again\n"
         @test texts() == ["first", "reply:first", "second", "reply:second", "later", "reply:later", "again"]
