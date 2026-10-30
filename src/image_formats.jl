@@ -1,6 +1,8 @@
 const inlinebytes = 3 * (div(9 * 1024 * 1024, 8) - 1)
 const inlinemessage = "Image exceeds the inline image size limit"
 const imagewidth = 2000
+const animationpixels = 64_000_000
+const animationmessage = "Image animation exceeds the supported limit"
 readlimit(::Union{MIME"image/gif", MIME"image/webp"}) = inlinebytes
 limitmessage(::Union{MIME"image/gif", MIME"image/webp"}) = inlinemessage
 
@@ -51,12 +53,13 @@ mutable struct GIFScan
     bytes::Vector{UInt8}
     position::Int
     frames::Vector{GIFFrame}
+    pixels::Int
     status::GIFStatus
     colors::Int
 end
 
 function gifproblem(bytes, position, colors)
-    scan = GIFScan(bytes, position, GIFFrame[], GIFReading(), colors)
+    scan = GIFScan(bytes, position, GIFFrame[], 0, GIFReading(), colors)
     for record in scan
         gifrecord!(scan, record)
     end
@@ -98,6 +101,8 @@ function gifframe!(scan)
 end
 gifframe!(scan, width, height, problem::String) = (scan.status = GIFDone(problem))
 function gifframe!(scan, width, height, ::Nothing)
+    scan.pixels += width * height
+    scan.pixels <= animationpixels || return (scan.status = GIFDone(animationmessage))
     flags = scan.bytes[scan.position + 8]
     colors = iszero(flags & 0x80) ? 0 : 3 * (1 << (Int(flags & 0x07) + 1))
     scan.position += 9 + colors
@@ -224,6 +229,10 @@ function webpanimation(bytes)
         decoder = ccall((:WebPAnimDecoderNewInternal, libwebpdemux), Ptr{Cvoid}, (Ref{WebPData}, Ptr{Cvoid}, Cint), data, C_NULL, 0x0107)
         decoder == C_NULL && return "image/webp data is not supported"
         try
+            info = Ref(ntuple(_ -> UInt32(0), 9))
+            ccall((:WebPAnimDecoderGetInfo, libwebpdemux), Cint, (Ptr{Cvoid}, Ref{NTuple{9, UInt32}}), decoder, info) == 1 || return "image/webp data is not supported"
+            width, height, _, _, frames = info[][1:5]
+            UInt64(width) * height * frames <= animationpixels || return animationmessage
             output, timestamp = Ref{Ptr{UInt8}}(C_NULL), Ref{Cint}(0)
             while ccall((:WebPAnimDecoderHasMoreFrames, libwebpdemux), Cint, (Ptr{Cvoid},), decoder) != 0
                 ccall((:WebPAnimDecoderGetNext, libwebpdemux), Cint, (Ptr{Cvoid}, Ref{Ptr{UInt8}}, Ref{Cint}), decoder, output, timestamp) == 1 || return "image/webp data is not supported"
