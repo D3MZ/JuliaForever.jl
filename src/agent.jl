@@ -359,8 +359,11 @@ function prepare(agent::Agent, call, callback)
     catch exception
         return ToolFailure(sprint(showerror, exception))
     end
-    prepare(tool, input, before)
+    prepare(tool, input, before, turnstate(agent))
 end
+
+prepare(tool, input, before, ::Cancelled) = ToolFailure("Operation cancelled")
+prepare(tool, input, before, ::Union{Idle, Running}) = prepare(tool, input, before)
 
 interceptcall(callback, call, input) = nothing
 prepare(tool::Tool, input, ::Nothing) = (; tool, input)

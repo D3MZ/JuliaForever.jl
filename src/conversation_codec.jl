@@ -135,6 +135,7 @@ pack(x::C.ToolReply) = packreply(x.result)
 packreply(result::ToolResult) = pack(result, result.image)
 pack(result::ToolResult, ::Nothing) = node("tool_reply", result.text, result.iserror)
 pack(result::ToolResult, image::C.Image) = node("tool_reply", result.text, result.iserror, pack(image))
+packreply(result::Terminate) = node("tool_terminate_reply", packreply(result.result))
 packreply(result::ToolDiscovery) = node("tool_discovery_reply", packreply(result.result), loaded(result))
 packreply(result::ToolLoaded) = node("tool_search_reply", result.text, loaded(result))
 pack(x::C.Image) = node("image", x.mime, x.data)
@@ -182,7 +183,7 @@ unpacked(items::Vector{T}, item::T) where T = push!(items, item)
 
 const nodetypes = Dict(
     "user" => C.User, "user_images" => C.ImageUser, "summary" => C.Summary, "skill_context" => C.SkillContext, "raw" => C.RawMessage, "bash_message" => C.BashMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant, "response_info" => C.ResponseInfo, "usage" => Usage, "cost_breakdown" => CostBreakdown,
-    "tool_message" => C.ToolMessage, "model_request" => C.ModelRequest, "tool_request" => C.ToolRequest,
+    "tool_terminate_reply" => Terminate, "tool_message" => C.ToolMessage, "model_request" => C.ModelRequest, "tool_request" => C.ToolRequest,
     "skip_request" => C.SkipRequest, "model_reply" => C.ModelReply, "tool_reply" => C.ToolReply,
     "tool_search_reply" => ToolLoaded, "tool_discovery_reply" => ToolDiscovery,
     "model_failure" => C.ModelFailure, "abandoned" => C.Abandoned, "input" => C.Input, "input_images" => C.ImageInput, "steer" => C.Steer,
@@ -216,6 +217,7 @@ unpack(::Type{C.SkipRequest}, f::Vector) = C.SkipRequest(unpack(f[1]))
 unpack(::Type{C.ModelReply}, f::Vector) = C.ModelReply(unpack(f[1]))
 unpack(::Type{C.ToolReply}, f::Vector) = C.ToolReply(f[1], f[2], unpackimage(get(f, 3, nothing)))
 unpack(::Type{C.Image}, f::Vector) = C.Image(f[1], f[2])
+unpack(::Type{Terminate}, f::Vector) = C.ToolReply(Terminate(unpack(f[1]).result))
 unpack(::Type{ToolDiscovery}, f::Vector) = C.ToolReply(ToolDiscovery(unpack(f[1]).result, String[f[2]...]))
 unpack(::Type{ToolLoaded}, f::Vector) = C.ToolReply(ToolLoaded(f[1], String[f[2]...]))
 unpack(::Type{C.ModelFailure}, f::Vector) = C.ModelFailure(f[1])

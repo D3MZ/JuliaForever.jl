@@ -22,6 +22,18 @@ Base.hash(image::Image, h::UInt) = hash((image.mime, image.data), hash(Image, h)
 
 abstract type ToolResult end
 
+struct Terminate{T<:ToolResult} <: ToolResult
+    result::T
+    text::String
+    image::Union{Nothing, Image}
+end
+Terminate(result::ToolResult) = Terminate(result, result.text, result.image)
+iserror(result::Terminate) = iserror(result.result)
+content(result::Terminate) = content(result.result)
+status(result::Terminate) = status(result.result)
+terminates(::ToolResult) = false
+terminates(::Terminate) = true
+
 struct ToolSuccess <: ToolResult
     text::String
     image::Union{Nothing, Image}

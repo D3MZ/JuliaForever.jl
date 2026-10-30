@@ -268,3 +268,4 @@ end
 
 include("extension_interception.jl")
 include("before_tool.jl")
+include("tool_termination.jl")

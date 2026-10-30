@@ -1,7 +1,7 @@
 module Conversation
 
 import ..Kernel as K
-import ..JuliaForever: Image, ToolResult, tooltype, content, loaded, CompletionStatus, Finished, Unfinished, completionstatus, finished, Usage, JSON3
+import ..JuliaForever: Image, ToolResult, Terminate, tooltype, content, loaded, terminates, CompletionStatus, Finished, Unfinished, completionstatus, finished, Usage, JSON3
 
 abstract type Message end
 
@@ -164,13 +164,13 @@ end
 Base.isequal(a::ToolCall, b::ToolCall) = K.same((a.id, a.name, a.arguments, a.metadata), (b.id, b.name, b.arguments, b.metadata))
 Base.isequal(a::Assistant, b::Assistant) = K.same((a.content, a.calls, a.finish, a.done, a.metadata, a.info), (b.content, b.calls, b.finish, b.done, b.metadata, b.info))
 Base.isequal(a::ModelReply, b::ModelReply) = isequal(a.message, b.message)
-Base.isequal(a::ToolReply, b::ToolReply) = isequal((a.text, a.iserror, a.image, loaded(a.result)), (b.text, b.iserror, b.image, loaded(b.result)))
+Base.isequal(a::ToolReply, b::ToolReply) = isequal((a.text, a.iserror, a.image, loaded(a.result), terminates(a.result)), (b.text, b.iserror, b.image, loaded(b.result), terminates(b.result)))
 Base.isequal(a::ModelFailure, b::ModelFailure) = isequal(a.reason, b.reason)
 Base.isequal(a::Abandoned, b::Abandoned) = isequal(a.reason, b.reason)
 Base.hash(value::ToolCall, h::UInt) = hash((value.id, value.name, value.arguments, value.metadata), hash(ToolCall, h))
 Base.hash(value::Assistant, h::UInt) = hash((value.content, value.calls, value.finish, value.done, value.metadata, value.info), hash(Assistant, h))
 Base.hash(value::ModelReply, h::UInt) = hash(value.message, hash(ModelReply, h))
-Base.hash(value::ToolReply, h::UInt) = hash((value.text, value.iserror, value.image, loaded(value.result)), hash(ToolReply, h))
+Base.hash(value::ToolReply, h::UInt) = hash((value.text, value.iserror, value.image, loaded(value.result), terminates(value.result)), hash(ToolReply, h))
 Base.hash(value::ModelFailure, h::UInt) = hash(value.reason, hash(ModelFailure, h))
 Base.hash(value::Abandoned, h::UInt) = hash(value.reason, hash(Abandoned, h))
 
@@ -736,11 +736,21 @@ function observe(state::State, event::K.Observe{ToolReply}, result::K.Applied)
     if !isempty(kernel.pending)
         return K.Applied(update(state; kernel, messages, flushed), ())
     end
-    observed_tools(state, kernel, messages, getfield(state, :mode))
+    decision = foldl((decision, id) -> batchdecision(decision, observations[id].result), order; init=StopBatch())
+    observed_tools(state, kernel, messages, getfield(state, :mode), decision)
 end
 
-observed_tools(state, kernel, messages, ::Manual) = K.Applied(update(state; kernel, messages, order=String[], calls=ToolCall[], flushed=0, phase=ReadyModel), ())
-function observed_tools(state, kernel, messages, ::Automatic)
+abstract type BatchDecision end
+struct StopBatch <: BatchDecision end
+struct ContinueBatch <: BatchDecision end
+batchdecision(::ContinueBatch, result) = ContinueBatch()
+batchdecision(::StopBatch, result) = batchdecision(result)
+batchdecision(result) = ContinueBatch()
+batchdecision(result::Terminate) = StopBatch()
+
+observed_tools(state, kernel, messages, mode, ::StopBatch) = K.Applied(update(state; kernel, messages, order=String[], calls=ToolCall[], flushed=0, phase=ReadyDecision), ())
+observed_tools(state, kernel, messages, ::Manual, ::ContinueBatch) = K.Applied(update(state; kernel, messages, order=String[], calls=ToolCall[], flushed=0, phase=ReadyModel), ())
+function observed_tools(state, kernel, messages, ::Automatic, ::ContinueBatch)
     kernel, effect, steering = model(state, kernel, messages, getfield(state, :steering))
     updated = update(state; kernel, messages, steering, order=String[], calls=ToolCall[], flushed=0, phase=WaitingModel)
     K.Applied(updated, (effect,))
