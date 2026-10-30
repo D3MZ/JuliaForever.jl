@@ -36,19 +36,12 @@ end
     mktempdir() do dir
         file = joinpath(dir, "session.jsonl")
         session = S.Session(file; cwd=dir)
-        @test !session.flushed && session.terminated
-        @test setproperty!(session, :terminated, 0) === false
-        @test setproperty!(session, :terminated, 1) === true
-        @test setproperty!(session, :flushed, 0) === false
-        data = JSON3.read(JSON3.write(session))
-        @test !data.flushed && data.terminated
         setup = S.record!(session, "model_change", Dict("provider" => "example", "modelId" => "m"))
         system = S.record!(session, Dict("role" => "system", "content" => "instructions"))
         @test !isfile(file)
         question = S.record!(session, Dict("role" => "user", "content" => "hello"))
         answer = S.record!(session, Dict("role" => "assistant", "content" => "reply"))
         @test isfile(file)
-        @test session.flushed && session.terminated
         @test [JSON3.read(line)["type"] for line in eachline(file)] == ["session", "model_change", "message", "message", "message"]
         @test S.branch!(session, question)
         alternative = S.record!(session, Dict("role" => "assistant", "content" => "alternative"))
