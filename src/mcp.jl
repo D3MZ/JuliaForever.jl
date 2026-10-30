@@ -732,15 +732,38 @@ end
 retirematching!(client, id, pending, ::Nothing) = nothing
 retirematching!(client, id, pending, current::Pending) = current === pending ? retire!(client, id) : nothing
 
+const stdiolimit = 16 * 1024 * 1024
+
+function stdioappend!(bytes, chunk, start, stop)
+    length(bytes) + stop - start + 1 > stdiolimit && (empty!(bytes); sizehint!(bytes, 0; shrink=true); return nothing)
+    append!(bytes, @view chunk[start:stop])
+end
+stdioreceive!(client, ::Nothing) = nothing
+function stdioreceive!(client, bytes::Vector{UInt8})
+    received(client, validmessage(jsonmessage(String(bytes))))
+    nothing
+end
+function stdiochunk!(client, bytes, chunk)
+    start = 1
+    while start <= length(chunk)
+        newline = sseend(findnext(==(0x0a), chunk, start), chunk)
+        line = stdioappend!(bytes, chunk, start, newline - 1)
+        newline > length(chunk) && break
+        stdioreceive!(client, line)
+        start = newline + 1
+    end
+end
+
 function readmessages(client::Client)
     try
-        for line in eachline(client.process.out; keep=true)
-            if !endswith(line, '\n')
-                fail!(client, Failure(:protocol, "Incomplete JSON-RPC message"))
-                return
-            end
-            received(client, validmessage(jsonmessage(line)))
+        bytes = UInt8[]
+        chunk = Vector{UInt8}(undef, 64 * 1024)
+        stream = client.process.out
+        while !eof(stream)
+            count = readbytes!(stream, chunk, min(bytesavailable(stream), length(chunk)))
+            stdiochunk!(client, bytes, @view chunk[1:count])
         end
+        isempty(bytes) || (fail!(client, Failure(:protocol, "Incomplete JSON-RPC message")); return)
         fail!(client, Failure(:closed, "MCP server closed its output"))
     catch exception
         fail!(client, Failure(:transport, sprint(showerror, exception)))
