@@ -14,4 +14,15 @@ using Test, JuliaForever, JSON3
         result = M.resolve("fixture/Overridden", actual, Set(["fixture"]))
         @test result isa M.Resolved && result.model.id == "alpha"
     end
+    mktempdir() do dir
+        path = joinpath(dir, "models.json")
+        write(path, "\ufeff{\n// fixture comment\n\"providers\": {\"fixture\": {\"baseUrl\": \"http://127.0.0.1:1/v1\", \"api\": \"openai-completions\", \"apiKey\": \"//literal,}\", \"models\": [{\"id\": \"alpha\", \"name\": \"quote \\\" // literal\",},],},},}\n")
+        source = ENV["PI_SOURCE"]
+        expected = JSON3.read(read(`node --conditions=source --experimental-strip-types $(joinpath(@__DIR__, "model_overlays_pi.mjs")) $source $path`), Vector{M.Model})
+        actual = filter(m -> m.provider == "fixture", M.catalog(path))
+        @test actual == filter(m -> m.provider == "fixture", expected)
+        write(path, "{ /* unsupported */ \"providers\": {} }")
+        @test M.load(path) isa M.InvalidConfig
+    end
+
 end

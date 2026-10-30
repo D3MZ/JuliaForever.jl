@@ -59,7 +59,8 @@ end
             mkpath(agent)
             base = "http://$(HTTP.server_addr(server))"
             config = (; providers=(; fixture=(; baseUrl=base * "/provider", api="openai-completions", apiKey="\$JF_CUSTOM_KEY", authHeader=true, headers=Dict("x-provider" => "\${JF_CUSTOM_HEADER}", "x-model" => "provider-header"), models=[(; id="alpha", baseUrl=base * "/model", headers=Dict("x-model" => "fixture-model-header")), (; id="beta", baseUrl=base * "/beta", headers=Dict("x-model" => "beta-header")), (; id="claude-fixture", api="anthropic-messages", baseUrl=base * "/anthropic"), (; id="gemini-fixture", api="google-generative-ai", baseUrl=base * "/google")], modelOverrides=(; alpha=(; name="Custom Alpha", maxTokens=1234, headers=Dict("x-model" => "override-header")))), openai=(; baseUrl=base * "/builtin", apiKey="\$JF_CUSTOM_KEY")))
-            write(joinpath(agent, "models.json"), JSON3.write(config))
+            json = JSON3.write(config)
+            write(joinpath(agent, "models.json"), "\ufeff// configured provider\n" * json[1:end-1] * ",}")
 
             listed = runcli(workspace, ["--list-models", "fixture alpha"])
             @test listed.status == 0 && occursin("fixture", listed.output) && occursin("alpha", listed.output)
@@ -133,7 +134,7 @@ end
             count = length(requests)
 
             rm(joinpath(agent, "auth.json"))
-            missing = JSON3.read(read(joinpath(agent, "models.json")), Dict{String, Any})
+            missing = JSON3.read(JSON3.write(config), Dict{String, Any})
             missing["providers"]["fixture"]["apiKey"] = "\$JF_MISSING_KEY"
             write(joinpath(agent, "models.json"), JSON3.write(missing))
             rejected = runcli(workspace, ["--provider", "fixture", "--model", "alpha", "--no-session", "hello"])

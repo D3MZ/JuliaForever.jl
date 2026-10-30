@@ -63,12 +63,19 @@ const punctuation = Dict(char => Char(index) for (index, char) in enumerate(" _-
 
 catalog() = JSON3.read(read(path), Vector{Model})
 
+function configjson(bytes)
+    text = String(bytes)
+    text = startswith(text, '\ufeff') ? text[nextind(text, firstindex(text)):end] : text
+    text = replace(text, r"\"(?:\\.|[^\"\\])*\"|//[^\n]*" => part -> startswith(part, "\"") ? part : "")
+    replace(text, r"\"(?:\\.|[^\"\\])*\"|,(?=\s*[}\]])" => part -> startswith(part, "\"") ? part : "")
+end
+
 function load(configpath::AbstractString)
     models = catalog()
     isfile(configpath) || return Registry(models, Dict{String, Any}())
     bytes = read(configpath)
     try
-        config = JSON3.read(bytes, Dict{String, Any})
+        config = JSON3.read(configjson(bytes), Dict{String, Any})
         providers = Dict{String, Any}(config["providers"])
         foldl(applyprovider!, pairs(providers); init=Registry(models, providers))
     catch
