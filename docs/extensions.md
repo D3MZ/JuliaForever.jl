@@ -46,6 +46,8 @@ The CLI takes one registry snapshot for the process and creates a fresh listener
 
 Pass `E.listen(snapshot)` as `on_agent_event` to receive the agent's existing notifications, including `agent_start`, `turn_start`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_end`, `turn_end`, and `agent_end` when the selected driver emits them. A listener runs handlers in plugin registration order, then hook order, synchronously and serially. Each handler receives a separate deep copy of the event; return values are ignored. Thrown exceptions, including `InterruptException`, are captured in `E.failures(listener)` with plugin ID, event and exception, and later hooks run. Failures accumulate for that listener; create another listener for a fresh list. Hooks can still perform arbitrary side effects through their own captured state and can delay the agent.
 
+For parallel local tool batches, before-tool hooks run in call order during preflight, before executable calls start. Result hooks and completion notifications follow completion order; tool messages remain in call order.
+
 `E.listen(snapshot; on_event=callback)` invokes the existing host callback after the hooks, with the original event. Callback exceptions propagate according to `Agent`'s existing behavior; they are not hook failures. Recorded agents emit notifications during live execution, not when opening an existing history. The executor-backed path installs its own tools on its worker; creating an agent from a snapshot alone does not install plugin code or resources there.
 
 ## Reference and limits
