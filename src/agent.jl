@@ -473,7 +473,10 @@ conversation_reply(message, calls, result::Completion) = Conversation.ModelReply
 conversation_reply(message, calls, result) = Conversation.ModelReply(Conversation.Assistant(get(message, "content", nothing), calls, result.finish, result.done; metadata=message))
 
 finish(message, result) = message["content"]
-finish(message, result::Completion) = result.finish == "length" ? Truncated(result) : message["content"]
+const finishresults = Dict("length" => Truncated)
+finish(message, result::Completion) = finish(message, result, get(finishresults, result.finish, nothing))
+finish(message, result::Completion, ::Nothing) = message["content"]
+finish(message, result::Completion, ::Type{Truncated}) = Truncated(result)
 
 function modelresponse(agent, effect, parameters, on_event, on_agent_event)
     returned = false
