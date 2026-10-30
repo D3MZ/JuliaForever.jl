@@ -37,7 +37,7 @@ using Test, JuliaForever, JSON3
     arguments = [("x", "{\"x\":1e-6}", 1e-6), ("x", "{\"x\":100000000000000000000}", 1e20), ("fives", "{\"x\":99999999999999999}", 99999999999999999), ("x", "{\"x\":-0.0}", -0.0), ("x", "{\"x\":1e21}", 1e21), ("x", "{\"x\":1e-7}", 1e-7), ("x", "{\"x\":  \n  1}", 1)]
     native_arguments = [c.Assistant(nothing, [c.ToolCall("n", name, raw)], "tool_calls", true) for (name, raw, _) in arguments]
     pi_arguments = [[(; role="assistant", content=[(; type="toolCall", id="n", name, arguments=Dict("x" => value))], timestamp=0, stopReason="toolUse", usage=no_usage)] for (name, _, value) in arguments]
-    aliases = [(Dict("reasoning" => "fall😀"), "fall😀"), (Dict("reasoning_text" => "texto"), "texto"), (Dict("reasoning_content" => "", "reasoning" => "é😀", "reasoning_text" => "ignored"), "é😀"), (Dict("reasoning_content" => Dict("unexpected" => true), "reasoning" => "優"), "優"), (Dict("reasoning_content" => "first", "reasoning" => "later"), "first")]
+    aliases = [(Dict("reasoning" => "fall😀"), "fall😀"), (Dict("reasoning_text" => "texto"), "texto"), (Dict("reasoning_content" => "", "reasoning" => "é😀", "reasoning_text" => "ignored"), "é😀"), (Dict("reasoning_content" => Dict("unexpected" => true), "reasoning" => "優"), "優"), (Dict("reasoning_content" => "first", "reasoning" => "much longer alternative"), "first")]
     native_aliases = [c.Assistant("a", c.ToolCall[], "stop", true; metadata) for (metadata, _) in aliases]
     pi_aliases = [[(; role="assistant", content=[(; type="text", text="a"), (; type="thinking", thinking)], timestamp=0, stopReason="stop", usage=no_usage)] for (_, thinking) in aliases]
     cases = [pi_plain, pi_measured, pi_stale, pi_fallback, with_tools, pi_system_blocks, pi_arguments..., pi_aliases...]
