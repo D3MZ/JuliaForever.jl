@@ -34,7 +34,7 @@ call(id, name, args) = Dict("id" => id, "type" => "function", "function" => Dict
         agent = Agent(provider, [Write(dir)])
         events = []
         raw = []
-        result = respond!(agent, "start"; on_event=event -> push!(raw, event), on_agent_event=event -> begin
+        result = respond!(agent, "start"; tool_execution=:sequential, on_event=event -> push!(raw, event), on_agent_event=event -> begin
             push!(events, event)
             if event.type == :tool_execution_start && event.tool_call_id == "one"
                 JuliaForever.steer!(agent, "steer one")
@@ -76,7 +76,7 @@ end
         agent = Agent(provider, [Write(dir)])
         events = []
         busy = []
-        result = respond!(agent, "start"; on_event=identity, on_agent_event=event -> begin
+        result = respond!(agent, "start"; tool_execution=:sequential, on_event=identity, on_agent_event=event -> begin
             push!(events, event)
             event.type == :agent_start && push!(busy, respond!(agent, "overlap"; on_event=identity))
             event.type == :agent_end && push!(busy, respond!(agent, "overlap"; on_event=identity))

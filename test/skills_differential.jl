@@ -63,7 +63,7 @@ end
         output, diagnostics, capture = joinpath.((root,), ("output", "diagnostics", "capture"))
         package = dirname(@__DIR__)
         cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$package $(joinpath(@__DIR__, "skills_process.jl")) --no-session inspect`; dir=cwd)
-        cmd = addenv(cmd, "HOME" => home, "PI_CODING_AGENT_DIR" => agent, "JF_SESSION_DIR" => joinpath(root, "sessions"), "JF_INSTRUCTIONS_DIR" => nothing, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic-secret", "JF_CAPTURE" => capture, "JF_SKILL" => chosen)
+        cmd = addenv(cmd, "HOME" => home, "JULIA_DEPOT_PATH" => join(DEPOT_PATH, Sys.iswindows() ? ';' : ':'), "PI_CODING_AGENT_DIR" => agent, "JF_SESSION_DIR" => joinpath(root, "sessions"), "JF_INSTRUCTIONS_DIR" => nothing, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic-secret", "JF_CAPTURE" => capture, "JF_SKILL" => chosen)
         process = run(pipeline(ignorestatus(cmd); stdout=output, stderr=diagnostics))
         @test process.exitcode == 0
         requests = JSON3.read.(readlines(capture))

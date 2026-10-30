@@ -177,4 +177,4 @@ callhook(hook, hooks, event) = nextcall(hook.handler(event), hooks, event)
 const callhandlers = Dict(:tool_call => callhook)
 nextcall(block::Extensions.Block, hooks, event) = block
 nextcall(value, hooks, event) = callhooks(hooks, event)
-invokeprepared(agent, call, tool, input, update, callback, block::Extensions.Block) = ToolFailure(isempty(block.reason) ? "Tool execution was blocked" : block.reason)
+prepare(tool::Tool, input, block::Extensions.Block) = ToolFailure(isempty(block.reason) ? "Tool execution was blocked" : block.reason)
