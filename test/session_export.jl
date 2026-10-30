@@ -60,13 +60,24 @@ end
     @test occursin("read &lt;file&gt;", html)
     @test occursin("&lt;script&gt;x&lt;/script&gt;", html)
     @test occursin("data:image/png;base64,aGVsbG8=", html)
+    markdown = IOBuffer()
+    messages = [Dict("role" => "assistant", "content" => "**bold** `code` [unsafe](javascript:alert(1)) ![remote](https://example.test/a.png)")]
+    JuliaForever.Logs.conversationhtml(markdown, messages)
+    html = String(take!(markdown))
+    @test occursin("<strong>bold</strong>", html) && occursin("<code>code</code>", html)
+    @test !occursin("href=\"javascript:", html) && !occursin("src=\"https://example.test", html)
+    notes = IOBuffer()
+    JuliaForever.Logs.conversationhtml(notes, [Dict("role" => "assistant", "content" => "See [^a].\n\n[^a]: Footnote")])
+    html = String(take!(notes))
+    @test occursin("<sup>[a]</sup>", html) && occursin("Footnote", html) && !occursin("nothing", html)
 end
 
 @testset "conversation export browser controls" begin
     browser = get(ENV, "JF_EXPORT_UI_BROWSER", "")
     if !isempty(browser)
         mktempdir() do root
-            messages = [Dict("role" => "user", "content" => "violet harbor"), Dict("role" => "assistant", "content" => "violet answer", "tool_calls" => [Dict("function" => Dict("name" => "read", "arguments" => "notes"))]), Dict("role" => "tool", "content" => "amber result"), Dict("role" => "user", "content" => "<script>globalThis.injected = true</script>")]
+            markdown = "**violet** answer using `notes.txt`. [safe](https://example.test) [unsafe](javascript:alert(1)) ![remote image](https://example.test/a.png)\n\n1. first\n2. second\n\n```julia\nx < 2\n```\n\n| name | value |\n| --- | --- |\n| red | 3 |\n\n> quoted text"
+            messages = [Dict("role" => "user", "content" => "violet harbor"), Dict("role" => "assistant", "content" => markdown, "tool_calls" => [Dict("function" => Dict("name" => "read", "arguments" => "notes"))]), Dict("role" => "tool", "content" => "amber result"), Dict("role" => "user", "content" => "<script>globalThis.injected = true</script>")]
             page = joinpath(root, "conversation.html")
             open(page, "w") do io
                 JuliaForever.Logs.conversationhtml(io, messages)
