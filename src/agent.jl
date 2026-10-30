@@ -1,4 +1,4 @@
-export steer!, followup!, cancel!, abandon!
+export steer!, followup!, dequeue!, cancel!, abandon!
 
 abstract type TurnState end
 struct Idle <: TurnState end
@@ -86,6 +86,15 @@ end
 function followup!(agent::Agent, prompt)
     result, _ = transition!(revision -> Conversation.Followup(revision, prompt), agent)
     outcome(result, nothing)
+end
+
+"Clear and return queued steering and follow-up messages."
+function dequeue!(agent::Agent)
+    lock(agent.lock) do
+        queued = (; steering=agent.state.steering, followups=agent.state.followups)
+        result, _ = transition!(revision -> Conversation.Dequeue(revision), agent)
+        outcome(result, queued)
+    end
 end
 
 "Cancel native provider requests and in-flight Unix shell calls; other work stops at the next boundary."

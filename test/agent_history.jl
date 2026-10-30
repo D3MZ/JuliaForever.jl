@@ -161,7 +161,7 @@ end
         C.ToolMessage("id", "result", false), C.ModelRequest(C.Message[C.User("hi")]),
         C.ToolRequest(call), C.SkipRequest(call), C.ModelReply(answer), C.ToolReply("ok", false),
         C.ModelFailure("failed"), C.Abandoned("reason"), C.Input(0, "input"), C.Steer(1, "steer"),
-        C.Followup(2, "followup"), C.Advance(3), C.Cancel(4), C.History(5, C.Message[C.User("hi")]),
+        C.Followup(2, "followup"), C.Dequeue(3), C.Advance(3), C.Cancel(4), C.History(5, C.Message[C.User("hi")]),
         C.Interrupt(6, "interrupted"), C.Abandon(7, "abandon"), K.Call("read", Dict("x" => 1)),
         K.Return(1), K.Fail("bad"), K.Plan(0, "id", K.Call("read", 1)),
         K.Observe(1, "id", K.Return(2)), K.Finish(2),

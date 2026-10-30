@@ -57,6 +57,7 @@ end
 end
 
 include("agent_core.jl")
+include("queue.jl")
 include("tool_faults.jl")
 include("terminal.jl")
 include("editor.jl")

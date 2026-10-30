@@ -224,6 +224,10 @@ struct Followup <: K.Event
     text::String
 end
 
+struct Dequeue <: K.Event
+    revision::Int
+end
+
 struct Advance <: K.Event
     revision::Int
 end
@@ -298,6 +302,11 @@ function K.step(state::State, event::Followup)
     followups = copy(getfield(state, :followups))
     push!(followups, event.text)
     K.Applied(update(state; followups), ())
+end
+
+function K.step(state::State, event::Dequeue)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    K.Applied(update(state; steering=String[], followups=String[]), ())
 end
 
 function K.step(state::State, event::Cancel)
