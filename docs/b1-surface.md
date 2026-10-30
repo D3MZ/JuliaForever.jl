@@ -84,7 +84,7 @@ The following tests are present; their existence is not a passing run at the obs
 | Shell, listing, cancellation and search fixtures | `test/system_differential.jl`, `test/system_cancel_differential.jl`, `test/search_differential.jl` | Shell streaming/hooks, escaped descendants, Windows behavior, search and platform edge cases |
 | Session append, branch, reopen and selected CLI selection | `test/session_differential.jl`, `test/session_cli.jl` | Migrated/corrupt files, concurrency, full entry semantics and recovery |
 | Durable transcript forks with nested and inherited cutoffs | `test/durable_forks_differential.jl` | Document policies, ownership, tasks, submissions, views, pagination and agent integration |
-| Instruction discovery and context formatting | `test/instructions_differential.jl` | Full resource configuration, read failures, invalid UTF-8, URL and Windows path behavior |
+| Instruction discovery and context formatting | `test/instructions.jl` | Full resource configuration, read failures, invalid UTF-8, URL and Windows path behavior |
 
 Native tests exist for file mutation coordination (`test/file_mutations.jl`), recorded agent histories, SQLite, typed transitions, executor, logs, durable store, scheduler, Julia code mode, terminal and other behaviors. These are independent contracts, not Pi parity proofs. Module documents report their own earlier test environments and limitations; those reports do not by themselves verify the current observed revision or other platforms.
 
