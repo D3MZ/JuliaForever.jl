@@ -135,6 +135,11 @@ pack(x::C.Input) = node("input", x.revision, x.text)
 pack(x::C.ImageInput) = node("input_images", x.revision, x.text, packall(x.images))
 pack(x::C.Steer) = node("steer", x.revision, x.text)
 pack(x::C.Followup) = node("followup", x.revision, x.text)
+queuecode(::C.OneAtATime) = "one-at-a-time"
+queuecode(::C.AllAtOnce) = "all"
+const queuetypes = Dict("one-at-a-time" => C.OneAtATime, "all" => C.AllAtOnce)
+pack(x::C.SteeringMode) = node("steering_mode", x.revision, queuecode(x.mode))
+pack(x::C.FollowupMode) = node("followup_mode", x.revision, queuecode(x.mode))
 pack(x::C.Dequeue) = node("dequeue", x.revision)
 pack(x::C.SessionName) = node("session_name", x.revision, x.name)
 pack(x::C.ContinueQueued) = node("continue_queued", x.revision)
@@ -164,7 +169,7 @@ const nodetypes = Dict(
     "skip_request" => C.SkipRequest, "model_reply" => C.ModelReply, "tool_reply" => C.ToolReply,
     "tool_search_reply" => ToolLoaded, "tool_discovery_reply" => ToolDiscovery,
     "model_failure" => C.ModelFailure, "abandoned" => C.Abandoned, "input" => C.Input, "input_images" => C.ImageInput, "steer" => C.Steer,
-    "followup" => C.Followup, "dequeue" => C.Dequeue, "session_name" => C.SessionName, "continue_queued" => C.ContinueQueued, "continue" => C.Continue, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History,
+    "followup" => C.Followup, "steering_mode" => C.SteeringMode, "followup_mode" => C.FollowupMode, "dequeue" => C.Dequeue, "session_name" => C.SessionName, "continue_queued" => C.ContinueQueued, "continue" => C.Continue, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History,
     "interrupt" => C.Interrupt, "abandon" => C.Abandon, "call" => K.Call, "return" => K.Return,
     "fail" => K.Fail, "plan" => K.Plan, "observe" => K.Observe, "finish" => K.Finish, "image" => C.Image,
 )
@@ -196,6 +201,8 @@ unpack(::Type{C.Input}, f::Vector) = C.Input(f[1], f[2])
 unpack(::Type{C.ImageInput}, f::Vector) = C.ImageInput(f[1], f[2], unpackall(f[3], C.Image))
 unpack(::Type{C.Steer}, f::Vector) = C.Steer(f[1], f[2])
 unpack(::Type{C.Followup}, f::Vector) = C.Followup(f[1], f[2])
+unpack(::Type{C.SteeringMode}, f::Vector) = C.SteeringMode(f[1], queuetypes[f[2]]())
+unpack(::Type{C.FollowupMode}, f::Vector) = C.FollowupMode(f[1], queuetypes[f[2]]())
 unpack(::Type{C.Dequeue}, f::Vector) = C.Dequeue(f[1])
 unpack(::Type{C.SessionName}, f::Vector) = C.SessionName(f[1], f[2])
 unpack(::Type{C.ContinueQueued}, f::Vector) = C.ContinueQueued(f[1])

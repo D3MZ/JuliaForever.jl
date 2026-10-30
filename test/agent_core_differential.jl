@@ -42,3 +42,24 @@ end
         @test occursin("output token limit", toolmessage["content"]) && reference.limitMessage
     end
 end
+
+@testset "Pi queue modes and tool batch ordering" begin
+    source = ENV["PI_SOURCE"]
+    @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
+    reference = JSON3.read(read(`node $(joinpath(@__DIR__, "queue_modes_reference.mjs")) $source`, String), Dict{String, Any})
+    mktempdir() do dir
+        calls = [call("one", "write", (; path="a.txt", content="first")), call("two", "write", (; path="b.txt", content="second"))]
+        provider = AgentFixture([completion(nothing; calls, finish="tool_calls"), completion("steered"), completion("followed")], [])
+        agent = Agent(provider, [Write(dir)])
+        respond!(agent, "start"; on_event=identity, on_agent_event=event -> begin
+            if event.type == :tool_execution_start && event.tool_call_id == "one"
+                steer!(agent, "steer one"); steer!(agent, "steer two")
+                followup!(agent, "follow one"); followup!(agent, "follow two")
+                steeringmode!(agent, :all); followupmode!(agent, :all)
+            end
+        end)
+        requests = [Dict("users" => [m["content"] for m in request if m["role"] == "user"], "tools" => [m["tool_call_id"] for m in request if m["role"] == "tool"]) for request in provider.requests]
+        @test requests == reference["requests"]
+        @test read(joinpath(dir, "b.txt"), String) == "second"
+    end
+end

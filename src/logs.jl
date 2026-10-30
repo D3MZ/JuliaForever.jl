@@ -37,13 +37,17 @@ record(value::Conversation.Abandoned) = (; type="abandoned", value.reason)
 record(value::Conversation.Input) = (; type="input", value.revision, value.text)
 record(value::Conversation.Steer) = (; type="steer", value.revision, value.text)
 record(value::Conversation.Followup) = (; type="followup", value.revision, value.text)
+queuemode(::Conversation.OneAtATime) = "one-at-a-time"
+queuemode(::Conversation.AllAtOnce) = "all"
+record(value::Conversation.SteeringMode) = (; type="steering_mode", value.revision, mode=queuemode(value.mode))
+record(value::Conversation.FollowupMode) = (; type="followup_mode", value.revision, mode=queuemode(value.mode))
 record(value::Conversation.Dequeue) = (; type="dequeue", value.revision)
 record(value::Conversation.SessionName) = (; type="session_name", value.revision, value.name)
 record(value::Conversation.Advance) = (; type="advance", value.revision)
 record(value::Conversation.Cancel) = (; type="cancel", value.revision)
 record(value::Conversation.History) = (; type="history", value.revision, messages=map(record, value.messages))
 record(value::Conversation.Interrupt) = (; type="interrupt", value.revision, value.reason)
-record(value::Conversation.State) = (; type="conversation", kernel=record(value.kernel), value.revision, messages=map(record, value.messages), phase=string(value.phase), value.order, calls=map(record, value.calls), value.steering, value.followups, value.automatic, value.cancelled, value.flushed)
+record(value::Conversation.State) = (; type="conversation", kernel=record(value.kernel), value.revision, messages=map(record, value.messages), phase=string(value.phase), value.order, calls=map(record, value.calls), value.steering, value.followups, steeringmode=queuemode(value.steeringmode), followupmode=queuemode(value.followupmode), value.automatic, value.cancelled, value.flushed)
 
 """
     json([io,] history; project=record)

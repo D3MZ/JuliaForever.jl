@@ -199,6 +199,10 @@ JSON3.StructTypes.lowertype(::Type{<:Cancellation}) = Bool
 JSON3.StructTypes.lower(status::Cancellation) = cancelled(status)
 JSON3.StructTypes.construct(::Type{Cancellation}, value::Bool) = cancellation(value)
 
+abstract type QueueMode end
+struct OneAtATime <: QueueMode end
+struct AllAtOnce <: QueueMode end
+
 struct State
     kernel::K.State
     revision::Int
@@ -211,13 +215,15 @@ struct State
     mode::Driving
     cancellation::Cancellation
     flushed::Int
+    steeringmode::QueueMode
+    followupmode::QueueMode
 
-    function State(kernel, revision, messages, phase, order, calls, steering, followups, mode::Driving, cancellation::Cancellation, flushed)
-        new(kernel, revision, messages, phase, order, calls, steering, followups, mode, cancellation, flushed)
+    function State(kernel, revision, messages, phase, order, calls, steering, followups, mode::Driving, cancellation::Cancellation, flushed, steeringmode::QueueMode, followupmode::QueueMode)
+        new(kernel, revision, messages, phase, order, calls, steering, followups, mode, cancellation, flushed, steeringmode, followupmode)
     end
 end
 
-State(kernel, revision, messages, phase, order, calls, steering, followups, automatic, cancelled, flushed) = State(kernel, revision, messages, phase, order, calls, steering, followups, driving(automatic), cancellation(cancelled), flushed)
+State(kernel, revision, messages, phase, order, calls, steering, followups, automatic, cancelled, flushed) = State(kernel, revision, messages, phase, order, calls, steering, followups, driving(automatic), cancellation(cancelled), flushed, OneAtATime(), OneAtATime())
 State(id::AbstractString; automatic=true, messages=Message[]) = State(K.State(id), 0, deepcopy(Message[messages...]), Ready, String[], ToolCall[], String[], String[], automatic, false, 0)
 
 function Base.getproperty(state::State, name::Symbol)
@@ -227,7 +233,7 @@ function Base.getproperty(state::State, name::Symbol)
     name in (:messages, :order, :calls, :steering, :followups) ? deepcopy(value) : value
 end
 
-Base.propertynames(::State, private::Bool=false) = (:kernel, :revision, :messages, :phase, :order, :calls, :steering, :followups, :automatic, :cancelled, :flushed, :mode, :cancellation)
+Base.propertynames(::State, private::Bool=false) = (:kernel, :revision, :messages, :phase, :order, :calls, :steering, :followups, :automatic, :cancelled, :flushed, :mode, :cancellation, :steeringmode, :followupmode)
 JSON3.StructTypes.names(::Type{State}) = ((:mode, :automatic), (:cancellation, :cancelled))
 
 struct Input <: K.Event
@@ -258,6 +264,16 @@ end
 struct Followup <: K.Event
     revision::Int
     text::String
+end
+
+struct SteeringMode <: K.Event
+    revision::Int
+    mode::QueueMode
+end
+
+struct FollowupMode <: K.Event
+    revision::Int
+    mode::QueueMode
 end
 
 struct Dequeue <: K.Event
@@ -302,8 +318,8 @@ struct Abandon <: K.Event
     reason::String
 end
 
-function update(state::State; kernel=getfield(state, :kernel), messages=getfield(state, :messages), phase=state.phase, order=getfield(state, :order), calls=getfield(state, :calls), steering=getfield(state, :steering), followups=getfield(state, :followups), cancelled=getfield(state, :cancellation), flushed=state.flushed)
-    State(kernel, state.revision + 1, messages, phase, order, calls, steering, followups, getfield(state, :mode), cancelled, flushed)
+function update(state::State; kernel=getfield(state, :kernel), messages=getfield(state, :messages), phase=state.phase, order=getfield(state, :order), calls=getfield(state, :calls), steering=getfield(state, :steering), followups=getfield(state, :followups), cancelled=getfield(state, :cancellation), flushed=state.flushed, steeringmode=state.steeringmode, followupmode=state.followupmode)
+    State(kernel, state.revision + 1, messages, phase, order, calls, steering, followups, getfield(state, :mode), cancellation(cancelled), flushed, steeringmode, followupmode)
 end
 
 function plan(kernel::K.State, effect::K.Effect)
@@ -312,11 +328,19 @@ function plan(kernel::K.State, effect::K.Effect)
     result.state, only(result.effects)
 end
 
-function model(kernel::K.State, messages::Vector{Message}, steering::Vector{String})
-    if !isempty(steering)
-        steering = copy(steering)
-        push!(messages, User(popfirst!(steering)))
-    end
+function drain(messages, queue, ::OneAtATime)
+    remaining = copy(queue)
+    isempty(remaining) || push!(messages, User(popfirst!(remaining)))
+    remaining
+end
+
+function drain(messages, queue, ::AllAtOnce)
+    append!(messages, User.(queue))
+    String[]
+end
+
+function model(state, kernel::K.State, messages::Vector{Message}, steering::Vector{String})
+    steering = drain(messages, steering, state.steeringmode)
     kernel, effect = plan(kernel, ModelRequest(messages))
     kernel, effect, steering
 end
@@ -339,7 +363,7 @@ user(event::ImageInput) = ImageUser(event.text, event.images)
 
 input(state, messages, ::Manual) = K.Applied(update(state; messages, phase=ReadyModel, cancelled=false), ())
 function input(state, messages, ::Automatic)
-    kernel, effect, steering = model(state.kernel, messages, getfield(state, :steering))
+    kernel, effect, steering = model(state, state.kernel, messages, getfield(state, :steering))
     updated = update(state; kernel, messages, steering, phase=WaitingModel, cancelled=false)
     K.Applied(updated, (effect,))
 end
@@ -371,6 +395,16 @@ function K.step(state::State, event::Followup)
     followups = copy(getfield(state, :followups))
     push!(followups, event.text)
     K.Applied(update(state; followups), ())
+end
+
+function K.step(state::State, event::SteeringMode)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    K.Applied(update(state; steeringmode=event.mode), ())
+end
+
+function K.step(state::State, event::FollowupMode)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    K.Applied(update(state; followupmode=event.mode), ())
 end
 
 function K.step(state::State, event::Dequeue)
@@ -447,8 +481,7 @@ function advance(state::State, ::ReadyDecisionPhase, steering, followups)
     isempty(steering) && isempty(followups) && return K.Applied(update(state; phase=Complete), ())
     messages = copy(getfield(state, :messages))
     if isempty(steering)
-        followups = copy(followups)
-        push!(messages, User(popfirst!(followups)))
+        followups = drain(messages, followups, state.followupmode)
     end
     advance(state, messages, steering, followups)
 end
@@ -456,7 +489,7 @@ end
 advance(state::State, ::ReadyModelPhase, steering, followups) = advance(state, copy(getfield(state, :messages)), steering, followups)
 
 function advance(state::State, messages::Vector{Message}, steering, followups)
-    kernel, effect, steering = model(state.kernel, messages, steering)
+    kernel, effect, steering = model(state, state.kernel, messages, steering)
     updated = update(state; kernel, messages, steering, followups, phase=WaitingModel)
     K.Applied(updated, (effect,))
 end
@@ -503,10 +536,9 @@ function observe_text(state, kernel, messages, steering, followups, ::Automatic)
         return K.Applied(update(state; kernel, messages, phase=Complete), ())
     end
     if isempty(steering)
-        followups = copy(followups)
-        push!(messages, User(popfirst!(followups)))
+        followups = drain(messages, followups, state.followupmode)
     end
-    kernel, effect, steering = model(kernel, messages, steering)
+    kernel, effect, steering = model(state, kernel, messages, steering)
     K.Applied(update(state; kernel, messages, steering, followups, phase=WaitingModel), (effect,))
 end
 
@@ -519,7 +551,7 @@ function observe_skipped(state, kernel, messages, steering, answer, ::Automatic)
         text = "Error: Tool call \"$(call.name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments."
         push!(messages, ToolMessage(call.id, text, true))
     end
-    kernel, effect, steering = model(kernel, messages, steering)
+    kernel, effect, steering = model(state, kernel, messages, steering)
     K.Applied(update(state; kernel, messages, steering, phase=WaitingModel), (effect,))
 end
 
@@ -563,7 +595,7 @@ end
 
 observed_tools(state, kernel, messages, ::Manual) = K.Applied(update(state; kernel, messages, order=String[], calls=ToolCall[], flushed=0, phase=ReadyModel), ())
 function observed_tools(state, kernel, messages, ::Automatic)
-    kernel, effect, steering = model(kernel, messages, getfield(state, :steering))
+    kernel, effect, steering = model(state, kernel, messages, getfield(state, :steering))
     updated = update(state; kernel, messages, steering, order=String[], calls=ToolCall[], flushed=0, phase=WaitingModel)
     K.Applied(updated, (effect,))
 end

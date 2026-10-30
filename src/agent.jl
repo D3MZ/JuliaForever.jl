@@ -1,4 +1,4 @@
-export steer!, followup!, dequeue!, name!, cancel!, abandon!, continue!
+export steer!, followup!, dequeue!, steeringmode!, followupmode!, name!, cancel!, abandon!, continue!
 
 struct Truncated
     completion::Completion
@@ -90,7 +90,7 @@ end
 outcome(result::History.Rejected, fallback) = result
 outcome(result, fallback) = fallback
 
-"Queue a user message for the next turn; steering is consumed one message at a time."
+"Queue a user message for the next turn."
 function steer!(agent::Agent, prompt)
     result, _ = transition!(revision -> Conversation.Steer(revision, prompt), agent)
     outcome(result, nothing)
@@ -99,6 +99,20 @@ end
 "Queue a user message for when the agent would otherwise stop."
 function followup!(agent::Agent, prompt)
     result, _ = transition!(revision -> Conversation.Followup(revision, prompt), agent)
+    outcome(result, nothing)
+end
+
+const queuemodes = Dict(:one_at_a_time => Conversation.OneAtATime(), :all => Conversation.AllAtOnce())
+
+"Set how many queued steering messages are delivered at each boundary."
+function steeringmode!(agent::Agent, mode::Symbol)
+    result, _ = transition!(revision -> Conversation.SteeringMode(revision, queuemodes[mode]), agent)
+    outcome(result, nothing)
+end
+
+"Set how many follow-up messages are delivered when the agent would stop."
+function followupmode!(agent::Agent, mode::Symbol)
+    result, _ = transition!(revision -> Conversation.FollowupMode(revision, queuemodes[mode]), agent)
     outcome(result, nothing)
 end
 

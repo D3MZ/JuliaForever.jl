@@ -1,4 +1,4 @@
-using Test, JuliaForever
+using Test, JSON3, JuliaForever
 import JuliaForever.History as QueueHistory
 
 mutable struct QueueProvider
@@ -67,6 +67,8 @@ end
     @test JuliaForever.dequeue!(agent) == QueueHistory.Rejected(:revision)
     @test agent.state.steering == ["keep steering"]
     @test agent.state.followups == ["keep followup"]
+    @test steeringmode!(agent, :all) == QueueHistory.Rejected(:revision)
+    @test agent.state.steeringmode isa JuliaForever.Conversation.OneAtATime
 end
 
 @testset "an empty queue does not change history" begin
@@ -76,4 +78,52 @@ end
     revision = QueueHistory.snapshot(history).revision
     @test JuliaForever.dequeue!(agent) == (steering=String[], followups=String[])
     @test QueueHistory.snapshot(history).revision == revision
+end
+
+@testset "queue modes are applied at the next boundary and survive replay" begin
+  mktempdir() do dir
+    path = joinpath(dir, "session.sqlite")
+    history = open(QueueHistory.SQLite, path)
+    provider = QueueProvider(Channel{Nothing}(1), Channel{Nothing}(1), Any[])
+    agent = Agent(provider, []; history)
+    steer!(agent, "s1")
+    steer!(agent, "s2")
+    followup!(agent, "f1")
+    followup!(agent, "f2")
+    steeringmode!(agent, :all)
+    followupmode!(agent, :all)
+    task = Threads.@spawn respond!(agent, "start"; on_event=identity)
+    take!(provider.started)
+    put!(provider.release, nothing)
+    @test fetch(task) == "answer"
+    users(request) = [message["content"] for message in request if message["role"] == "user"]
+    @test users.(provider.requests) == [["start", "s1", "s2"], ["start", "s1", "s2", "f1", "f2"]]
+    close(history)
+    history = open(QueueHistory.SQLite, path)
+    restored = Agent(provider, []; history)
+    @test restored.fault === nothing
+    @test restored.state.steeringmode == agent.state.steeringmode
+    @test restored.state.followupmode == agent.state.followupmode
+    @test restored.messages == agent.messages
+    exported = JSON3.read(JuliaForever.Logs.json(restored.events))
+    @test [row.mode for row in exported if row.type in ("steering_mode", "followup_mode")] == ["all", "all"]
+    close(history)
+  end
+end
+
+@testset "mode changes affect already queued messages" begin
+    provider = QueueProvider(Channel{Nothing}(1), Channel{Nothing}(1), Any[])
+    agent = Agent(provider, [])
+    steeringmode!(agent, :all)
+    followupmode!(agent, :all)
+    task = Threads.@spawn respond!(agent, "start"; on_event=identity)
+    take!(provider.started)
+    steer!(agent, "s1"); steer!(agent, "s2")
+    followup!(agent, "f1"); followup!(agent, "f2")
+    steeringmode!(agent, :one_at_a_time)
+    followupmode!(agent, :one_at_a_time)
+    put!(provider.release, nothing)
+    @test fetch(task) == "answer"
+    users(request) = [message["content"] for message in request if message["role"] == "user"]
+    @test users.(provider.requests) == [["start"], ["start", "s1"], ["start", "s1", "s2"], ["start", "s1", "s2", "f1"], ["start", "s1", "s2", "f1", "f2"]]
 end
