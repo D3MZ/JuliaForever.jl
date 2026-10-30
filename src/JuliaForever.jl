@@ -28,6 +28,7 @@ include("search.jl")
 include("context.jl")
 include("codemode.jl")
 include("terminal.jl")
+include("tree_terminal.jl")
 include("mcp.jl")
 
 missingmodel(env, info, ::Nothing) = isempty(strip(get(env, info.model, ""))) ? [info.model] : String[]
@@ -384,11 +385,17 @@ end
 function readloop!(terminal, agent, extensions, input, output)
     intro!(output, input)
     status = 0
+    history = agent.history
     while true
         prompt!(output, input)
         eof(input) && break
         line = readline(input)
         line == "/exit" && break
+        if line == "/tree"
+            agent, history, result = tree!(terminal, agent, history, input, extensions)
+            status = max(status, result)
+            continue
+        end
         status = max(status, run!(terminal, agent, line, extensions))
     end
     status

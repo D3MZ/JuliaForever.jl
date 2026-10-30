@@ -103,6 +103,29 @@ def editor(julia, project, directory):
         session.close()
 
 
+def tree_editor(julia, project, directory):
+    fixture = str(project / "test" / "fixtures")
+    session = Session(julia, project, directory, args=("--plugin-env", fixture, "--plugin", "GreetingPlugin"))
+    try:
+        session.ready()
+        session.send(b"first\r", "first")
+        offset = len(session.output)
+        os.write(session.master, b"/tree\r")
+        session.until(lambda: b"Choose a message" in session.output[offset:], "tree selector")
+        os.write(session.master, b"1\n")
+        session.until(lambda: b"Message [first]" in session.output[offset:], "tree edit prompt")
+        os.write(session.master, b"changed\n")
+        session.until(lambda: session.records() == ["first", "changed"], "tree branch request")
+        session.until(lambda: b"reply:changed" in session.output[offset:] and b"> " in session.output[offset:].split(b"reply:changed", 1)[1], "prompt after branch")
+        os.write(session.master, b"\x04")
+        session.wait_exit()
+        assert session.process.returncode == 0, (session.process.returncode, session.output)
+        assert (directory / "plugin-events").read_text().splitlines() == ["agent_start", "agent_end", "agent_start", "agent_end"]
+        assert termios.tcgetattr(session.slave) == session.initial_mode
+    finally:
+        session.close()
+
+
 def redirected(julia, project, directory):
     session = Session(julia, project, directory, stdout_tty=False)
     try:
@@ -167,7 +190,7 @@ def plugin_terminal(julia, project, directory):
 def main():
     julia, project = sys.argv[1], Path(sys.argv[2])
     with tempfile.TemporaryDirectory(prefix="jf-terminal-pty-") as root:
-        for name, scenario in (("editor", editor), ("redirected", redirected), ("no-terminal-output", no_terminal_output), ("dumb-terminal", dumb_terminal), ("plugin", plugin_terminal)):
+        for name, scenario in (("editor", editor), ("tree-editor", tree_editor), ("redirected", redirected), ("no-terminal-output", no_terminal_output), ("dumb-terminal", dumb_terminal), ("plugin", plugin_terminal)):
             directory = Path(root) / name
             directory.mkdir()
             scenario(julia, project, directory)

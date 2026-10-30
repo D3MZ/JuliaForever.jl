@@ -101,7 +101,7 @@ function historyagent(f, terminal::Terminal, path)
         println(terminal.diagnostics, "Recovery requires an existing history file.")
         return 2
     end
-    history = open(History.SQLite, path; create=false)
+    history = SessionCatalog.adapt(open(History.SQLite, path; create=false))
     history isa History.Rejected && return result!(terminal, history)
     try
         snapshot = History.snapshot(history)
@@ -162,6 +162,12 @@ function failure!(terminal::Terminal, exception::HTTP.HTTPError)
     1
 end
 
+function failure!(terminal::Terminal, exception::Union{SystemError, Base.IOError})
+    println(terminal.diagnostics, "Request failed: ", redact(terminal, sprint(showerror, exception)))
+    flush(terminal.diagnostics)
+    1
+end
+
 function failure!(terminal::Terminal, ::InvalidResponse)
     println(terminal.diagnostics, "Request failed (invalid provider response).")
     flush(terminal.diagnostics)
@@ -173,6 +179,14 @@ function failure!(terminal::Terminal, failure::ProviderStatus)
     flush(terminal.diagnostics)
     1
 end
+
+function request!(terminal::Terminal, task, exception::Union{HTTP.HTTPError, InterruptException, SystemError, Base.IOError})
+    line!(terminal)
+    terminal.streamed = false
+    (; value=nothing, status=failure!(terminal, exception))
+end
+
+request!(terminal::Terminal, task, exception) = (; value=fetch(task), status=0)
 
 function request!(f, terminal::Terminal)
     task = Threads.@spawn f()
@@ -187,11 +201,7 @@ function request!(f, terminal::Terminal)
     take!(ready)
     if istaskfailed(task)
         entry = last(current_exceptions(task))
-        if entry.exception isa Union{HTTP.HTTPError, InterruptException}
-            line!(terminal)
-            terminal.streamed = false
-            return (; value=nothing, status=failure!(terminal, entry.exception))
-        end
+        return request!(terminal, task, entry.exception)
     end
     (; value=fetch(task), status=0)
 end
@@ -277,6 +287,7 @@ end
 function edit!(terminal::Terminal, agent::Agent, snapshot=nothing)
     edit = REPL.LineEdit
     history = InputHistory()
+    store = agent.history
     newline = (state, args...) -> edit.edit_insert_newline(state, 0)
     keymap = Dict{Any, Any}(
         '\n' => newline,
@@ -327,6 +338,11 @@ function edit!(terminal::Terminal, agent::Agent, snapshot=nothing)
         text = String(take!(buffer))
         edit.reset_state(state)
         text == "/exit" && break
+        if text == "/tree"
+            agent, store, result = tree!(terminal, agent, store, stdin, snapshot)
+            status = max(status, result)
+            continue
+        end
         status = max(status, run!(terminal, agent, text, snapshot))
     end
     status

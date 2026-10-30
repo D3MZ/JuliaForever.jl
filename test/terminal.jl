@@ -144,6 +144,11 @@ end
     end
 end
 
+@testset "terminal request preserves unexpected exceptions" begin
+    terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), String[])
+    @test_throws TaskFailedException JuliaForever.request!(() -> 1 + "synthetic", terminal)
+end
+
 function terminal_process(mode, args; input="", key="synthetic-secret")
     project = dirname(@__DIR__)
     script = joinpath(@__DIR__, "terminal_process.jl")

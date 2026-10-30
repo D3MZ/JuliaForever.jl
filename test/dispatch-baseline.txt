@@ -499,7 +499,6 @@ system.jl	:reached
 system.jl	:truncated
 terminal.jl	:(agent isa History.Rejected)
 terminal.jl	:(content isa AbstractString)
-terminal.jl	:(entry.exception isa Union{HTTP.HTTPError, InterruptException})
 terminal.jl	:(history isa History.Rejected)
 terminal.jl	:(isnothing(agent.fault))
 terminal.jl	:(result isa History.Rejected)
