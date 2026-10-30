@@ -69,8 +69,9 @@ if (tools.includes("bash")) {
     const dir = await mkdtemp(join(tmpdir(), "jf-powershell-parse-"));
     try {
         const command = "[IO.File]::WriteAllText('unreachable','bad'); if (";
-        const result = await createPowerShellToolDefinition(dir).execute("parse", { command, timeout: 30 }, new AbortController().signal);
-        results.push({ text: result.content.find(block => block.type === "text").text, iserror: result.isError === true });
+        const updates = [];
+        const result = await createPowerShellToolDefinition(dir).execute("parse", { command, timeout: 30 }, new AbortController().signal, update => updates.push(update.content.map(block => block.text ?? "").join("")));
+        results.push({ text: result.content.find(block => block.type === "text").text, iserror: result.isError === true, updates });
     } finally {
         await rm(dir, { recursive: true, force: true });
     }

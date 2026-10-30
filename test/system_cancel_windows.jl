@@ -656,7 +656,7 @@ if Sys.iswindows() && haskey(ENV, "PI_SOURCE")
             syntax = execute(shell, (; command=malformed, timeout=30); cancel=ShellCancellation(), on_update=update -> push!(updates, update))
             @test syntax.iserror
             @test !isfile(joinpath(dir, "unreachable"))
-            @test any(update -> !isempty(update.text), updates)
+            @test [update.text for update in updates] == reference[end - 1].updates
             @test (syntax.text, syntax.iserror) == (reference[end - 1].text, reference[end - 1].iserror)
             cancelled = ShellCancellation()
             cancel!(cancelled)
