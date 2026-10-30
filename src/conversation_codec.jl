@@ -30,42 +30,34 @@ valuetype(::Type{Dict}, type::Type) = Dict{String, type}
 packvalue(x, seen=IdDict()) = Rejected(:unsupported_value)
 packvalue(x::Union{Nothing, Bool, Int, Float64, String}, seen=IdDict()) = value(x, seen)
 
-function packvalue(xs::Vector{T}, seen=IdDict()) where T
-    code = typecode(T)
-    code isa Rejected && return code
+packvalue(xs::Vector{T}, seen=IdDict()) where T = packvalue("vector", xs, seen, typecode(T))
+packvalue(xs::Dict{String, T}, seen=IdDict()) where T = packvalue("dict", xs, seen, typecode(T))
+packvalue(kind, xs, seen, rejected::Rejected) = rejected
+
+function packvalue(kind, xs, seen, code)
     haskey(seen, xs) && return Rejected(:unsupported_value)
     seen[xs] = nothing
     try
-        items = Any[]
-        for x in xs
-            item = packvalue(x, seen)
-            item isa Rejected && return item
-            push!(items, item)
-        end
-        Dict("kind" => "vector", "type" => code, "items" => items)
+        items = foldl((result, item) -> packvalueitem(result, item, seen), xs; init=packitems(xs))
+        packedvalues(kind, code, items)
     finally
         delete!(seen, xs)
     end
 end
 
-function packvalue(xs::Dict{String, T}, seen=IdDict()) where T
-    code = typecode(T)
-    code isa Rejected && return code
-    haskey(seen, xs) && return Rejected(:unsupported_value)
-    seen[xs] = nothing
-    try
-        items = Dict{String, Any}()
-        for (key, x) in xs
-            isvalid(key) || return Rejected(:unsupported_value)
-            item = packvalue(x, seen)
-            item isa Rejected && return item
-            items[key] = item
-        end
-        Dict("kind" => "dict", "type" => code, "items" => items)
-    finally
-        delete!(seen, xs)
-    end
+packitems(::Vector) = Any[]
+packitems(::Dict) = Dict{String, Any}()
+packvalueitem(rejected::Rejected, item, seen) = rejected
+packvalueitem(items::Vector, item, seen) = packed(items, packvalue(item, seen))
+function packvalueitem(items::Dict, pair::Pair, seen)
+    key, item = pair
+    isvalid(key) || return Rejected(:unsupported_value)
+    packed(items, key, packvalue(item, seen))
 end
+packed(items::Dict, key, rejected::Rejected) = rejected
+packed(items::Dict, key, item) = (items[key] = item; items)
+packedvalues(kind, code, rejected::Rejected) = rejected
+packedvalues(kind, code, items) = Dict("kind" => kind, "type" => code, "items" => items)
 
 unvalue(x::Union{Nothing, Bool, Int, Float64, String}) = value(x, IdDict())
 unvalue(x) = Rejected(:invalid_record)
@@ -75,28 +67,25 @@ unvalue(x::Dict, rejected::Rejected) = rejected
 unvalue(x::Dict, type::Type) = unvalue(get(containertypes, x["kind"], nothing), get(x, "items", nothing), type)
 unvalue(kind, items, type) = Rejected(:invalid_record)
 
-function unvalue(::Type{Vector}, items::Vector, type::Type)
-    result = type[]
-    for item in items
-        item = unvalue(item)
-        item isa Rejected && return item
-        item isa type || return Rejected(:invalid_record)
-        push!(result, item)
-    end
-    result
-end
+unvalue(::Type{Vector}, items::Vector, type::Type) = foldl(unvalueitem, items; init=type[])
+unvalue(::Type{Dict}, items::Dict, type::Type) = foldl(unvalueitem, items; init=Dict{String, type}())
 
-function unvalue(::Type{Dict}, items::Dict, type::Type)
-    result = Dict{String, type}()
-    for (key, item) in items
-        key isa String && isvalid(key) || return Rejected(:invalid_record)
-        item = unvalue(item)
-        item isa Rejected && return item
-        item isa type || return Rejected(:invalid_record)
-        result[key] = item
-    end
-    result
+unvalueitem(rejected::Rejected, item) = rejected
+unvalueitem(items::Vector, item) = unvalued(items, unvalue(item))
+unvalueitem(items::Dict, pair::Pair) = unvaluekey(items, first(pair), last(pair))
+unvaluekey(items, key, item) = Rejected(:invalid_record)
+function unvaluekey(items, key::String, item)
+    isvalid(key) || return Rejected(:invalid_record)
+    unvalued(items, key, unvalue(item))
 end
+unvalued(items::Vector, rejected::Rejected) = rejected
+unvalued(items::Dict, key, rejected::Rejected) = rejected
+unvalued(items::Vector, item) = unvaluedtype(items, item)
+unvalued(items::Dict, key, item) = unvaluedtype(items, key, item)
+unvaluedtype(items::Vector, item) = Rejected(:invalid_record)
+unvaluedtype(items::Vector{T}, item::T) where T = push!(items, item)
+unvaluedtype(items::Dict, key, item) = Rejected(:invalid_record)
+unvaluedtype(items::Dict{String, T}, key, item::T) where T = (items[key] = item; items)
 
 rejection(result, field) = result
 rejection(::Nothing, field::Rejected) = field
@@ -153,16 +142,12 @@ pack(x::K.Plan) = node("plan", x.revision, x.id, pack(x.effect))
 pack(x::K.Observe) = node("observe", x.revision, x.id, pack(x.observation))
 pack(x::K.Finish) = node("finish", x.revision)
 
-function unpackall(xs, type)
-    xs isa Vector || return Rejected(:invalid_record)
-    items = type[]
-    for x in xs
-        item = unpack(x)
-        item isa type || return Rejected(:invalid_record)
-        push!(items, item)
-    end
-    items
-end
+unpackall(xs, type) = Rejected(:invalid_record)
+unpackall(xs::Vector, type) = foldl(unpackitem, xs; init=type[])
+unpackitem(rejected::Rejected, item) = rejected
+unpackitem(items::Vector, item) = unpacked(items, unpack(item))
+unpacked(items::Vector, item) = Rejected(:invalid_record)
+unpacked(items::Vector{T}, item::T) where T = push!(items, item)
 
 const nodetypes = Dict(
     "user" => C.User, "raw" => C.RawMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant,
@@ -213,15 +198,18 @@ encode(event::K.Event) = encoded(pack(event))
 encoded(rejected::Rejected) = rejected
 encoded(data) = Dict("format" => "JuliaForever.AgentEvent/1", "event" => data)
 
-function decode_event(record)
+decode_event(record) = Rejected(:invalid_record)
+function decode_event(record::Dict)
     try
-        record isa Dict && get(record, "format", nothing) == "JuliaForever.AgentEvent/1" || return Rejected(:invalid_record)
-        event = unpack(record["event"])
-        event isa K.Event && isequal(pack(event), record["event"]) ? event : Rejected(:invalid_record)
+        get(record, "format", nothing) == "JuliaForever.AgentEvent/1" || return Rejected(:invalid_record)
+        decoded_event(record, unpack(record["event"]))
     catch
         Rejected(:invalid_record)
     end
 end
+
+decoded_event(record, event) = Rejected(:invalid_record)
+decoded_event(record, event::K.Event) = isequal(pack(event), record["event"]) ? event : Rejected(:invalid_record)
 
 function encode_initial(state::C.State)
     state.revision == 0 && state.kernel.revision == 0 && state.phase == C.Ready || return Rejected(:unsupported_value)
@@ -231,15 +219,20 @@ end
 encode_initial(state::C.State, rejected::Rejected) = rejected
 encode_initial(state::C.State, messages::Vector) = Dict("format" => "JuliaForever.Agent/1", "id" => state.kernel.id, "automatic" => state.automatic, "messages" => messages)
 
-function decode_initial(record)
+decode_initial(record) = Rejected(:invalid_record)
+function decode_initial(record::Dict)
     try
-        record isa Dict && get(record, "format", nothing) == "JuliaForever.Agent/1" || return Rejected(:invalid_record)
-        messages = unpackall(record["messages"], C.Message)
-        messages isa Rejected && return messages
-        record["automatic"] isa Bool || return Rejected(:invalid_record)
-        state = C.State(record["id"]; automatic=record["automatic"], messages)
-        isequal(encode_initial(state), record) ? state : Rejected(:invalid_record)
+        get(record, "format", nothing) == "JuliaForever.Agent/1" || return Rejected(:invalid_record)
+        decode_initial(record, unpackall(record["messages"], C.Message))
     catch
         Rejected(:invalid_record)
     end
+end
+
+decode_initial(record, rejected::Rejected) = rejected
+decode_initial(record, messages::Vector) = decode_initial(record, messages, record["automatic"])
+decode_initial(record, messages::Vector, automatic) = Rejected(:invalid_record)
+function decode_initial(record, messages::Vector, automatic::Bool)
+    state = C.State(record["id"]; automatic, messages)
+    isequal(encode_initial(state), record) ? state : Rejected(:invalid_record)
 end
