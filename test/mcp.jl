@@ -47,6 +47,8 @@ end
         @test client isa MCP.Client
         if client isa MCP.Client
             @test MCP.admission!(client, MCP.Closed(), MCP.Open()).kind == :closed
+            @test MCP.activate!(client, MCP.Closed()) isa MCP.Failure
+            @test client.connection isa MCP.Open
             @test client.shutdown isa MCP.ShutdownReady
             @test !client.shutting
             @test client.state === :open
