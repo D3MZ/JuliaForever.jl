@@ -401,6 +401,54 @@ end
 receivechat!(process, failure, data::InvalidResponse) = (failure[] = data; nothing)
 receivechat!(process, failure, data) = process(data)
 
+reasonvalue(field, value) = nothing
+reasonvalue(field, text::AbstractString) = isempty(text) ? nothing : field => text
+findreason(found::Pair, delta, field) = found
+findreason(::Nothing, delta, field) = reasonvalue(field, get(delta, field, nothing))
+
+recordreason!(message, selected, on_event, ::Nothing) = nothing
+function recordreason!(message, selected, on_event, reason::Pair)
+    field, text = reason
+    selected[] = something(selected[], field)
+    key = selected[]
+    message[key] = get(message, key, "") * text
+    on_event((; type=:thinking, text, field))
+end
+
+recordtext!(message, on_event, value) = nothing
+function recordtext!(message, on_event, text::AbstractString)
+    isempty(text) && return
+    message["content"] = appendtext(message["content"], text)
+    on_event((; type=:text, text))
+end
+
+function chatcall!(calls, order, on_event, call)
+    index = get(call, "index", get(call, "id", 0))
+    output = get!(calls, index) do
+        push!(order, index)
+        Dict("id" => "", "type" => "function", "function" => Dict("name" => "", "arguments" => ""))
+    end
+    id = get(call, "id", nothing)
+    writeonce!(output, "id", id)
+    fn = get(call, "function", Dict())
+    name = get(fn, "name", nothing)
+    writeonce!(output["function"], "name", name)
+    arguments = get(fn, "arguments", "")
+    output["function"]["arguments"] *= arguments
+    on_event((; type=:tool_call, index, id, name, arguments))
+end
+
+chatdelta!(message, calls, order, selected, on_event, ::Nothing) = nothing
+function chatdelta!(message, calls, order, selected, on_event, delta)
+    fields = ("reasoning_content", "reasoning", "reasoning_text")
+    reason = foldl((found, field) -> findreason(found, delta, field), fields; init=nothing)
+    recordreason!(message, selected, on_event, reason)
+    recordtext!(message, on_event, get(delta, "content", nothing))
+    for call in get(delta, "tool_calls", [])
+        chatcall!(calls, order, on_event, call)
+    end
+end
+
 function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=identity)
     message = Dict{String, Any}("role" => "assistant", "content" => nothing)
     calls = Dict{Any, Dict{String, Any}}()
@@ -421,39 +469,7 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
         isempty(choices) && return
         choice = first(choices)
         recordfinish!(finish, on_event, get(choice, "finish_reason", nothing))
-        delta = get(choice, "delta", nothing)
-        isnothing(delta) && return
-        for field in ("reasoning_content", "reasoning", "reasoning_text")
-            text = get(delta, field, nothing)
-            if text isa AbstractString && !isempty(text)
-                reasoningfield[] = something(reasoningfield[], field)
-                key = reasoningfield[]
-                message[key] = get(message, key, "") * text
-                on_event((; type=:thinking, text, field))
-                break
-            end
-        end
-        text = get(delta, "content", nothing)
-        if text isa AbstractString && !isempty(text)
-            message["content"] = appendtext(message["content"], text)
-            on_event((; type=:text, text))
-        end
-        for call in get(delta, "tool_calls", [])
-            index = get(call, "index", get(call, "id", 0))
-            if !haskey(calls, index)
-                calls[index] = Dict("id" => "", "type" => "function", "function" => Dict("name" => "", "arguments" => ""))
-                push!(order, index)
-            end
-            output = calls[index]
-            id = get(call, "id", nothing)
-            writeonce!(output, "id", id)
-            fn = get(call, "function", Dict())
-            name = get(fn, "name", nothing)
-            writeonce!(output["function"], "name", name)
-            arguments = get(fn, "arguments", "")
-            output["function"]["arguments"] *= arguments
-            on_event((; type=:tool_call, index, id, name, arguments))
-        end
+        chatdelta!(message, calls, order, reasoningfield, on_event, get(choice, "delta", nothing))
     end
     response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=event -> receivechat!(process, failure, marker, event.data, failure[]))
     if !(200 <= response.status < 300)
