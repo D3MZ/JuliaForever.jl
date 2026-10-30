@@ -161,15 +161,22 @@ function rules(file, ::Type{T}; base=dirname(file)) where {T <: IgnoreRule}
     result
 end
 
-function ignored(rules, target, directory)
-    value = false
+ignorevalue(value, rule::IgnoreRule, target, directory, ::Type{T}) where {T <: IgnoreRule} = value
+function ignorevalue(value, rule::T, target, directory, ::Type{T}) where {T <: IgnoreRule}
+    relative = posix(relpath(target, rule.base))
+    startswith(relative, "../") && return value
+    ignorevalue(value, rule.pattern, relative, directory)
+end
+
+function ignored(kind::Type{T}, rules, target, directory, value) where {T <: IgnoreRule}
     for rule in rules
-        relative = posix(relpath(target, rule.base))
-        startswith(relative, "../") && continue
-        value = ignorevalue(value, rule.pattern, relative, directory)
+        value = ignorevalue(value, rule, target, directory, kind)
     end
     value
 end
+
+# .ignore rules take precedence over .gitignore, even across directory levels.
+ignored(rules, target, directory) = ignored(FileRule, rules, target, directory, ignored(GitRule, rules, target, directory, false))
 
 function ancestors(root)
     dirs = String[]

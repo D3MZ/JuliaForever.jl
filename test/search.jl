@@ -48,6 +48,31 @@ function searchfixture(dir)
     write(joinpath(dir, "binary.txt"), UInt8[0x6e, 0x65, 0x65, 0x64, 0x6c, 0x65, 0x00])
 end
 
+function ignorepriorityfixture(dir)
+    mkpath(joinpath(dir, ".git"))
+    mkpath(joinpath(dir, "sub"))
+    mkpath(joinpath(dir, "deep"))
+    write(joinpath(dir, ".gitignore"), "secret.txt\n")
+    write(joinpath(dir, ".ignore"), "!visible.txt\nblocked.txt\n*.masked\n!keep.masked\nnested.txt\n")
+    write(joinpath(dir, "sub", ".gitignore"), "visible.txt\n!blocked.txt\nkeep.masked\n!secret.txt\n")
+    write(joinpath(dir, "sub", ".ignore"), "!nested.txt\nno.txt\n")
+    for file in ("sub/visible.txt", "sub/blocked.txt", "sub/keep.masked", "sub/nested.txt", "sub/no.txt", "sub/secret.txt", "sub/open.txt", "deep/keep.masked", "deep/blocked.masked", "deep/secret.txt")
+        write(joinpath(dir, split(file, '/')...), "needle\n")
+    end
+end
+
+@testset "ignore file precedence" begin
+    mktempdir() do dir
+        ignorepriorityfixture(dir)
+        grep = execute(Grep(dir), (; pattern="needle"))
+        @test !grep.iserror
+        @test Set(split(grep.text, '\n')) == Set(["sub/visible.txt:1: needle", "sub/keep.masked:1: needle", "sub/nested.txt:1: needle", "sub/secret.txt:1: needle", "sub/open.txt:1: needle", "deep/keep.masked:1: needle"])
+        find = execute(Find(dir), (; pattern="*.txt"))
+        @test !find.iserror
+        @test Set(split(find.text, '\n')) == Set(["sub/visible.txt", "sub/nested.txt", "sub/secret.txt", "sub/open.txt"])
+    end
+end
+
 @testset "file URL paths" begin
     @test JuliaForever.fileurlpath("file:///C:/Users/Example%20User/note.txt", true) == "C:/Users/Example User/note.txt"
     @test JuliaForever.fileurlpath("file://server/share/note%20one.txt", true) == "//server/share/note one.txt"
