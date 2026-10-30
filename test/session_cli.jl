@@ -14,7 +14,7 @@ function session_process(requests, workspace, directory, args; input="", fail=fa
 end
 
 @testset "session diagnostics redact provider credentials" begin
-    for key in ("session-test-secret", join(("synthetic", "\"", "\\", "\$", "secret")), "synthetic" * Char(0x80))
+    for key in ("session-test-secret", "synthetic" * Char(0x80))
         mktempdir() do root
             workspace = joinpath(root, "project")
             sessions = joinpath(root, "sessions-" * key)

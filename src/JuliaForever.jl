@@ -352,17 +352,26 @@ function runsession!(history, terminal, model, extensions, args)
     try
         snapshot = isnothing(history) ? nothing : History.snapshot(history)
         snapshot isa History.Rejected && return result!(terminal, snapshot)
-        messages = initial(extensions, snapshot)
-        agent = Agent(model, extensions, messages; history)
-        agent isa History.Rejected && return result!(terminal, agent)
-        isnothing(agent.fault) || return sessionfault!(terminal, agent.fault, history)
-        if isempty(args)
-            return interact!(terminal, agent, extensions, stdin, stderr)
-        else
-            return run!(terminal, agent, join(args, " "), extensions)
-        end
+        startsession!(terminal, model, extensions, history, args, attempt(() -> initial(extensions, snapshot)))
     finally
         isnothing(history) || close(history)
+    end
+end
+
+function startsession!(terminal, model, extensions, history, args, failure::ToolFailure)
+    println(terminal.diagnostics, "Failed to initialize project context: ", redact(terminal, failure.text))
+    flush(terminal.diagnostics)
+    1
+end
+
+function startsession!(terminal, model, extensions, history, args, messages)
+    agent = Agent(model, extensions, messages; history)
+    agent isa History.Rejected && return result!(terminal, agent)
+    isnothing(agent.fault) || return sessionfault!(terminal, agent.fault, history)
+    if isempty(args)
+        return interact!(terminal, agent, extensions, stdin, stderr)
+    else
+        return run!(terminal, agent, join(args, " "), extensions)
     end
 end
 

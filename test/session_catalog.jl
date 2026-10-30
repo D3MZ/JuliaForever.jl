@@ -51,20 +51,21 @@ end
 end
 
 @testset "session target redacts only the diagnostic" begin
-    for key in ("synthetic" * Char(0x80), "synthetic" * repeat("\\", 20))
+    for key in ("synthetic" * Char(0x80), join(("synthetic", "\"", "\\", "\$", "secret")), "synthetic" * repeat("\\", 20))
         mktempdir() do root
             terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), [key])
             redact = text -> JuliaForever.redact(terminal, text)
             missing = joinpath(root, "missing-" * key * "a.sqlite")
-            request = Catalog.Target(missing)
-            result = Catalog.choose(request, root, root, IOBuffer(), IOBuffer(), redact)
+            result = Catalog.named(Catalog.Info[], missing, redact)
             @test result isa Catalog.Invalid
             @test occursin("missing-[redacted]a.sqlite", result.message)
             @test !occursin(chop(repr(key * "a"); head=1, tail=1), result.message)
-            raw = Catalog.choose(request, root, root, IOBuffer(), IOBuffer())
+            raw = Catalog.named(Catalog.Info[], missing)
             @test occursin(repr(missing), raw.message)
 
-            if !Sys.iswindows() || !occursin('\\', key)
+            if !Sys.iswindows() || !(occursin('\\', key) || occursin('\"', key))
+                request = Catalog.Target(missing)
+                @test Catalog.choose(request, root, root, IOBuffer(), IOBuffer(), redact).message == result.message
                 path = joinpath(root, "exists-" * key * "a.sqlite")
                 close(open(H.SQLite, path))
                 selected = Catalog.choose(Catalog.Target(path), root, root, IOBuffer(), IOBuffer(), redact)

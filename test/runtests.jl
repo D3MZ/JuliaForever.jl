@@ -6,6 +6,7 @@ include("dispatch.jl")
 include("integration_dispatch.jl")
 include("instructions.jl")
 include("instructions_cli.jl")
+include("instructions_failure.jl")
 
 @testset "file tools" begin
     mktempdir() do dir
