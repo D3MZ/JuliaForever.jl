@@ -539,7 +539,9 @@ Supplying `executor` and `context` selects the executor-backed path, including f
 function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential, executor=nothing, context=nothing, auto_compaction=nothing, summarize=Summarizer(agent.provider))
     used = Ref{Union{Nothing, Usage}}(nothing)
     result = task_local_storage(:jf_compaction_usage, used) do
-        respond!(agent, prompt, executor, context; on_event, on_agent_event, parameters, tool_execution)
+        task_local_storage(:jf_overflow_recovery, recovery(auto_compaction, summarize, agent.provider)) do
+            respond!(agent, prompt, executor, context; on_event, on_agent_event, parameters, tool_execution)
+        end
     end
     finishauto!(agent, result, used[], auto_compaction, summarize, on_agent_event)
     result
@@ -631,10 +633,8 @@ function direct_partial!(run, answer, result)
     message_start!(run.callback, answer.message, answer.started)
     emit(run.callback, (; type=:message_end, message=deepcopy(answer.message)))
     emit(run.callback, (; type=:turn_end, message=deepcopy(answer.message), tool_results=Dict{String, Any}[]))
-    direct_partial!(result, turnstate(run.agent))
+    recover!(run, result, turnstate(run.agent))
 end
-direct_partial!(result, ::Cancelled) = :cancelled
-direct_partial!(result, ::Union{Idle, Running}) = result
 
 function direct_complete!(run, answer, transition, added)
     agent = run.agent
@@ -657,10 +657,15 @@ end
 
 "Continue a transcript ending in a user or tool message. Returns :empty or :assistant_tail for unsupported tails."
 function continue!(agent::Agent; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential)
-    selected = lock(agent.lock) do
-        continue_start!(agent, agent.turn, agent.fault, toolmode(tool_execution))
+    used = Ref{Union{Nothing, Usage}}(nothing)
+    task_local_storage(:jf_compaction_usage, used) do
+        task_local_storage(:jf_overflow_recovery, nothing) do
+            selected = lock(agent.lock) do
+                continue_start!(agent, agent.turn, agent.fault, toolmode(tool_execution))
+            end
+            continue_selected!(agent, selected; on_event, on_agent_event, parameters, tool_execution)
+        end
     end
-    continue_selected!(agent, selected; on_event, on_agent_event, parameters, tool_execution)
 end
 continue_start!(agent, ::Union{Running, Cancelled}, fault, mode) = :busy
 continue_start!(agent, ::Idle, fault::History.Rejected, mode) = fault
