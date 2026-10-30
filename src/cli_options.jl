@@ -13,10 +13,11 @@ mutable struct CLIOptions
     baseline
     rules
     excluded::Vector{Regex}
+    tui
     outputmode
 end
 
-CLIOptions() = CLIOptions(nothing, String[], String[], nothing, nothing, nothing, APIKeyAuth(), SessionCatalog.New(), SessionCatalog.directory(ENV), nothing, String[], ToolSelection.Defaults(), ToolSelection.Inherit(), Regex[], TextMode())
+CLIOptions() = CLIOptions(nothing, String[], String[], nothing, nothing, nothing, APIKeyAuth(), SessionCatalog.New(), SessionCatalog.directory(ENV), nothing, String[], ToolSelection.Defaults(), ToolSelection.Inherit(), Regex[], LiveTerminal.FullscreenMode(), TextMode())
 
 struct CLIReady
     options::CLIOptions
@@ -44,6 +45,7 @@ end
 
 clivalue(action, valid, message) = (state, option) -> CLIValue(state.options, action, valid, message(option))
 clirequired(action, valid) = clivalue(action, valid, option -> "$option requires a value.")
+clituivalue(value) = haskey(tuimodes, value)
 climodevalue(value) = !startswith(value, "-")
 cliprovidervalue(value) = !isempty(strip(value)) && !startswith(value, "--")
 clioptionvalue(value) = !isempty(value) && !startswith(value, "--")
@@ -94,6 +96,7 @@ clilogin(state, auth) = clilogin(state, state.options.auth, auth)
 clilogin(state, ::APIKeyAuth, auth::OpenRouterAuth) = (state.options.auth = auth; state)
 clilogin(state, ::OpenRouterAuth, auth) = clierror("Select only one OpenRouter login mode.")
 
+settui!(options, value) = (options.tui = tuimodes[value]; nothing)
 setmode!(options, value) = (options.outputmode = assignmode(options.outputmode, terminalmode(value)); nothing)
 settools!(options, value) = (options.rules = ToolSelection.assign(options.rules, ToolSelection.entries(value)); nothing)
 setexcluded!(options, value) = (options.excluded = ToolSelection.patterns(value); nothing)
@@ -108,13 +111,14 @@ setsessiondir!(options, value) = (options.sessiondir = abspath(expanduser(value)
 setname!(options, value) = (options.sessionname = Conversation.sessionname(value); nothing)
 setabandon!(options, value) = (options.action = historyabandon(options.action, value); nothing)
 
+const clituioption = clivalue(settui!, clituivalue, option -> "--tui-mode requires regular or fullscreen.")
 const climodeoption = clivalue(setmode!, climodevalue, option -> "--mode requires text or json.")
 const clitoolsoption = clirequired(settools!, nothing)
 const cliexcludeoption = clirequired(setexcluded!, nothing)
 const clinameoption = clivalue(setname!, clinamevalue, option -> "--name requires a non-empty value.")
 const cliactions = Dict{String, Function}(
     "--" => clirest!, "--help" => clihelp!, "-h" => clihelp!,
-    "--codemode" => clicode!, "--mode" => climodeoption,
+    "--codemode" => clicode!, "--mode" => climodeoption, "--tui-mode" => clituioption,
     "--no-tools" => cliexcludeall!, "-nt" => cliexcludeall!,
     "--no-builtin-tools" => cliexcludebuiltin!, "-nbt" => cliexcludebuiltin!,
     "--tools" => clitoolsoption, "-t" => clitoolsoption,
@@ -143,7 +147,7 @@ clifinal(state::CLIModelQuery) = clifinal(state.options)
 clifinal(state::CLIValue) = clifinal(clierror(state.message))
 clifinal(state::CLIStopped) = state.status
 function clifinal(options::CLIOptions)
-    (; codemode, packages, environments, action, selected, requested_model, auth, session, sessiondir, sessionname, args, baseline, rules, excluded, outputmode) = options
-    values = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, outputmode, output=stdout)
+    (; codemode, packages, environments, action, selected, requested_model, auth, session, sessiondir, sessionname, args, baseline, rules, excluded, tui, outputmode) = options
+    values = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, tui, outputmode, output=stdout)
     selectedmode(action, values, outputmode)
 end

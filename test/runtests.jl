@@ -192,6 +192,7 @@ if haskey(ENV, "PI_SOURCE")
     include("mcp_progress.jl")
     include("mcp_resources_differential.jl")
     include("mcp_roots_differential.jl")
+    include("fullscreen_differential.jl")
 end
 include("scheduler.jl")
 include("json_content.jl")
