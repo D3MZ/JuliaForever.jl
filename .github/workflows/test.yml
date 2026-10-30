@@ -55,6 +55,7 @@ jobs:
         env:
           PI_SOURCE: ${{ runner.temp }}/pi-source
           JULIA_NUM_THREADS: 4
+          JULIA_PKG_PRECOMPILE_AUTO: '0'
         run: |
           if [ "$RUNNER_OS" = Linux ]; then
             timeout --signal=TERM --kill-after=15s 600s julia --startup-file=no --project=. scripts/ci.jl --coverage
