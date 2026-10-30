@@ -68,3 +68,12 @@ end
     @test agent.state.steering == ["keep steering"]
     @test agent.state.followups == ["keep followup"]
 end
+
+@testset "an empty queue does not change history" begin
+    history = QueueHistory.Memory()
+    provider = QueueProvider(Channel{Nothing}(1), Channel{Nothing}(1), Any[])
+    agent = Agent(provider, []; history)
+    revision = QueueHistory.snapshot(history).revision
+    @test JuliaForever.dequeue!(agent) == (steering=String[], followups=String[])
+    @test QueueHistory.snapshot(history).revision == revision
+end
