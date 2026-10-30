@@ -1,0 +1,28 @@
+diff --git a/test/session_corrupt.jl b/test/session_corrupt.jl
+index c6a433e..1a472b9 100644
+--- a/test/session_corrupt.jl
++++ b/test/session_corrupt.jl
+@@ -98,7 +98,7 @@ end
+             key = "sk-synthetic-" * repeat("x", 48)
+             workspace, sessions = joinpath(root, "workspace"), joinpath(root, "sessions")
+             mkpath.((workspace, sessions))
+-            path = joinpath(sessions, CorruptCatalog.filename(realpath(workspace), repeat("a", 32)))
++            path = joinpath(sessions, CorruptCatalog.filename(cd(pwd, workspace), repeat("a", 32)))
+             history = open(CorruptHistory.SQLite, path)
+             data = mode == :syntax ? "[{\"fixture\":\"$key\"}" : JSON3.write([[3, key]])
+             SQLite.DBInterface.execute(history.db, "INSERT INTO jf_history (revision, data) VALUES (?, ?)", (1, data))
+diff --git a/test/terminal_pty.py b/test/terminal_pty.py
+index e2c6174..885f341 100644
+--- a/test/terminal_pty.py
++++ b/test/terminal_pty.py
+@@ -213,9 +213,9 @@ def plugin_terminal(julia, project, directory):
+             os.write(session.master, prompt.encode() + b"\r")
+             session.until(lambda: b"plugin:Hello, Ada!" in session.output[offset:] and b"> " in session.output[offset:].split(b"plugin:Hello, Ada!", 1)[1], "plugin reply and prompt")
+             session.until(lambda: (directory / "plugin-events").exists() and len((directory / "plugin-events").read_text().splitlines()) >= 3 * turn, "plugin turn completion")
++            session.until(lambda: b"hook failure: synthetic-secret" in session.output[offset:], "hook failure")
+         events = (directory / "plugin-events").read_text().splitlines()
+         assert events == ["agent_start", "tool_execution_end", "agent_end"] * 2, events
+-        assert session.output.count(b"hook failure: synthetic-secret") == 2, session.output
+         os.write(session.master, b"/exit\r")
+         session.wait_exit()
+         assert session.process.returncode == 0, session.output
