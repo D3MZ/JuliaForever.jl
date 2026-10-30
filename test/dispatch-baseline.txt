@@ -1,73 +1,29 @@
-JuliaForever.jl	:(SessionCatalog.recovery(session))
-JuliaForever.jl	:(SessionCatalog.recovery(session))
-JuliaForever.jl	:(compatible(auth, selected))
-JuliaForever.jl	:(haslogin(auth))
-JuliaForever.jl	:(haslogin(auth))
-JuliaForever.jl	:(haslogin(auth))
-JuliaForever.jl	:(isnothing(path))
-JuliaForever.jl	:(isnothing(path))
-JuliaForever.jl	:(isnothing(reason))
-JuliaForever.jl	:(isnothing(reason))
-JuliaForever.jl	:(recoveryname(sessionname))
-JuliaForever.jl	:(recoveryname(sessionname))
 JuliaForever.jl	:(result.status == 0)
-JuliaForever.jl	:(selected == "openrouter")
-JuliaForever.jl	:(validprovider(selected))
-JuliaForever.jl	:codemode
-JuliaForever.jl	:inspect
+JuliaForever.jl	:(something(findfirst((==)("--"), args), length(args) + 1))
 agent.jl	:(Kernel.same(recorded, agent.messages))
+agent.jl	:(Kernel.same(value, convert(Dict{String, Any}, previous)))
 agent.jl	:(name === :cancelled)
 agent.jl	:(name === :events)
 agent.jl	:(name === :running)
 agent.jl	:(requestcancelled((last(exceptions)).exception, turnstate(agent)))
-agent.jl	:(result.finish == "length")
-agent.jl	:returned
-agent_history.jl	:complete
-codemode.jl	:(call.status == :running)
+agent.jl	:(visible(result))
+agent_execution.jl	:(visible(result))
+chatgpt_store.jl	:(code == Base.Libc.EAGAIN)
 codemode.jl	:(cancel.cancelled[])
 codemode.jl	:(cancel.cancelled[])
 codemode.jl	:(cancel.cancelled[])
 codemode.jl	:(context.done[])
-codemode.jl	:(isnothing(alarm))
-codemode.jl	:(isnothing(failure))
-codemode.jl	:(isnothing(failure))
-codemode.jl	:(isnothing(failure))
-codemode.jl	:(isnothing(failure))
-codemode.jl	:(isnothing(process))
-codemode.jl	:(isnothing(reader))
-codemode.jl	:(isnothing(result))
-codemode.jl	:(isnothing(timer))
-codemode.jl	:(isnothing(writer))
+codemode.jl	:(isopen(context.events))
 codemode.jl	:(name === :ok)
+codemode.jl	:(ok(result))
 codemode.jl	:(timedout[])
-codemode.jl	:ok
-codemode_worker.jl	:(connected[])
-codemode_worker.jl	:(isnothing(channel))
-codemode_worker.jl	:(isnothing(id))
-codemode_worker.jl	:(value isa AbstractString)
-conversation.jl	:(index === nothing)
+compaction.jl	:(Kernel.same(agent.messages, plan.original))
 conversation.jl	:(name === :automatic)
 conversation.jl	:(name === :cancelled)
 conversation.jl	:(name === :done)
 conversation.jl	:(name in (:messages, :order, :calls, :steering, :followups))
 conversation.jl	:(name in (:text, :iserror, :image))
-conversation_codec.jl	:(code isa Rejected)
-conversation_codec.jl	:(code isa Rejected)
-conversation_codec.jl	:(event isa K.Event)
-conversation_codec.jl	:(item isa Rejected)
-conversation_codec.jl	:(item isa Rejected)
-conversation_codec.jl	:(item isa Rejected)
-conversation_codec.jl	:(item isa Rejected)
-conversation_codec.jl	:(item isa type)
-conversation_codec.jl	:(item isa type)
-conversation_codec.jl	:(item isa type)
-conversation_codec.jl	:(key isa String)
-conversation_codec.jl	:(messages isa Rejected)
-conversation_codec.jl	:(record isa Dict)
-conversation_codec.jl	:(record isa Dict)
-conversation_codec.jl	:(record["automatic"] isa Bool)
-conversation_codec.jl	:(state.phase == C.Ready)
-conversation_codec.jl	:(xs isa Vector)
+durable.jl	:(code == Base.Libc.EAGAIN)
 durable.jl	:(document(record, conversation))
 durable.jl	:(entry(record, conversation, upper))
 durable.jl	:(hasdocuments(state, conversation))
@@ -80,192 +36,73 @@ durable.jl	:(name === :closed)
 durable.jl	:(name === :closed)
 durable.jl	:(name === :failed)
 durable.jl	:(name === :failed)
-durable.jl	:(nextid isa Int)
 durable.jl	:(previous.kind == kind)
-durable.jl	:(record isa Record)
-durable.jl	:(result === nothing)
-durable.jl	:(seq isa Int)
-durable.jl	:(state isa Rejected)
-durable.jl	:(valid(apply!(state, record)))
-durable.jl	:(valid(forkcheck(state, record)))
-durable.jl	:(valid(forkcheck(state, records)))
 durable.jl	:(visible(state, conversation, at))
-durable.jl	:(writes isa AbstractVector)
-durable.jl	:adopted
-durable.jl	:created
-durable.jl	:success
 execution.jl	:(cancelled(cancellation))
 execution.jl	:(cancelled(handle.cancellation))
 execution_conversation.jl	:(name === :detailed)
-extensions.jl	:(hook.event == event.type)
-history.jl	:(key isa String)
+headless_thinking.jl	:(something(findfirst(isequal(session.thinking), choices.levels), 0))
 history.jl	:(name === :batches)
 history.jl	:(name === :batches)
 history.jl	:(name === :status)
-history.jl	:(saved isa Rejected)
-history.jl	:(saved isa Rejected)
 instructions.jl	:(shadowed(shadow, dir, context))
-kernel.jl	:(index === nothing)
 kernel.jl	:(name === :closed)
 kernel.jl	:(name === :events)
 kernel.jl	:(name === :observations)
 kernel.jl	:(name === :pending)
-kernel.jl	:(previous !== nothing)
 kernel.jl	:(same(getfield(a, field), getfield(b, field), seen))
 kernel.jl	:(same(key, other))
-kernel.jl	:(same(value, result, seen))
 kernel.jl	:(same(x, y, seen))
 kernel.jl	:(same(x, y, seen))
-kernel.jl	:found
-logs.jl	:empty
-logs.jl	:first
-mcp.jl	:(available(capability(client)))
-mcp.jl	:(cursor isa AbstractString)
-mcp.jl	:(detail isa AbstractDict)
-mcp.jl	:(detail["code"] isa Bool)
-mcp.jl	:(doc isa AbstractString)
-mcp.jl	:(execution isa AbstractDict)
-mcp.jl	:(get(detail, "code", nothing) isa Integer)
-mcp.jl	:(get(detail, "message", nothing) isa AbstractString)
-mcp.jl	:(get(item, "inputSchema", nothing) isa AbstractDict)
-mcp.jl	:(get(item, "name", nothing) isa AbstractString)
-mcp.jl	:(get(page, "tools", nothing) isa AbstractVector)
-mcp.jl	:(get(result, "capabilities", nothing) isa AbstractDict)
-mcp.jl	:(get(result, "serverInfo", nothing) isa AbstractDict)
-mcp.jl	:(get(result["capabilities"], "tools", Dict()) isa AbstractDict)
-mcp.jl	:(get(result["serverInfo"], "name", nothing) isa AbstractString)
-mcp.jl	:(get(result["serverInfo"], "version", nothing) isa AbstractString)
-mcp.jl	:(id isa AbstractString)
-mcp.jl	:(id isa AbstractString)
-mcp.jl	:(id isa Bool)
-mcp.jl	:(id isa Bool)
-mcp.jl	:(id isa Integer)
-mcp.jl	:(id isa Integer)
-mcp.jl	:(isnothing(channel))
-mcp.jl	:(item isa AbstractDict)
-mcp.jl	:(message isa AbstractDict)
-mcp.jl	:(method isa AbstractString)
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :state)
-mcp.jl	:(page isa AbstractDict)
-mcp.jl	:(page isa Failure)
-mcp.jl	:(received(client, message))
-mcp.jl	:(result["content"] isa AbstractVector)
-mcp.jl	:(result["isError"] isa Bool)
-mcp.jl	:(stringvalue(get(value, "text", nothing)))
-mcp.jl	:(stringvalue(get(value, "uri", nothing)))
+mcp.jl	:(received(client, validmessage(value)))
+mcp.jl	:(received(client, value))
 mcp.jl	:(timedwait((()->begin                   process_exited(client.process)               end), client.grace; pollint = 0.01) != :ok)
 mcp.jl	:(timedwait((()->begin                   process_exited(client.process)               end), client.grace; pollint = 0.01) != :ok)
 mcp.jl	:(visible(item))
+mcp.jl	:validcontent
+model_config.jl	:(effort in values(levels))
 provider.jl	:((last(current_exceptions())).exception isa ArgumentError)
-provider.jl	:(get(data, "is_byok", false))
-provider.jl	:(isnothing(delta))
 provider.jl	:(key == "error")
-provider.jl	:(key isa AbstractString)
 provider.jl	:(name === :done)
-provider.jl	:(pending[])
-provider.jl	:(text isa AbstractString)
-provider.jl	:(text isa AbstractString)
-provider.jl	:(timedwait((()->begin                   isready(callback.result)               end), timeout; pollint = 0.01) == :ok)
 provider.jl	:complete
-provider.jl	:denied
-provider.jl	:streaming
-provider.jl	:success
-provider.jl	:success
-responses.jl	:(get(call, key, nothing) isa AbstractString)
-responses.jl	:(valid(call))
-scheduler.jl	:(key !== nothing)
+scheduler.jl	:(cancel!(tx, id, get(tx, Task, id)))
+scheduler.jl	:(cancel!(tx, record.id, get(tx, Task, record.id)))
 scheduler.jl	:(name === :cancelled)
 scheduler.jl	:(same(record.state["spec"], spec))
 scheduler.jl	:(same(state["checkpoint"], next))
-scheduler.jl	:(typeof(a))
-scheduler.jl	:(typeof(b))
-scheduler.jl	:(view === nothing)
 scheduler.jl	:(view.kind == name(handler))
-scheduler.jl	:cancelled
-scheduler.jl	:success
-search.jl	:(isnothing(filterregex))
-search.jl	:(isnothing(filterregex))
-search.jl	:(isnothing(stop))
-search.jl	:(rule.directory)
+search.jl	:(matchesignore(pattern.pattern, relative, entry))
+search.jl	:(matchesignore(pattern.pattern, relative, entry))
+search.jl	:(selectglob(filter, target))
+search.jl	:(visit(item))
+search.jl	:(walkentry(walk, item, ruleset, inside))
 search.jl	:anchored
-search.jl	:anchored
-search.jl	:anywhere
-search.jl	:directory
-search.jl	:directory
-search.jl	:directory
-search.jl	:directory
-search.jl	:directory
-search.jl	:directory
-search.jl	:directory
-search.jl	:exclude
-search.jl	:exclude
-search.jl	:ignorecase
-search.jl	:ignorecase
-search.jl	:isdirectory
-search.jl	:limited
-search.jl	:literal
-search.jl	:matched
-search.jl	:negate
-search.jl	:smartcase
-search.jl	:truncated
-search.jl	:truncated
-search.jl	:truncatedlines
-search.jl	:truncatedlines
-search.jl	:windows
-search.jl	:windows
+session_terminal.jl	:(Kernel.same(agent.messages, plan.original))
+session_terminal.jl	:(Kernel.same(projected, agent.messages))
+session_terminal.jl	:(Kernel.same(projected, agent.messages))
+session_terminal.jl	:(Kernel.same(projected, plan.original))
 session_terminal.jl	:(history === selected)
 session_terminal.jl	:(history === selected)
-sessions.jl	:(entryid isa AbstractString)
-sessions.jl	:(get(header, "type", nothing) == "session")
-sessions.jl	:(get(header, key, nothing) isa AbstractString)
-sessions.jl	:(get(row, "timestamp", nothing) isa AbstractString)
-sessions.jl	:(get(row, "type", nothing) isa AbstractString)
-sessions.jl	:(isnothing(from))
-sessions.jl	:(isnothing(from))
-sessions.jl	:(isnothing(parent))
-sessions.jl	:(isnothing(path))
 sessions.jl	:(name === :flushed)
 sessions.jl	:(name === :flushed)
 sessions.jl	:(name === :terminated)
 sessions.jl	:(name === :terminated)
-sessions.jl	:(parent isa AbstractString)
 sqlite_history.jl	:(formaterror((last(exceptions)).exception))
 sqlite_history.jl	:(mode in ("delete", "truncate", "persist", "wal"))
-sqlite_history.jl	:(result isa H.Rejected)
-sqlite_history.jl	:complete
-sqlite_history.jl	:create
-sqlite_history.jl	:create
-sqlite_history.jl	:create
-sqlite_history.jl	:opened
-system.jl	:(isnothing(shellrun))
-system.jl	:(token.cancelled)
-system.jl	:bybytes
-system.jl	:keep
-system.jl	:partial
-system.jl	:partial
-system.jl	:reached
-system.jl	:truncated
+system.jl	:(code != 0)
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :streamed)
 terminal.jl	:(name === :streamed)
 terminal.jl	:(result.status == 0)
-terminal_live.jl	:(continuation!(state, mode))
 terminal_live.jl	:(matches(item, mode))
-tools.jl	:(duplicate(edit.fuzzy, comparable))
-tools.jl	:(duplicate(edit.old, originalcontent))
-tools.jl	:(isnothing(content))
-tools.jl	:(isnothing(findfirst(edit.old, originalcontent)))
-tools.jl	:(isnothing(findfirst(edit.old, originalcontent)))
-tools.jl	:(isnothing(match))
-tools.jl	:(isnothing(match))
-tools.jl	:(isnothing(output))
+terminal_menus.jl	:(selected === nothing)
+tool_selection.jl	:(name(tool) in wanted)
+tool_selection.jl	:(name(tool) in wanted)
 tools.jl	:(isopen(signal))
 tools.jl	:(kind == codeunits("IDAT"))
 tools.jl	:(kind == codeunits("acTL"))
 tools.jl	:(name === :iserror)
-tools.jl	:iserror
-tools.jl	:usedfuzzy
-tools.jl	:usedfuzzy

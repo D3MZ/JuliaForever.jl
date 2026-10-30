@@ -120,6 +120,31 @@ end
     end
 end
 
+@testset "SQLite existing-only open preserves invalid files" begin
+    mktempdir() do dir
+        missing = joinpath(dir, "missing.sqlite")
+        @test open(H.SQLite, missing; create=false) == H.Rejected(:history_missing)
+        @test !ispath(missing)
+
+        empty = joinpath(dir, "empty.sqlite")
+        db = SQLite.DB(empty)
+        SQLite.execute(db, "PRAGMA user_version = 1")
+        close(db)
+        before = read(empty)
+        @test open(H.SQLite, empty; create=false) == H.Rejected(:history_format)
+        @test read(empty) == before
+
+        history = open(H.SQLite, empty)
+        @test history isa H.SQLite
+        @test H.append!(history, 0, Any["saved"]) == 1
+        close(history)
+        reopened = open(H.SQLite, empty; create=false)
+        @test reopened isa H.SQLite
+        @test collect(H.snapshot(reopened)) == Any["saved"]
+        close(reopened)
+    end
+end
+
 @testset "SQLite rejects an unrelated database" begin
     mktempdir() do dir
         path = joinpath(dir, "other.sqlite")

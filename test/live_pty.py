@@ -10,6 +10,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from tmux_exit import wait_for_exit
+
 root = pathlib.Path(sys.argv[1]).resolve()
 julia = sys.argv[2]
 more = threading.Event()
@@ -126,7 +128,7 @@ with tempfile.TemporaryDirectory(prefix="jf-live-pty-") as directory:
     env = os.environ.copy()
     env.update(JF_PROVIDER="openai", OPENAI_MODEL="fixture", OPENAI_API_KEY="synthetic", OPENAI_BASE_URL=f"http://127.0.0.1:{server.server_port}/v1", JF_SESSION_DIR=directory, PI_CODING_AGENT_DIR=str(pathlib.Path(directory) / "agent"))
     env.pop("JF_INSTRUCTIONS_DIR", None)
-    command = shlex.join([julia, "--startup-file=no", "--compiled-modules=existing", f"--project={root}", "-e", "using JuliaForever; exit(JuliaForever.main(ARGS))", "--"])
+    command = shlex.join([julia, "--startup-file=no", "--compiled-modules=existing", f"--project={root}", "-e", "using JuliaForever; exit(JuliaForever.main(ARGS))", "--", "--tui-mode", "regular"])
     subprocess.run([*tmux, "new-session", "-d", "-s", "live", "-x", "72", "-y", "24", "-c", directory, command], env=env, check=True, capture_output=True, text=True)
     run("set-option", "-g", "remain-on-exit", "on")
     try:
@@ -135,6 +137,11 @@ with tempfile.TemporaryDirectory(prefix="jf-live-pty-") as directory:
         send("probe")
         wait_for(lambda: "> probe" in screen(), "empty dequeue did not return to the editor", 8)
         assert not list(pathlib.Path(directory).glob("*.sqlite"))
+        key("C-c")
+        send("discard\\")
+        key("Enter")
+        send("multiline")
+        wait_for(lambda: "discard" in screen() and "multiline" in screen() and len(requests) == 0, "backslash continuation did not keep the draft", 8)
         key("C-c")
         send("first")
         key("Enter")
@@ -148,7 +155,7 @@ with tempfile.TemporaryDirectory(prefix="jf-live-pty-") as directory:
         key("C-c")
         send("steer")
         more.set()
-        wait_for(lambda: "First response " + "x" * 70 in screen() and "> steer" in screen(), "streaming or resize overwrote the draft", 8)
+        wait_for(lambda: "First response" + "x" * 70 in screen().replace("\n", "") and "> steer" in screen(), "streaming or resize overwrote the draft", 8)
         run("resize-window", "-t", "live", "-x", "72", "-y", "24")
         key("Enter")
         wait_for(lambda: "Steering: steer" in screen(), "steering was not queued during the request", 8)
@@ -192,10 +199,10 @@ with tempfile.TemporaryDirectory(prefix="jf-live-pty-") as directory:
         assert [m["content"] for m in requests[6] if m["role"] == "user"][-1] == "another\n\nafter\n\ncurrent", requests[6]
         send("/exit")
         key("Enter")
-        wait_for(lambda: run("display-message", "-p", "-t", "live", "#{pane_dead}").stdout.strip() == "1", "terminal failed to exit", 15)
-        assert run("display-message", "-p", "-t", "live", "#{pane_dead_status}").stdout.strip() == "0", screen()
+        status, death_signal = wait_for_exit(run, "live")
+        assert status == "0", f"exit status={status!r}; signal={death_signal!r}; screen={history()!r}"
         assert len(list(pathlib.Path(directory).glob("*.sqlite"))) == 1
-        resumed = shlex.join([julia, "--startup-file=no", "--compiled-modules=existing", f"--project={root}", "-e", "using JuliaForever; exit(JuliaForever.main(ARGS))", "--", "--continue"])
+        resumed = shlex.join([julia, "--startup-file=no", "--compiled-modules=existing", f"--project={root}", "-e", "using JuliaForever; exit(JuliaForever.main(ARGS))", "--", "--tui-mode", "regular", "--continue"])
         run("new-window", "-t", "live", "-n", "resumed", "-c", directory, resumed)
         wait_for(lambda: "> " in screen(), "saved session did not reopen", 60)
         send("reopen")

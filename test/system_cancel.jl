@@ -19,12 +19,7 @@ end
 end
 
 @testset "shell cancellation" begin
-    if Sys.iswindows()
-        mktempdir() do dir
-            result = execute(Bash(dir), (; command="echo unexpected"); cancel=JuliaForever.ShellCancellation())
-            @test result == ToolResult("Cancellation is not supported on Windows", true)
-        end
-    else
+    if !Sys.iswindows()
         mktempdir() do dir
             shell = Bash(dir)
             cancel = JuliaForever.ShellCancellation()
@@ -100,7 +95,8 @@ end
                 @test timedwait(() -> istaskdone(run), 5) == :ok
                 result = fetch(run)
                 @test result in (ToolResult("complete"), ToolResult("Command aborted", true), ToolResult("complete\n\nCommand aborted", true), ToolResult("Command timed out after 0.01 seconds", true), ToolResult("complete\n\nCommand timed out after 0.01 seconds", true))
-                @test isempty(cancel.runs)
+                @test execute(shell, (; command="touch unexpected"); cancel) == ToolFailure("Command aborted")
+                @test !isfile(joinpath(dir, "unexpected"))
             end
         end
     end

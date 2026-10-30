@@ -21,6 +21,8 @@ units(::Image) = 4800
 "Approximate tokens for text or a supported native conversation message."
 tokens(text::AbstractString) = cld(2 * units(text), 7)
 tokens(message::Conversation.User) = tokens(message.content)
+tokens(message::Conversation.SkillContext) = tokens(message.content)
+tokens(message::Conversation.ImageUser) = cld(2 * (units(message.content) + sum(units, message.images; init=0)), 7)
 
 attached(::Nothing) = 0
 attached(image::Image) = units(image)
@@ -51,8 +53,17 @@ functionunits(data::AbstractDict) = units(get(data, "name", nothing)) + argument
 
 thinking() = 0
 thinking(text::AbstractString, rest...) = isempty(text) ? thinking(rest...) : units(text)
+thinking(value::Integer) = value
 thinking(value, rest...) = thinking(rest...)
-reasoningunits(metadata::AbstractDict) = thinking(get(metadata, "reasoning_content", nothing), get(metadata, "reasoning", nothing), get(metadata, "reasoning_text", nothing))
+anthropicthinking(blocks::AbstractVector) = sum(reasoningblock, blocks; init=0)
+anthropicthinking(value) = 0
+reasoningblock(block) = 0
+reasoningblock(block::AbstractDict) = get(reasoningblocks, get(block, "type", ""), reasoningother)(block)
+reasoningother(block) = 0
+reasoningtext(block) = units(get(block, "thinking", nothing))
+reasoningredacted(block) = units("[Reasoning redacted]")
+const reasoningblocks = Dict("thinking" => reasoningtext, "redacted_thinking" => reasoningredacted)
+reasoningunits(metadata::AbstractDict) = thinking(get(metadata, "reasoning_content", nothing), get(metadata, "reasoning", nothing), get(metadata, "reasoning_text", nothing), anthropicthinking(get(metadata, "anthropic_content", nothing)))
 assistantunits(content, calls, metadata) = units(content) + reasoningunits(metadata) + sum(callunits, calls; init=0)
 tokens(message::Conversation.Assistant) = cld(2 * assistantunits(message.content, message.calls, message.metadata), 7)
 tokens(message::Conversation.ToolMessage) = cld(2 * (units(message.content) + attached(message.image)), 7)
@@ -73,7 +84,9 @@ end
 tooltokens(::Nothing) = 0
 tooltokens(tools::Union{Tuple, AbstractVector}) = isempty(tools) ? 0 : tokens(JSON3.write(tools))
 systemtokens(data) = tokens(systemtext(data)) + tooltokens(get(data, "toolsAdded", nothing)) + tooltokens(get(data, "toolsRemoved", nothing))
-usertokens(data) = cld(2 * units(get(data, "content", nothing)), 7)
+imageunits(::Nothing) = 0
+imageunits(images::Union{Tuple, AbstractVector}) = 4800 * length(images)
+usertokens(data) = cld(2 * (units(get(data, "content", nothing)) + imageunits(get(data, "images", nothing))), 7)
 toolmessagetokens(data) = cld(2 * (units(get(data, "content", nothing)) + attached(get(data, "image", nothing))), 7)
 assistanttokens(data) = cld(2 * assistantunits(get(data, "content", nothing), get(data, "tool_calls", ()), data), 7)
 const roles = Dict("system" => systemtokens, "user" => usertokens, "assistant" => assistanttokens, "tool" => toolmessagetokens)

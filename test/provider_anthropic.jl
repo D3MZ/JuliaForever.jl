@@ -25,6 +25,23 @@ using HTTP, JSON3
     end
 end
 
+@testset "Anthropic block validation" begin
+    api = JuliaForever.AnthropicAPI
+    text = api.Text(Dict("type" => "text", "text" => "ok"))
+    unknown = api.Unknown(Dict("type" => "unknown"))
+    valid = api.Call(Dict("type" => "tool_use", "id" => "id", "name" => "read", "input" => Dict()))
+    @test api.result([text], "end_turn", nothing, nothing).done
+    @test api.result([valid], "tool_use", nothing, nothing).done
+    for block in (unknown, api.Call(Dict("type" => "tool_use", "id" => "", "name" => "read", "input" => Dict())), api.Call(Dict("type" => "tool_use", "id" => "id", "name" => "", "input" => Dict())), api.Call(Dict("type" => "tool_use", "id" => "id", "name" => "read", "input" => "bad")))
+        result = api.result([block], "tool_use", nothing, nothing)
+        @test !result.done && occursin("invalid content", result.error)
+        @test api.result([block], "tool_use", nothing, "previous").error == "previous"
+    end
+    duplicate = api.result([valid, valid], "tool_use", nothing, nothing)
+    @test !duplicate.done && occursin("invalid content", duplicate.error)
+    @test !api.result([text], "unknown", nothing, nothing).done
+end
+
 anthropicsse(event) = "event: " * event["type"] * "\ndata: " * JSON3.write(event) * "\n\n"
 
 @testset "Anthropic messages" begin
@@ -67,7 +84,7 @@ anthropicsse(event) = "event: " * event["type"] * "\ndata: " * JSON3.write(event
             @test all(block.type != "thinking" for block in handoff.messages[1].content)
             @test handoff.messages[1].content[end].id == "call-1"
         end
-        model = provider(Dict("JF_PROVIDER" => "anthropic", "ANTHROPIC_MODEL" => "claude", "ANTHROPIC_API_KEY" => "secret"))
+        model = provider(Dict("JF_PROVIDER" => "anthropic", "ANTHROPIC_MODEL" => "claude", "ANTHROPIC_API_KEY" => "secret", "PI_CODING_AGENT_DIR" => mktempdir()))
         @test model isa Anthropic
         @test model.base == "https://api.anthropic.com"
     finally
@@ -220,6 +237,54 @@ end
             @test requests[2].messages[2].content[1].signature == "signed"
             @test requests[2].messages[3].content[1].tool_use_id == "call-1"
             @test count(event -> event.type == :done, events) == 2
+        end
+    finally
+        close(server)
+        wait(server)
+    end
+end
+
+@testset "Anthropic tool streaming compatibility" begin
+    reference = if haskey(ENV, "PI_SOURCE")
+        source = ENV["PI_SOURCE"]
+        @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
+        JSON3.read(read(`node $(joinpath(@__DIR__, "provider_anthropic_tools_reference.mjs")) $source`, String))
+    else
+        JSON3.read("""[{"body":{"tools":[{"eager_input_streaming":true}]},"beta":null},{"body":{"tools":[{}]},"beta":"fine-grained-tool-streaming-2025-05-14"},{"body":{},"beta":null}]""")
+    end
+    requests = []
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        body = JSON3.read(String(request.body))
+        push!(requests, (; body, beta=HTTP.header(request, "anthropic-beta", "")))
+        body.stream && return HTTP.Response(200, ["Content-Type" => "text/event-stream"], join(anthropicsse.(anthropic_events())))
+        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(Dict("content" => [Dict("type" => "text", "text" => "ok")], "stop_reason" => "end_turn")))
+    end
+    try
+        mktempdir() do dir
+            tools = Dict("read" => Read(dir))
+            input = [Dict("role" => "user", "content" => "hi")]
+            base = "http://$(HTTP.server_addr(server))"
+            models = [Anthropic(base, "claude-sonnet-4-5", "synthetic"; eager_tool_streaming=true), Anthropic(base, "claude-sonnet-4-5", "synthetic"; eager_tool_streaming=false), Anthropic(base, "claude-sonnet-4-5", "synthetic"; eager_tool_streaming=false)]
+            for (model, exposed) in zip(models, (tools, tools, Dict()))
+                @test JuliaForever.stream(model, input, exposed).done
+            end
+            for (request, expected) in zip(requests, reference)
+                @test request.beta == something(expected.beta, "")
+                @test haskey(request.body, :tools) == haskey(expected.body, :tools)
+                if haskey(expected.body, :tools)
+                    @test get(request.body.tools[1], :eager_input_streaming, nothing) == get(expected.body.tools[1], :eager_input_streaming, nothing)
+                end
+            end
+            @test JuliaForever.complete(models[2], input, tools).done
+            @test requests[end].beta == "fine-grained-tool-streaming-2025-05-14"
+            @test !haskey(requests[end].body.tools[1], :eager_input_streaming)
+            @test JuliaForever.stream(Anthropic(base, "custom-model", "synthetic"), input, tools).done
+            @test isempty(requests[end].beta) && !haskey(requests[end].body.tools[1], :eager_input_streaming)
+            builtin = Anthropic("https://api.anthropic.com", "claude-sonnet-4-5", "synthetic")
+            @test JSON3.read(JuliaForever.payload(builtin, input, tools, Dict())).tools[1].eager_input_streaming
+            for model in (Anthropic(base, "custom-model", "synthetic"), Anthropic("https://api.anthropic.com", "custom-model", "synthetic"), Anthropic(base, "claude-sonnet-4-5", "synthetic"))
+                @test !haskey(JSON3.read(JuliaForever.payload(model, input, tools, Dict())).tools[1], :eager_input_streaming)
+            end
         end
     finally
         close(server)

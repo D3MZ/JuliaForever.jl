@@ -1,4 +1,4 @@
-export steer!, followup!, dequeue!, name!, cancel!, abandon!
+export steer!, followup!, dequeue!, steeringmode!, followupmode!, name!, cancel!, abandon!, continue!
 
 struct Truncated
     completion::Completion
@@ -14,10 +14,11 @@ struct Sequential <: ToolMode end
 struct Parallel <: ToolMode end
 const toolmodes = Dict(:sequential => Sequential(), :parallel => Parallel())
 toolmode(mode) = get(toolmodes, mode, nothing)
+toolmode(mode::ToolMode) = mode
 
-mutable struct Agent{P}
+mutable struct Agent{P, T}
     provider::P
-    tools::Dict{String, Tool}
+    tools::T
     messages::Vector{Dict{String, Any}}
     initial::Conversation.State
     state::Conversation.State
@@ -34,10 +35,23 @@ end
 function Agent(provider, tools, messages; history=nothing)
     transcript = Conversation.Message[Conversation.RawMessage(deepcopy(message)) for message in messages]
     initial = Conversation.State("agent-" * randstring(16); automatic=false, messages=transcript)
-    openagent(provider, tools, messages, initial, history)
+    openagent(provider, fresh(tools), messages, initial, history)
+end
+
+function Agent(provider, tools, messages::Vector{Conversation.Message}; history=nothing)
+    initial = Conversation.State("agent-" * randstring(16); automatic=false, messages)
+    projected = Dict{String, Any}[convert(Dict{String, Any}, message) for message in messages]
+    openagent(provider, fresh(tools), projected, initial, history)
 end
 
 Agent(provider, tools; history=nothing) = Agent(provider, Dict{String, Tool}(name(tool) => tool for tool in tools), Dict{String, Any}[]; history)
+Agent(provider, tools::ToolSet; history=nothing) = Agent(provider, tools, Dict{String, Any}[]; history)
+
+function withprovider(agent::Agent, provider)
+    lock(agent.lock) do
+        Agent(provider, agent.tools, agent.messages, agent.initial, agent.state, getfield(agent, :events), agent.lock, agent.turn, agent.shell, agent.handle, agent.history, agent.history_revision, agent.fault)
+    end
+end
 
 function Base.getproperty(agent::Agent, name::Symbol)
     name === :running && return running(getfield(agent, :turn))
@@ -72,15 +86,17 @@ end
 transition!(agent::Agent, event, before, result, rejected::History.Rejected) = (rejected, Conversation.Message[])
 
 function transition!(agent::Agent, event, before, result::Kernel.Applied, ::Nothing)
+    previous = agent.state
     agent.state = result.state
     push!(getfield(agent, :events), event)
+    applied!(agent.tools, previous, event, result.state)
     result, result.state.messages[before+1:end]
 end
 
 outcome(result::History.Rejected, fallback) = result
 outcome(result, fallback) = fallback
 
-"Queue a user message for the next turn; steering is consumed one message at a time."
+"Queue a user message for the next turn."
 function steer!(agent::Agent, prompt)
     result, _ = transition!(revision -> Conversation.Steer(revision, prompt), agent)
     outcome(result, nothing)
@@ -89,6 +105,20 @@ end
 "Queue a user message for when the agent would otherwise stop."
 function followup!(agent::Agent, prompt)
     result, _ = transition!(revision -> Conversation.Followup(revision, prompt), agent)
+    outcome(result, nothing)
+end
+
+const queuemodes = Dict(:one_at_a_time => Conversation.OneAtATime(), :all => Conversation.AllAtOnce())
+
+"Set how many queued steering messages are delivered at each boundary."
+function steeringmode!(agent::Agent, mode::Symbol)
+    result, _ = transition!(revision -> Conversation.SteeringMode(revision, queuemodes[mode]), agent)
+    outcome(result, nothing)
+end
+
+"Set how many follow-up messages are delivered when the agent would stop."
+function followupmode!(agent::Agent, mode::Symbol)
+    result, _ = transition!(revision -> Conversation.FollowupMode(revision, queuemodes[mode]), agent)
     outcome(result, nothing)
 end
 
@@ -182,6 +212,11 @@ function Base.convert(::Type{Dict{String, Any}}, message::Conversation.User)
     Dict{String, Any}("role" => "user", "content" => message.content)
 end
 
+function Base.convert(::Type{Dict{String, Any}}, message::Conversation.ImageUser)
+    images = [Dict("mime" => image.mime, "data" => image.data) for image in message.images]
+    Dict{String, Any}("role" => "user", "content" => message.content, "images" => images)
+end
+
 function Base.convert(::Type{Dict{String, Any}}, message::Conversation.Assistant)
     value = deepcopy(message.metadata)
     value["role"] = "assistant"
@@ -210,12 +245,81 @@ function attach!(value, image::Image)
 end
 
 Base.convert(::Type{Dict{String, Any}}, message::Conversation.RawMessage) = deepcopy(message.value)
+Base.convert(::Type{Dict{String, Any}}, message::Conversation.SkillContext) = Dict{String, Any}("role" => "system", "content" => message.content)
+
+function Base.convert(::Type{Dict{String, Any}}, message::Conversation.BashMessage)
+    value = Dict{String, Any}("role" => "bashExecution", "command" => message.command, "output" => message.output, "cancelled" => Conversation.bashcancelled(message.status), "truncated" => Conversation.bashtruncated(message.extent), "timestamp" => message.timestamp)
+    bashfield!(value, "exitCode", message.exitcode)
+    bashfield!(value, "fullOutputPath", message.file)
+    bashfield!(value, "excludeFromContext", Conversation.bashexcluded(message.context))
+end
+
+bashfield!(value, key, ::Nothing) = value
+bashfield!(value, key, field) = (value[key] = field; value)
+
+function modelmessages(messages)
+    result = Dict{String, Any}[]
+    foreach(message -> modelmessage!(result, message), messages)
+    result
+end
+modelmessage!(messages, value::Conversation.Message) = push!(messages, convert(Dict{String, Any}, value))
+modelmessage!(messages, value::Conversation.BashMessage{Conversation.ExcludedBashContext}) = messages
+function modelmessage!(messages, value::Conversation.BashMessage)
+    push!(messages, Dict{String, Any}("role" => "user", "content" => bashtext(value)))
+end
+function bashtext(message::Conversation.BashMessage)
+    content = isempty(message.output) ? "(no output)" : "```\n$(message.output)\n```"
+    status = bashstatus(message.status, message.exitcode)
+    truncation = bashtruncation(message.extent, message.file)
+    "Ran `$(message.command)`\n$content$status$truncation"
+end
+bashexit(::Nothing) = ""
+const bashcodes = Dict(0 => "")
+bashexit(code::Int) = get(bashcodes, code, "\n\nCommand exited with code $code")
+bashstatus(::Conversation.FinishedBash, code) = bashexit(code)
+bashstatus(::Conversation.CancelledBash, code) = "\n\n(command cancelled)"
+bashtruncation(::Conversation.FullBash, file) = ""
+bashtruncation(::Conversation.TruncatedBash, ::Nothing) = ""
+bashtruncation(::Conversation.TruncatedBash, file::String) = "\n\n[Output truncated. Full output: $file]"
+
+function recordbash!(agent::Agent, message::Conversation.BashMessage)
+    lock(agent.lock) do
+        result, _ = transition!(revision -> Conversation.BashOutput(revision, message), agent)
+        recordbash!(agent, message, result)
+    end
+end
+recordbash!(agent, message, result) = result
+function recordbash!(agent, message, result::Kernel.Applied)
+    push!(agent.messages, convert(Dict{String, Any}, message))
+    nothing
+end
+
+synccontext(current, ::Conversation.Message) = current
+synccontext(current, message::Conversation.SkillContext) = message
+syncmessage!(messages, value, ::Nothing) = (push!(messages, Conversation.RawMessage(deepcopy(value))); nothing)
+function syncmessage!(messages, value, previous::Conversation.SkillContext)
+    if Kernel.same(value, convert(Dict{String, Any}, previous))
+        push!(messages, previous)
+        return nothing
+    end
+    push!(messages, Conversation.RawMessage(deepcopy(value)))
+    previous
+end
+function syncmessages(values, previous)
+    context = foldl(synccontext, previous; init=nothing)
+    messages = Conversation.Message[]
+    for value in values
+        context = syncmessage!(messages, value, context)
+    end
+    messages
+end
 
 function sync!(agent::Agent)
     result = lock(agent.lock) do
-        recorded = [convert(Dict{String, Any}, message) for message in agent.state.messages]
+        previous = agent.state.messages
+        recorded = Dict{String, Any}[convert(Dict{String, Any}, message) for message in previous]
         if !Kernel.same(recorded, agent.messages)
-            history = Conversation.Message[Conversation.RawMessage(deepcopy(message)) for message in agent.messages]
+            history = syncmessages(agent.messages, previous)
             result, _ = transition!(revision -> Conversation.History(revision, history), agent)
             return outcome(result, nothing)
         end
@@ -244,18 +348,49 @@ description(::Edit) = "Replace unique, non-overlapping text in a file."
 
 definition(tool) = Dict("type" => "function", "function" => Dict("name" => name(tool), "description" => description(tool), "parameters" => schema(tool)))
 
-invoke(tool::Tool, args, ::ShellCancellation) = execute(tool, args)
-invoke(tool::Union{Bash, PowerShell}, args, cancel::ShellCancellation) = Sys.iswindows() ? execute(tool, args) : execute(tool, args; cancel)
+invoke(tool::Tool, args, ::ShellCancellation, update) = execute(tool, args)
+invoke(tool::ToolSearch, args, ::ShellCancellation, update) = search(tool, args)
+invoke(tool::Union{Bash, PowerShell}, args, cancel::ShellCancellation, update) = execute(tool, args; cancel, on_update=update)
 
-function invoke(agent, call)
+function prepare(agent::Agent, call, callback)
     tool, args = try
         tool = call["function"]
-        agent.tools[tool["name"]], JSON3.read(tool["arguments"])
+        agent.tools[tool["name"]], JSON3.read(codeunits(tool["arguments"]))
     catch exception
         return ToolFailure(sprint(showerror, exception))
     end
-    attempt(() -> invoke(tool, args, agent.shell))
+    input = JSON3.read(codeunits(JSON3.write(args)), Dict{String, Any})
+    before = try
+        interceptcall(callback, call, input)
+    catch exception
+        return ToolFailure(sprint(showerror, exception))
+    end
+    prepare(tool, input, before, turnstate(agent))
 end
+
+prepare(tool, input, before, ::Cancelled) = ToolFailure("Operation cancelled")
+prepare(tool, input, before, ::Union{Idle, Running}) = prepare(tool, input, before)
+
+interceptcall(callback, call, input) = nothing
+prepare(tool::Tool, input, ::Nothing) = (; tool, input)
+invoke(agent, call, update, callback) = invoke(agent, call, prepare(agent, call, callback), update, callback)
+invoke(agent, call, result::ToolResult, update, callback) = result
+invoke(agent, call, plan::NamedTuple, update, callback) = runprepared(agent, call, plan.tool, plan.input, update, callback)
+function runprepared(agent, call, tool, input, update, callback)
+    args = JSON3.read(codeunits(JSON3.write(input)))
+    result = attempt(() -> invoke(tool, args, agent.shell, update))
+    interceptresult(callback, call, args, result)
+end
+
+interceptresult(callback, call, args, result) = result
+
+struct EventSink{F}
+    lock::ReentrantLock
+    callback::F
+end
+(sink::EventSink)(event) = lock(() -> emit(sink.callback, event), sink.lock)
+interceptcall(sink::EventSink, call, input) = lock(() -> interceptcall(sink.callback, call, input), sink.lock)
+interceptresult(sink::EventSink, call, args, result) = lock(() -> interceptresult(sink.callback, call, args, result), sink.lock)
 
 emit(::Nothing, event) = nothing
 emit(callback, event) = callback(event)
@@ -334,6 +469,9 @@ end
 response(message::Completion) = (; message=message.message, result=message, started=Unannounced())
 response(message) = (; message, result=nothing, started=Unannounced())
 
+const contextkey = gensym(:context_messages)
+withcontext(f, messages) = task_local_storage(f, contextkey, messages)
+
 register!(agent::Agent, ::Nothing) = nothing
 
 function register!(agent::Agent, context::HTTP.RequestContext)
@@ -363,32 +501,41 @@ function request!(f, agent::Agent, partial, started)
         unregister!(agent, context)
         exceptions = current_exceptions()
         if length(exceptions) > depth && requestcancelled(last(exceptions).exception, turnstate(agent))
-            result = Completion(deepcopy(partial), nothing, "cancelled", false, "cancelled")
+            result = Completion(deepcopy(partial), nothing, "cancelled", Unfinished(), "cancelled")
             return (; message=result.message, result, started=started[])
         end
     end
 end
 
-function response(agent, messages, parameters, ::Nothing, on_agent_event)
+function response(agent, request, parameters, ::Nothing, on_agent_event)
     partial = Dict{String, Any}("role" => "assistant", "content" => nothing)
-    request!(agent, partial, Ref{MessagePresentation}(Unannounced())) do
-        message = isempty(parameters) ? complete(agent.provider, messages, agent.tools) : complete(agent.provider, messages, agent.tools; parameters)
+    info = responseinfo(agent.provider, round(Int, 1000time()))
+    result = request!(agent, partial, Ref{MessagePresentation}(Unannounced())) do
+        message = isempty(parameters) ? complete(agent.provider, request.messages, request.tools) : complete(agent.provider, request.messages, request.tools; parameters)
+        message = price(agent.provider, message)
         response(message)
     end
+    merge(result, (; info))
 end
 
-function response(agent, messages, parameters, on_event, on_agent_event)
+providercomplete!(callback, result) = nothing
+
+function response(agent, request, parameters, on_event, on_agent_event)
     partial = Dict{String, Any}("role" => "assistant", "content" => nothing)
     calls = Dict{Any, Any}()
     started = Ref{MessagePresentation}(Unannounced())
     callback = event -> begin
-        on_event(event)
-        publish!(partial, calls, started, on_agent_event, agentupdate(event))
+        priced = priceevent(agent.provider, event)
+        on_event(priced)
+        publish!(partial, calls, started, on_agent_event, agentupdate(priced))
     end
-    request!(agent, partial, started) do
-        result = stream(agent.provider, messages, agent.tools; parameters, on_event=callback)
+    info = responseinfo(agent.provider, round(Int, 1000time()))
+    answer = request!(agent, partial, started) do
+        result = price(agent.provider, stream(agent.provider, request.messages, request.tools; parameters, on_event=callback))
+        providercomplete!(on_event, result)
         (; message=result.message, result, started=started[])
     end
+    merge(answer, (; info))
 end
 
 function callinfo(call)
@@ -405,16 +552,23 @@ function toolstart(call, on_agent_event)
     emit(on_agent_event, (; type=:tool_execution_start, tool_call_id=call["id"], tool_name=info.name, args=info.args))
 end
 
-invoke(agent, call, ::Conversation.ToolRequest, ::Union{Idle, Running}) = invoke(agent, call)
-invoke(agent, call, ::Conversation.SkipRequest, ::Union{Idle, Running}) = ToolFailure("Tool call \"$(callinfo(call).name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.")
-invoke(agent, call, ::Union{Conversation.ToolRequest, Conversation.SkipRequest}, ::Cancelled) = ToolFailure("Operation cancelled")
+invoke(agent, call, ::Conversation.ToolRequest, ::Union{Idle, Running}, update, callback) = invoke(agent, call, update, callback)
+invoke(agent, call, ::Conversation.SkipRequest, ::Union{Idle, Running}, update, callback) = ToolFailure("Tool call \"$(callinfo(call).name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.")
+invoke(agent, call, ::Union{Conversation.ToolRequest, Conversation.SkipRequest}, ::Cancelled, update, callback) = ToolFailure("Operation cancelled")
 
 function toolresult(agent, call, request, on_agent_event)
     info = callinfo(call)
     id = call["id"]
     turn = lock(() -> agent.turn, agent.lock)
-    result = invoke(agent, call, request, turn)
-    emit(on_agent_event, (; type=:tool_execution_end, tool_call_id=id, tool_name=info.name, result, iserror=result.iserror))
+    update = partial_result -> emit(on_agent_event, (; type=:tool_execution_update, tool_call_id=id, tool_name=info.name, args=info.args, partial_result))
+    result = invoke(agent, call, request, turn, update, on_agent_event)
+    toolend(call, result, on_agent_event)
+end
+
+function toolend(call, result, on_agent_event)
+    info = callinfo(call)
+    id = call["id"]
+    emit(on_agent_event, (; type=:tool_execution_end, tool_call_id=id, tool_name=info.name, result=visible(result), iserror=result.iserror))
     result
 end
 
@@ -447,61 +601,177 @@ end
 
 runtools!(agent, effects, messages, on_agent_event, ::Parallel) = runtoolsparallel!(agent, effects, messages, on_agent_event, batchmode(effects))
 runtoolsparallel!(agent, effects, messages, on_agent_event, mode::Sequential) = runtools!(agent, effects, messages, on_agent_event, mode)
-function runtoolsparallel!(agent, effects, messages, on_agent_event, ::Parallel)
-    calls = [convert(Dict{String, Any}, effect.effect.call) for effect in effects]
-    foreach(call -> toolstart(call, on_agent_event), calls)
-    completed = Vector{ToolResult}(undef, length(calls))
-    @sync for i in eachindex(calls)
-        Threads.@spawn completed[i] = toolresult(agent, calls[i], effects[i].effect, on_agent_event)
+runtoolsparallel!(agent, effects, messages, on_agent_event, ::Parallel) = parallel!(agent, preflight(agent, effects, on_agent_event), messages, on_agent_event)
+
+preflight(agent, effects, callback) = foldl((plans, effect) -> preflight(agent, effect, callback, plans), effects; init=Any[])
+preflight(agent, effect, callback, rejected::History.Rejected) = rejected
+function preflight(agent, effect, callback, plans::Vector)
+    call = convert(Dict{String, Any}, effect.effect.call)
+    toolstart(call, callback)
+    preflight(agent, effect, callback, plans, call, fault(agent))
+end
+preflight(agent, effect, callback, plans, call, rejected::History.Rejected) = rejected
+function preflight(agent, effect, callback, plans, call, ::Nothing)
+    plan = prepare(agent, call, effect.effect, turnstate(agent), callback)
+    preflight(agent, effect, callback, plans, call, plan, fault(agent))
+end
+preflight(agent, effect, callback, plans, call, plan, rejected::History.Rejected) = rejected
+function preflight(agent, effect, callback, plans, call, plan, ::Nothing)
+    preparedevent(call, plan, callback)
+    push!(plans, (; effect, call, plan))
+end
+
+prepare(agent, call, ::Conversation.ToolRequest, ::Union{Idle, Running}, callback) = prepare(agent, call, callback)
+prepare(agent, call, ::Conversation.SkipRequest, ::Union{Idle, Running}, callback) = ToolFailure("Tool call \"$(callinfo(call).name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.")
+prepare(agent, call, ::Union{Conversation.ToolRequest, Conversation.SkipRequest}, ::Cancelled, callback) = ToolFailure("Operation cancelled")
+preparedevent(call, plan::NamedTuple, callback) = nothing
+preparedevent(call, result::ToolResult, callback) = toolend(call, result, callback)
+
+parallelresult(agent, item, callback) = parallelresult(agent, item, callback, fault(agent))
+parallelresult(agent, item, callback, rejected::History.Rejected) = rejected
+parallelresult(agent, item, callback, ::Nothing) = parallelresult(agent, item, callback, item.plan, turnstate(agent))
+parallelresult(agent, item, callback, result::ToolResult, turn) = result
+parallelresult(agent, item, callback, plan::NamedTuple, ::Cancelled) = toolend(item.call, ToolFailure("Operation cancelled"), callback)
+function parallelresult(agent, item, callback, plan::NamedTuple, ::Union{Idle, Running})
+    call = item.call
+    info = callinfo(call)
+    update = partial_result -> emit(callback, (; type=:tool_execution_update, tool_call_id=call["id"], tool_name=info.name, args=info.args, partial_result))
+    toolend(call, invoke(agent, call, plan, update, callback), callback)
+end
+
+parallel!(agent, rejected::History.Rejected, messages, callback) = rejected
+function parallel!(agent, plans::Vector, messages, callback)
+    completed = Vector{Any}(undef, length(plans))
+    tasks = Vector{Task}(undef, length(plans))
+    ready = Channel{Int}(length(plans))
+    added = Conversation.Message[]
+    failure = nothing
+    @sync begin
+        for i in eachindex(plans)
+            tasks[i] = Threads.@spawn try
+                parallelresult(agent, plans[i], callback)
+            finally
+                put!(ready, i)
+            end
+        end
+        for _ in eachindex(plans)
+            i = take!(ready)
+            completed[i] = fetch(tasks[i])
+            failure = parallelobserve!(agent, plans[i], completed[i], added, failure)
+        end
     end
-    results = Dict{String, Any}[]
-    for i in eachindex(calls)
-        toolobserve!(agent, effects[i], completed[i], messages, on_agent_event)
-        push!(results, toolmessage(calls[i], completed[i]))
+    parallelfinish!(agent, plans, completed, added, messages, callback, failure)
+end
+
+parallelobserve!(agent, plan, result, added, rejected) = rejected
+parallelobserve!(agent, plan, rejected::History.Rejected, added, ::Nothing) = rejected
+function parallelobserve!(agent, plan, result::ToolResult, added, ::Nothing)
+    transition, visible = transition!(revision -> Kernel.Observe(revision, plan.effect.id, Conversation.ToolReply(result)), agent)
+    parallelobserve!(transition, added, visible)
+end
+parallelobserve!(transition, added, visible) = transition
+function parallelobserve!(::Kernel.Applied, added, visible)
+    append!(added, visible)
+    nothing
+end
+
+parallelfinish!(agent, plans, completed, added, messages, callback, rejected) = rejected
+function parallelfinish!(agent, plans, completed, added, messages, callback, ::Nothing)
+    presentation = Ref{MessagePresentation}(Unannounced())
+    try
+        present!(agent, added, messages, callback)
+        presentation[] = Announced()
+    finally
+        preserve!(agent, presentation[])
     end
-    results
+    [toolmessage(plan.call, result) for (plan, result) in zip(plans, completed)]
+end
+
+preserve!(agent, ::Announced) = nothing
+function preserve!(agent, ::Unannounced)
+    lock(agent.lock) do
+        empty!(agent.messages)
+        append!(agent.messages, [convert(Dict{String, Any}, message) for message in agent.state.messages])
+    end
 end
 
 function conversation_reply(answer)
     message = answer.message
     calls = Conversation.ToolCall[convert(Conversation.ToolCall, call) for call in get(message, "tool_calls", [])]
-    conversation_reply(message, calls, answer.result)
+    reply = conversation_reply(message, calls, answer.result)
+    responseinfo(reply, get(answer, :info, nothing), answer.result)
 end
 
 conversation_reply(message, calls, ::Nothing) = Conversation.ModelReply(Conversation.Assistant(get(message, "content", nothing), calls, nothing, true; metadata=message))
 conversation_reply(message, calls, result::Completion) = Conversation.ModelReply(Conversation.Assistant(get(message, "content", nothing), calls, result.finish, getfield(result, :status); metadata=message))
 conversation_reply(message, calls, result) = Conversation.ModelReply(Conversation.Assistant(get(message, "content", nothing), calls, result.finish, result.done; metadata=message))
 
+responseinfo(reply::Conversation.ModelReply, ::Nothing, result) = reply
+responseinfo(reply::Conversation.ModelReply, ::Nothing, result::Completion) = responseinfo(reply, Conversation.ResponseInfo(result.usage, nothing, nothing, nothing, nothing))
+responseinfo(reply::Conversation.ModelReply, info::Conversation.ResponseInfo, result) = responseinfo(reply, info)
+responseinfo(reply::Conversation.ModelReply, info::Conversation.ResponseInfo, result::Completion) = responseinfo(reply, Conversation.ResponseInfo(result.usage, info.api, info.provider, info.model, info.timestamp))
+function responseinfo(reply::Conversation.ModelReply, info::Conversation.ResponseInfo)
+    message = reply.message
+    Conversation.ModelReply(Conversation.Assistant(message.content, message.calls, message.finish, getfield(message, :status), message.metadata, info))
+end
+
 finish(message, result) = message["content"]
-finish(message, result::Completion) = result.finish == "length" ? Truncated(result) : message["content"]
+const finishresults = Dict("length" => Truncated)
+finish(message, result::Completion) = finish(message, result, get(finishresults, result.finish, nothing))
+finish(message, result::Completion, ::Nothing) = message["content"]
+finish(message, result::Completion, ::Type{Truncated}) = Truncated(result)
 
 function modelresponse(agent, effect, parameters, on_event, on_agent_event)
-    returned = false
+    answer = nothing
     try
-        messages = [convert(Dict{String, Any}, message) for message in effect.effect.messages]
-        answer = response(agent, messages, parameters, on_event, on_agent_event)
-        returned = true
-        answer
+        request = requestview(on_agent_event, effect.effect.messages, agent.tools, agent.provider)
+        received = modelresponse(agent, effect, request, parameters, on_event, on_agent_event, turnstate(agent))
+        remembermodel!(received)
+        answer = received
     finally
-        if !returned
-            transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("provider did not return")), agent)
-        end
+        modelreturned!(agent, effect, answer)
     end
 end
+
+modelresponse(agent, effect, request, parameters, on_event, on_agent_event, ::Cancelled) = Cancelled()
+function modelresponse(agent, effect, request, parameters, on_event, on_agent_event, ::Union{Idle, Running})
+    withcontext(effect.effect.messages) do
+        response(agent, request, parameters, on_event, on_agent_event)
+    end
+end
+remembermodel!(::Cancelled) = nothing
+remembermodel!(answer::NamedTuple) = rememberusage!(answer.result)
+modelreturned!(agent, effect, ::NamedTuple) = nothing
+modelreturned!(agent, effect, ::Cancelled) = nothing
+modelreturned!(agent, effect, ::Nothing) = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("provider did not return")), agent)
 
 interrupt!(agent::Agent, ::Conversation.Phase) = nothing
 interrupt!(agent::Agent, ::Union{Conversation.ReadyModelPhase, Conversation.ReadyDecisionPhase, Conversation.WaitingModelPhase, Conversation.WaitingToolsPhase}) = transition!(revision -> Conversation.Interrupt(revision, "turn interrupted"), agent)
 
 """
-    respond!(agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential, executor=nothing, context=nothing)
+    respond!(agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=nothing, executor=nothing, context=nothing)
 
-Run a turn and queued messages. `on_event` receives provider stream events; `on_agent_event` receives lifecycle events. Tool calls run sequentially unless `tool_execution=:parallel`; recorded agents currently support sequential execution only. Returns `:busy` for an overlapping run and `:cancelled` for cooperative cancellation. Providers returning a `Completion` retain finish metadata; a custom provider returning only a message cannot report truncation.
+Run a turn and queued messages. `on_event` receives provider stream events; `on_agent_event` receives lifecycle events. Local tool calls run in parallel by default; set `tool_execution=:sequential` to run them in order. Executor-backed turns default to sequential execution. Returns `:busy` for an overlapping run and `:cancelled` for cooperative cancellation. Providers returning a `Completion` retain finish metadata; a custom provider returning only a message cannot report truncation.
 
 Supplying `executor` and `context` selects the executor-backed path, including for a recorded agent. It returns an `Execution.Turn` with the outcome and per-model usage and error metadata; unsupported combinations return `Execution.Rejected` before starting. See `docs/execution.md` for its limitations.
 """
-function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential, executor=nothing, context=nothing)
-    respond!(agent, prompt, executor, context; on_event, on_agent_event, parameters, tool_execution)
+function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=nothing, executor=nothing, context=nothing, auto_compaction=nothing, summarize=Summarizer(agent.provider))
+    tool_execution = defaultmode(tool_execution, executor)
+    used = Ref{Union{Nothing, Usage}}(nothing)
+    result = task_local_storage(:jf_pre_compaction, (auto_compaction, summarize)) do
+        task_local_storage(:jf_compaction_usage, used) do
+            task_local_storage(:jf_overflow_recovery, recovery(auto_compaction, summarize, agent.provider)) do
+                respond!(agent, prompt, executor, context; on_event, on_agent_event, parameters, tool_execution)
+            end
+        end
+    end
+    finishauto!(agent, result, used[], auto_compaction, summarize, on_agent_event)
+    result
 end
+
+defaultmode(::Nothing, ::Nothing) = :parallel
+defaultmode(::Nothing, executor) = :sequential
+defaultmode(mode, executor) = mode
 
 respond!(agent::Agent, prompt, executor, context; kwargs...) = respond_execution!(agent, prompt, executor, context; kwargs...)
 respond!(agent::Agent, prompt, ::Nothing, ::Nothing; kwargs...) = respond!(agent, prompt, agent.history; kwargs...)
@@ -511,22 +781,21 @@ respond!(agent::Agent, prompt, ::Nothing; on_event, on_agent_event, parameters, 
 direct_start!(agent, prompt, ::Nothing; kwargs...) = :busy
 function direct_start!(agent, prompt, ::Running; on_event, on_agent_event, parameters, tool_execution)
     messages = Dict{String, Any}[]
-    event_lock = ReentrantLock()
-    callback = on_agent_event
-    on_agent_event = event -> lock(() -> emit(callback, event), event_lock)
+    on_agent_event = EventSink(ReentrantLock(), on_agent_event)
     run = (; agent, on_event, callback=on_agent_event, parameters, tool_execution, messages)
     try
-        emit(on_agent_event, (; type=:agent_start))
-        emit(on_agent_event, (; type=:turn_start))
-        direct_begin!(run, prompt)
-    finally
+        precompact!(agent, on_agent_event)
         try
+            emit(on_agent_event, (; type=:agent_start))
+            emit(on_agent_event, (; type=:turn_start))
+            direct_begin!(run, prompt)
+        finally
             interrupt!(agent, agent.state.phase)
             sync!(agent)
             emit(on_agent_event, (; type=:agent_end, messages=deepcopy(messages)))
-        finally
-            finish!(agent)
         end
+    finally
+        finish!(agent)
     end
 end
 
@@ -576,6 +845,10 @@ end
 
 function direct_step!(run, effect, ::Union{Idle, Running})
     answer = modelresponse(run.agent, effect, run.parameters, run.on_event, run.callback)
+    direct_answer!(run, effect, answer)
+end
+direct_answer!(run, effect, ::Cancelled) = direct_step!(run, effect, Cancelled())
+function direct_answer!(run, effect, answer)
     outcome = conversation_reply(answer)
     result, added = transition!(revision -> Kernel.Observe(revision, effect.id, outcome), run.agent)
     direct_result!(run, answer, result, added, answer.result)
@@ -591,10 +864,8 @@ function direct_partial!(run, answer, result)
     message_start!(run.callback, answer.message, answer.started)
     emit(run.callback, (; type=:message_end, message=deepcopy(answer.message)))
     emit(run.callback, (; type=:turn_end, message=deepcopy(answer.message), tool_results=Dict{String, Any}[]))
-    direct_partial!(result, turnstate(run.agent))
+    recover!(run, result, turnstate(run.agent))
 end
-direct_partial!(result, ::Cancelled) = :cancelled
-direct_partial!(result, ::Union{Idle, Running}) = result
 
 function direct_complete!(run, answer, transition, added)
     agent = run.agent
@@ -603,6 +874,7 @@ function direct_complete!(run, answer, transition, added)
     results = runtools!(agent, transition.effects, run.messages, run.callback; tool_execution=run.tool_execution)
     emit(run.callback, (; type=:turn_end, message=deepcopy(message), tool_results=deepcopy(results)))
     sync!(agent)
+    precompactnext!(agent, run.callback)
     next, added = transition!(revision -> Conversation.Advance(revision), agent)
     direct_next!(run, message, answer.result, next, added, turnstate(agent))
 end
@@ -614,3 +886,85 @@ function direct_next!(run, message, completion, next, added, ::Union{Idle, Runni
     present!(run.agent, added, run.messages, run.callback)
     only(next.effects)
 end
+
+"Continue a transcript ending in a user or tool message. Returns :empty or :assistant_tail for unsupported tails."
+function continue!(agent::Agent; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:parallel, auto_compaction=nothing, summarize=Summarizer(agent.provider))
+    used = Ref{Union{Nothing, Usage}}(nothing)
+    result = task_local_storage(:jf_pre_compaction, (auto_compaction, summarize)) do
+        task_local_storage(:jf_compaction_usage, used) do
+            task_local_storage(:jf_overflow_recovery, recovery(auto_compaction, summarize, agent.provider)) do
+                selected = lock(agent.lock) do
+                    continue_start!(agent, agent.turn, agent.fault, toolmode(tool_execution))
+                end
+                continue_selected!(agent, selected; on_event, on_agent_event, parameters, tool_execution)
+            end
+        end
+    end
+    finishauto!(agent, result, used[], auto_compaction, summarize, on_agent_event)
+    result
+end
+continue_start!(agent, ::Union{Running, Cancelled}, fault, mode) = :busy
+continue_start!(agent, ::Idle, fault::History.Rejected, mode) = fault
+continue_start!(agent, ::Idle, ::Nothing, mode) = continue_tail!(agent, agent.history, mode)
+continue_tail!(agent, history::History.Store, mode) = History.Rejected(:unsupported_execution)
+continue_tail!(agent, history::History.Store, ::Union{Sequential, Parallel}) = continue_tail!(agent)
+continue_tail!(agent, ::Nothing, mode) = continue_tail!(agent)
+struct SystemTail end
+const continuationroles = Dict("system" => SystemTail(), "assistant" => Conversation.ContinueQueued)
+continuationkind(::Nothing, ::SystemTail) = nothing
+continuationkind(state, ::SystemTail) = Conversation.Continue
+continuationkind(state, kind::Type{<:Union{Conversation.Continue, Conversation.ContinueQueued}}) = kind
+continuationkind(state, message::AbstractDict) = continuationkind(state, get(continuationroles, get(message, "role", ""), Conversation.Continue))
+continue_tail!(agent) = continue_tail!(agent, foldl(continuationkind, agent.messages; init=nothing))
+continue_tail!(agent, ::Nothing) = :empty
+function continue_tail!(agent, ::Type{Conversation.ContinueQueued})
+    isempty(agent.state.steering) && isempty(agent.state.followups) && return :assistant_tail
+    startturn!(agent)
+    Conversation.ContinueQueued
+end
+function continue_tail!(agent, ::Type{Conversation.Continue})
+    startturn!(agent)
+    Conversation.Continue
+end
+continue_selected!(agent, result; kwargs...) = result
+continue_selected!(agent, constructor::Type{<:Union{Conversation.Continue, Conversation.ContinueQueued}}; kwargs...) = continue_run!(agent, agent.history, constructor; kwargs...)
+function continue_run!(agent, history, constructor; on_event, on_agent_event, parameters, tool_execution)
+    messages = Dict{String, Any}[]
+    callback = EventSink(ReentrantLock(), on_agent_event)
+    run = (; agent, on_event, callback, parameters, tool_execution, messages, constructor)
+    try
+        precompact!(agent, callback)
+        syncresult = sync!(agent)
+        continue_synced!(run, history, syncresult)
+    finally
+        try
+            continue_finish!(agent, history)
+            emit(callback, (; type=:agent_end, messages=deepcopy(messages)))
+        finally
+            finish!(agent)
+        end
+    end
+end
+continue_synced!(run, history, rejected::History.Rejected) = rejected
+function continue_synced!(run, history, ::Nothing)
+    result, _ = transition!(revision -> run.constructor(revision), run.agent)
+    continue_prepared!(run, history, result)
+end
+continue_prepared!(run, history, result) = result
+function continue_prepared!(run, history, result::Kernel.Applied)
+    emit(run.callback, (; type=:agent_start))
+    emit(run.callback, (; type=:turn_start))
+    continue_advance!(run, history)
+end
+function continue_advance!(run, ::Nothing)
+    direct_cancel!(run, turnstate(run.agent))
+    next, added = transition!(revision -> Conversation.Advance(revision), run.agent)
+    present!(run.agent, added, run.messages, run.callback)
+    direct_ready!(run, next, turnstate(run.agent))
+end
+continue_advance!(run, ::History.Store) = recorded_cancel!(run, run.agent.fault)
+function continue_finish!(agent, ::Nothing)
+    interrupt!(agent, agent.state.phase)
+    sync!(agent)
+end
+continue_finish!(agent, ::History.Store) = interrupted!(agent)

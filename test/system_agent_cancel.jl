@@ -13,7 +13,7 @@ end
 
 @testset "agent shell cancellation" begin
     if !Sys.iswindows()
-        for (mode, recorded) in ((:sequential, false), (:parallel, false), (:sequential, true))
+        for (mode, recorded) in ((:sequential, false), (:parallel, false), (:sequential, true), (:parallel, true))
             mktempdir() do dir
                 count = mode == :parallel ? 2 : 1
                 commands = [shellfixture(dir, i) for i in 1:count]
@@ -55,6 +55,29 @@ end
                     wait(task)
                 end
             end
+        end
+    end
+end
+
+@testset "streamed shell cancellation reaches plugin listeners" begin
+    if !Sys.iswindows()
+        mktempdir() do dir
+            registry = JuliaForever.Extensions.Registry()
+            seen = Symbol[]
+            JuliaForever.Extensions.register!(registry, :observer, JuliaForever.Extensions.Plugin(; hooks=(:tool_execution_update => (event -> push!(seen, event.type)), :tool_execution_end => (event -> push!(seen, event.type)))))
+            provider = ShellProvider(Any[shellreply(["printf ready; sleep 30"]), Dict("role" => "assistant", "content" => "continued")])
+            agent = Agent(provider, JuliaForever.Extensions.snapshot(registry))
+            agent.tools["bash"] = Bash(dir)
+            events = Any[]
+            listener = JuliaForever.Extensions.listen(JuliaForever.Extensions.snapshot(registry); on_event=event -> begin
+                push!(events, event)
+                event.type == :tool_execution_update && occursin("ready", event.partial_result.text) && cancel!(agent)
+            end)
+            @test respond!(agent, "run"; on_agent_event=listener) == :cancelled
+            @test :tool_execution_update in seen
+            @test last(seen) == :tool_execution_end
+            @test any(event -> event.type == :tool_execution_end && event.result.iserror, events)
+            @test isempty(JuliaForever.Extensions.failures(listener))
         end
     end
 end

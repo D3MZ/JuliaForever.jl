@@ -4,6 +4,35 @@ struct Streamed <: TerminalPresentation end
 abstract type TerminalLine end
 struct LineClosed <: TerminalLine end
 struct LineOpen <: TerminalLine end
+abstract type TerminalMode end
+struct TextMode <: TerminalMode
+    provider::String
+end
+TextMode() = TextMode("")
+struct JSONMode <: TerminalMode
+    provider::String
+end
+struct RPCMode <: TerminalMode
+    provider::String
+    thinking::Union{Nothing, String}
+    model::Union{Nothing, String}
+end
+RPCMode(provider::String) = RPCMode(provider, nothing, nothing)
+RPCMode(provider::String, thinking::Union{Nothing, String}) = RPCMode(provider, thinking, nothing)
+struct InvalidMode <: TerminalMode end
+
+const terminalmodes = Dict("text" => TextMode(), "json" => JSONMode(""), "rpc" => RPCMode(""))
+terminalmode(value) = get(terminalmodes, value, InvalidMode())
+assignmode(::TerminalMode, mode::TerminalMode) = mode
+assignmode(invalid::InvalidMode, ::TerminalMode) = invalid
+provider(mode::TerminalMode, name) = mode
+provider(::TextMode, name) = TextMode(name)
+provider(::JSONMode, name) = JSONMode(name)
+provider(::RPCMode, name) = RPCMode(name)
+thinkingmode(mode::TerminalMode, level) = mode
+thinkingmode(mode::RPCMode, level) = RPCMode(mode.provider, level, mode.model)
+modelmode(mode::TerminalMode, model) = mode
+modelmode(mode::RPCMode, model) = RPCMode(mode.provider, mode.thinking, model)
 
 streamstate(value::Bool) = (Unstreamed(), Streamed())[Int(value) + 1]
 linestate(value::Bool) = (LineClosed(), LineOpen())[Int(value) + 1]
@@ -12,16 +41,18 @@ streamed(::Streamed) = true
 lineopen(::LineClosed) = false
 lineopen(::LineOpen) = true
 
-mutable struct Terminal{O<:IO, E<:IO}
+mutable struct Terminal{O<:IO, E<:IO, M<:TerminalMode}
     output::O
     diagnostics::E
     secrets::Vector{String}
     presentation::TerminalPresentation
     line::TerminalLine
+    mode::M
 end
 
-Terminal(output, diagnostics, secrets) = Terminal(output, diagnostics, secrets, Unstreamed(), LineClosed())
-Terminal(output, diagnostics, secrets, streamed::Bool, lineopen::Bool) = Terminal(output, diagnostics, secrets, streamstate(streamed), linestate(lineopen))
+Terminal(output, diagnostics, secrets) = Terminal(output, diagnostics, secrets, TextMode())
+Terminal(output, diagnostics, secrets, mode::TerminalMode) = Terminal(output, diagnostics, secrets, Unstreamed(), LineClosed(), mode)
+Terminal(output, diagnostics, secrets, streamed::Bool, lineopen::Bool) = Terminal(output, diagnostics, secrets, streamstate(streamed), linestate(lineopen), TextMode())
 
 function Base.getproperty(terminal::Terminal, name::Symbol)
     name === :streamed && return streamed(getfield(terminal, :presentation))
@@ -34,7 +65,7 @@ function Base.setproperty!(terminal::Terminal, name::Symbol, value)
     name === :lineopen && return (setfield!(terminal, :line, linestate(convert(Bool, value))); value)
     setfield!(terminal, name, convert(fieldtype(typeof(terminal), name), value))
 end
-Base.propertynames(::Terminal, private::Bool=false) = (:output, :diagnostics, :secrets, :streamed, :lineopen, :presentation, :line)
+Base.propertynames(::Terminal, private::Bool=false) = (:output, :diagnostics, :secrets, :streamed, :lineopen, :presentation, :line, :mode)
 
 # A following hexadecimal or octal digit can change the last escape.
 forms(secret) = (chop(repr(secret * "0"); head=1, tail=2), chop(repr(secret); head=1, tail=1), secret)
@@ -76,18 +107,29 @@ end
 struct ToolStarted <: TerminalEvent
     name::Any
 end
+struct ToolUpdated <: TerminalEvent
+    name::Any
+    result::ShellUpdate
+end
 struct ToolEnded <: TerminalEvent
     name::Any
     result::Any
 end
+struct AutoCompactionStarted <: TerminalEvent end
+struct AutoCompactionEnded <: TerminalEvent
+    result::Any
+end
 
-const terminaleventtypes = Dict(:message_end => AssistantEnded, :tool_execution_start => ToolStarted, :tool_execution_end => ToolEnded)
+const terminaleventtypes = Dict(:message_end => AssistantEnded, :tool_execution_start => ToolStarted, :tool_execution_end => ToolEnded, :tool_execution_update => ToolUpdated, :auto_compaction_start => AutoCompactionStarted, :auto_compaction_end => AutoCompactionEnded)
 const terminalroles = Dict("assistant" => AssistantEnded)
 terminalevent(event) = terminalevent(get(terminaleventtypes, event.type, nothing), event)
 terminalevent(::Nothing, event) = nothing
 terminalevent(::Type{AssistantEnded}, event) = terminalassistant(get(terminalroles, get(event.message, "role", nothing), nothing), event.message)
 terminalevent(::Type{ToolStarted}, event) = ToolStarted(event.tool_name)
+terminalevent(::Type{ToolUpdated}, event) = ToolUpdated(event.tool_name, event.partial_result)
 terminalevent(::Type{ToolEnded}, event) = ToolEnded(event.tool_name, event.result)
+terminalevent(::Type{AutoCompactionStarted}, event) = AutoCompactionStarted()
+terminalevent(::Type{AutoCompactionEnded}, event) = AutoCompactionEnded(event.result)
 terminalassistant(::Nothing, message) = nothing
 terminalassistant(::Type{AssistantEnded}, message) = AssistantEnded(get(message, "content", nothing))
 
@@ -110,10 +152,38 @@ function render!(terminal::Terminal, event::ToolStarted)
     flush(terminal.diagnostics)
 end
 
+function render!(terminal::Terminal, event::ToolUpdated)
+    println(terminal.diagnostics, "[tool] ", redact(terminal, event.name), ": output ", ncodeunits(event.result.text), " bytes available")
+    flush(terminal.diagnostics)
+end
+
 function render!(terminal::Terminal, event::ToolEnded)
     name = redact(terminal, something(event.name, "unknown"))
     result = status(terminal, event.result)
     println(terminal.diagnostics, "[tool] ", name, ": ", result)
+    flush(terminal.diagnostics)
+end
+
+function render!(terminal::Terminal, ::AutoCompactionStarted)
+    println(terminal.diagnostics, "Auto-compaction started.")
+    flush(terminal.diagnostics)
+end
+render!(terminal::Terminal, event::AutoCompactionEnded) = autocompactionmessage!(terminal, event.result)
+function autocompactionmessage!(terminal, ::AbstractString)
+    println(terminal.diagnostics, "Auto-compaction complete.")
+    flush(terminal.diagnostics)
+end
+const autocompactionmessages = Dict(:cancelled => "Auto-compaction cancelled.")
+function autocompactionmessage!(terminal, result::Symbol)
+    println(terminal.diagnostics, get(autocompactionmessages, result, "Auto-compaction failed: $(redact(terminal, result))."))
+    flush(terminal.diagnostics)
+end
+function autocompactionmessage!(terminal, result::History.Rejected)
+    println(terminal.diagnostics, "Auto-compaction failed: ", result.reason, ".")
+    flush(terminal.diagnostics)
+end
+function autocompactionmessage!(terminal, result)
+    println(terminal.diagnostics, "Auto-compaction failed: ", redact(terminal, result), ".")
     flush(terminal.diagnostics)
 end
 
@@ -152,30 +222,35 @@ result!(::Terminal, ::Union{AbstractString, Nothing}) = 0
 
 struct PendingInputs end
 
-queueplace(::Union{Nothing, History.Memory}) = "These messages exist only in memory."
+queueplace(::Union{Nothing, History.Memory}) = "These messages exist only in memory; exiting discards them."
 queueplace(history::History.Tree) = queueplace(history.store)
 queueplace(history::SessionCatalog.Deferred) = queueplace(history.store)
-queueplace(::History.Store) = "These messages remain saved; start a new session to resubmit them."
+queueplace(::History.Store) = "These messages remain saved in this session."
 
 function checkqueues!(terminal::Terminal, state::Conversation.State, history)
     isempty(state.steering) && isempty(state.followups) && return nothing
     println(terminal.diagnostics, "History has unprocessed queued messages. No new prompt was sent.")
     for text in state.steering
-        println(terminal.diagnostics, "Unprocessed steering: ", repr(redact(terminal, text)))
+        println(terminal.diagnostics, "Unprocessed steering: ", repr(redact(terminal, Conversation.queuetext(text))))
     end
     for text in state.followups
-        println(terminal.diagnostics, "Unprocessed follow-up: ", repr(redact(terminal, text)))
+        println(terminal.diagnostics, "Unprocessed follow-up: ", repr(redact(terminal, Conversation.queuetext(text))))
     end
+    queuewarning!(terminal, Conversation.queuecontent(state))
     println(terminal.diagnostics, queueplace(history))
     flush(terminal.diagnostics)
     PendingInputs()
 end
+queuewarning!(terminal, ::Conversation.TextOnly) = nothing
+queuewarning!(terminal, ::Conversation.ContainsImages) = result!(terminal, History.Rejected(:queued_images))
 
 const historydiagnostics = Dict(
     :uncertain_effect => "History has an uncertain pending effect. It was not retried. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.",
     :incomplete_turn => "History has an incomplete turn. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.",
     :not_interrupted => "History has no interrupted turn to abandon.",
     :pending_inputs => "History has unprocessed queued messages. Review them before forking this session.",
+    :queued_images => "Queued images cannot be restored to the text editor; the queue remains unchanged.",
+    :image_edit => "Image messages cannot be edited in the text editor; the session remains unchanged.",
 )
 
 function result!(terminal::Terminal, result::History.Rejected)
@@ -322,20 +397,32 @@ function failures!(terminal::Terminal, listener::Extensions.Listener)
 end
 
 failures!(::Terminal, ::Function) = nothing
-observer(terminal::Terminal, ::Nothing) = event -> render!(terminal, event)
-observer(terminal::Terminal, snapshot::Extensions.Snapshot) = Extensions.listen(snapshot; on_event=event -> render!(terminal, event))
+observer(terminal::Terminal, ::Nothing, callback) = event -> (render!(terminal, event); callback(event))
+observer(terminal::Terminal, snapshot::Extensions.Snapshot, callback) = Extensions.listen(snapshot; on_event=observer(terminal, nothing, callback))
 
 run!(terminal::Terminal, agent::Agent, prompt, snapshot=nothing; on_agent_event=identity) = run!(terminal, agent, prompt, snapshot, checkqueues!(terminal, agent.state, agent.history), on_agent_event)
 run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::PendingInputs, on_agent_event) = 1
 
 function run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::Nothing, on_agent_event)
-    callback = observer(terminal, snapshot)
+    runmode!(terminal, agent, prompt, snapshot, on_agent_event, terminal.mode)
+end
+
+function runmode!(terminal::Terminal, agent::Agent, prompt, snapshot, on_agent_event, mode::TextMode)
+    policy = attempt(() -> terminalcompaction(agent.provider, mode.provider, ENV, pwd()))
+    runtext!(terminal, agent, prompt, snapshot, on_agent_event, policy)
+end
+
+function runtext!(terminal, agent, prompt, snapshot, on_agent_event, failure::Union{Models.InvalidConfig, ToolFailure})
+    println(terminal.diagnostics, "Invalid or unreadable compaction settings.")
+    flush(terminal.diagnostics)
+    2
+end
+
+function runtext!(terminal, agent, prompt, snapshot, on_agent_event, policy::Union{Nothing, AutoCompaction})
+    on_event, callback = textcallbacks(terminal, agent, snapshot, on_agent_event, agent.history)
     result = try
         request!(terminal) do
-            respond!(agent, prompt; on_event=event -> streamrender!(terminal, event), on_agent_event=event -> begin
-                callback(event)
-                on_agent_event(event)
-            end)
+            respond!(agent, prompt; on_event, on_agent_event=callback, auto_compaction=policy)
         end
     finally
         failures!(terminal, callback)
@@ -343,3 +430,6 @@ function run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::Nothing, on_
     result.status == 0 || return result.status
     result!(terminal, result.value)
 end
+
+textcallbacks(terminal, agent, snapshot, callback, ::Nothing) = (event -> streamrender!(terminal, event), observer(terminal, snapshot, callback))
+textcallbacks(terminal, agent, snapshot, callback, ::History.Store) = LiveJSON.textcallbacks(terminal, agent, snapshot, callback)

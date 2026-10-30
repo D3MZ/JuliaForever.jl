@@ -5,7 +5,7 @@ function instructions_process(base, workspace, piagent; provider="openai", agent
     session = "--history" in options ? String[] : ["--no-session"]
     args = [session; options; isnothing(input) ? ["inspect"] : String[]]
     cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever $args`; dir=workspace)
-    cmd = addenv(cmd, "JF_PROVIDER" => provider, "OPENAI_BASE_URL" => base, "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic-secret", "PI_CODING_AGENT_DIR" => piagent, "JF_INSTRUCTIONS_DIR" => agentdir)
+    cmd = addenv(cmd, "HOME" => piagent, "JULIA_DEPOT_PATH" => join(DEPOT_PATH, Sys.iswindows() ? ';' : ':'), "JF_PROVIDER" => provider, "OPENAI_BASE_URL" => base, "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic-secret", "PI_CODING_AGENT_DIR" => piagent, "JF_INSTRUCTIONS_DIR" => agentdir)
     mktempdir() do dir
         stdinpath, output, diagnostics = joinpath.((dir,), ("stdin", "output", "diagnostics"))
         write(stdinpath, something(input, ""))
@@ -51,7 +51,10 @@ end
             write(joinpath(workspace, "AGENTS.md"), "ignored service")
             base = "http://$(HTTP.server_addr(server))/v1"
             for (provider, agentdir) in (("openai", nothing), ("openai-responses", globaldir))
-                @test instructions_process(base, workspace, piagent; provider, agentdir) == (; status=0, output="ok\n", diagnostics="")
+                result = withenv("JULIA_DEPOT_PATH" => nothing) do
+                    instructions_process(base, workspace, piagent; provider, agentdir)
+                end
+                @test result == (; status=0, output="ok\n", diagnostics="")
                 request = last(requests)
                 messages = provider == "openai" ? request.body.messages : request.body.input
                 @test request.target == (provider == "openai" ? "/v1/chat/completions" : "/v1/responses")
@@ -80,7 +83,7 @@ end
             blank = joinpath(dir, "blank")
             mkpath(blank)
             @test isempty(JuliaForever.Instructions.load(blank))
-            tools = ("read", "write", "edit", "bash", "ls", "find", "grep")
+            tools = ("read", "write", "edit", "bash")
             for provider in ("openai", "openai-responses")
                 @test instructions_process(base, blank, piagent; provider) == (; status=0, output="ok\n", diagnostics="")
                 request = last(requests)
@@ -93,6 +96,7 @@ end
                 for name in tools
                     @test occursin("- $name:", context)
                 end
+                @test all(name -> !occursin("- $name:", context), ("ls", "find", "grep", "powershell"))
                 @test !occursin("- greet:", context)
                 @test !occursin("- codemode:", context)
                 definitions = provider == "openai" ? [tool.function for tool in request.body.tools] : request.body.tools

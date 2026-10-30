@@ -29,9 +29,10 @@ using HTTP, JSON3, SHA, Base64
         @test wait(callback; timeout=1) == "synthetic+code"
 
         received = Channel{Any}(1)
+        returned = Ref{Any}("synthetic-key")
         server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
             put!(received, (; target=request.target, body=JSON3.read(String(request.body))))
-            HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write((; key="synthetic-key")))
+            HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write((; key=returned[])))
         end
         try
             key = exchange(login, "synthetic+code"; base="http://$(HTTP.server_addr(server))/api/v1")
@@ -40,6 +41,11 @@ using HTTP, JSON3, SHA, Base64
             @test request.body.code == "synthetic+code"
             @test request.body.code_verifier == login.verifier
             @test key == "synthetic-key"
+            for value in ("", 1, nothing)
+                returned[] = value
+                @test exchange(login, "synthetic+code"; base="http://$(HTTP.server_addr(server))/api/v1") === nothing
+                take!(received)
+            end
         finally
             close(server)
             wait(server)
@@ -62,6 +68,20 @@ end
     end
 end
 
+@testset "OpenRouter callback accepts one concurrent request" begin
+    callback = OpenRouterCallback()
+    try
+        params = HTTP.queryparams(HTTP.URI(authorize(callback).url))
+        address = params["callback_url"]
+        state = HTTP.escapeuri(params["state"])
+        tasks = [Threads.@spawn HTTP.get("$address?code=synthetic&state=$state"; status_exception=false, redirect=false, retry=false).status for _ in 1:8]
+        @test sort!(fetch.(tasks)) == [200, fill(409, 7)...]
+        @test wait(callback; timeout=1) == "synthetic"
+    finally
+        close(callback)
+    end
+end
+
 @testset "OpenRouter callback CLI" begin
     requests = Channel{Any}(2)
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
@@ -77,7 +97,7 @@ end
     try
         project = dirname(@__DIR__)
         base = "http://$(HTTP.server_addr(server))/api/v1"
-        cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever --no-session --provider openrouter --login-openrouter-callback --model cli/model hello`, "OPENROUTER_BASE_URL" => base, "OPENROUTER_MODEL" => "fixture/model")
+        cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever --no-session --provider openrouter --login-openrouter-callback --model cli/model hello`, "OPENROUTER_BASE_URL" => base, "OPENROUTER_MODEL" => "fixture/model", "JF_OPENROUTER_DIR" => joinpath(mktempdir(), "router"))
         output = open(cmd, "r") do io
             line = readline(io)
             url = match(r"https://openrouter\.ai/auth\?\S+", line).match

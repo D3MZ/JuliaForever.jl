@@ -22,6 +22,25 @@
         (; tool="grep", args=(; pattern="^Beta", path="root.txt", literal=true)),
         (; tool="grep", args=(; pattern="café [x]", path="literal.dat", literal=true)),
         (; tool="grep", args=(; pattern="café [x]", path="literal.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="ǅ", path="titlecase.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="σ", path="greek.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="σ", path="greek.dat", literal=true)),
+        (; tool="grep", args=(; pattern="^Σ\$", path="greek.dat", ignoreCase=true)),
+        (; tool="grep", args=(; pattern="k", path="kelvin.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="s", path="long-s.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="i", path="turkic.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="ß", path="sharp-s.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="ss", path="sharp-s.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="s", path="sharp-s.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="ﬀ", path="ligature.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="ﬅ", path="ligature.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="st", path="ligature.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="ΐ", path="greek-accent.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="ς\x01S", path="controls.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="", path="empty-lines.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="𐐀", path="deseret.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="[a]\\E(b)", path="quoted.dat", literal=true, ignoreCase=true)),
+        (; tool="grep", args=(; pattern="é", path="canonical.dat", literal=true, ignoreCase=true)),
         (; tool="grep", args=(; pattern="needle", glob="*.ts")),
         (; tool="grep", args=(; pattern="needle", path="missing")),
         (; tool="grep", args=(; pattern="needle", glob="*.txt"), unordered=true),
@@ -48,6 +67,19 @@
         write(joinpath(dir, "long.txt"), repeat("x", 501) * "needle\n")
         write(joinpath(dir, "unicode.txt"), repeat("🌱", 250) * "needle\n")
         write(joinpath(dir, "literal.dat"), "CAFÉ [x]\ncafé [x]\n")
+        write(joinpath(dir, "titlecase.dat"), join((repeat("中", 50) * c for c in ("Ǆ", "ǅ", "ǆ")), "\n") * "\n")
+        write(joinpath(dir, "greek.dat"), "σ\nς\nΣ\n")
+        write(joinpath(dir, "kelvin.dat"), "k\nK\nK\n")
+        write(joinpath(dir, "long-s.dat"), "s\nS\nſ\n")
+        write(joinpath(dir, "turkic.dat"), "i\nI\nİ\nı\n")
+        write(joinpath(dir, "sharp-s.dat"), "ß\nẞ\nss\nSS\n")
+        write(joinpath(dir, "ligature.dat"), "ﬀ\nff\nﬅ\nﬆ\nst\n")
+        write(joinpath(dir, "greek-accent.dat"), "ΐ\nΐ\nΐ\n")
+        write(joinpath(dir, "controls.dat"), "Σ\x01s\nσ\x02s\n")
+        write(joinpath(dir, "empty-lines.dat"), "abc\n\nσ\n")
+        write(joinpath(dir, "deseret.dat"), "𐐀\n𐐨\n")
+        write(joinpath(dir, "quoted.dat"), "[A]\\e(B)\n[a]\\E(b)\nA\\eB\n")
+        write(joinpath(dir, "canonical.dat"), "é\né\n")
         input = tempname()
         write(input, JSON3.write(cases))
         try
@@ -131,6 +163,29 @@ end
                 else
                     @test result.text == reference[index].text
                 end
+            end
+        finally
+            rm(input; force=true)
+        end
+    end
+end
+
+@testset "Pi ignore file precedence" begin
+    cases = [
+        (; tool="grep", args=(; pattern="needle")),
+        (; tool="find", args=(; pattern="*.txt")),
+    ]
+    mktempdir() do dir
+        ignorepriorityfixture(dir)
+        input = tempname()
+        write(input, JSON3.write(cases))
+        try
+            reference = JSON3.read(read(`node $(joinpath(@__DIR__, "search_reference.mjs")) $(ENV["PI_SOURCE"]) $dir $input`, String))
+            for (index, case) in enumerate(cases)
+                tool = case.tool == "find" ? Find(dir) : Grep(dir)
+                result = execute(tool, case.args)
+                @test result.iserror == reference[index].iserror
+                @test Set(split(result.text, '\n')) == Set(split(reference[index].text, '\n'))
             end
         finally
             rm(input; force=true)

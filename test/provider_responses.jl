@@ -3,15 +3,34 @@ using HTTP, JSON3
 response_sse(data) = "data: $(JSON3.write(data))\n\n"
 response_call(id, call, path, content) = Dict("type" => "function_call", "id" => id, "call_id" => call, "name" => "write", "arguments" => JSON3.write((; path, content)), "status" => "completed")
 response_text(text) = Dict("type" => "message", "id" => "msg_1", "status" => "completed", "role" => "assistant", "content" => [Dict("type" => "output_text", "text" => text, "annotations" => [])])
+@testset "Responses call validation" begin
+    call = response_call("id", "call", "file", "content")
+    @test JuliaForever.callfailure([call], nothing) === nothing
+    nostatus = copy(call)
+    delete!(nostatus, "status")
+    @test JuliaForever.callfailure([nostatus], nothing) === nothing
+    @test JuliaForever.callfailure([merge(call, Dict("status" => "running"))], nothing) == "Responses contained an unfinished function call"
+    for key in ("id", "call_id", "name", "arguments"), value in (nothing, "", 1)
+        bad = merge(call, Dict(key => value))
+        @test JuliaForever.callfailure([bad], nothing) == "Responses contained an unfinished function call"
+        @test JuliaForever.callfailure([bad], "earlier") == "earlier"
+    end
+    missing = copy(call)
+    delete!(missing, "name")
+    @test JuliaForever.callfailure([missing], nothing) == "Responses contained an unfinished function call"
+    @test JuliaForever.callfailure([call, merge(call, Dict("call_id" => "other"))], nothing) == "Responses contained duplicate function call identifiers"
+    @test JuliaForever.callfailure([call, merge(call, Dict("id" => "other"))], nothing) == "Responses contained duplicate function call identifiers"
+end
+
 response_reasoning() = Dict("type" => "reasoning", "id" => "rs_1", "summary" => [], "encrypted_content" => "synthetic-encrypted")
 response_done(output; status="completed", usage=nothing) = Dict("id" => "resp_1", "status" => status, "output" => output, "usage" => usage)
 
 @testset "Responses configuration" begin
-    model = provider(Dict("JF_PROVIDER" => "openai-responses", "OPENAI_MODEL" => "gpt-6-astra", "OPENAI_API_KEY" => "synthetic", "OPENAI_BASE_URL" => "http://localhost/v1/"))
+    model = provider(Dict("JF_PROVIDER" => "openai-responses", "OPENAI_MODEL" => "gpt-6-astra", "OPENAI_API_KEY" => "synthetic", "OPENAI_BASE_URL" => "http://localhost/v1/", "PI_CODING_AGENT_DIR" => mktempdir()))
     @test model isa OpenAIResponses
     @test model.model == "gpt-6-astra"
     @test !occursin("synthetic", sprint(show, model))
-    @test provider(Dict("OPENAI_MODEL" => "old", "OPENAI_API_KEY" => "synthetic")) isa OpenAI
+    @test provider(Dict("OPENAI_MODEL" => "old", "OPENAI_API_KEY" => "synthetic", "PI_CODING_AGENT_DIR" => mktempdir())) isa OpenAI
 end
 
 @testset "Responses completion status and call validation" begin
@@ -19,6 +38,7 @@ end
     call = response_call("fc_1", "call_1", "one.txt", "one")
     completed = JuliaForever.completion(model, response_done([call]))
     @test completed.done && completed.finish == "tool_calls" && completed.error === nothing
+    @test completed.status isa JuliaForever.Finished
     text = JuliaForever.completion(model, response_done([response_text("answer")]))
     @test text.done && text.finish == "stop"
     for (status, kind) in (("failed", :failed), ("incomplete", :incomplete), (nothing, :unknown))
@@ -29,6 +49,7 @@ end
     unfinished = merge(call, Dict("status" => "in_progress"))
     result = JuliaForever.completion(model, response_done([unfinished]))
     @test !result.done && result.error == "Responses contained an unfinished function call"
+    @test result.status isa JuliaForever.Unfinished
     duplicate = merge(call, Dict("id" => "fc_2"))
     result = JuliaForever.completion(model, response_done([call, duplicate]))
     @test !result.done && result.error == "Responses contained duplicate function call identifiers"

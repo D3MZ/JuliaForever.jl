@@ -35,6 +35,32 @@ struct Document <: Record
     value::Any
 end
 
+abstract type DocumentPolicy end
+struct AsOf <: DocumentPolicy end
+struct Current <: DocumentPolicy end
+struct Initial <: DocumentPolicy end
+
+struct PolicyDocument <: Record
+    id::Int
+    conversation::Int
+    kind::String
+    key::Union{Nothing, String}
+    policy::DocumentPolicy
+    value::Any
+end
+
+struct ForkCopy
+    id::Int
+    source::Int
+end
+
+struct DocumentFork <: Record
+    id::Int
+    value::Any
+    parent::Tuple{Int, Int}
+    copies::Vector{ForkCopy}
+end
+
 struct Submission <: Record
     id::Int
     conversation::Int
@@ -49,9 +75,13 @@ mutable struct State
     nextid::Int
     records::Dict{Int, Record}
     requests::Dict{Tuple{Int, String}, Int}
+    entries::Dict{Int, Int}
+    documents::Dict{Int, Vector{Pair{Int, Document}}}
+    policies::Dict{Int, Vector{Pair{Int, PolicyDocument}}}
+    addresses::Dict{Tuple{Int, String, Union{Nothing, String}}, Int}
 end
 
-State() = State(0, 0, Dict{Int, Record}(), Dict{Tuple{Int, String}, Int}())
+State() = State(0, 0, Dict{Int, Record}(), Dict{Tuple{Int, String}, Int}(), Dict{Int, Int}(), Dict{Int, Vector{Pair{Int, Document}}}(), Dict{Int, Vector{Pair{Int, PolicyDocument}}}(), Dict{Tuple{Int, String, Union{Nothing, String}}, Int}())
 
 abstract type Health end
 struct Healthy <: Health end
@@ -145,19 +175,27 @@ encode(r::Conversation) = (; type="conversation", r.id, r.value, parent=encode(r
 encode(r::Entry) = (; type="entry", r.id, r.conversation, r.kind, r.value)
 encode(r::Task) = (; type="task", r.id, r.conversation, r.state)
 encode(r::Document) = (; type="document", r.id, r.conversation, r.value)
+encode(::AsOf) = "asOf"
+encode(::Current) = "current"
+encode(::Initial) = "initial"
+encode(r::PolicyDocument) = (; type="policy_document", r.id, r.conversation, r.kind, r.key, policy=encode(r.policy), r.value)
+encode(copy::ForkCopy) = (; copy.id, copy.source)
+encode(r::DocumentFork) = (; type="document_fork", r.id, r.value, parent=encode(r.parent), copies=encode.(r.copies))
 encode(r::Submission) = (; type="submission", r.id, r.conversation, r.request, r.kind, r.status, r.value)
 
-const recordtypes = Dict("conversation" => Conversation, "entry" => Entry, "task" => Task, "document" => Document, "submission" => Submission)
+const recordtypes = Dict("conversation" => Conversation, "entry" => Entry, "task" => Task, "document" => Document, "policy_document" => PolicyDocument, "document_fork" => DocumentFork, "submission" => Submission)
 
 decode(record::AbstractDict) = decode(get(recordtypes, record["type"], nothing), record, record["id"])
 decode(::Nothing, record, id) = nothing
 decode(::Type{<:Record}, record, id) = nothing
 decode(::Type{Conversation}, record, id::Int) = decodeparent(id, record["value"], get(record, "parent", nothing))
+decode(::Type{DocumentFork}, record, id::Int) = decodefork(id, record["value"], record["parent"], record["copies"])
 decode(type::Type{<:Record}, record, id::Int) = decode(type, record, id, record["conversation"])
 decode(::Type{<:Record}, record, id::Int, conversation) = nothing
 decode(::Type{Entry}, record, id::Int, conversation::Int) = Entry(id, conversation, record["kind"], record["value"])
 decode(::Type{Task}, record, id::Int, conversation::Int) = Task(id, conversation, record["state"])
 decode(::Type{Document}, record, id::Int, conversation::Int) = Document(id, conversation, record["value"])
+decode(::Type{PolicyDocument}, record, id::Int, conversation::Int) = decodepolicy(id, conversation, record["kind"], record["key"], get(documentpolicies, record["policy"], nothing), record["value"])
 decode(::Type{Submission}, record, id::Int, conversation::Int) = Submission(id, conversation, record["request"], record["kind"], record["status"], record["value"])
 
 decodeparent(id, value, ::Nothing) = Conversation(id, value)
@@ -166,7 +204,7 @@ decodeparent(id, value, parent) = nothing
 decodeparent(id, value, conversation::Int, at::Int) = Conversation(id, value, (conversation, at))
 decodeparent(id, value, conversation, at) = nothing
 
-detach(record::Record) = decode(JSON3.read(JSON3.write(encode(record)), Dict{String, Any}))
+detach(record::Record) = decode(JSON3.read(codeunits(JSON3.write(encode(record))), Dict{String, Any}))
 
 pushparent!(pending, ::Nothing, upper) = nothing
 pushparent!(pending, parent::Tuple{Int, Int}, upper) = push!(pending, (parent[1], min(upper, parent[2])))
@@ -186,6 +224,7 @@ end
 
 document(::Record, conversation) = false
 document(record::Document, conversation) = record.conversation == conversation
+document(record::PolicyDocument, conversation) = record.conversation == conversation
 
 function hasdocuments(state::State, conversation::Int)
     pending = Tuple{Int, Int}[(conversation, typemax(Int))]
@@ -212,9 +251,6 @@ end
 forkcheck(state::State, records::Vector{Record}) = foldl((result, record) -> forkcheck(state, record, result), records; init=nothing)
 forkcheck(state::State, record::Record, ::Nothing) = forkcheck(state, record)
 forkcheck(::State, ::Record, result::Rejected) = result
-
-valid(::Nothing) = true
-valid(result) = false
 
 validate(::Conversation) = nothing
 validate(parent) = Rejected(:conversation_missing)
@@ -248,36 +284,66 @@ store!(state::State, record::Record, rejected::Rejected) = rejected
 
 function store!(state::State, record::Record, ::Nothing)
     state.records[record.id] = record
+    index!(state, record)
+    nothing
+end
+
+index!(state::State, record::Record) = nothing
+index!(state::State, record::Entry) = (state.entries[record.id] = state.seq + 1; nothing)
+function index!(state::State, record::Document)
+    push!(get!(Vector{Pair{Int, Document}}, state.documents, record.id), (state.seq + 1) => record)
     nothing
 end
 
 function replay!(state::State, batch)
     try
-        seq = batch["seq"]
-        seq isa Int && seq == state.seq + 1 || return false
-        nextid = batch["nextid"]
-        nextid isa Int && nextid >= state.nextid || return false
-        writes = batch["writes"]
-        writes isa AbstractVector && !isempty(writes) || return false
-        records = Record[]
-        for encoded in writes
-            record = decode(encoded)
-            record isa Record || return false
-            record.id <= nextid || return false
-            haskey(state.records, record.id) || record.id > state.nextid || return false
-            valid(forkcheck(state, record)) || return false
-            push!(records, record)
-        end
-        for record in records
-            valid(apply!(state, record)) || return false
-        end
-        valid(forkcheck(state, records)) || return false
-        state.seq += 1
-        state.nextid = nextid
-        true
+        replayseq!(state, batch, batch["seq"])
     catch
-        false
+        Rejected(:corrupt_log)
     end
+end
+
+replayseq!(state, batch, seq) = Rejected(:corrupt_log)
+function replayseq!(state, batch, seq::Int)
+    seq == state.seq + 1 || return Rejected(:corrupt_log)
+    replaynext!(state, batch, batch["nextid"])
+end
+replaynext!(state, batch, nextid) = Rejected(:corrupt_log)
+function replaynext!(state, batch, nextid::Int)
+    nextid >= state.nextid || return Rejected(:corrupt_log)
+    replaywrites!(state, nextid, batch["writes"])
+end
+replaywrites!(state, nextid, writes) = Rejected(:corrupt_log)
+function replaywrites!(state, nextid, writes::AbstractVector)
+    isempty(writes) && return Rejected(:corrupt_log)
+    records = foldl((records, encoded) -> replayrecord!(state, nextid, records, encoded), writes; init=Record[])
+    replayrecords!(state, nextid, records)
+end
+replayrecord!(state, nextid, rejected::Rejected, encoded) = rejected
+replayrecord!(state, nextid, records::Vector{Record}, encoded) = replaydecoded!(state, nextid, records, decode(encoded))
+replaydecoded!(state, nextid, records, record) = Rejected(:corrupt_log)
+function replaydecoded!(state, nextid, records, record::Record)
+    record.id <= nextid || return Rejected(:corrupt_log)
+    haskey(state.records, record.id) || record.id > state.nextid || return Rejected(:corrupt_log)
+    replayids!(state, nextid, records, record, replayids(state, nextid, record))
+end
+replayids!(state, nextid, records, record, rejected::Rejected) = rejected
+replayids!(state, nextid, records, record, ::Nothing) = replayaccepted!(records, record, forkcheck(state, record))
+replayaccepted!(records, record, rejected::Rejected) = rejected
+replayaccepted!(records, record, ::Nothing) = push!(records, record)
+replayrecords!(state, nextid, rejected::Rejected) = Rejected(:corrupt_log)
+replayrecords!(state, nextid, records::Vector{Record}) = replaychecked!(state, nextid, records, batchforkcheck(state, records))
+replaychecked!(state, nextid, records, rejected::Rejected) = Rejected(:corrupt_log)
+replaychecked!(state, nextid, records, ::Nothing) = replayapplied!(state, nextid, records, foldl((result, record) -> replayapply!(state, result, record), records; init=nothing))
+replayapply!(state, rejected::Rejected, record) = rejected
+replayapply!(state, ::Nothing, record) = apply!(state, record)
+replayapplied!(state, nextid, records, rejected::Rejected) = Rejected(:corrupt_log)
+replayapplied!(state, nextid, records, ::Nothing) = replayfinish!(state, nextid, forkcheck(state, records))
+replayfinish!(state, nextid, rejected::Rejected) = Rejected(:corrupt_log)
+function replayfinish!(state, nextid, ::Nothing)
+    state.seq += 1
+    state.nextid = nextid
+    nothing
 end
 
 function sync(io::IOStream)
@@ -321,18 +387,25 @@ function recover(io::IOStream)
     bytes = read(io)
     ends = findall(==(0x0a), bytes)
     state = State()
-    start = 1
-    for last in ends
-        line = bytes[start:last-1]
-        isvalid(String, line) || return Rejected(:corrupt_log)
-        batch = try
-            JSON3.read(String(line), Dict{String, Any})
-        catch
-            return Rejected(:corrupt_log)
-        end
-        replay!(state, batch) || return Rejected(:corrupt_log)
-        start = last + 1
+    start = foldl((start, last) -> recoverline!(state, bytes, start, last), ends; init=1)
+    recover(io, state, bytes, ends, start)
+end
+
+recoverline!(state, bytes, rejected::Rejected, last) = rejected
+function recoverline!(state, bytes, start::Int, last::Int)
+    line = bytes[start:last-1]
+    isvalid(String, line) || return Rejected(:corrupt_log)
+    batch = try
+        JSON3.read(line, Dict{String, Any})
+    catch
+        return Rejected(:corrupt_log)
     end
+    replayline!(last, replay!(state, batch))
+end
+replayline!(last, rejected::Rejected) = rejected
+replayline!(last, ::Nothing) = last + 1
+recover(io, state, bytes, ends, rejected::Rejected) = rejected
+function recover(io, state, bytes, ends, start::Int)
     complete = isempty(ends) ? 0 : ends[end]
     if complete < length(bytes)
         truncate(io, complete)
@@ -342,29 +415,37 @@ function recover(io::IOStream)
     state
 end
 
+function syncnew!(io, path)
+    sync(io)
+    syncdir(path)
+end
+syncexisting!(io, path) = nothing
+const syncstores = Dict(true => syncnew!, false => syncexisting!)
+
 function Base.open(::Type{Store}, path::AbstractString)
     @static if !Sys.isunix()
         return Rejected(:unsupported_platform)
     end
-    created = !isfile(path)
+    prepare = syncstores[!isfile(path)]
     io = open(path, "a+")
-    success = false
+    result = nothing
     try
-        result = claim(io)
-        result === nothing || return result
-        if created
-            sync(io)
-            syncdir(path)
-        end
-        state = recover(io)
-        state isa Rejected && return state
-        store = Store(io, state, state.nextid, ReentrantLock(), false, false, false)
-        success = true
-        store
+        result = opened(io, path, prepare, claim(io))
     finally
-        success || close(io)
+        release(io, result)
     end
+    result
 end
+
+opened(io, path, prepare, result) = result
+function opened(io, path, prepare, ::Nothing)
+    prepare(io, path)
+    recovered(io, recover(io))
+end
+recovered(io, rejected::Rejected) = rejected
+recovered(io, state::State) = Store(io, state, state.nextid, ReentrantLock(), false, false, false)
+release(io, ::Store) = nothing
+release(io, result) = close(io)
 
 function Base.close(store::Store)
     lock(store.lock) do
@@ -462,6 +543,27 @@ function entries(store::Store, conversation::Integer)
 end
 
 entries(tx::Transaction, conversation::Integer) = copyentries(tx.state, conversation, status(tx))
+function snapshot(store::Store, conversation::Integer, document::Integer, entry::Integer)
+    lock(store.lock) do
+        snapshot(store.state, conversation, document, entry, status(store))
+    end
+end
+snapshot(state, conversation, document, entry, rejected::Rejected) = rejected
+snapshot(state, conversation, document, entry, ::Nothing) = snapshotentry(state, conversation, document, get(state.records, entry, nothing))
+snapshotentry(state, conversation, document, ::Union{Nothing, Record}) = Rejected(:entry_not_visible)
+function snapshotentry(state, conversation, document, entry::Entry)
+    entry.conversation == conversation || return Rejected(:entry_not_visible)
+    snapshotdocument(state, conversation, state.entries[entry.id], get(state.records, document, nothing))
+end
+snapshotdocument(state, conversation, seq, ::Union{Nothing, Record}) = nothing
+snapshotdocument(state, conversation, seq, document::Document) = snapshotdocument(state, conversation, seq, document, state.documents)
+function snapshotdocument(state, conversation, seq, document::Union{Document, PolicyDocument}, history)
+    document.conversation == conversation || return nothing
+    versions = history[document.id]
+    snapshotversion(versions, findlast(version -> version.first <= seq, versions))
+end
+snapshotversion(versions, ::Nothing) = nothing
+snapshotversion(versions, index::Integer) = deepcopy(versions[index].second)
 
 Base.get(tx::Transaction, ::Type{T}, id::Integer) where {T <: Record} = readrecord(tx, T, id, status(tx))
 mint!(tx::Transaction) = mint!(tx, status(tx))
@@ -503,8 +605,7 @@ end
 fork!(tx::Transaction, conversation::Integer, at::Integer; value=nothing) = fork!(tx, conversation, at, status(tx); value)
 fork!(::Transaction, ::Integer, ::Integer, result::Rejected; value=nothing) = result
 function fork!(tx::Transaction, conversation::Integer, at::Integer, ::Nothing; value=nothing)
-    id = mint!(tx)
-    put!(tx, Conversation(id, value, (conversation, at)))
+    forkpolicy!(tx, (Int(conversation), Int(at)), value, forkplan(tx.store.state, Int(conversation), Int(at)))
 end
 
 const submissionstates = Dict("input" => "queued", "write" => "queued", "continue" => "placed")
@@ -553,15 +654,19 @@ function commit!(f, store::Store, ::Free)
 end
 
 committed!(store::Store, tx::Transaction, value, rejected::Rejected) = rejected
-committed!(store::Store, tx::Transaction, value, ::Nothing) = commit!(store, tx, value, forkcheck(tx.state, tx.writes))
+committed!(store::Store, tx::Transaction, value, ::Nothing) = committedchecked!(store, tx, value, batchforkcheck(store.state, tx.writes))
+committedchecked!(store::Store, tx::Transaction, value, rejected::Rejected) = rejected
+committedchecked!(store::Store, tx::Transaction, value, ::Nothing) = commit!(store, tx, value, forkcheck(tx.state, tx.writes))
 
 commit!(::Store, ::Transaction, value, result::Rejected) = result
+finishcommit!(store, ::Nothing) = setfield!(store, :health, Broken())
+finishcommit!(store, ::Some) = nothing
 function commit!(store::Store, tx::Transaction, value, ::Nothing)
     value = deepcopy(value)
     isempty(tx.writes) && return value
     seq = store.state.seq + 1
     encoded = JSON3.write((; seq, nextid=store.nextid, writes=encode.(tx.writes))) * "\n"
-    adopted = false
+    committed = nothing
     try
         seekend(store.io)
         write(store.io, encoded)
@@ -569,13 +674,14 @@ function commit!(store::Store, tx::Transaction, value, ::Nothing)
         tx.state.seq = seq
         tx.state.nextid = store.nextid
         store.state = tx.state
-        adopted = true
+        committed = Some(value)
     finally
-        adopted || setfield!(store, :health, Broken())
+        finishcommit!(store, committed)
     end
-    value
+    something(committed)
 end
 
+include("durable_policy.jl")
 include("scheduler.jl")
 
 end

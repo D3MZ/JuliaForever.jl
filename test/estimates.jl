@@ -51,6 +51,11 @@ const EC = JuliaForever.Conversation
     @test CT.tokens(nested) == CT.tokens("a")
     rawalias = EC.RawMessage(Dict{String, Any}("role" => "assistant", "content" => "a", "reasoning" => "fall😀"))
     @test CT.tokens(rawalias) == CT.tokens("afall😀")
+    native_thoughts = [Dict("type" => "thinking", "thinking" => "thought"), Dict("type" => "redacted_thinking", "data" => "opaque"), Dict("type" => "text", "text" => "a")]
+    native = EC.Assistant("a", EC.ToolCall[], "stop", true; metadata=Dict("anthropic_content" => native_thoughts))
+    @test CT.tokens(native) == CT.tokens("athought[Reasoning redacted]")
+    aliased = EC.Assistant("a", EC.ToolCall[], "stop", true; metadata=Dict("reasoning_content" => [], "reasoning" => "fallback", "anthropic_content" => native_thoughts))
+    @test CT.tokens(aliased) == CT.tokens("afallback")
     response_reasoning = Dict("type" => "reasoning", "summary" => [Dict("type" => "summary_text", "text" => "a longer visible reasoning summary")], "encrypted_content" => "synthetic")
     response = EC.Assistant("a", EC.ToolCall[], "stop", true; metadata=Dict("response_output" => [response_reasoning]))
     @test CT.tokens(response) == CT.tokens("a")

@@ -31,7 +31,8 @@ class Session:
             f = open(path, "wb")
             self.files.append(f)
             return f
-        self.process = subprocess.Popen([julia, "--startup-file=no", "--project=" + str(project), str(project / "test/terminal_process.jl"), *args], cwd=self.directory, stdin=self.slave, stdout=destination(stdout_tty, self.stdout), stderr=destination(stderr_tty, self.stderr), env=env, close_fds=True)
+        tui = () if "--tui-mode" in args else ("--tui-mode", "regular")
+        self.process = subprocess.Popen([julia, "--startup-file=no", "--project=" + str(project), str(project / "test/terminal_process.jl"), *tui, *args], cwd=self.directory, stdin=self.slave, stdout=destination(stdout_tty, self.stdout), stderr=destination(stderr_tty, self.stderr), env=env, close_fds=True)
 
     def read(self):
         ready, _, _ = select.select([self.master], [], [], 0.1)

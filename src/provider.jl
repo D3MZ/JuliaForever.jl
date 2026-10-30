@@ -1,8 +1,37 @@
+function price end
+function priceevent end
+
+struct DirectRoute end
+struct CatalogRoute
+    name::String
+    registry::Models.Registry
+end
+
+abstract type ThinkingWire end
+struct DirectThinking <: ThinkingWire end
+struct UpdateThinking <: ThinkingWire end
+const thinkingwires = Dict(false => DirectThinking(), true => UpdateThinking())
+thinkingwire(levels) = get(thinkingwires, get(levels, "configurationUpdate", false), UpdateThinking())
+Base.show(io::IO, ::CatalogRoute) = print(io, "Catalog route ([redacted])")
+StructTypes.StructType(::Type{CatalogRoute}) = StructTypes.CustomStruct()
+StructTypes.lower(::CatalogRoute) = "[redacted]"
+
 struct OpenAI
     base::String
     model::String
     key::String
+    extra::Vector{Pair{String, String}}
+    route::Union{DirectRoute, CatalogRoute}
 end
+OpenAI(base, model, key) = OpenAI(base, model, key, Pair{String, String}[], DirectRoute())
+OpenAI(base, model, key, extra) = OpenAI(base, model, key, extra, DirectRoute())
+
+struct UnconfiguredProvider
+    base::String
+    model::String
+    key::String
+end
+UnconfiguredProvider() = UnconfiguredProvider("", "unknown", "")
 
 # Keep request cancellation scoped to the calling task without changing provider APIs.
 const requestkey = gensym(:request_context)
@@ -15,12 +44,6 @@ struct ProviderStatus
     status::Int
 end
 struct UnsupportedImage end
-
-imagecheck(::Nothing, message) = imagecheck(get(Dict(string(key) => value for (key, value) in pairs(message)), "image", nothing))
-imagecheck(unsupported::UnsupportedImage, message) = unsupported
-imagecheck(::Nothing) = nothing
-imagecheck(image) = UnsupportedImage()
-images(input) = foldl(imagecheck, input; init=nothing)
 
 "A provider-reported failure without its untrusted message or request details."
 struct ProviderError
@@ -56,6 +79,7 @@ failurestatus(value) = nothing
 failurestatus(value::Integer) = 400 <= value <= 599 ? Int(value) : nothing
 failurestatus(data::AbstractDict) = failurestatus(get(data, "code", nothing))
 providererror(provider::Symbol, data) = ProviderError(provider, failurekind(data), failurestatus(data))
+protocolfield(data, key) = haskey(data, key) ? Some(data[key]) : nothing
 
 const finishreasons = Dict(reason => reason for reason in ("stop", "end", "length", "tool_calls", "function_call", "content_filter", "failed", "incomplete"))
 safefinish(value) = nothing
@@ -99,8 +123,32 @@ providerinfo(selected) = get(providerinfos, selected, nothing)
 modelvalue(env, name, ::Nothing) = env[name]
 modelvalue(env, name, model::AbstractString) = model
 
+const credentialproviders = Dict("OPENAI_API_KEY" => "openai", "OPENROUTER_API_KEY" => "openrouter", "ANTHROPIC_API_KEY" => "anthropic", "GEMINI_API_KEY" => "google")
+
+function storedcredentials(env)
+    path = joinpath(get(env, "PI_CODING_AGENT_DIR", joinpath(homedir(), ".pi", "agent")), "auth.json")
+    try
+        JSON3.read(codeunits(replace(read(path, String), r"^\ufeff" => "")), Dict{String, Any})
+    catch
+        Dict{String, Any}()
+    end
+end
+
+credentialkey(::Nothing, env, info) = get(env, info.key, "")
+credentialkey(value, env, info) = nothing
+credentialkey(value::AbstractDict, env, info) = credentialkey(get(Dict("api_key" => Val(:api_key)), get(value, "type", ""), Val(:unsupported)), value, env, info)
+credentialkey(::Val, value, env, info) = nothing
+credentialkey(::Val{:api_key}, value, env, info) = literalkey(get(value, "key", nothing), env, info)
+literalkey(::Nothing, env, info) = get(env, info.key, "")
+literalkey(value, env, info) = nothing
+literalkey(value::AbstractString, env, info) = isempty(value) ? get(env, info.key, "") : (occursin(r"[\$]", value) || startswith(value, "!") ? nothing : value)
+readpicredential(pi, env, info) = get(pi, credentialproviders[info.key], nothing)
+keyvalue(env, info) = credentialkey(get(credentialreaders, info.key, readpicredential)(storedcredentials(env), env, info), env, info)
+
 provider(::Nothing, env, model) = nothing
-provider(info::NamedTuple, env, model) = info.factory(get(env, info.base, info.url), modelvalue(env, info.model, model), env[info.key])
+provider(info::NamedTuple, env, model) = provider(info, env, model, keyvalue(env, info))
+provider(info::NamedTuple, env, model, ::Nothing) = nothing
+provider(info::NamedTuple, env, model, key::AbstractString) = isempty(key) ? nothing : info.factory(get(env, info.base, info.url), modelvalue(env, info.model, model), key)
 provider(env=ENV) = provider(providerinfo(get(env, "JF_PROVIDER", "openai")), env, nothing)
 
 struct OpenRouterLogin
@@ -131,11 +179,30 @@ Base.show(io::IO, ::OpenRouterCallback) = print(io, "OpenRouterCallback([redacte
 StructTypes.StructType(::Type{<:OpenRouterCallback}) = StructTypes.CustomStruct()
 StructTypes.lower(::OpenRouterCallback) = "[redacted]"
 
+function openrouterresult(codes, states, failures, state)
+    length(codes) == 1 && !isempty(only(codes)) && isempty(failures) && states == [state] && return only(codes)
+    isempty(codes) && failures == ["access_denied"] && (isempty(states) || states == [state]) && return nothing
+    HTTP.Response(400)
+end
+
+openrouterreply(response::HTTP.Response, pending, gate) = response
+function openrouterreply(value::Union{Nothing, AbstractString}, pending, gate)
+    lock(gate) do
+        openrouteraccept(value, pending[], pending)
+    end
+end
+openrouteraccept(value, ::Nothing, pending) = HTTP.Response(409)
+function openrouteraccept(value, result::Channel, pending)
+    pending[] = nothing
+    put!(result, value)
+    HTTP.Response(200, ["Content-Type" => "text/plain; charset=utf-8", "Cache-Control" => "no-store", "Referrer-Policy" => "no-referrer"], "You may close this window.")
+end
+
 function OpenRouterCallback()
     path = "/oauth/callback/" * base64url(rand(RandomDevice(), UInt8, 24))
     state = String(base64url(rand(RandomDevice(), UInt8, 32)))
     result = Channel{Union{Nothing, String}}(1)
-    pending = Ref(true)
+    pending = Ref{Union{Nothing, typeof(result)}}(result)
     gate = ReentrantLock()
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
         request.method == "GET" || return HTTP.Response(405)
@@ -145,15 +212,7 @@ function OpenRouterCallback()
         codes = [value for (key, value) in params if key == "code"]
         states = [value for (key, value) in params if key == "state"]
         failures = [value for (key, value) in params if key == "error"]
-        success = length(codes) == 1 && !isempty(only(codes)) && isempty(failures) && states == [state]
-        denied = isempty(codes) && failures == ["access_denied"] && (isempty(states) || states == [state])
-        (success || denied) || return HTTP.Response(400)
-        lock(gate) do
-            pending[] || return HTTP.Response(409)
-            pending[] = false
-            put!(result, success ? only(codes) : nothing)
-            HTTP.Response(200, ["Content-Type" => "text/plain; charset=utf-8", "Cache-Control" => "no-store", "Referrer-Policy" => "no-referrer"], "You may close this window.")
-        end
+        openrouterreply(openrouterresult(codes, states, failures, state), pending, gate)
     end
     OpenRouterCallback(server, "http://127.0.0.1:$(HTTP.port(server))$path", state, result)
 end
@@ -163,7 +222,9 @@ function authorize(callback::OpenRouterCallback)
     OpenRouterLogin("$(login.url)&callback_url=$(HTTP.escapeuri(callback.url))&state=$(HTTP.escapeuri(callback.state))", login.verifier)
 end
 
-Base.wait(callback::OpenRouterCallback; timeout=300) = timedwait(() -> isready(callback.result), timeout; pollint=0.01) == :ok ? take!(callback.result) : nothing
+openroutertimeout(channel) = nothing
+const openrouterwait = Dict(:ok => take!, :timed_out => openroutertimeout)
+Base.wait(callback::OpenRouterCallback; timeout=300) = openrouterwait[timedwait(() -> isready(callback.result), timeout; pollint=0.01)](callback.result)
 Base.close(callback::OpenRouterCallback) = (close(callback.server); wait(callback.server); nothing)
 
 function exchange(login::OpenRouterLogin, code; base="https://openrouter.ai/api/v1")
@@ -175,9 +236,16 @@ end
 
 apikey(failure::InvalidResponse) = failure
 
-function apikey(data::AbstractDict)
-    key = get(data, "key", nothing)
-    key isa AbstractString && !isempty(key) ? key : nothing
+apikey(data::AbstractDict) = apikeyvalue(get(data, "key", nothing))
+apikeyvalue(value) = nothing
+apikeyvalue(value::AbstractString) = isempty(value) ? nothing : value
+
+struct CostBreakdown
+    input::Float64
+    output::Float64
+    cache_read::Float64
+    cache_write::Float64
+    reported::Union{Nothing, Float64}
 end
 
 struct Usage
@@ -188,7 +256,10 @@ struct Usage
     reasoning::Int
     total::Int
     cost::Union{Nothing, Float64}
+    breakdown::Union{Nothing, CostBreakdown}
+    cache_write_1h::Int
 end
+Usage(input, output, cache_read, cache_write, reasoning, total, cost) = Usage(input, output, cache_read, cache_write, reasoning, total, cost, nothing, 0)
 
 abstract type CompletionStatus end
 struct Finished <: CompletionStatus end
@@ -221,7 +292,7 @@ Base.propertynames(::Completion, private::Bool=false) = (:message, :usage, :fini
 completionevent(result::Completion) = completionevent(getfield(result, :status))
 JSON3.StructTypes.names(::Type{Completion}) = ((:status, :done),)
 
-incomplete(failure::Union{InvalidResponse, ProviderStatus, UnsupportedImage}) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, failure)
+incomplete(failure::Union{InvalidResponse, ProviderStatus, UnsupportedImage}) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, Unfinished(), failure)
 
 abstract type ChatFinish end
 struct ChatAccepted <: ChatFinish
@@ -236,24 +307,36 @@ chatfinish(::Nothing) = ChatMissing()
 chatfinish(reason) = ChatMissing()
 chatfinish(reason::AbstractString) = get(chatfinishes, reason, ChatRejected)(String(reason))
 
-chatcompletion(message, used, ::ChatMissing) = Completion(message, used, nothing, false, providererror(:openai_compatible, nothing))
-chatcompletion(message, used, status::ChatAccepted) = Completion(message, used, status.reason, true, nothing)
-chatcompletion(message, used, status::ChatRejected) = Completion(message, used, safefinish(status.reason), false, providererror(:openai_compatible, status.reason))
+chatcompletion(message, used, ::ChatMissing) = Completion(message, used, nothing, Unfinished(), providererror(:openai_compatible, nothing))
+chatcompletion(message, used, status::ChatAccepted) = Completion(message, used, status.reason, Finished(), nothing)
+chatcompletion(message, used, status::ChatRejected) = Completion(message, used, safefinish(status.reason), Unfinished(), providererror(:openai_compatible, status.reason))
 
 finishfailure!(failure, ::Union{ChatMissing, ChatAccepted}, previous) = nothing
 finishfailure!(failure, status::ChatRejected, ::Nothing) = (failure[] = providererror(:openai_compatible, status.reason))
 finishfailure!(failure, ::ChatRejected, previous) = nothing
-finishdone(::ChatMissing, marker, failure) = false
-finishdone(::Union{ChatAccepted, ChatRejected}, marker, ::Nothing) = marker
-finishdone(::Union{ChatAccepted, ChatRejected}, marker, failure) = false
+finishstatus(::ChatMissing, marker, failure) = Unfinished()
+finishstatus(::Union{ChatAccepted, ChatRejected}, marker::CompletionStatus, ::Nothing) = marker
+finishstatus(::Union{ChatAccepted, ChatRejected}, marker, failure) = Unfinished()
 
 usage(::Nothing) = nothing
 details(::Nothing) = Dict()
 details(data) = data
-upstream(::Nothing) = 0
-upstream(data) = get(data, "upstream_inference_cost", 0)
 usagecost(::Nothing, data) = nothing
-usagecost(cost, data) = Float64(get(data, "is_byok", false) ? cost + upstream(get(data, "cost_details", nothing)) : cost)
+usagecost(cost, data) = usagecost(cost, data, get(data, "is_byok", nothing))
+usagecost(cost, data, mode) = nothing
+plaincost(cost, data) = money(cost)
+byokcost(cost, data) = addmoney(money(cost), upstream(get(data, "cost_details", nothing)))
+const costcalculators = Dict(false => plaincost, true => byokcost)
+usagecost(cost, data, byok::Bool) = costcalculators[byok](cost, data)
+money(value) = nothing
+money(::Bool) = nothing
+money(value::Real) = isfinite(value) && value >= 0 ? Float64(value) : nothing
+addmoney(a, b) = nothing
+addmoney(a::Float64, b::Float64) = a + b
+upstream(data) = nothing
+upstream(data::AbstractDict) = haskey(data, "upstream_inference_cost") ? upstream(data["upstream_inference_cost"], data) : nothing
+upstream(::Nothing, data) = addmoney(money(get(data, "upstream_inference_prompt_cost", nothing)), money(get(data, "upstream_inference_completions_cost", nothing)))
+upstream(value, data) = money(value)
 
 function usage(data)
     prompt = get(data, "prompt_tokens", 0)
@@ -298,10 +381,23 @@ function chat(messages)
     result
 end
 
-const chathandlers = Dict("tool" => chattool!)
+function chatuser!(result, images, message)
+    chatimages!(result, images)
+    chatuser!(result, message, get(message, "images", nothing))
+end
+chatuser!(result, message, ::Nothing) = push!(result, message)
+function chatuser!(result, message, attachments::AbstractVector)
+    value = copy(message)
+    delete!(value, "images")
+    value["content"] = [Dict("type" => "text", "text" => message["content"]), (Dict("type" => "image_url", "image_url" => Dict("url" => "data:$(image["mime"]);base64,$(image["data"])")) for image in attachments)...]
+    push!(result, value)
+end
+
+const chathandlers = Dict("tool" => chattool!, "user" => chatuser!)
 
 function chatmessage(message)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(message))
+    delete!(data, "anthropic_usage_anchor")
     for key in ("is_error", "anthropic_content", "anthropic_origin", "google_parts", "google_origin", "response_output")
         delete!(data, key)
     end
@@ -325,25 +421,41 @@ appendtext(current, text) = current * text
 writeonce!(output, key, ::Nothing) = nothing
 writeonce!(output, key, value) = isempty(output[key]) && (output[key] = value)
 
-function payload(provider::OpenAI, messages, tools, parameters; streaming=false)
+bufferedchat!(data) = (data["stream"] = false; nothing)
+function streamedchat!(data)
+    data["stream"] = true
+    data["stream_options"] = Dict("include_usage" => true)
+    nothing
+end
+const chatpayloads = Dict(false => bufferedchat!, true => streamedchat!)
+chatdefinition(provider, tool) = definition(tool)
+
+payload(provider::OpenAI, messages, tools, parameters; streaming::Bool=false) = payload(provider, messages, tools, parameters, chatpayloads[streaming])
+function payload(provider::OpenAI, messages, tools, parameters, configure)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(parameters))
     data["model"] = provider.model
     data["messages"] = chat(chatmessage.(messages))
-    data["stream"] = streaming
     delete!(data, "tools")
     delete!(data, "stream_options")
-    isempty(tools) || (data["tools"] = definition.(collect(values(tools))))
-    if streaming
-        data["stream_options"] = Dict("include_usage" => true)
-    end
+    isempty(tools) || (data["tools"] = [chatdefinition(provider, tool) for tool in values(tools)])
+    configure(data)
     JSON3.write(data)
 end
 
-headers(provider::OpenAI) = ["Authorization" => "Bearer $(provider.key)", "Content-Type" => "application/json"]
+function mergeheaders(defaults, extra)
+    result = copy(defaults)
+    for (name, value) in extra
+        filter!(item -> lowercase(first(item)) != lowercase(name), result)
+        push!(result, name => value)
+    end
+    result
+end
+headers(provider::OpenAI) = mergeheaders(["Authorization" => "Bearer $(clientkey(provider.key))", "Content-Type" => "application/json"], provider.extra)
+clientkey(key) = isempty(key) ? "unused" : key
 endpoint(provider::OpenAI) = "$(rstrip(provider.base, '/'))/chat/completions"
 
 function complete(provider::OpenAI, messages, tools; parameters=Dict())
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters, bufferedchat!); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
     200 <= response.status < 300 || return incomplete(ProviderStatus(response.status))
     complete(provider, decode(String(response.body)))
 end
@@ -355,81 +467,98 @@ function complete(provider::OpenAI, data::AbstractDict)
     reason = get(choice, "finish_reason", nothing)
     raw_usage = get(data, "usage", nothing)
     used = usage(raw_usage)
-    chatcompletion(choice["message"], used, chatfinish(reason))
+    price(provider, chatcompletion(choice["message"], used, chatfinish(reason)))
 end
 
 receivechat!(process, failure, marker, text, ::InvalidResponse) = nothing
 function receivechat!(process, failure, marker, text, previous)
-    text == "[DONE]" && return (marker[] = true; nothing)
+    text == "[DONE]" && return (marker[] = Finished(); nothing)
     receivechat!(process, failure, decode(text))
 end
 receivechat!(process, failure, data::InvalidResponse) = (failure[] = data; nothing)
 receivechat!(process, failure, data) = process(data)
 
+reasonvalue(field, value) = nothing
+reasonvalue(field, text::AbstractString) = isempty(text) ? nothing : field => text
+findreason(found::Pair, delta, field) = found
+findreason(::Nothing, delta, field) = reasonvalue(field, get(delta, field, nothing))
+
+recordreason!(message, selected, on_event, ::Nothing) = nothing
+function recordreason!(message, selected, on_event, reason::Pair)
+    field, text = reason
+    selected[] = something(selected[], field)
+    key = selected[]
+    message[key] = get(message, key, "") * text
+    on_event((; type=:thinking, text, field))
+end
+
+recordtext!(message, on_event, value) = nothing
+function recordtext!(message, on_event, text::AbstractString)
+    isempty(text) && return
+    message["content"] = appendtext(message["content"], text)
+    on_event((; type=:text, text))
+end
+
+function chatcall!(calls, order, on_event, call)
+    index = get(call, "index", get(call, "id", 0))
+    output = get!(calls, index) do
+        push!(order, index)
+        Dict("id" => "", "type" => "function", "function" => Dict("name" => "", "arguments" => ""))
+    end
+    id = get(call, "id", nothing)
+    writeonce!(output, "id", id)
+    fn = get(call, "function", Dict())
+    name = get(fn, "name", nothing)
+    writeonce!(output["function"], "name", name)
+    arguments = get(fn, "arguments", "")
+    output["function"]["arguments"] *= arguments
+    on_event((; type=:tool_call, index, id, name, arguments))
+end
+
+chatdelta!(message, calls, order, selected, on_event, ::Nothing) = nothing
+function chatdelta!(message, calls, order, selected, on_event, delta)
+    fields = ("reasoning_content", "reasoning", "reasoning_text")
+    reason = foldl((found, field) -> findreason(found, delta, field), fields; init=nothing)
+    recordreason!(message, selected, on_event, reason)
+    recordtext!(message, on_event, get(delta, "content", nothing))
+    for call in get(delta, "tool_calls", [])
+        chatcall!(calls, order, on_event, call)
+    end
+end
+
 function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=identity)
+    callback = event -> on_event(priceevent(provider, event))
     message = Dict{String, Any}("role" => "assistant", "content" => nothing)
     calls = Dict{Any, Dict{String, Any}}()
     order = Any[]
     reported_usage = Ref{Union{Nothing, Usage}}(nothing)
     finish = Ref{Union{Nothing, String}}(nothing)
     failure = Ref{Union{Nothing, String, InvalidResponse, ProviderError}}(nothing)
-    marker = Ref(false)
+    marker = Ref{CompletionStatus}(Unfinished())
     reasoningfield = Ref{Union{Nothing, String}}(nothing)
-    process = data -> begin
-        on_event((; type=:provider, data))
-        if haskey(data, "error")
-            failure[] = providererror(:openai_compatible, data["error"])
-            return
-        end
-        recordusage!(reported_usage, on_event, get(data, "usage", nothing))
+    function process(data)
+        callback((; type=:provider, data))
+        process(data, protocolfield(data, "error"))
+    end
+    process(data, error::Some) = (failure[] = providererror(:openai_compatible, something(error)); nothing)
+    function process(data, ::Nothing)
+        recordusage!(reported_usage, callback, get(data, "usage", nothing))
         choices = get(data, "choices", [])
         isempty(choices) && return
         choice = first(choices)
-        recordfinish!(finish, on_event, get(choice, "finish_reason", nothing))
-        delta = get(choice, "delta", nothing)
-        isnothing(delta) && return
-        for field in ("reasoning_content", "reasoning", "reasoning_text")
-            text = get(delta, field, nothing)
-            if text isa AbstractString && !isempty(text)
-                reasoningfield[] = something(reasoningfield[], field)
-                key = reasoningfield[]
-                message[key] = get(message, key, "") * text
-                on_event((; type=:thinking, text, field))
-                break
-            end
-        end
-        text = get(delta, "content", nothing)
-        if text isa AbstractString && !isempty(text)
-            message["content"] = appendtext(message["content"], text)
-            on_event((; type=:text, text))
-        end
-        for call in get(delta, "tool_calls", [])
-            index = get(call, "index", get(call, "id", 0))
-            if !haskey(calls, index)
-                calls[index] = Dict("id" => "", "type" => "function", "function" => Dict("name" => "", "arguments" => ""))
-                push!(order, index)
-            end
-            output = calls[index]
-            id = get(call, "id", nothing)
-            writeonce!(output, "id", id)
-            fn = get(call, "function", Dict())
-            name = get(fn, "name", nothing)
-            writeonce!(output["function"], "name", name)
-            arguments = get(fn, "arguments", "")
-            output["function"]["arguments"] *= arguments
-            on_event((; type=:tool_call, index, id, name, arguments))
-        end
+        recordfinish!(finish, callback, get(choice, "finish_reason", nothing))
+        chatdelta!(message, calls, order, reasoningfield, callback, get(choice, "delta", nothing))
     end
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=event -> receivechat!(process, failure, marker, event.data, failure[]))
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters, streamedchat!); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=event -> receivechat!(process, failure, marker, event.data, failure[]))
     if !(200 <= response.status < 300)
         result = incomplete(ProviderStatus(response.status))
-        on_event((; type=:incomplete, result))
+        callback((; type=:incomplete, result))
         return result
     end
     isempty(order) || (message["tool_calls"] = [calls[index] for index in order])
     status = chatfinish(finish[])
     finishfailure!(failure, status, failure[])
-    result = Completion(message, reported_usage[], safefinish(finish[]), finishdone(status, marker[], failure[]), failure[])
-    on_event((; type=completionevent(result), result))
+    result = price(provider, Completion(message, reported_usage[], safefinish(finish[]), finishstatus(status, marker[], failure[]), failure[]))
+    callback((; type=completionevent(result), result))
     result
 end

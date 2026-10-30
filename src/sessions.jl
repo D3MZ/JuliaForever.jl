@@ -62,9 +62,12 @@ JSON3.StructTypes.names(::Type{Session}) = ((:persistence, :flushed), (:ending, 
 timestamp() = Dates.format(Dates.now(Dates.UTC), dateformat"yyyy-mm-ddTHH:MM:SS.sss") * "Z"
 id(n::Integer) = bytes2hex(rand(UInt8, n))
 
+sessionpath(::Nothing) = nothing
+sessionpath(path) = abspath(path)
+
 function Session(; cwd=pwd(), path=nothing)
     header = Dict{String, Any}("type" => "session", "version" => 3, "id" => id(16), "timestamp" => timestamp(), "cwd" => abspath(cwd))
-    Session(isnothing(path) ? nothing : abspath(path), header, Dict{String, Any}[], Dict{String, Dict{String, Any}}(), nothing, false, true)
+    Session(sessionpath(path), header, Dict{String, Any}[], Dict{String, Dict{String, Any}}(), nothing, false, true)
 end
 
 Session(path::AbstractString; cwd=pwd()) = Session(; cwd, path)
@@ -147,7 +150,7 @@ function Base.open(::Type{Session}, path::AbstractString)
     for line in eachline(IOBuffer(text))
         isempty(strip(line)) && continue
         row = try
-            JSON3.read(line, Dict{String, Any})
+            JSON3.read(codeunits(line), Dict{String, Any})
         catch
             return Rejected(:invalid_session)
         end
@@ -155,29 +158,47 @@ function Base.open(::Type{Session}, path::AbstractString)
     end
     isempty(rows) && return Rejected(:invalid_session)
     header = popfirst!(rows)
-    get(header, "type", nothing) == "session" || return Rejected(:invalid_session)
+    get(headerreaders, get(header, "type", nothing), invalidheader)(path, text, header, rows)
+end
+
+invalidheader(path, text, header, rows) = Rejected(:invalid_session)
+function sessionheader(path, text, header, rows)
     version = sessionversion(get(header, "version", nothing))
     openversion(path, text, header, rows, version)
 end
+const headerreaders = Dict("session" => sessionheader)
 
 sessionversion(::Nothing) = LegacyLinear()
 sessionversion(::Bool) = nothing
 sessionversion(version) = get(versions, version, nothing)
 openversion(path, text, header, rows, ::Nothing) = Rejected(:invalid_session)
-function openversion(path, text, header, rows, version::SessionVersion)
-    all(key -> get(header, key, nothing) isa AbstractString, ("id", "timestamp", "cwd")) || return Rejected(:invalid_session)
+headerfield(rejected::Rejected, header, key) = rejected
+headerfield(::Nothing, header, key) = stringfield(get(header, key, nothing))
+stringfield(::AbstractString) = nothing
+stringfield(value) = Rejected(:invalid_session)
+openversion(path, text, header, rows, version::SessionVersion) = openvalidated(path, text, header, rows, version, foldl((result, key) -> headerfield(result, header, key), ("id", "timestamp", "cwd"); init=nothing))
+openvalidated(path, text, header, rows, version, rejected::Rejected) = rejected
+function openvalidated(path, text, header, rows, version, ::Nothing)
     migrate!(header, rows, version)
     index = Dict{String, Dict{String, Any}}()
-    leaf = nothing
-    for row in rows
-        get(row, "type", nothing) isa AbstractString || return Rejected(:invalid_session)
-        entryid = get(row, "id", nothing)
-        entryid isa AbstractString && !haskey(index, entryid) || return Rejected(:invalid_session)
-        parent = get(row, "parentId", missing)
-        (isnothing(parent) || parent isa AbstractString) && get(row, "timestamp", nothing) isa AbstractString || return Rejected(:invalid_session)
-        index[entryid] = row
-        leaf = entryid
-    end
+    leaf = foldl((result, row) -> indexrow!(index, result, row), rows; init=nothing)
+    openindexed(path, text, header, rows, version, index, leaf)
+end
+indexrow!(index, rejected::Rejected, row) = rejected
+indexrow!(index, result, row) = rowtype!(index, row, get(row, "type", nothing))
+rowtype!(index, row, value) = Rejected(:invalid_session)
+rowtype!(index, row, ::AbstractString) = rowid!(index, row, get(row, "id", nothing))
+rowid!(index, row, value) = Rejected(:invalid_session)
+function rowid!(index, row, id::AbstractString)
+    haskey(index, id) && return Rejected(:invalid_session)
+    rowparent!(index, row, id, get(row, "parentId", missing))
+end
+rowparent!(index, row, id, value) = Rejected(:invalid_session)
+rowparent!(index, row, id, ::Union{Nothing, AbstractString}) = rowtime!(index, row, id, get(row, "timestamp", nothing))
+rowtime!(index, row, id, value) = Rejected(:invalid_session)
+rowtime!(index, row, id, ::AbstractString) = (index[String(id)] = row; String(id))
+openindexed(path, text, header, rows, version, index, rejected::Rejected) = rejected
+function openindexed(path, text, header, rows, version, index, leaf::Union{Nothing, String})
     rewrite!(path, header, rows, version)
     Session(abspath(path), header, rows, index, leaf, true, ending(text, version))
 end
@@ -193,7 +214,7 @@ end
 function branch(session::Session, from::Union{Nothing, AbstractString}=session.leaf)
     path = Dict{String, Any}[]
     seen = Set{String}()
-    while !isnothing(from) && haskey(session.index, from) && !(from in seen)
+    while haskey(session.index, from) && !(from in seen)
         push!(seen, from)
         entry = session.index[from]
         push!(path, entry)
@@ -216,8 +237,9 @@ end
 addmessage!(result, entry, ::Nothing) = nothing
 addmessage!(result, entry, ::Type{C.Message}) = push!(result, entry["message"])
 
-function branch!(session::Session, from::Union{Nothing, AbstractString})
-    isnothing(from) || haskey(session.index, from) || return false
+branch!(session::Session, ::Nothing) = (session.leaf = nothing; true)
+function branch!(session::Session, from::AbstractString)
+    haskey(session.index, from) || return false
     session.leaf = from
     true
 end
@@ -255,7 +277,7 @@ function persist_role!(session, entry, path, ::Type{<:C.Message})
 end
 
 function record!(session::Session, type::AbstractString, fields::AbstractDict)
-    entry = JSON3.read(JSON3.write(fields), Dict{String, Any})
+    entry = JSON3.read(codeunits(JSON3.write(fields)), Dict{String, Any})
     entryid = id(4)
     while haskey(session.index, entryid)
         entryid = id(4)

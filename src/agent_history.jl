@@ -15,26 +15,27 @@ function openagent(provider, tools, messages, initial, history::History.Store, s
     History.consistent(history, snapshot) || return History.Rejected(:invalid_record)
     all(batch -> length(batch) == 1, batches) || return History.Rejected(:invalid_record)
     initial = History.decode_initial(only(first(batches)))
-    restore(provider, tools, history, snapshot, initial, replay(initial, batches[2:end]))
+    restore(provider, tools, history, snapshot, initial, replay(initial, batches[2:end], tools))
 end
 
 openagent(provider, tools, messages, initial, history::History.Store, revision::Integer) = Agent(provider, tools, messages, initial, initial, Kernel.Event[], ReentrantLock(), Idle(), ShellCancellation(), nothing, history, revision, nothing)
-replay(rejected::History.Rejected, batches) = rejected
+replay(rejected::History.Rejected, batches, tools) = rejected
 
-replay(initial::Conversation.State, batches) = replay(initial, batches, getfield(initial, :mode))
-replay(initial::Conversation.State, batches, ::Conversation.Automatic) = History.Rejected(:invalid_record)
-function replay(initial::Conversation.State, batches, ::Conversation.Manual)
+replay(initial::Conversation.State, batches, tools) = replay(initial, batches, tools, getfield(initial, :mode))
+replay(initial::Conversation.State, batches, tools, ::Conversation.Automatic) = History.Rejected(:invalid_record)
+function replay(initial::Conversation.State, batches, tools, ::Conversation.Manual)
     foldl(batches; init=(initial, Kernel.Event[])) do state, batch
-        replay(state, batch)
+        replay(state, batch, tools)
     end
 end
 
-replay(state::Tuple, batch::AbstractVector) = replay(state, History.decode_event(only(batch)))
-replay(state::Tuple, rejected::History.Rejected) = rejected
-replay(state::Tuple, event::Kernel.Event) = replay(state, event, Kernel.step(first(state), event))
-replay(state::Tuple, event::Kernel.Event, result) = History.Rejected(:invalid_record)
+replay(state::Tuple, batch::AbstractVector, tools) = replay(state, History.decode_event(only(batch)), tools)
+replay(state::Tuple, rejected::History.Rejected, tools) = rejected
+replay(state::Tuple, event::Kernel.Event, tools) = replay(state, event, tools, Kernel.step(first(state), event))
+replay(state::Tuple, event::Kernel.Event, tools, result) = History.Rejected(:invalid_record)
 
-function replay(state::Tuple, event::Kernel.Event, result::Kernel.Applied)
+function replay(state::Tuple, event::Kernel.Event, tools, result::Kernel.Applied)
+    applied!(tools, first(state), event, result.state)
     events = last(state)
     push!(events, event)
     result.state, events
@@ -46,7 +47,8 @@ function restore(provider, tools, history::History.Store, snapshot::History.Snap
     state, events = replayed
     messages = Dict{String, Any}[convert(Dict{String, Any}, message) for message in state.messages]
     failure = fault(state)
-    Agent(provider, tools, messages, initial, state, events, ReentrantLock(), Idle(), ShellCancellation(), nothing, history, snapshot.revision, failure)
+    agent = Agent(provider, tools, messages, initial, state, events, ReentrantLock(), Idle(), ShellCancellation(), nothing, history, snapshot.revision, failure)
+    agent
 end
 
 persist!(agent::Agent, event) = persist!(agent, agent.history, event)
@@ -64,15 +66,18 @@ function record!(agent::Agent, revision::Integer)
 end
 
 function persist!(agent::Agent, history::History.Store, event)
-    complete = false
+    saved = nothing
     try
         result = persist!(history, agent.history_revision, History.encode(event))
-        complete = true
+        saved = Some(result)
         record!(agent, result)
     finally
-        complete || (agent.fault = History.Rejected(:uncertain))
+        persistended!(agent, saved)
     end
 end
+
+persistended!(agent, ::Some) = nothing
+persistended!(agent, ::Nothing) = (agent.fault = History.Rejected(:uncertain))
 
 fault(agent::Agent) = lock(() -> agent.fault, agent.lock)
 
@@ -125,18 +130,23 @@ end
 abandon!(agent::Agent, event::Conversation.Abandon, result, saved::History.Rejected) = (agent.fault = saved)
 
 function abandon!(agent::Agent, event::Conversation.Abandon, result::Kernel.Applied, ::Nothing)
+    previous = agent.state
     agent.state = result.state
     push!(getfield(agent, :events), event)
+    applied!(agent.tools, previous, event, result.state)
     empty!(agent.messages)
     append!(agent.messages, [convert(Dict{String, Any}, message) for message in result.state.messages])
     result
 end
 
-function recorded_tools!(agent, effects, messages, callback)
+function recorded_tools!(agent, effects, messages, callback, ::Sequential)
     foldl(effects; init=Dict{String, Any}[]) do results, effect
         recorded_tool!(agent, effect, messages, callback, results)
     end
 end
+recorded_tools!(agent, effects, messages, callback, ::Parallel) = recorded_parallel!(agent, effects, messages, callback, batchmode(effects))
+recorded_parallel!(agent, effects, messages, callback, ::Sequential) = recorded_tools!(agent, effects, messages, callback, Sequential())
+recorded_parallel!(agent, effects, messages, callback, ::Parallel) = parallel!(agent, preflight(agent, effects, callback), messages, callback)
 
 recorded_tool!(agent, effect, messages, callback, outcome) = outcome
 
@@ -170,7 +180,7 @@ end
 recorded_tool!(agent, effect, messages, callback, results, call, result, transition, added, rejected::History.Rejected) = rejected
 recorded_tool!(agent, effect, messages, callback, results, call, result, transition, added, ::Nothing) = push!(results, toolmessage(call, result))
 
-function respond_recorded!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential)
+function respond_recorded!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:parallel)
     respond_recorded!(agent, prompt, agent.fault; on_event, on_agent_event, parameters, tool_execution)
 end
 
@@ -179,25 +189,24 @@ respond_recorded!(agent::Agent, prompt, rejected::History.Rejected; kwargs...) =
 respond_recorded!(agent::Agent, prompt, ::Nothing; on_event, on_agent_event, parameters, tool_execution) = recorded_mode!(agent, prompt, toolmode(tool_execution); on_event, on_agent_event, parameters)
 recorded_mode!(agent, prompt, mode; kwargs...) = History.Rejected(:unsupported_execution)
 
-recorded_mode!(agent, prompt, ::Sequential; on_event, on_agent_event, parameters) = recorded_start!(agent, prompt, startturn!(agent); on_event, on_agent_event, parameters)
+recorded_mode!(agent, prompt, mode::Union{Sequential, Parallel}; on_event, on_agent_event, parameters) = recorded_start!(agent, prompt, startturn!(agent); on_event, on_agent_event, parameters, tool_execution=mode)
 recorded_start!(agent, prompt, ::Nothing; kwargs...) = :busy
-function recorded_start!(agent, prompt, ::Running; on_event, on_agent_event, parameters)
+function recorded_start!(agent, prompt, ::Running; on_event, on_agent_event, parameters, tool_execution)
     messages = Dict{String, Any}[]
-    event_lock = ReentrantLock()
-    callback = on_agent_event
-    on_agent_event = event -> lock(() -> emit(callback, event), event_lock)
-    run = (; agent, on_event, callback=on_agent_event, parameters, messages)
+    on_agent_event = EventSink(ReentrantLock(), on_agent_event)
+    run = (; agent, on_event, callback=on_agent_event, parameters, messages, tool_execution)
     try
-        emit(on_agent_event, (; type=:agent_start))
-        emit(on_agent_event, (; type=:turn_start))
-        recorded_begin!(run, prompt, agent.fault)
-    finally
+        precompact!(agent, on_agent_event)
         try
+            emit(on_agent_event, (; type=:agent_start))
+            emit(on_agent_event, (; type=:turn_start))
+            recorded_begin!(run, prompt, agent.fault)
+        finally
             interrupted!(agent)
             emit(on_agent_event, (; type=:agent_end, messages=deepcopy(messages)))
-        finally
-            finish!(agent)
         end
+    finally
+        finish!(agent)
     end
 end
 
@@ -270,8 +279,15 @@ function recorded_cancel_observed!(run, ::Kernel.Applied)
 end
 
 function recorded_step!(run, effect, ::Union{Idle, Running})
-    request = [convert(Dict{String, Any}, message) for message in effect.effect.messages]
-    answer = response(run.agent, request, run.parameters, run.on_event, run.callback)
+    request = requestview(run.callback, effect.effect.messages, run.agent.tools, run.agent.provider)
+    recorded_request!(run, effect, request, turnstate(run.agent))
+end
+recorded_request!(run, effect, request, ::Cancelled) = recorded_step!(run, effect, Cancelled())
+function recorded_request!(run, effect, request, ::Union{Idle, Running})
+    answer = withcontext(effect.effect.messages) do
+        response(run.agent, request, run.parameters, run.on_event, run.callback)
+    end
+    rememberusage!(answer.result)
     recorded_answer!(run, effect, answer, run.agent.fault)
 end
 
@@ -299,7 +315,7 @@ end
 recorded_incomplete!(run, result, rejected::History.Rejected) = rejected
 recorded_incomplete!(run, result, ::Nothing) = recorded_incomplete!(run, result, turnstate(run.agent))
 recorded_incomplete!(run, result, ::Cancelled) = :cancelled
-recorded_incomplete!(run, result, ::Union{Idle, Running}) = result
+recorded_incomplete!(run, result, turn::Union{Idle, Running}) = recover!(run, result, turn)
 
 function recorded_complete!(run, answer, transition, added)
     present!(run.agent, added, run.messages, run.callback; started=answer.started)
@@ -308,7 +324,7 @@ end
 
 recorded_tools_begin!(run, message, completion, transition, rejected::History.Rejected) = rejected
 function recorded_tools_begin!(run, message, completion, transition, ::Nothing)
-    results = recorded_tools!(run.agent, transition.effects, run.messages, run.callback)
+    results = recorded_tools!(run.agent, transition.effects, run.messages, run.callback, toolmode(run.tool_execution))
     recorded_tools_done!(run, message, completion, results)
 end
 
@@ -322,6 +338,7 @@ recorded_post_tools!(run, message, completion, rejected::History.Rejected) = rej
 recorded_post_tools!(run, message, completion, ::Nothing) = recorded_post_sync!(run, message, completion, sync!(run.agent))
 recorded_post_sync!(run, message, completion, rejected::History.Rejected) = rejected
 function recorded_post_sync!(run, message, completion, ::Nothing)
+    precompactnext!(run.agent, run.callback)
     result, added = transition!(revision -> Conversation.Advance(revision), run.agent)
     recorded_next!(run, message, completion, result, added)
 end

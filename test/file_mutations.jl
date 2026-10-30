@@ -73,6 +73,10 @@ end
 
 function started!(channel, task)
     @test timedwait(() -> isready(channel) || istaskdone(task), 10; pollint=0.002) == :ok
+    if !isready(channel) && istaskdone(task)
+        fetch(task)
+        error("task returned before reaching the gate")
+    end
     @test isready(channel)
     isready(channel) || error("task did not reach the gate")
     take!(channel)
@@ -212,6 +216,17 @@ end
         symlink("../outside/child", joinpath(dir, "logical", "link"); dir_target=true)
         symlink("logical/link/../new.txt", joinpath(dir, "alias.txt"))
         path = joinpath(dir, "outside", "new.txt")
+        @test JuliaForever.mutationkey(joinpath(dir, "alias.txt")) == JuliaForever.mutationkey(path)
+        try
+            write(joinpath(dir, "alias.txt"), "probe")
+        catch exception
+            if Sys.iswindows() && exception isa SystemError && exception.errnum == Base.Libc.EINVAL
+                @test_skip false
+                return
+            end
+            rethrow()
+        end
+        rm(path)
         started = Channel{Nothing}(1)
         release = Channel{Nothing}(1)
         content = GatedContent("first", started, release)

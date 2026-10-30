@@ -23,12 +23,18 @@ resource_server(mode, marker) = `$(Base.julia_cmd()) --startup-file=no --project
         @test client isa ResourceMCP.Client
         if client isa ResourceMCP.Client
             try
+                selected = Dict{String, ResourceMCP.Client}()
+                ResourceMCP.selectresource!(selected, "docs", client, nothing)
+                @test isempty(selected)
+                ResourceMCP.selectresource!(selected, "docs", client, Dict())
+                @test selected["docs"] === client
                 page = ResourceMCP.resourcepage(client)
                 @test page["nextCursor"] == "opaque/+="
                 @test ResourceMCP.resources(client)[end]["name"] == "docs://image"
                 @test ResourceMCP.templates(client)[1]["name"] == "docs://{id}"
                 @test ResourceMCP.read(client, "docs://intro")["contents"][1]["text"] == "hello: docs://intro"
                 @test ResourceMCP.read(client, "docs://image")["contents"][1]["blob"] == "aGVsbG8="
+                @test ResourceMCP.read(client, "docs://both")["contents"][1]["text"] == "visible"
                 failure = ResourceMCP.read(client, "docs://missing")
                 @test failure isa ResourceMCP.Failure && failure.kind == :rpc && failure.data["code"] == -32002
                 failure = ResourceMCP.read(client, "docs://invalid")
@@ -78,6 +84,13 @@ resource_server(mode, marker) = `$(Base.julia_cmd()) --startup-file=no --project
         if badcap isa ResourceMCP.Client
             @test ResourceMCP.resources(badcap).kind == :capability
             close(badcap)
+        end
+        failed = ResourceMCP.connect(resource_server("failed_templates", marker); timeout=10, grace=0.2)
+        @test failed isa ResourceMCP.Client
+        if failed isa ResourceMCP.Client
+            resource_tools = ResourceMCP.resourcetools(Dict("docs" => failed))
+            @test execute(resource_tools[2], (; server="docs")) isa ToolFailure
+            close(failed)
         end
         missing = ResourceMCP.connect(resource_server("no_templates", marker); timeout=10, grace=0.2)
         @test missing isa ResourceMCP.Client

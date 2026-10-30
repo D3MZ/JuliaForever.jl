@@ -1,18 +1,24 @@
 module GoogleAPI
 
 using HTTP, JSON3, Random, SHA
-import ..JuliaForever: requestcontext, complete, stream, payload, headers, endpoint, definition, decode, incomplete, images, UnsupportedImage, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Usage
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, protocolfield, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute, price, priceevent, ToolDeclaration
 
 struct Google
     base::String
     model::String
     key::String
+    extra::Vector{Pair{String, String}}
+    route::Union{DirectRoute, CatalogRoute}
+    thinking::Union{Nothing, String}
 end
+Google(base, model, key, extra, route) = Google(base, model, key, extra, route, nothing)
+Google(base, model, key) = Google(base, model, key, Pair{String, String}[], DirectRoute())
+Google(base, model, key, extra) = Google(base, model, key, extra, DirectRoute())
 
 Base.show(io::IO, provider::Google) = print(io, "Google(", repr(provider.model), ", [redacted])")
 JSON3.StructTypes.StructType(::Type{Google}) = JSON3.StructTypes.CustomStruct()
 JSON3.StructTypes.lower(provider::Google) = (; model=provider.model, credentials="[redacted]")
-headers(provider::Google) = ["x-goog-api-key" => provider.key, "content-type" => "application/json"]
+headers(provider::Google) = mergeheaders(["x-goog-api-key" => provider.key, "content-type" => "application/json"], provider.extra)
 endpoint(provider::Google) = "$(rstrip(provider.base, '/'))/models/$(HTTP.escapeuri(provider.model)):generateContent"
 endpoint(provider::Google, ::typeof(stream)) = "$(rstrip(provider.base, '/'))/models/$(HTTP.escapeuri(provider.model)):streamGenerateContent?alt=sse"
 origin(provider::Google) = bytes2hex(sha256(provider.base)) * ":" * provider.model
@@ -40,6 +46,14 @@ callids(model) = callids(model, match(r"^gemini(?:-live)?-(\d+)"i, model))
 callids(model, ::Nothing) = idmodes[startswith(model, "claude-") || startswith(model, "gpt-oss-")]
 callids(model, version::RegexMatch) = idmodes[parse(Int, version.captures[1]) >= 3]
 
+abstract type ImageMode end
+struct InlineImage <: ImageMode end
+struct SeparateImage <: ImageMode end
+const imagemodes = Dict(false => SeparateImage(), true => InlineImage())
+imagemode(model) = imagemode(match(r"^gemini(?:-live)?-(\d+)"i, model))
+imagemode(::Nothing) = InlineImage()
+imagemode(version::RegexMatch) = imagemodes[parse(Int, version.captures[1]) >= 3]
+
 mutable struct Transcript
     system::Vector{String}
     contents::Vector{Any}
@@ -47,8 +61,9 @@ mutable struct Transcript
     calls::Dict{String, String}
     origin::String
     ids::CallIds
+    image::ImageMode
 end
-Transcript(provider::Google) = Transcript(String[], [], [], Dict{String, String}(), origin(provider), callids(provider.model))
+Transcript(provider::Google) = Transcript(String[], [], [], Dict{String, String}(), origin(provider), callids(provider.model), imagemode(provider.model))
 
 function flush!(transcript::Transcript)
     isempty(transcript.results) || push!(transcript.contents, Dict("role" => "user", "parts" => copy(transcript.results)))
@@ -60,8 +75,14 @@ function add!(transcript::Transcript, message::System)
 end
 function add!(transcript::Transcript, message::User)
     flush!(transcript)
-    push!(transcript.contents, Dict("role" => "user", "parts" => [Dict("text" => message.data["content"])]))
+    push!(transcript.contents, Dict("role" => "user", "parts" => userparts(message.data, get(message.data, "images", nothing))))
 end
+userparts(data, ::Nothing) = [Dict("text" => data["content"])]
+imagepart(image) = Dict("inlineData" => Dict("mimeType" => image["mime"], "data" => image["data"]))
+function userparts(data, attachments::AbstractVector)
+    [Dict("text" => data["content"]), imagepart.(attachments)...]
+end
+
 function add!(transcript::Transcript, message::Assistant)
     flush!(transcript)
     data = message.data
@@ -79,7 +100,7 @@ function add!(transcript::Transcript, data, ::Nothing)
     addtext!(parts, get(data, "content", nothing))
     for call in get(data, "tool_calls", [])
         fn = call["function"]
-        result = Dict("name" => fn["name"], "args" => JSON3.read(fn["arguments"], Dict{String, Any}))
+        result = Dict("name" => fn["name"], "args" => JSON3.read(codeunits(fn["arguments"]), Dict{String, Any}))
         callid!(result, call["id"], transcript.ids)
         push!(parts, Dict("functionCall" => result))
     end
@@ -96,16 +117,56 @@ function add!(transcript::Transcript, message::Tool)
     data = message.data
     id = data["tool_call_id"]
     name = transcript.calls[id]
-    output = Dict(outputkeys[get(data, "is_error", false)] => data["content"])
+    image = get(data, "image", nothing)
+    output = Dict(outputkeys[get(data, "is_error", false)] => outputtext(data["content"], image))
     result = Dict("name" => name, "response" => output)
     callid!(result, id, transcript.ids)
+    resultimage!(transcript, result, image)
+end
+outputtext(text, ::Nothing) = text
+outputtext(text, image) = isempty(strip(text)) ? "(see attached image)" : text
+function resultimage!(transcript, result, ::Nothing)
     push!(transcript.results, Dict("functionResponse" => result))
 end
+resultimage!(transcript, result, image) = resultimage!(transcript, result, image, transcript.image)
+function resultimage!(transcript, result, image, ::InlineImage)
+    result["parts"] = [imagepart(image)]
+    push!(transcript.results, Dict("functionResponse" => result))
+end
+function resultimage!(transcript, result, image, ::SeparateImage)
+    push!(transcript.results, Dict("functionResponse" => result))
+    flush!(transcript)
+    push!(transcript.contents, Dict("role" => "user", "parts" => [Dict("text" => "Tool result image:"), imagepart(image)]))
+end
 
-payload(provider::Google, input, tools, parameters; streaming=false) = payload(provider, input, tools, parameters, images(input); streaming)
-payload(provider::Google, input, tools, parameters, failure::UnsupportedImage; streaming=false) = failure
+abstract type SchemaPart end
+struct SchemaNode <: SchemaPart end
+struct SchemaNames <: SchemaPart end
+struct SchemaLiteral <: SchemaPart end
+const schemaparts = Dict{String, SchemaPart}(
+    (key => SchemaNames() for key in ("properties", "patternProperties", "\$defs", "definitions", "dependentSchemas", "dependencies"))...,
+    (key => SchemaNode() for key in ("additionalProperties", "unevaluatedProperties", "propertyNames", "items", "prefixItems", "additionalItems", "unevaluatedItems", "contains", "allOf", "anyOf", "oneOf", "not", "if", "then", "else", "contentSchema"))...,
+)
+rewriteschema(value, part::SchemaPart) = value
+rewriteschema(value::AbstractVector, part::SchemaNode) = [rewriteschema(item, part) for item in value]
+rewriteschema(value::AbstractDict, ::SchemaNames) = Dict(string(key) => rewriteschema(item, SchemaNode()) for (key, item) in pairs(value))
+function rewriteschema(value::AbstractDict, ::SchemaNode)
+    result = Dict{String, Any}(string(key) => rewriteschema(item, get(schemaparts, string(key), SchemaLiteral())) for (key, item) in pairs(value))
+    rewriteconst!(result, get(result, "const", nothing))
+    result
+end
+rewriteconst!(result, value) = nothing
+rewriteconst!(result, value::Bool) = nothing
+function rewriteconst!(result, value::Union{AbstractString, Real})
+    haskey(result, "enum") && return nothing
+    delete!(result, "const")
+    result["enum"] = [value]
+    nothing
+end
+toolparams(tool) = definition(tool)["function"]["parameters"]
+toolparams(tool::ToolDeclaration) = rewriteschema(definition(tool)["function"]["parameters"], SchemaNode())
 
-function payload(provider::Google, input, tools, parameters, ::Nothing; streaming=false)
+function payload(provider::Google, input, tools, parameters; streaming=false)
     transcript = Transcript(provider)
     for message in input
         data = Dict{String, Any}(string(key) => value for (key, value) in pairs(message))
@@ -113,14 +174,33 @@ function payload(provider::Google, input, tools, parameters, ::Nothing; streamin
     end
     flush!(transcript)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(parameters))
+    thinking!(data, provider.thinking, provider.model)
     data["contents"] = transcript.contents
     isempty(transcript.system) || (data["systemInstruction"] = Dict("parts" => [Dict("text" => join(transcript.system, "\n\n"))]))
     delete!(data, "tools")
     if !isempty(tools)
-        data["tools"] = [Dict("functionDeclarations" => [Dict("name" => fn["name"], "description" => fn["description"], "parametersJsonSchema" => fn["parameters"]) for fn in (definition(tool)["function"] for tool in values(tools))])]
+        data["tools"] = [Dict("functionDeclarations" => [Dict("name" => definition(tool)["function"]["name"], "description" => definition(tool)["function"]["description"], "parametersJsonSchema" => toolparams(tool)) for tool in values(tools)])]
     end
     JSON3.write(data)
 end
+
+thinking!(data, ::Nothing, model) = nothing
+function thinking!(data, level::AbstractString, model)
+    generation = Dict{String, Any}(string(key) => value for (key, value) in pairs(get(data, "generationConfig", NamedTuple())))
+    generation["thinkingConfig"] = thinkingconfig(model, level)
+    data["generationConfig"] = generation
+end
+const budgets = Dict(
+    "gemini-2.5-pro" => Dict("minimal" => 128, "low" => 2048, "medium" => 8192, "high" => 32768),
+    "gemini-2.5-flash" => Dict("minimal" => 128, "low" => 2048, "medium" => 8192, "high" => 24576),
+    "gemini-2.5-flash-lite" => Dict("minimal" => 512, "low" => 2048, "medium" => 8192, "high" => 24576),
+    "gemini-2.5-computer-use-preview-10-2025" => Dict(level => -1 for level in ("minimal", "low", "medium", "high")),
+)
+thinkingconfig(model, level) = thinkingconfig(level, get(budgets, model, nothing))
+thinkingconfig(level, ::Nothing) = Dict("includeThoughts" => true, "thinkingLevel" => uppercase(level))
+thinkingconfig(level, budgets::AbstractDict) = budgetconfig(get(budgets, level, nothing))
+budgetconfig(::Nothing) = Dict("thinkingBudget" => 0)
+budgetconfig(budget::Int) = Dict("includeThoughts" => true, "thinkingBudget" => budget)
 
 function usage(data::AbstractDict)
     input = something(get(data, "promptTokenCount", nothing), 0)
@@ -219,8 +299,10 @@ function receive!(state::State, ::Nothing, data::AbstractDict, callback)
     receiveusage!(state, get(data, "usageMetadata", nothing), callback)
     candidates = get(data, "candidates", [])
     isempty(candidates) || receivecandidate!(state, first(candidates), callback)
-    haskey(data, "error") && (state.failure = providererror(:google, data["error"]))
+    receiveerror!(state, protocolfield(data, "error"))
 end
+receiveerror!(state, ::Nothing) = nothing
+receiveerror!(state, error::Some) = (state.failure = providererror(:google, something(error)))
 receive!(state::State, failure, data::AbstractDict, callback) = nothing
 receive!(state::State, failure::InvalidResponse, callback) = fail!(state, state.failure, failure)
 fail!(state, ::Nothing, failure) = (state.failure = failure)
@@ -264,19 +346,19 @@ function finish(state::State, provider::Google)
     result(message, state, state.reason)
 end
 function result(message, state, ::Nothing)
-    Completion(message, state.used, nothing, false, something(state.failure, "Google stream ended without a finish reason"))
+    Completion(message, state.used, nothing, Unfinished(), something(state.failure, "Google stream ended without a finish reason"))
 end
 function result(message, state, reason::AbstractString)
     result(message, state, reason, finish(reason))
 end
 function result(message, state, reason, ::Other)
-    Completion(message, state.used, nothing, false, something(state.failure, providererror(:google, reason)))
+    Completion(message, state.used, nothing, Unfinished(), something(state.failure, providererror(:google, reason)))
 end
 function result(message, state, reason, mapped::Union{Stop, Limit})
     outcome(message, state, finishname(mapped, state.calls), state.failure)
 end
-outcome(message, state, finish, ::Nothing) = Completion(message, state.used, finish, true, nothing)
-outcome(message, state, finish, failure) = Completion(message, state.used, finish, false, failure)
+outcome(message, state, finish, ::Nothing) = Completion(message, state.used, finish, Finished(), nothing)
+outcome(message, state, finish, failure) = Completion(message, state.used, finish, Unfinished(), failure)
 
 httpfailure(status) = incomplete(ProviderStatus(status))
 
@@ -285,32 +367,27 @@ requestcontext(::Google) = HTTP.RequestContext()
 function complete(provider::Google, input, tools; parameters=Dict())
     complete(provider, payload(provider, input, tools, parameters))
 end
-complete(provider::Google, failure::UnsupportedImage) = incomplete(failure)
 function complete(provider::Google, body::AbstractString)
     response = HTTP.post(endpoint(provider), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
     200 <= response.status < 300 || return httpfailure(response.status)
     state = State()
     receive!(state, decode(String(response.body)), identity)
-    finish(state, provider)
+    price(provider, finish(state, provider))
 end
 function stream(provider::Google, input, tools; parameters=Dict(), on_event=identity)
     stream(provider, payload(provider, input, tools, parameters; streaming=true), on_event)
 end
-function stream(provider::Google, failure::UnsupportedImage, on_event)
-    answer = incomplete(failure)
-    on_event((; type=:incomplete, result=answer))
-    answer
-end
 function stream(provider::Google, body::AbstractString, on_event)
+    callback = event -> on_event(priceevent(provider, event))
     state = State()
-    response = HTTP.post(endpoint(provider, stream), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=raw -> receive!(state, decode(raw.data), on_event))
+    response = HTTP.post(endpoint(provider, stream), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=raw -> receive!(state, decode(raw.data), callback))
     if !(200 <= response.status < 300)
         answer = httpfailure(response.status)
-        on_event((; type=:incomplete, result=answer))
+        callback((; type=:incomplete, result=answer))
         return answer
     end
-    answer = finish(state, provider)
-    report!(on_event, answer, answer.error)
+    answer = price(provider, finish(state, provider))
+    report!(callback, answer, answer.error)
     answer
 end
 report!(callback, answer, ::Nothing) = callback((; type=:done, result=answer))

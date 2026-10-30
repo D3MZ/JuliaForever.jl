@@ -23,6 +23,9 @@ end
     @test !state.automatic && !state.cancelled
     encoded = JSON3.read(JSON3.write(state))
     @test !encoded.automatic && !encoded.cancelled
+    @test encoded.steeringmode == "one-at-a-time" && encoded.followupmode == "one-at-a-time"
+    all = K.step(state, C.SteeringMode(0, C.AllAtOnce())).state
+    @test JSON3.read(JSON3.write(all)).steeringmode == "all"
     cancelled = K.step(state, C.Cancel(0)).state
     @test !cancelled.automatic && cancelled.cancelled
     encoded = JSON3.read(JSON3.write(cancelled))

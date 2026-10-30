@@ -4,6 +4,7 @@ import Base: append!
 import ..Durable as D
 import ..Kernel as K
 import ..Conversation as C
+import ..JuliaForever: ToolResult, ToolLoaded, ToolDiscovery, Terminate, loaded, Usage, CostBreakdown
 
 struct Rejected
     reason::Symbol
@@ -83,38 +84,30 @@ value(x::Union{Bool, Int}, seen) = x
 value(x::String, seen) = isvalid(x) ? x : Rejected(:unsupported_value)
 value(x::Float64, seen) = isfinite(x) ? x : Rejected(:unsupported_value)
 
-function value(xs::Vector, seen)
+function value(xs::Union{Vector, Dict}, seen)
     haskey(seen, xs) && return Rejected(:unsupported_value)
     seen[xs] = nothing
     try
-        result = Any[]
-        for item in xs
-            saved = value(item, seen)
-            saved isa Rejected && return saved
-            push!(result, saved)
-        end
-        result
+        foldl((result, item) -> valueitem(result, item, seen), xs; init=valueitems(xs))
     finally
         delete!(seen, xs)
     end
 end
 
-function value(xs::Dict, seen)
-    haskey(seen, xs) && return Rejected(:unsupported_value)
-    seen[xs] = nothing
-    try
-        result = Dict{String, Any}()
-        for (key, item) in xs
-            key isa String && isvalid(key) || return Rejected(:unsupported_value)
-            saved = value(item, seen)
-            saved isa Rejected && return saved
-            result[key] = saved
-        end
-        result
-    finally
-        delete!(seen, xs)
-    end
+valueitems(::Vector) = Any[]
+valueitems(::Dict) = Dict{String, Any}()
+valueitem(rejected::Rejected, item, seen) = rejected
+valueitem(result::Vector, item, seen) = valueadded(result, value(item, seen))
+valueitem(result::Dict, pair::Pair, seen) = valuekey(result, first(pair), last(pair), seen)
+valuekey(result, key, item, seen) = Rejected(:unsupported_value)
+function valuekey(result, key::String, item, seen)
+    isvalid(key) || return Rejected(:unsupported_value)
+    valueadded(result, key, value(item, seen))
 end
+valueadded(result::Vector, rejected::Rejected) = rejected
+valueadded(result::Vector, item) = push!(result, item)
+valueadded(result::Dict, key, rejected::Rejected) = rejected
+valueadded(result::Dict, key, item) = (result[key] = item; result)
 
 encode(x::Union{Nothing, Bool, String}) = x
 encode(x::Int) = Any[3, string(x)]

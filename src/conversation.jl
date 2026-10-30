@@ -1,7 +1,7 @@
 module Conversation
 
 import ..Kernel as K
-import ..JuliaForever: Image, ToolResult, content, CompletionStatus, Finished, Unfinished, completionstatus, finished, JSON3
+import ..JuliaForever: Image, ToolResult, Terminate, tooltype, content, loaded, terminates, CompletionStatus, Finished, Unfinished, completionstatus, finished, Usage, JSON3
 
 abstract type Message end
 
@@ -9,9 +9,62 @@ struct User <: Message
     content::String
 end
 
+struct Summary <: Message
+    content::String
+end
+
+struct SkillContext <: Message
+    content::String
+end
+
+struct ImageUser <: Message
+    content::String
+    images::Vector{Image}
+    ImageUser(content, images) = new(content, copy(images))
+end
+
+Base.isequal(a::ImageUser, b::ImageUser) = isequal((a.content, a.images), (b.content, b.images))
+Base.hash(message::ImageUser, h::UInt) = hash((message.content, message.images), hash(ImageUser, h))
+
 struct RawMessage <: Message
     value::Dict{String, Any}
 end
+
+abstract type BashContext end
+struct DefaultBashContext <: BashContext end
+struct IncludedBashContext <: BashContext end
+struct ExcludedBashContext <: BashContext end
+abstract type BashStatus end
+struct FinishedBash <: BashStatus end
+struct CancelledBash <: BashStatus end
+abstract type BashExtent end
+struct FullBash <: BashExtent end
+struct TruncatedBash <: BashExtent end
+
+struct BashMessage{C<:BashContext, S<:BashStatus, E<:BashExtent} <: Message
+    command::String
+    output::String
+    exitcode::Union{Nothing, Int}
+    status::S
+    extent::E
+    file::Union{Nothing, String}
+    timestamp::Int
+    context::C
+end
+
+const bashstatuses = Dict(false => FinishedBash(), true => CancelledBash())
+const bashextents = Dict(false => FullBash(), true => TruncatedBash())
+BashMessage(command, output, exitcode, cancelled::Bool, truncated::Bool, file, timestamp, context::BashContext) = BashMessage(command, output, exitcode, bashstatuses[cancelled], bashextents[truncated], file, timestamp, context)
+bashcancelled(::FinishedBash) = false
+bashcancelled(::CancelledBash) = true
+bashtruncated(::FullBash) = false
+bashtruncated(::TruncatedBash) = true
+bashcontext(::Nothing) = DefaultBashContext()
+const bashcontexts = Dict(false => IncludedBashContext(), true => ExcludedBashContext())
+bashcontext(value::Bool) = bashcontexts[value]
+bashexcluded(::DefaultBashContext) = nothing
+bashexcluded(::IncludedBashContext) = false
+bashexcluded(::ExcludedBashContext) = true
 
 struct ToolCall
     id::String
@@ -26,22 +79,35 @@ end
 
 ToolCall(id, name, arguments; metadata=Dict{String, Any}()) = ToolCall(id, name, arguments, metadata)
 
+struct ResponseInfo
+    usage::Union{Nothing, Usage}
+    api::Union{Nothing, String}
+    provider::Union{Nothing, String}
+    model::Union{Nothing, String}
+    timestamp::Union{Nothing, Int}
+end
+Base.isequal(a::ResponseInfo, b::ResponseInfo) = K.same((a.usage, a.api, a.provider, a.model, a.timestamp), (b.usage, b.api, b.provider, b.model, b.timestamp))
+Base.hash(value::ResponseInfo, h::UInt) = hash((value.usage, value.api, value.provider, value.model, value.timestamp), hash(ResponseInfo, h))
+
 struct Assistant <: Message
     content::Union{Nothing, String}
     calls::Vector{ToolCall}
     finish::Union{Nothing, String}
     status::CompletionStatus
     metadata::Dict{String, Any}
+    info::Union{Nothing, ResponseInfo}
 
-    function Assistant(content, calls, finish, status::CompletionStatus, metadata::AbstractDict)
-        new(content, deepcopy(calls), finish, status, deepcopy(Dict{String, Any}(metadata)))
+    function Assistant(content, calls, finish, status::CompletionStatus, metadata::AbstractDict, info::Union{Nothing, ResponseInfo})
+        new(content, deepcopy(calls), finish, status, deepcopy(Dict{String, Any}(metadata)), info)
     end
 end
 
-Assistant(content, calls, finish, done, metadata::AbstractDict) = Assistant(content, calls, finish, completionstatus(convert(Bool, done)), metadata)
-Assistant(content, calls, finish, done; metadata=Dict{String, Any}()) = Assistant(content, calls, finish, done, metadata)
+Assistant(content, calls, finish, status::CompletionStatus, metadata::AbstractDict) = Assistant(content, calls, finish, status, metadata, nothing)
+Assistant(content, calls, finish, done, metadata::AbstractDict) = Assistant(content, calls, finish, completionstatus(convert(Bool, done)), metadata, nothing)
+Assistant(content, calls, finish, status::CompletionStatus; metadata=Dict{String, Any}(), info=nothing) = Assistant(content, calls, finish, status, metadata, info)
+Assistant(content, calls, finish, done; metadata=Dict{String, Any}(), info=nothing) = Assistant(content, calls, finish, completionstatus(convert(Bool, done)), metadata, info)
 Base.getproperty(message::Assistant, name::Symbol) = name === :done ? finished(getfield(message, :status)) : getfield(message, name)
-Base.propertynames(::Assistant, private::Bool=false) = (:content, :calls, :finish, :done, :metadata, :status)
+Base.propertynames(::Assistant, private::Bool=false) = (:content, :calls, :finish, :done, :metadata, :status, :info)
 JSON3.StructTypes.names(::Type{Assistant}) = ((:status, :done),)
 
 struct ToolMessage <: Message
@@ -73,8 +139,8 @@ struct ToolReply <: K.Observation
     result::ToolResult
 end
 
-ToolReply(text, iserror::Bool) = ToolReply(ToolResult(text, iserror))
-ToolReply(text, iserror::Bool, image) = ToolReply(ToolResult(text, iserror, image))
+ToolReply(text, iserror::Bool) = ToolReply(tooltype(iserror)(text))
+ToolReply(text, iserror::Bool, image) = ToolReply(tooltype(iserror)(text, image))
 
 function Base.getproperty(reply::ToolReply, name::Symbol)
     name in (:text, :iserror, :image) && return getproperty(getfield(reply, :result), name)
@@ -96,15 +162,15 @@ struct Abandoned <: K.Observation
 end
 
 Base.isequal(a::ToolCall, b::ToolCall) = K.same((a.id, a.name, a.arguments, a.metadata), (b.id, b.name, b.arguments, b.metadata))
-Base.isequal(a::Assistant, b::Assistant) = K.same((a.content, a.calls, a.finish, a.done, a.metadata), (b.content, b.calls, b.finish, b.done, b.metadata))
+Base.isequal(a::Assistant, b::Assistant) = K.same((a.content, a.calls, a.finish, a.done, a.metadata, a.info), (b.content, b.calls, b.finish, b.done, b.metadata, b.info))
 Base.isequal(a::ModelReply, b::ModelReply) = isequal(a.message, b.message)
-Base.isequal(a::ToolReply, b::ToolReply) = isequal((a.text, a.iserror, a.image), (b.text, b.iserror, b.image))
+Base.isequal(a::ToolReply, b::ToolReply) = isequal((a.text, a.iserror, a.image, loaded(a.result), terminates(a.result)), (b.text, b.iserror, b.image, loaded(b.result), terminates(b.result)))
 Base.isequal(a::ModelFailure, b::ModelFailure) = isequal(a.reason, b.reason)
 Base.isequal(a::Abandoned, b::Abandoned) = isequal(a.reason, b.reason)
 Base.hash(value::ToolCall, h::UInt) = hash((value.id, value.name, value.arguments, value.metadata), hash(ToolCall, h))
-Base.hash(value::Assistant, h::UInt) = hash((value.content, value.calls, value.finish, value.done, value.metadata), hash(Assistant, h))
+Base.hash(value::Assistant, h::UInt) = hash((value.content, value.calls, value.finish, value.done, value.metadata, value.info), hash(Assistant, h))
 Base.hash(value::ModelReply, h::UInt) = hash(value.message, hash(ModelReply, h))
-Base.hash(value::ToolReply, h::UInt) = hash((value.text, value.iserror, value.image), hash(ToolReply, h))
+Base.hash(value::ToolReply, h::UInt) = hash((value.text, value.iserror, value.image, loaded(value.result), terminates(value.result)), hash(ToolReply, h))
 Base.hash(value::ModelFailure, h::UInt) = hash(value.reason, hash(ModelFailure, h))
 Base.hash(value::Abandoned, h::UInt) = hash(value.reason, hash(Abandoned, h))
 
@@ -182,6 +248,17 @@ JSON3.StructTypes.lowertype(::Type{<:Cancellation}) = Bool
 JSON3.StructTypes.lower(status::Cancellation) = cancelled(status)
 JSON3.StructTypes.construct(::Type{Cancellation}, value::Bool) = cancellation(value)
 
+abstract type QueueMode end
+struct OneAtATime <: QueueMode end
+struct AllAtOnce <: QueueMode end
+queuecode(::OneAtATime) = "one-at-a-time"
+queuecode(::AllAtOnce) = "all"
+const queuetypes = Dict("one-at-a-time" => OneAtATime, "all" => AllAtOnce)
+JSON3.StructTypes.StructType(::Type{<:QueueMode}) = JSON3.StructTypes.CustomStruct()
+JSON3.StructTypes.lowertype(::Type{<:QueueMode}) = String
+JSON3.StructTypes.lower(mode::QueueMode) = queuecode(mode)
+JSON3.StructTypes.construct(::Type{QueueMode}, value::String) = queuetypes[value]()
+
 struct State
     kernel::K.State
     revision::Int
@@ -189,19 +266,21 @@ struct State
     phase::Phase
     order::Vector{String}
     calls::Vector{ToolCall}
-    steering::Vector{String}
-    followups::Vector{String}
+    steering::Vector{Union{String, ImageUser}}
+    followups::Vector{Union{String, ImageUser}}
     mode::Driving
     cancellation::Cancellation
     flushed::Int
+    steeringmode::QueueMode
+    followupmode::QueueMode
 
-    function State(kernel, revision, messages, phase, order, calls, steering, followups, mode::Driving, cancellation::Cancellation, flushed)
-        new(kernel, revision, messages, phase, order, calls, steering, followups, mode, cancellation, flushed)
+    function State(kernel, revision, messages, phase, order, calls, steering, followups, mode::Driving, cancellation::Cancellation, flushed, steeringmode::QueueMode, followupmode::QueueMode)
+        new(kernel, revision, messages, phase, order, calls, steering, followups, mode, cancellation, flushed, steeringmode, followupmode)
     end
 end
 
-State(kernel, revision, messages, phase, order, calls, steering, followups, automatic, cancelled, flushed) = State(kernel, revision, messages, phase, order, calls, steering, followups, driving(automatic), cancellation(cancelled), flushed)
-State(id::AbstractString; automatic=true, messages=Message[]) = State(K.State(id), 0, deepcopy(Message[messages...]), Ready, String[], ToolCall[], String[], String[], automatic, false, 0)
+State(kernel, revision, messages, phase, order, calls, steering, followups, automatic, cancelled, flushed) = State(kernel, revision, messages, phase, order, calls, steering, followups, driving(automatic), cancellation(cancelled), flushed, OneAtATime(), OneAtATime())
+State(id::AbstractString; automatic=true, messages=Message[]) = State(K.State(id), 0, deepcopy(Message[messages...]), Ready, String[], ToolCall[], Union{String, ImageUser}[], Union{String, ImageUser}[], automatic, false, 0)
 
 function Base.getproperty(state::State, name::Symbol)
     name === :automatic && return automatic(getfield(state, :mode))
@@ -210,13 +289,28 @@ function Base.getproperty(state::State, name::Symbol)
     name in (:messages, :order, :calls, :steering, :followups) ? deepcopy(value) : value
 end
 
-Base.propertynames(::State, private::Bool=false) = (:kernel, :revision, :messages, :phase, :order, :calls, :steering, :followups, :automatic, :cancelled, :flushed, :mode, :cancellation)
+Base.propertynames(::State, private::Bool=false) = (:kernel, :revision, :messages, :phase, :order, :calls, :steering, :followups, :automatic, :cancelled, :flushed, :mode, :cancellation, :steeringmode, :followupmode)
 JSON3.StructTypes.names(::Type{State}) = ((:mode, :automatic), (:cancellation, :cancelled))
 
 struct Input <: K.Event
     revision::Int
     text::String
 end
+
+struct ImagePrompt
+    text::String
+    images::Vector{Image}
+    ImagePrompt(text, images) = new(text, copy(images))
+end
+
+struct ImageInput <: K.Event
+    revision::Int
+    text::String
+    images::Vector{Image}
+    ImageInput(revision, text, images) = new(revision, text, copy(images))
+end
+
+Input(revision, prompt::ImagePrompt) = ImageInput(revision, prompt.text, prompt.images)
 
 struct Steer <: K.Event
     revision::Int
@@ -228,6 +322,33 @@ struct Followup <: K.Event
     text::String
 end
 
+struct ImageSteer <: K.Event
+    revision::Int
+    text::String
+    images::Vector{Image}
+    ImageSteer(revision, text, images) = new(revision, text, copy(images))
+end
+
+struct ImageFollowup <: K.Event
+    revision::Int
+    text::String
+    images::Vector{Image}
+    ImageFollowup(revision, text, images) = new(revision, text, copy(images))
+end
+
+Steer(revision, prompt::ImagePrompt) = ImageSteer(revision, prompt.text, prompt.images)
+Followup(revision, prompt::ImagePrompt) = ImageFollowup(revision, prompt.text, prompt.images)
+
+struct SteeringMode <: K.Event
+    revision::Int
+    mode::QueueMode
+end
+
+struct FollowupMode <: K.Event
+    revision::Int
+    mode::QueueMode
+end
+
 struct Dequeue <: K.Event
     revision::Int
 end
@@ -237,7 +358,60 @@ struct SessionName <: K.Event
     name::String
 end
 
+struct SessionParent <: K.Event
+    revision::Int
+    path::String
+end
+
+struct BashOutput{M<:BashMessage} <: K.Event
+    revision::Int
+    message::M
+end
+
+abstract type SessionEntry end
+struct ModelEntry <: SessionEntry
+    provider::String
+    model::String
+end
+struct ThinkingEntry <: SessionEntry
+    level::String
+end
+struct MessageEntry <: SessionEntry
+    message::Dict{String, Any}
+end
+struct NameEntry <: SessionEntry
+    name::String
+end
+struct CompactionEntry <: SessionEntry
+    summary::String
+    firstkept::Union{Nothing, String}
+    tokens_before::Int
+    estimated_after::Int
+    info::Union{Nothing, ResponseInfo}
+end
+struct SessionRecord{E<:SessionEntry} <: K.Event
+    revision::Int
+    id::String
+    parent::Union{Nothing, String}
+    timestamp::String
+    entry::E
+end
+struct ModelSelection <: K.Event
+    revision::Int
+    model::SessionRecord{ModelEntry}
+    thinking::SessionRecord{ThinkingEntry}
+end
+const SessionRecordValue = Union{SessionRecord{ModelEntry}, SessionRecord{ThinkingEntry}, SessionRecord{MessageEntry}, SessionRecord{NameEntry}, SessionRecord{CompactionEntry}}
+
 sessionname(text::AbstractString) = String(strip(replace(text, r"[\r\n]+" => " ")))
+
+struct ContinueQueued <: K.Event
+    revision::Int
+end
+
+struct Continue <: K.Event
+    revision::Int
+end
 
 struct Advance <: K.Event
     revision::Int
@@ -250,6 +424,18 @@ end
 struct History <: K.Event
     revision::Int
     messages::Vector{Message}
+    compaction::Union{Nothing, ResponseInfo}
+end
+History(revision, messages) = History(revision, messages, nothing)
+
+struct SystemUpdate <: K.Event
+    revision::Int
+    messages::Vector{Message}
+end
+
+struct CompactionUsage <: K.Event
+    revision::Int
+    info::ResponseInfo
 end
 
 struct Interrupt <: K.Event
@@ -262,8 +448,8 @@ struct Abandon <: K.Event
     reason::String
 end
 
-function update(state::State; kernel=getfield(state, :kernel), messages=getfield(state, :messages), phase=state.phase, order=getfield(state, :order), calls=getfield(state, :calls), steering=getfield(state, :steering), followups=getfield(state, :followups), cancelled=getfield(state, :cancellation), flushed=state.flushed)
-    State(kernel, state.revision + 1, messages, phase, order, calls, steering, followups, getfield(state, :mode), cancelled, flushed)
+function update(state::State; kernel=getfield(state, :kernel), messages=getfield(state, :messages), phase=state.phase, order=getfield(state, :order), calls=getfield(state, :calls), steering=getfield(state, :steering), followups=getfield(state, :followups), cancelled=getfield(state, :cancellation), flushed=state.flushed, steeringmode=state.steeringmode, followupmode=state.followupmode)
+    State(kernel, state.revision + 1, messages, phase, order, calls, steering, followups, getfield(state, :mode), cancellation(cancelled), flushed, steeringmode, followupmode)
 end
 
 function plan(kernel::K.State, effect::K.Effect)
@@ -272,55 +458,123 @@ function plan(kernel::K.State, effect::K.Effect)
     result.state, only(result.effects)
 end
 
-function model(kernel::K.State, messages::Vector{Message}, steering::Vector{String})
-    if !isempty(steering)
-        steering = copy(steering)
-        push!(messages, User(popfirst!(steering)))
-    end
+function drain(messages, queue, ::OneAtATime)
+    remaining = copy(queue)
+    isempty(remaining) || push!(messages, user(popfirst!(remaining)))
+    remaining
+end
+
+function drain(messages, queue, ::AllAtOnce)
+    append!(messages, user.(queue))
+    empty(queue)
+end
+
+function model(state, kernel::K.State, messages::Vector{Message}, steering::Vector{Union{String, ImageUser}})
+    steering = drain(messages, steering, state.steeringmode)
     kernel, effect = plan(kernel, ModelRequest(messages))
     kernel, effect, steering
 end
 
-function K.step(state::State, event::Input)
+function K.step(state::State, event::Union{Input, ImageInput})
     event.revision == state.revision || return K.Rejected(state, :revision)
     K.step(state, event, state.phase)
 end
 
-K.step(state::State, event::Input, ::Phase) = K.Rejected(state, :phase)
+K.step(state::State, event::Union{Input, ImageInput}, ::Phase) = K.Rejected(state, :phase)
 
-function K.step(state::State, event::Input, ::Union{ReadyPhase, CompletePhase, IncompletePhase, CancelledPhase})
+function K.step(state::State, event::Union{Input, ImageInput}, ::Union{ReadyPhase, CompletePhase, IncompletePhase, CancelledPhase})
     messages = copy(getfield(state, :messages))
-    push!(messages, User(event.text))
+    push!(messages, user(event))
     input(state, messages, getfield(state, :mode))
 end
 
+user(text::String) = User(text)
+user(message::ImageUser) = message
+user(event::Union{ImageSteer, ImageFollowup}) = ImageUser(event.text, event.images)
+user(event::Input) = User(event.text)
+user(event::ImageInput) = ImageUser(event.text, event.images)
+
 input(state, messages, ::Manual) = K.Applied(update(state; messages, phase=ReadyModel, cancelled=false), ())
 function input(state, messages, ::Automatic)
-    kernel, effect, steering = model(state.kernel, messages, getfield(state, :steering))
+    kernel, effect, steering = model(state, state.kernel, messages, getfield(state, :steering))
     updated = update(state; kernel, messages, steering, phase=WaitingModel, cancelled=false)
     K.Applied(updated, (effect,))
 end
 
-function K.step(state::State, event::Steer)
+function K.step(state::State, event::Continue)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    resume(state, state.phase)
+end
+
+function K.step(state::State, event::ContinueQueued)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    resumequeued(state, state.phase)
+end
+resumequeued(state, ::Phase) = K.Rejected(state, :phase)
+resumequeued(state, ::Union{ReadyPhase, CompletePhase, IncompletePhase, CancelledPhase}) = K.Applied(update(state; phase=ReadyDecision, cancelled=false), ())
+
+resume(state, ::Phase) = K.Rejected(state, :phase)
+resume(state, ::Union{ReadyPhase, CompletePhase, IncompletePhase, CancelledPhase}) = K.Applied(update(state; phase=ReadyModel, cancelled=false), ())
+
+queued(event::Union{Steer, Followup}) = event.text
+queued(event::Union{ImageSteer, ImageFollowup}) = user(event)
+queuetext(text::String) = text
+queuetext(message::ImageUser) = message.content
+
+abstract type QueueContent end
+struct TextOnly <: QueueContent end
+struct ContainsImages <: QueueContent end
+queuecontent(content::QueueContent, ::String) = content
+queuecontent(::QueueContent, ::ImageUser) = ContainsImages()
+queuecontent(state::State) = foldl(queuecontent, Iterators.flatten((state.steering, state.followups)); init=TextOnly())
+
+function K.step(state::State, event::Union{Steer, ImageSteer})
     event.revision == state.revision || return K.Rejected(state, :revision)
     steering = copy(getfield(state, :steering))
-    push!(steering, event.text)
+    push!(steering, queued(event))
     K.Applied(update(state; steering), ())
 end
 
-function K.step(state::State, event::Followup)
+function K.step(state::State, event::Union{Followup, ImageFollowup})
     event.revision == state.revision || return K.Rejected(state, :revision)
     followups = copy(getfield(state, :followups))
-    push!(followups, event.text)
+    push!(followups, queued(event))
     K.Applied(update(state; followups), ())
+end
+
+function K.step(state::State, event::SteeringMode)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    K.Applied(update(state; steeringmode=event.mode), ())
+end
+
+function K.step(state::State, event::FollowupMode)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    K.Applied(update(state; followupmode=event.mode), ())
 end
 
 function K.step(state::State, event::Dequeue)
     event.revision == state.revision || return K.Rejected(state, :revision)
-    K.Applied(update(state; steering=String[], followups=String[]), ())
+    K.Applied(update(state; steering=empty(getfield(state, :steering)), followups=empty(getfield(state, :followups))), ())
 end
 
 function K.step(state::State, event::SessionName)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    K.Applied(update(state), ())
+end
+
+function K.step(state::State, event::SessionParent)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    K.Applied(update(state), ())
+end
+
+function K.step(state::State, event::BashOutput)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    messages = copy(getfield(state, :messages))
+    push!(messages, event.message)
+    K.Applied(update(state; messages), ())
+end
+
+function K.step(state::State, event::Union{SessionRecord, ModelSelection})
     event.revision == state.revision || return K.Rejected(state, :revision)
     K.Applied(update(state), ())
 end
@@ -330,9 +584,14 @@ function K.step(state::State, event::Cancel)
     K.Applied(update(state; cancelled=true), ())
 end
 
-function K.step(state::State, event::History)
+function K.step(state::State, event::Union{History, SystemUpdate})
     event.revision == state.revision || return K.Rejected(state, :revision)
     K.Applied(update(state; messages=deepcopy(event.messages)), ())
+end
+
+function K.step(state::State, event::CompactionUsage)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    K.Applied(update(state), ())
 end
 
 function K.step(state::State, event::Interrupt)
@@ -389,8 +648,7 @@ function advance(state::State, ::ReadyDecisionPhase, steering, followups)
     isempty(steering) && isempty(followups) && return K.Applied(update(state; phase=Complete), ())
     messages = copy(getfield(state, :messages))
     if isempty(steering)
-        followups = copy(followups)
-        push!(messages, User(popfirst!(followups)))
+        followups = drain(messages, followups, state.followupmode)
     end
     advance(state, messages, steering, followups)
 end
@@ -398,7 +656,7 @@ end
 advance(state::State, ::ReadyModelPhase, steering, followups) = advance(state, copy(getfield(state, :messages)), steering, followups)
 
 function advance(state::State, messages::Vector{Message}, steering, followups)
-    kernel, effect, steering = model(state.kernel, messages, steering)
+    kernel, effect, steering = model(state, state.kernel, messages, steering)
     updated = update(state; kernel, messages, steering, followups, phase=WaitingModel)
     K.Applied(updated, (effect,))
 end
@@ -445,10 +703,9 @@ function observe_text(state, kernel, messages, steering, followups, ::Automatic)
         return K.Applied(update(state; kernel, messages, phase=Complete), ())
     end
     if isempty(steering)
-        followups = copy(followups)
-        push!(messages, User(popfirst!(followups)))
+        followups = drain(messages, followups, state.followupmode)
     end
-    kernel, effect, steering = model(kernel, messages, steering)
+    kernel, effect, steering = model(state, kernel, messages, steering)
     K.Applied(update(state; kernel, messages, steering, followups, phase=WaitingModel), (effect,))
 end
 
@@ -461,7 +718,7 @@ function observe_skipped(state, kernel, messages, steering, answer, ::Automatic)
         text = "Error: Tool call \"$(call.name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments."
         push!(messages, ToolMessage(call.id, text, true))
     end
-    kernel, effect, steering = model(kernel, messages, steering)
+    kernel, effect, steering = model(state, kernel, messages, steering)
     K.Applied(update(state; kernel, messages, steering, phase=WaitingModel), (effect,))
 end
 
@@ -481,18 +738,24 @@ end
 
 K.step(state::State, event::K.Observe{ToolReply}) = observe(state, event, observe(state, event, WaitingTools))
 
+function observationindex(observations)
+    indexed = Dict{String, K.Observation}()
+    for observation in observations
+        get!(indexed, observation.id, observation.observation)
+    end
+    indexed
+end
+
 function observe(state::State, event::K.Observe{ToolReply}, result::K.Applied)
     kernel = result.state
     messages = copy(getfield(state, :messages))
-    observations = kernel.observations
+    observations = observationindex(kernel.observations)
     order = getfield(state, :order)
     calls = getfield(state, :calls)
     flushed = state.flushed
-    while flushed < length(order)
+    while flushed < length(order) && haskey(observations, order[flushed + 1])
         id = order[flushed + 1]
-        index = findfirst(item -> item.id == id, observations)
-        index === nothing && break
-        observation = observations[index].observation
+        observation = observations[id]
         call = calls[flushed + 1]
         push!(messages, ToolMessage(call, observation))
         flushed += 1
@@ -500,12 +763,22 @@ function observe(state::State, event::K.Observe{ToolReply}, result::K.Applied)
     if !isempty(kernel.pending)
         return K.Applied(update(state; kernel, messages, flushed), ())
     end
-    observed_tools(state, kernel, messages, getfield(state, :mode))
+    decision = foldl((decision, id) -> batchdecision(decision, observations[id].result), order; init=StopBatch())
+    observed_tools(state, kernel, messages, getfield(state, :mode), decision)
 end
 
-observed_tools(state, kernel, messages, ::Manual) = K.Applied(update(state; kernel, messages, order=String[], calls=ToolCall[], flushed=0, phase=ReadyModel), ())
-function observed_tools(state, kernel, messages, ::Automatic)
-    kernel, effect, steering = model(kernel, messages, getfield(state, :steering))
+abstract type BatchDecision end
+struct StopBatch <: BatchDecision end
+struct ContinueBatch <: BatchDecision end
+batchdecision(::ContinueBatch, result) = ContinueBatch()
+batchdecision(::StopBatch, result) = batchdecision(result)
+batchdecision(result) = ContinueBatch()
+batchdecision(result::Terminate) = StopBatch()
+
+observed_tools(state, kernel, messages, mode, ::StopBatch) = K.Applied(update(state; kernel, messages, order=String[], calls=ToolCall[], flushed=0, phase=ReadyDecision), ())
+observed_tools(state, kernel, messages, ::Manual, ::ContinueBatch) = K.Applied(update(state; kernel, messages, order=String[], calls=ToolCall[], flushed=0, phase=ReadyModel), ())
+function observed_tools(state, kernel, messages, ::Automatic, ::ContinueBatch)
+    kernel, effect, steering = model(state, kernel, messages, getfield(state, :steering))
     updated = update(state; kernel, messages, steering, order=String[], calls=ToolCall[], flushed=0, phase=WaitingModel)
     K.Applied(updated, (effect,))
 end

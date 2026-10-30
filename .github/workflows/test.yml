@@ -24,7 +24,7 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    timeout-minutes: 180
     defaults:
       run:
         shell: bash
@@ -41,6 +41,10 @@ jobs:
       - name: Test coverage report
         if: runner.os == 'Linux'
         run: python3 -B -m unittest discover -s scripts/tests -v
+      - name: Install search tools
+        run: |
+          python scripts/install_search_tools.py "$RUNNER_TEMP/search-tools" "$RUNNER_OS" "$RUNNER_ARCH"
+          echo "$RUNNER_TEMP/search-tools" >> "$GITHUB_PATH"
       - name: Prepare pinned Pi reference
         run: |
           git clone --filter=blob:none https://github.com/earendil-works/pi.git "$RUNNER_TEMP/pi-source"
@@ -76,6 +80,10 @@ jobs:
           cd "$RUNNER_TEMP/coverage-baseline"
           julia --startup-file=no --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test(; coverage=true, julia_args=`--startup-file=no --threads=4`)'
           python3 scripts/coverage.py --output "$GITHUB_WORKSPACE/coverage/baseline.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Check Pi search tools
+        env:
+          PI_SOURCE: ${{ runner.temp }}/pi-source
+        run: node scripts/check_pi_search_tools.mjs
       - name: Julia tests and differential cases
         env:
           PI_SOURCE: ${{ runner.temp }}/pi-source

@@ -13,44 +13,52 @@ function schema(db)
     end
 end
 
-function initialize(db; create=true)
-    SQLite.execute(db, create ? "BEGIN IMMEDIATE" : "BEGIN")
-    names = schema(db)
-    if isempty(names)
-        if !create
-            SQLite.execute(db, "ROLLBACK")
-            return H.Rejected(:history_format)
-        end
-        SQLite.execute(db, "CREATE TABLE jf_meta (format TEXT NOT NULL)")
-        SQLite.execute(db, "INSERT INTO jf_meta VALUES (?)", (format,))
-        SQLite.execute(db, "CREATE TABLE jf_history (revision INTEGER PRIMARY KEY, data TEXT NOT NULL)")
-    elseif names != ["jf_history", "jf_meta"]
-        SQLite.execute(db, "ROLLBACK")
-        return H.Rejected(:history_format)
-    else
-        markers = DBI.execute(db, "SELECT format FROM jf_meta") do rows
-            [row.format for row in rows]
-        end
-        if markers != [format]
-            SQLite.execute(db, "ROLLBACK")
-            return H.Rejected(:history_format)
-        end
-    end
-    SQLite.execute(db, "COMMIT")
-    nothing
+function initialize(db, beginstatement, empty)
+    SQLite.execute(db, beginstatement)
+    finishinitialize(db, initialschema(db, empty, schema(db)))
 end
 
-function Base.open(::Type{H.SQLite}, path::AbstractString; create=true)
-    path = expanduser(path)
-    if !create
-        isfile(path) || return H.Rejected(:history_missing)
-        header = open(path, "r") do file
-            read(file, 16)
-        end
-        header == codeunits("SQLite format 3\0") || return H.Rejected(:history_format)
+function initialschema(db, empty, names)
+    isempty(names) && return empty(db)
+    names == ["jf_history", "jf_meta"] || return H.Rejected(:history_format)
+    markers = DBI.execute(db, "SELECT format FROM jf_meta") do rows
+        [row.format for row in rows]
     end
+    markers == [format] ? nothing : H.Rejected(:history_format)
+end
+
+rejectempty(db) = H.Rejected(:history_format)
+function createschema(db)
+    SQLite.execute(db, "CREATE TABLE jf_meta (format TEXT NOT NULL)")
+    SQLite.execute(db, "INSERT INTO jf_meta VALUES (?)", (format,))
+    SQLite.execute(db, "CREATE TABLE jf_history (revision INTEGER PRIMARY KEY, data TEXT NOT NULL)")
+    nothing
+end
+finishinitialize(db, ::Nothing) = (SQLite.execute(db, "COMMIT"); nothing)
+finishinitialize(db, rejected::H.Rejected) = (SQLite.execute(db, "ROLLBACK"); rejected)
+initializeexisting(db) = initialize(db, "BEGIN", rejectempty)
+initializecreating(db) = initialize(db, "BEGIN IMMEDIATE", createschema)
+
+openhistory(db, rejected::H.Rejected) = rejected
+openhistory(db, ::Nothing) = H.SQLite(db, ReentrantLock(), H.Open())
+closefailed!(db, ::H.SQLite) = nothing
+closefailed!(db, result) = close(db)
+
+function openexisting(path)
+    isfile(path) || return H.Rejected(:history_missing)
+    header = open(path, "r") do file
+        read(file, 16)
+    end
+    header == codeunits("SQLite format 3\0") || return H.Rejected(:history_format)
+    openvalidated(path, initializeexisting)
+end
+opencreating(path) = openvalidated(path, initializecreating)
+const historyopeners = (openexisting, opencreating)
+Base.open(::Type{H.SQLite}, path::AbstractString; create::Bool=true) = historyopeners[Int(create) + 1](expanduser(path))
+
+function openvalidated(path, initializer::F) where F
     db = SQLite.DB(path)
-    opened = false
+    opened = nothing
     try
         SQLite.busy_timeout(db, 5000)
         mode = DBI.execute(db, "PRAGMA journal_mode") do rows
@@ -58,12 +66,9 @@ function Base.open(::Type{H.SQLite}, path::AbstractString; create=true)
         end
         mode in ("delete", "truncate", "persist", "wal") || return H.Rejected(:history_format)
         SQLite.execute(db, "PRAGMA synchronous = EXTRA")
-        result = initialize(db; create)
-        result isa H.Rejected && return result
-        opened = true
-        H.SQLite(db, ReentrantLock(), H.Open())
+        opened = openhistory(db, initializer(db))
     finally
-        opened || close(db)
+        closefailed!(db, opened)
     end
 end
 
@@ -99,7 +104,7 @@ rawbatch(data) = H.Rejected(:history_format)
 function rawbatch(data::AbstractString)
     depth = length(current_exceptions())
     try
-        JSON3.read(data, Vector{Any})
+        JSON3.read(codeunits(data), Vector{Any})
     finally
         exceptions = current_exceptions()
         if length(exceptions) > depth && formaterror(last(exceptions).exception)
@@ -151,7 +156,7 @@ end
 
 function append!(history::H.SQLite{SQLite.DB}, revision::Integer, batch::Vector, ::H.Open)
     db = history.db
-    complete = false
+    committed = nothing
     try
         SQLite.execute(db, "BEGIN IMMEDIATE")
         current = DBI.execute(db, "SELECT COALESCE(MAX(revision), 0) AS revision FROM jf_history") do rows
@@ -165,11 +170,14 @@ function append!(history::H.SQLite{SQLite.DB}, revision::Integer, batch::Vector,
             write!(db, current, H.value(batch, IdDict()))
         end
         SQLite.execute(db, transaction(result))
-        complete = true
+        committed = Some(result)
         result
     finally
-        complete || setfield!(history, :status, H.Uncertain())
+        uncertain!(history, committed)
     end
 end
+
+uncertain!(history, ::Some) = nothing
+uncertain!(history, ::Nothing) = setfield!(history, :status, H.Uncertain())
 
 end

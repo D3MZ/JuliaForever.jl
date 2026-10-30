@@ -198,11 +198,30 @@ function next!(editor::Editor, result::Submitted)
     text, nothing
 end
 
-function remember!(editor::Editor)
-    excess = max(length(editor.history.history) - 100, 0)
-    deleteat!(editor.history.history, 1:excess)
-    deleteat!(editor.history.modes, 1:excess)
-    LineEdit.reset_state(editor.history)
+remember!(editor::Editor) = remember!(editor.history)
+function remember!(history::REPL.REPLHistoryProvider)
+    excess = max(length(history.history) - 100, 0)
+    deleteat!(history.history, 1:excess)
+    deleteat!(history.modes, 1:excess)
+    LineEdit.reset_state(history)
+    nothing
+end
+
+function remember!(history::REPL.REPLHistoryProvider, value::AbstractString)
+    text = String(strip(value))
+    isempty(text) && return nothing
+    !isempty(history.history) && last(history.history) == text && return nothing
+    push!(history.history, text)
+    push!(history.modes, :julia)
+    remember!(history)
+end
+
+function commitcommand!(state)
+    history = LineEdit.mode(state).hist
+    count = length(history.history)
+    LineEdit.commit_line(state)
+    resize!(history.history, count)
+    resize!(history.modes, count)
     nothing
 end
 

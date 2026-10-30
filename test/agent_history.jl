@@ -34,14 +34,33 @@ import JuliaForever.Kernel as K
     @test length(provider.requests) == 1
 end
 
-mutable struct FailHistory <: H.Store
+struct FailHistory{T} <: H.Store
     store::H.Memory
-    fail::Int
 end
+FailHistory(store::H.Memory, ::Type{T}) where T = FailHistory{T}(store)
 H.snapshot(history::FailHistory) = H.snapshot(history.store)
-function H.append!(history::FailHistory, revision::Integer, batch::Vector)
-    revision + 1 == history.fail && return H.Rejected(:failed)
+function H.append!(history::FailHistory{T}, revision::Integer, batch::Vector) where T
+    H.decode_event(only(batch)) isa T && return H.Rejected(:failed)
     H.append!(history.store, revision, batch)
+end
+
+struct UncertainHistory <: H.Store
+    store::H.Memory
+end
+H.snapshot(history::UncertainHistory) = H.snapshot(history.store)
+function H.append!(history::UncertainHistory, revision::Integer, batch::Vector)
+    result = H.append!(history.store, revision, batch)
+    revision == 0 && return result
+    error("connection lost after append")
+end
+
+@testset "uncertain append stops the agent" begin
+    history = UncertainHistory(H.Memory())
+    agent = Agent(Scripted([], []), []; history)
+    @test_throws ErrorException respond!(agent, "start")
+    @test agent.fault == H.Rejected(:uncertain)
+    @test respond!(agent, "again") == H.Rejected(:uncertain)
+    @test H.snapshot(history).revision == 2
 end
 
 @testset "recorded agent and passive replay" begin
@@ -86,7 +105,7 @@ end
         call = Dict{String, Any}("id" => "one", "type" => "function", "function" => Dict("name" => "write", "arguments" => "{\"path\":\"a.txt\",\"content\":\"unsafe\"}"))
         provider = Scripted([Dict{String, Any}("role" => "assistant", "content" => nothing, "tool_calls" => [call])], [])
         store = H.Memory()
-        history = FailHistory(store, 5)
+        history = FailHistory(store, K.Observe{C.ModelReply})
         agent = Agent(provider, [Write(dir)]; history)
         @test respond!(agent, "start") == H.Rejected(:failed)
         @test agent.state.phase == C.WaitingModel
@@ -171,7 +190,7 @@ end
 @testset "planning and tool observation failures are boundaries" begin
     provider = KeyedProvider("secret", 0)
     store = H.Memory()
-    agent = Agent(provider, []; history=FailHistory(store, 4))
+    agent = Agent(provider, []; history=FailHistory(store, C.Advance))
     @test respond!(agent, "hello") == H.Rejected(:failed)
     @test agent.state.phase == C.ReadyModel
     @test provider.calls == 0
@@ -181,8 +200,8 @@ end
         calls = [Dict{String, Any}("id" => string(i), "type" => "function", "function" => Dict("name" => "write", "arguments" => "{\"path\":\"$(i).txt\",\"content\":\"written\"}")) for i in 1:2]
         provider = Scripted([Dict{String, Any}("role" => "assistant", "content" => nothing, "tool_calls" => calls)], [])
         store = H.Memory()
-        agent = Agent(provider, [Write(dir)]; history=FailHistory(store, 6))
-        @test respond!(agent, "go") == H.Rejected(:failed)
+        agent = Agent(provider, [Write(dir)]; history=FailHistory(store, K.Observe{C.ToolReply}))
+        @test respond!(agent, "go"; tool_execution=:sequential) == H.Rejected(:failed)
         @test isfile(joinpath(dir, "1.txt"))
         @test !isfile(joinpath(dir, "2.txt"))
         @test length(provider.requests) == 1
@@ -334,7 +353,6 @@ JuliaForever.complete(::BrokenHistoryProvider, messages, tools) = error("provide
 @testset "recorded failures expose uncertainty" begin
     history = H.Memory()
     agent = Agent(BrokenHistoryProvider(), []; history)
-    @test respond!(agent, "start"; tool_execution=:parallel) == H.Rejected(:unsupported_execution)
     @test respond!(agent, "start"; tool_execution=:unknown) == H.Rejected(:unsupported_execution)
     @test H.snapshot(history).revision == 1
     @test_throws ErrorException respond!(agent, "start")

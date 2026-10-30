@@ -53,14 +53,39 @@ directory(env) = abspath(expanduser(get(env, "JF_SESSION_DIR", joinpath(homedir(
 project(cwd) = bytes2hex(sha256(abspath(cwd)))[1:24]
 filename(cwd, id) = project(cwd) * "--" * id * ".sqlite"
 
+function winpath(cwd, api)
+    input = transcode(UInt16, abspath(cwd) * "\0")
+    output = zeros(UInt16, 32768)
+    n = api(input, output)
+    n == 0 || n >= length(output) ? abspath(cwd) : transcode(String, output[1:n])
+end
+
+@static if Sys.iswindows()
+    longpath(input, output) = ccall((:GetLongPathNameW, "kernel32"), stdcall, UInt32, (Ptr{UInt16}, Ptr{UInt16}, UInt32), input, output, length(output))
+    shortpath(input, output) = ccall((:GetShortPathNameW, "kernel32"), stdcall, UInt32, (Ptr{UInt16}, Ptr{UInt16}, UInt32), input, output, length(output))
+    spellings(cwd) = unique((abspath(cwd), winpath(cwd, longpath), winpath(cwd, shortpath)))
+    projectlist(dir, cwd, paths) = listcase(dir, paths)
+    caseform(path) = winpath(path, longpath)
+    function caseequal(a, b)
+        left, right = transcode(UInt16, a), transcode(UInt16, b)
+        ccall((:CompareStringOrdinal, "kernel32"), stdcall, Cint, (Ptr{UInt16}, Cint, Ptr{UInt16}, Cint, Cint), left, length(left), right, length(right), 1) == 2
+    end
+else
+    spellings(cwd) = (abspath(cwd),)
+    projectlist(dir, cwd, paths) = list(dir, projectpattern(paths))
+    caseequal(a, b) = lowercase(a) == lowercase(b)
+    caseform(path) = abspath(path)
+end
+
 mutable struct Deferred <: H.Store
     path::String
     store::H.Store
     lock::ReentrantLock
+    cwd::Union{Nothing, String}
 end
 
-Deferred(path) = Deferred(path, H.Memory(), ReentrantLock())
-new(dir, cwd) = H.Tree(Deferred(joinpath(dir, filename(cwd, bytes2hex(rand(UInt8, 16))))))
+Deferred(path, cwd=nothing) = Deferred(path, H.Memory(), ReentrantLock(), cwd)
+new(dir, cwd) = H.Tree(Deferred(joinpath(dir, filename(cwd, bytes2hex(rand(UInt8, 16)))), abspath(cwd)))
 
 function H.snapshot(history::Deferred)
     lock(history.lock) do
@@ -80,7 +105,12 @@ materialize!(history, store::H.Memory, revision, batch, rejected::H.Rejected) = 
 materialize!(history, store::H.Memory, revision, batch, saved::Integer) = revision == 0 ? saved : materialize!(history, store, saved, H.treenode(batch, 0))
 materialize!(history, store::H.Memory, saved::Integer, ::H.Rejected) = materialize!(history, store, H.snapshot(store))
 materialize!(history, store::H.Memory, saved::Integer, node::H.TreeNode) = length(node.batch) == 1 ? materialize!(history, store, saved, H.decode_event(only(node.batch))) : materialize!(history, store, H.snapshot(store))
+materialize!(history, store::H.Memory, saved::Integer, ::C.SessionParent) = saved
 materialize!(history, store::H.Memory, saved::Integer, ::C.SessionName) = saved
+materialize!(history, store::H.Memory, saved::Integer, ::C.BashOutput) = saved
+materialize!(history, store::H.Memory, saved::Integer, ::C.SessionRecord) = saved
+materialize!(history, store::H.Memory, saved::Integer, ::C.ModelSelection) = saved
+materialize!(history, store::H.Memory, saved::Integer, ::Union{C.SteeringMode, C.FollowupMode}) = saved
 materialize!(history, store::H.Memory, saved::Integer, event) = materialize!(history, store, H.snapshot(store))
 
 function materialize!(history, store::H.Memory, snapshot::H.Snapshot)
@@ -93,10 +123,30 @@ end
 materialize!(history, rejected::H.Rejected, snapshot) = rejected
 
 function materialize!(history, store::H.SQLite, snapshot::H.Snapshot)
-    history.store = store
-    foldl(snapshot.batches; init=0) do revision, batch
-        appendbatch!(store, revision, batch)
+    completed = nothing
+    try
+        SQLite.execute(store.db, "BEGIN IMMEDIATE")
+        savecwd!(store, history.cwd)
+        revision = foldl(snapshot.batches; init=0) do revision, batch
+            SH.write!(store.db, revision, batch)
+        end
+        SQLite.execute(store.db, "COMMIT")
+        history.store = store
+        completed = Some(revision)
+        revision
+    finally
+        finishmaterialize!(store, completed)
     end
+end
+
+finishmaterialize!(store, ::Some) = nothing
+finishmaterialize!(store, ::Nothing) = close(store)
+
+savecwd!(store, ::Nothing) = nothing
+function savecwd!(store, cwd::String)
+    SQLite.execute(store.db, "ALTER TABLE jf_meta ADD COLUMN cwd TEXT")
+    SQLite.execute(store.db, "UPDATE jf_meta SET cwd = ?", (cwd,))
+    nothing
 end
 
 appendbatch!(store, rejected::H.Rejected, batch) = rejected
@@ -114,7 +164,7 @@ function Base.close(history::Deferred)
 end
 
 firstprompt(text, event) = text
-firstprompt(::Nothing, event::C.Input) = event.text
+firstprompt(::Nothing, event::Union{C.Input, C.ImageInput}) = event.text
 firstprompt(::Nothing, event) = nothing
 
 function firstprompt(snapshot::H.Snapshot)
@@ -134,6 +184,12 @@ function firstprompt(entries::Vector)
         end
     end
 end
+
+parent(current, event) = current
+parent(current, event::C.SessionParent) = event.path
+parent(current, batch::AbstractVector) = foldl((value, record) -> parent(value, H.decode_event(record)), batch; init=current)
+parent(entries::AbstractVector{<:NamedTuple}) = foldl((value, entry) -> parent(value, entry.batch), entries; init=nothing)
+parent(history::H.Tree) = parent(H.entries(history))
 
 sessionname(current, ::Any) = current
 sessionname(current, event::C.SessionName) = isempty(event.name) ? nothing : event.name
@@ -176,10 +232,9 @@ end
 pushinfo!(items, ::Nothing) = items
 pushinfo!(items, item::Info) = (push!(items, item); items)
 
-function list(dir, cwd::AbstractString)
-    pattern = Regex("^" * project(cwd) * raw"--([0-9a-f]{32})\.sqlite$")
-    list(dir, pattern)
-end
+projectpattern(paths) = Regex("^(?:" * join(project.(paths), "|") * raw")--([0-9a-f]{32})\.sqlite$")
+list(dir, cwd::AbstractString) = projectlist(dir, cwd, spellings(cwd))
+include("session_case.jl")
 
 function list(dir, pattern::Regex)
     isdir(dir) || return Info[]
@@ -316,7 +371,9 @@ queueable(state::C.State) = queueable(state, state.phase)
 queueable(state, ::C.Phase) = H.Rejected(:incomplete_turn)
 queueable(state, ::Union{C.ReadyModelPhase, C.ReadyDecisionPhase}) = isempty(state.kernel.pending) ? nothing : H.Rejected(:uncertain_effect)
 queuedtarget(tree, leaf, state, rejected::H.Rejected) = rejected
-queuedtarget(tree, leaf, state::C.State, ::Nothing) = (; batches=H.path(tree, leaf), state)
+queuedtarget(tree, leaf, state::C.State, ::Nothing) = queuedtarget(tree, leaf, state, C.queuecontent(state))
+queuedtarget(tree, leaf, state, ::C.ContainsImages) = H.Rejected(:queued_images)
+queuedtarget(tree, leaf, state, ::C.TextOnly) = (; batches=H.path(tree, leaf), state)
 
 append_event!(tree, state::C.State, event::K.Event) = append_event!(tree, event, K.step(state, event))
 append_event!(tree, event::K.Event, rejected::K.Rejected) = H.Rejected(:invalid_record)

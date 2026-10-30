@@ -28,9 +28,10 @@ while !eof(stdin)
             fault(message["id"], -32602, "invalid initialize")
             continue
         end
-        version = mode == "badversion" ? "2099-01-01" : "2025-11-25"
-        capabilities = mode == "no_tools" ? Dict() : mode == "badcap" ? Dict("tools" => nothing) : Dict("tools" => Dict("listChanged" => true))
-        reply(message["id"], Dict("protocolVersion" => version, "capabilities" => capabilities, "serverInfo" => Dict("name" => "mock", "version" => "1")))
+        version = get(Dict("badversion" => "2099-01-01", "oldversion" => "2025-06-18", "oldversion2" => "2025-03-26", "oldversion3" => "2024-11-05"), mode, "2025-11-25")
+        capabilities = mode == "no_tools" ? Dict() : mode == "badcap" ? Dict("tools" => nothing) : mode == "badcaps" ? [] : Dict("tools" => Dict("listChanged" => true))
+        info = mode == "badinfo" ? [] : Dict("name" => mode == "badname" ? 1 : "mock", "version" => mode == "badserverversion" ? nothing : "1")
+        reply(message["id"], Dict("protocolVersion" => version, "capabilities" => capabilities, "serverInfo" => info))
     elseif method == "notifications/initialized"
         initialized[] = true
         send(Dict("jsonrpc" => "2.0", "id" => "server-ping", "method" => "ping"))
@@ -43,7 +44,12 @@ while !eof(stdin)
             continue
         end
         cursor = get(get(message, "params", Dict()), "cursor", nothing)
-        if mode == "loopcursor"
+        if mode in ("limittools", "lasttoolpage")
+            page = isnothing(cursor) ? 1 : parse(Int, cursor) + 1
+            result = Dict{String, Any}("tools" => [])
+            (mode == "limittools" || page < 1000) && (result["nextCursor"] = string(page))
+            reply(message["id"], result)
+        elseif mode == "loopcursor"
             reply(message["id"], Dict("tools" => [], "nextCursor" => "same"))
         elseif mode == "collisions"
             reply(message["id"], Dict("tools" => [Dict("name" => "a.b", "inputSchema" => Dict("type" => "object")), Dict("name" => "a_b", "inputSchema" => Dict("type" => "object"))]))
@@ -51,6 +57,20 @@ while !eof(stdin)
             reply(message["id"], Dict("tools" => [], "nextCursor" => nothing))
         elseif mode == "taskrequired"
             reply(message["id"], Dict("tools" => [Dict("name" => "long_task", "inputSchema" => Dict("type" => "object"), "execution" => Dict("taskSupport" => "required"))]))
+        elseif mode == "badtools"
+            reply(message["id"], Dict("tools" => "not an array"))
+        elseif mode == "baddefinition"
+            reply(message["id"], Dict("tools" => [Dict("name" => 1, "inputSchema" => Dict())], "nextCursor" => nothing))
+        elseif mode == "badschema"
+            reply(message["id"], Dict("tools" => [Dict("name" => "x", "inputSchema" => "bad")]))
+        elseif mode == "badexecution"
+            reply(message["id"], Dict("tools" => [Dict("name" => "x", "inputSchema" => Dict(), "execution" => 3)]))
+        elseif mode == "badsupport"
+            reply(message["id"], Dict("tools" => [Dict("name" => "x", "inputSchema" => Dict(), "execution" => Dict("taskSupport" => "future"))]))
+        elseif mode == "badtypesupport"
+            reply(message["id"], Dict("tools" => [Dict("name" => "x", "inputSchema" => Dict(), "execution" => Dict("taskSupport" => Dict()))]))
+        elseif mode == "baddescription"
+            reply(message["id"], Dict("tools" => [Dict("name" => "x", "inputSchema" => Dict(), "description" => 3)]))
         elseif isnothing(cursor)
             reply(message["id"], Dict("tools" => [Dict("name" => "alpha", "description" => "First", "inputSchema" => Dict("type" => "object", "properties" => Dict("value" => Dict("type" => "integer"))))], "nextCursor" => "opaque/+="))
         elseif cursor == "opaque/+="
@@ -96,6 +116,12 @@ while !eof(stdin)
                 [Dict("type" => "text", "text" => "before"), image, Dict("type" => "text", "text" => "after"), Dict("type" => "resource_link", "uri" => "file:///item", "name" => "item")]
             elseif name == "image_multiple"
                 [Dict("type" => "text", "text" => "before"), image, Dict("type" => "text", "text" => "between"), embedded, Dict("type" => "text", "text" => "after")]
+            elseif name == "image_webp"
+                data = base64encode(read(joinpath(@__DIR__, "fixtures", "static.webp")))
+                [Dict("type" => "resource", "resource" => Dict("uri" => "file:///image.webp", "mimeType" => "image/webp", "blob" => data))]
+            elseif name == "image_gif"
+                data = base64encode(read(joinpath(@__DIR__, "fixtures", "static.gif")))
+                [Dict("type" => "image", "mimeType" => "image/gif", "data" => data)]
             elseif name == "image_unsupported"
                 [Dict("type" => "image", "mimeType" => "image/gif", "data" => base64encode("GIF89a"))]
             elseif name == "image_embedded_unsupported"

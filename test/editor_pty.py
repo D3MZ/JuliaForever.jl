@@ -27,7 +27,7 @@ with tempfile.TemporaryDirectory(prefix="jf-editor-") as temporary:
     env.update(JF_SESSION_REQUESTS=str(requests), JF_SESSION_DIR=str(workspace / "sessions"), JF_PROVIDER="openai", OPENAI_MODEL="fixture", OPENAI_API_KEY="editor-test", TERM="xterm", PI_CODING_AGENT_DIR=str(workspace / "agent"))
     env.pop("JF_INSTRUCTIONS_DIR", None)
     env.pop("JF_SESSION_FAIL", None)
-    command = [sys.argv[3], "--startup-file=no", "--compiled-modules=existing", f"--project={root}", str(root / "test/session_cli_process.jl"), "--no-session"]
+    command = [sys.argv[3], "--startup-file=no", "--compiled-modules=existing", f"--project={root}", str(root / "test/session_cli_process.jl"), "--tui-mode", "regular", "--no-session"]
     process = subprocess.Popen(command, cwd=workspace, env=env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
     output = bytearray()
 

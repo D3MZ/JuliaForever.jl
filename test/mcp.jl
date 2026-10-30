@@ -7,6 +7,11 @@ const MCP = JuliaForever.MCP
     @test MCP.toolresponse(failure) === failure
     @test MCP.toolresponse(Dict("content" => Any[])) == Dict("content" => Any[])
     @test MCP.toolresponse(Dict("content" => "bad")) isa MCP.Failure
+    @test MCP.toolresponse(JSON3.read("{\"content\":[],\"isError\":false}")) isa AbstractDict
+    @test MCP.toolresponse(Dict("structuredContent" => nothing)) == Dict("structuredContent" => nothing)
+    for bad in (Dict(), Dict("content" => nothing), Dict("content" => missing, "structuredContent" => 1), Dict("content" => [], "isError" => nothing), Dict("content" => [], "isError" => 1))
+        @test MCP.toolresponse(bad) isa MCP.Failure
+    end
     @test MCP.cursorparams(nothing) == Dict()
     @test MCP.cursorparams("next") == Dict("cursor" => "next")
     blocks = Any[Dict("type" => "text", "text" => "ok"), Dict("type" => "text", "text" => 3), Dict("type" => "resource_link", "uri" => "file:///item"), false]
@@ -51,6 +56,12 @@ end
             @test MCP.send(client, Dict(), MCP.Closed()) isa MCP.Failure
             @test client.server["serverInfo"]["name"] == "mock"
             @test client.server["capabilities"]["tools"]["listChanged"]
+            malformed = (nothing, [], Dict("jsonrpc" => "1.0"), Dict("jsonrpc" => "2.0", "method" => 1), Dict("jsonrpc" => "2.0", "method" => "ping", "id" => true), Dict("jsonrpc" => "2.0", "id" => true, "result" => nothing), Dict("jsonrpc" => "2.0", "id" => 1.5, "result" => nothing), Dict("jsonrpc" => "2.0", "id" => 1), Dict("jsonrpc" => "2.0", "id" => 1, "result" => nothing, "error" => nothing))
+            @test all(message -> !MCP.received(client, message), malformed)
+            for detail in (nothing, Dict("code" => true, "message" => "bad"), Dict("code" => 1, "message" => 2))
+                failure = MCP.responsevalue(Dict("error" => detail))
+                @test failure isa MCP.Failure && failure.kind == :protocol
+            end
             tools = MCP.tools(client)
             @test tools isa Vector{MCP.RemoteTool}
             if tools isa Vector{MCP.RemoteTool}
@@ -74,8 +85,8 @@ end
             end
             failure = MCP.call(client, "protocol_error", Dict())
             @test failure isa MCP.Failure && failure.kind == :rpc && failure.data["code"] == -32602
-            failure = MCP.call(client, "invalid_error", Dict())
-            @test failure isa MCP.Failure && failure.kind == :protocol
+            failure = MCP.call(client, "invalid_error", Dict(); timeout=1)
+            @test failure isa MCP.Failure && failure.kind == :timeout
             @test MCP.call(client, "invalid_result", Dict()) isa MCP.Failure
             failed = MCP.RemoteTool(client, "tool_error", "failed", "", Dict("type" => "object"))
             result = execute(failed, Dict())
@@ -105,6 +116,10 @@ end
         end
         @test MCP.connect(mcpserver("badversion", marker); timeout=10, grace=0.2) isa MCP.Failure
         @test MCP.connect(mcpserver("badcap", marker); timeout=10, grace=0.2) isa MCP.Failure
+        for mode in ("badcaps", "badinfo", "badname", "badserverversion")
+            failure = MCP.connect(mcpserver(mode, marker); timeout=10, grace=0.2)
+            @test failure isa MCP.Failure && failure.kind == :protocol
+        end
         unavailable = MCP.connect(mcpserver("no_tools", marker); timeout=10, grace=0.2)
         @test unavailable isa MCP.Client
         if unavailable isa MCP.Client
@@ -137,6 +152,28 @@ end
             @test failure isa MCP.Failure && failure.kind == :capability && occursin("long_task", failure.message)
             close(required)
         end
+        for (mode, message) in (("badtools", "Invalid MCP tools/list result"), ("baddefinition", "Invalid MCP tool definition"), ("badschema", "Invalid MCP tool definition"), ("badexecution", "Invalid MCP tool execution metadata"), ("badsupport", "Invalid MCP task support"), ("badtypesupport", "Invalid MCP task support"), ("baddescription", "Invalid MCP tool description"))
+            invalid = MCP.connect(mcpserver(mode, marker); timeout=10, grace=0.2)
+            @test invalid isa MCP.Client
+            if invalid isa MCP.Client
+                failure = MCP.tools(invalid)
+                @test failure isa MCP.Failure && failure.kind == :protocol && failure.message == message
+                close(invalid)
+            end
+        end
+        for mode in ("lasttoolpage", "limittools")
+            paged = MCP.connect(mcpserver(mode, marker); timeout=10, grace=0.2)
+            @test paged isa MCP.Client
+            if paged isa MCP.Client
+                result = MCP.tools(paged)
+                if mode == "lasttoolpage"
+                    @test result == MCP.RemoteTool[]
+                else
+                    @test result isa MCP.Failure && result.kind == :protocol && result.message == "MCP tools/list exceeded 1000 pages"
+                end
+                close(paged)
+            end
+        end
         incomplete = MCP.connect(mcpserver("incomplete", marker); timeout=10, grace=0.2)
         @test incomplete isa MCP.Client
         if incomplete isa MCP.Client
@@ -157,7 +194,7 @@ end
         broken = MCP.connect(mcpserver("malformed", marker); timeout=10, grace=0.2)
         @test broken isa MCP.Client
         if broken isa MCP.Client
-            @test MCP.call(broken, "anything", Dict()) isa MCP.Failure
+            @test MCP.call(broken, "anything", Dict(); timeout=1) isa MCP.Failure
             close(broken)
             @test process_exited(broken.process)
         end

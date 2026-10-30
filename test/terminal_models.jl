@@ -3,8 +3,9 @@ using Test, JuliaForever, HTTP, JSON3
 function models_process(base, workspace, args; provider="openrouter", openai_model="env-openai", router_model="env/router", openai_key="synthetic-openai-secret", router_key="synthetic-router-secret", anthropic_model="env-anthropic", google_model="env-google", input="")
     project = dirname(@__DIR__)
     cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever $args`; dir=workspace)
-    cmd = addenv(cmd, "JF_PROVIDER" => provider, "OPENAI_BASE_URL" => "$base/openai", "OPENAI_MODEL" => openai_model, "OPENAI_API_KEY" => openai_key, "OPENROUTER_BASE_URL" => "$base/router", "OPENROUTER_MODEL" => router_model, "OPENROUTER_API_KEY" => router_key, "ANTHROPIC_BASE_URL" => "$base/anthropic", "ANTHROPIC_MODEL" => anthropic_model, "ANTHROPIC_API_KEY" => "synthetic-anthropic-secret", "GEMINI_BASE_URL" => "$base/google", "GEMINI_MODEL" => google_model, "GEMINI_API_KEY" => "synthetic-google-secret", "JF_SESSION_DIR" => joinpath(workspace, "sessions"), "JF_INSTRUCTIONS_DIR" => workspace, "JF_TEST_PLUGIN" => nothing, "JF_TEST_EVENTS" => nothing)
+    cmd = addenv(cmd, "HOME" => workspace, "PI_CODING_AGENT_DIR" => joinpath(workspace, "pi-agent"), "JF_PROVIDER" => provider, "OPENAI_BASE_URL" => "$base/openai", "OPENAI_MODEL" => openai_model, "OPENAI_API_KEY" => openai_key, "OPENROUTER_BASE_URL" => "$base/router", "OPENROUTER_MODEL" => router_model, "OPENROUTER_API_KEY" => router_key, "ANTHROPIC_BASE_URL" => "$base/anthropic", "ANTHROPIC_MODEL" => anthropic_model, "ANTHROPIC_API_KEY" => "synthetic-anthropic-secret", "GEMINI_BASE_URL" => "$base/google", "GEMINI_MODEL" => google_model, "GEMINI_API_KEY" => "synthetic-google-secret", "JF_SESSION_DIR" => joinpath(workspace, "sessions"), "JF_INSTRUCTIONS_DIR" => workspace, "JF_TEST_PLUGIN" => nothing, "JF_TEST_EVENTS" => nothing)
     mktempdir() do dir
+        cmd = addenv(cmd, "JF_OPENROUTER_DIR" => joinpath(dir, "router"))
         stdinpath, stdoutpath, stderrpath = joinpath.((dir,), ("stdin", "stdout", "stderr"))
         write(stdinpath, input)
         process = run(pipeline(ignorestatus(cmd); stdin=stdinpath, stdout=stdoutpath, stderr=stderrpath))
@@ -101,6 +102,12 @@ end
             for secret in ("synthetic-code", "synthetic-login-secret", "synthetic-openai-secret", "synthetic-router-secret", requests[end-1].body.code_verifier)
                 @test !occursin(secret, login.output * login.diagnostics)
             end
+
+            jsonlogin = models_process(base, workspace, ["--mode", "json", "--login-openrouter", "--model", "login/model", "hello"]; provider="openai", router_model=nothing, router_key=nothing, input="synthetic-code\n")
+            @test jsonlogin.status == 0
+            @test JSON3.read.(split(chomp(jsonlogin.output), '\n'))[1].type == "session"
+            @test occursin("Open this URL", jsonlogin.diagnostics)
+            @test !occursin("synthetic-code", jsonlogin.output * jsonlogin.diagnostics)
 
             for (code, status, diagnostic) in (("synthetic-empty", 2, "did not return an API key"), ("synthetic-malformed", 1, "invalid provider response"), ("synthetic-http", 1, "HTTP 401"))
                 before = length(requests)

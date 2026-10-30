@@ -30,42 +30,34 @@ valuetype(::Type{Dict}, type::Type) = Dict{String, type}
 packvalue(x, seen=IdDict()) = Rejected(:unsupported_value)
 packvalue(x::Union{Nothing, Bool, Int, Float64, String}, seen=IdDict()) = value(x, seen)
 
-function packvalue(xs::Vector{T}, seen=IdDict()) where T
-    code = typecode(T)
-    code isa Rejected && return code
+packvalue(xs::Vector{T}, seen=IdDict()) where T = packvalue("vector", xs, seen, typecode(T))
+packvalue(xs::Dict{String, T}, seen=IdDict()) where T = packvalue("dict", xs, seen, typecode(T))
+packvalue(kind, xs, seen, rejected::Rejected) = rejected
+
+function packvalue(kind, xs, seen, code)
     haskey(seen, xs) && return Rejected(:unsupported_value)
     seen[xs] = nothing
     try
-        items = Any[]
-        for x in xs
-            item = packvalue(x, seen)
-            item isa Rejected && return item
-            push!(items, item)
-        end
-        Dict("kind" => "vector", "type" => code, "items" => items)
+        items = foldl((result, item) -> packvalueitem(result, item, seen), xs; init=packitems(xs))
+        packedvalues(kind, code, items)
     finally
         delete!(seen, xs)
     end
 end
 
-function packvalue(xs::Dict{String, T}, seen=IdDict()) where T
-    code = typecode(T)
-    code isa Rejected && return code
-    haskey(seen, xs) && return Rejected(:unsupported_value)
-    seen[xs] = nothing
-    try
-        items = Dict{String, Any}()
-        for (key, x) in xs
-            isvalid(key) || return Rejected(:unsupported_value)
-            item = packvalue(x, seen)
-            item isa Rejected && return item
-            items[key] = item
-        end
-        Dict("kind" => "dict", "type" => code, "items" => items)
-    finally
-        delete!(seen, xs)
-    end
+packitems(::Vector) = Any[]
+packitems(::Dict) = Dict{String, Any}()
+packvalueitem(rejected::Rejected, item, seen) = rejected
+packvalueitem(items::Vector, item, seen) = packed(items, packvalue(item, seen))
+function packvalueitem(items::Dict, pair::Pair, seen)
+    key, item = pair
+    isvalid(key) || return Rejected(:unsupported_value)
+    packed(items, key, packvalue(item, seen))
 end
+packed(items::Dict, key, rejected::Rejected) = rejected
+packed(items::Dict, key, item) = (items[key] = item; items)
+packedvalues(kind, code, rejected::Rejected) = rejected
+packedvalues(kind, code, items) = Dict("kind" => kind, "type" => code, "items" => items)
 
 unvalue(x::Union{Nothing, Bool, Int, Float64, String}) = value(x, IdDict())
 unvalue(x) = Rejected(:invalid_record)
@@ -75,28 +67,25 @@ unvalue(x::Dict, rejected::Rejected) = rejected
 unvalue(x::Dict, type::Type) = unvalue(get(containertypes, x["kind"], nothing), get(x, "items", nothing), type)
 unvalue(kind, items, type) = Rejected(:invalid_record)
 
-function unvalue(::Type{Vector}, items::Vector, type::Type)
-    result = type[]
-    for item in items
-        item = unvalue(item)
-        item isa Rejected && return item
-        item isa type || return Rejected(:invalid_record)
-        push!(result, item)
-    end
-    result
-end
+unvalue(::Type{Vector}, items::Vector, type::Type) = foldl(unvalueitem, items; init=type[])
+unvalue(::Type{Dict}, items::Dict, type::Type) = foldl(unvalueitem, items; init=Dict{String, type}())
 
-function unvalue(::Type{Dict}, items::Dict, type::Type)
-    result = Dict{String, type}()
-    for (key, item) in items
-        key isa String && isvalid(key) || return Rejected(:invalid_record)
-        item = unvalue(item)
-        item isa Rejected && return item
-        item isa type || return Rejected(:invalid_record)
-        result[key] = item
-    end
-    result
+unvalueitem(rejected::Rejected, item) = rejected
+unvalueitem(items::Vector, item) = unvalued(items, unvalue(item))
+unvalueitem(items::Dict, pair::Pair) = unvaluekey(items, first(pair), last(pair))
+unvaluekey(items, key, item) = Rejected(:invalid_record)
+function unvaluekey(items, key::String, item)
+    isvalid(key) || return Rejected(:invalid_record)
+    unvalued(items, key, unvalue(item))
 end
+unvalued(items::Vector, rejected::Rejected) = rejected
+unvalued(items::Dict, key, rejected::Rejected) = rejected
+unvalued(items::Vector, item) = unvaluedtype(items, item)
+unvalued(items::Dict, key, item) = unvaluedtype(items, key, item)
+unvaluedtype(items::Vector, item) = Rejected(:invalid_record)
+unvaluedtype(items::Vector{T}, item::T) where T = push!(items, item)
+unvaluedtype(items::Dict, key, item) = Rejected(:invalid_record)
+unvaluedtype(items::Dict{String, T}, key, item::T) where T = (items[key] = item; items)
 
 rejection(result, field) = result
 rejection(::Nothing, field::Rejected) = field
@@ -120,9 +109,21 @@ packed(items::Vector, item) = push!(items, item)
 
 pack(x) = Rejected(:unsupported_value)
 pack(x::C.User) = node("user", x.content)
+pack(x::C.Summary) = node("summary", x.content)
+pack(x::C.SkillContext) = node("skill_context", x.content)
+pack(x::C.ImageUser) = node("user_images", x.content, packall(x.images))
 pack(x::C.RawMessage) = node("raw", packvalue(x.value))
+pack(x::C.BashMessage) = node("bash_message", x.command, x.output, x.exitcode, C.bashcancelled(x.status), C.bashtruncated(x.extent), x.file, x.timestamp, C.bashexcluded(x.context))
 pack(x::C.ToolCall) = node("tool_call", x.id, x.name, x.arguments, packvalue(x.metadata))
-pack(x::C.Assistant) = node("assistant", x.content, packall(x.calls), x.finish, x.done, packvalue(x.metadata))
+pack(x::C.Assistant) = pack(x, x.info)
+pack(x::C.Assistant, ::Nothing) = node("assistant", x.content, packall(x.calls), x.finish, x.done, packvalue(x.metadata))
+pack(x::C.Assistant, info::C.ResponseInfo) = node("assistant", x.content, packall(x.calls), x.finish, x.done, packvalue(x.metadata), pack(info))
+pack(x::C.ResponseInfo) = node("response_info", packusage(x.usage), x.api, x.provider, x.model, x.timestamp)
+packusage(::Nothing) = nothing
+packusage(x::Usage) = packusage(x, x.breakdown, x.cache_write_1h)
+packusage(x::Usage, ::Nothing, write) = iszero(write) ? node("usage", x.input, x.output, x.cache_read, x.cache_write, x.reasoning, x.total, x.cost) : node("usage", x.input, x.output, x.cache_read, x.cache_write, x.reasoning, x.total, x.cost, nothing, write)
+packusage(x::Usage, value::CostBreakdown, write) = node("usage", x.input, x.output, x.cache_read, x.cache_write, x.reasoning, x.total, x.cost, pack(value), write)
+pack(x::CostBreakdown) = node("cost_breakdown", x.input, x.output, x.cache_read, x.cache_write, x.reported)
 pack(x::C.ToolMessage) = pack(x, x.image)
 pack(x::C.ToolMessage, ::Nothing) = node("tool_message", x.id, x.content, x.iserror)
 pack(x::C.ToolMessage, image::C.Image) = node("tool_message", x.id, x.content, x.iserror, pack(image))
@@ -130,20 +131,46 @@ pack(x::C.ModelRequest) = node("model_request", packall(x.messages))
 pack(x::C.ToolRequest) = node("tool_request", pack(x.call))
 pack(x::C.SkipRequest) = node("skip_request", pack(x.call))
 pack(x::C.ModelReply) = node("model_reply", pack(x.message))
-pack(x::C.ToolReply) = pack(x, x.image)
-pack(x::C.ToolReply, ::Nothing) = node("tool_reply", x.text, x.iserror)
-pack(x::C.ToolReply, image::C.Image) = node("tool_reply", x.text, x.iserror, pack(image))
+pack(x::C.ToolReply) = packreply(x.result)
+packreply(result::ToolResult) = pack(result, result.image)
+pack(result::ToolResult, ::Nothing) = node("tool_reply", result.text, result.iserror)
+pack(result::ToolResult, image::C.Image) = node("tool_reply", result.text, result.iserror, pack(image))
+packreply(result::Terminate) = node("tool_terminate_reply", packreply(result.result))
+packreply(result::ToolDiscovery) = node("tool_discovery_reply", packreply(result.result), loaded(result))
+packreply(result::ToolLoaded) = node("tool_search_reply", result.text, loaded(result))
 pack(x::C.Image) = node("image", x.mime, x.data)
 pack(x::C.ModelFailure) = node("model_failure", x.reason)
 pack(x::C.Abandoned) = node("abandoned", x.reason)
 pack(x::C.Input) = node("input", x.revision, x.text)
+pack(x::C.ImageInput) = node("input_images", x.revision, x.text, packall(x.images))
 pack(x::C.Steer) = node("steer", x.revision, x.text)
 pack(x::C.Followup) = node("followup", x.revision, x.text)
+pack(x::C.ImageSteer) = node("steer_images", x.revision, x.text, packall(x.images))
+pack(x::C.ImageFollowup) = node("followup_images", x.revision, x.text, packall(x.images))
+pack(x::C.SteeringMode) = node("steering_mode", x.revision, C.queuecode(x.mode))
+pack(x::C.FollowupMode) = node("followup_mode", x.revision, C.queuecode(x.mode))
 pack(x::C.Dequeue) = node("dequeue", x.revision)
+pack(x::C.SessionParent) = node("session_parent", x.revision, x.path)
 pack(x::C.SessionName) = node("session_name", x.revision, x.name)
+pack(x::C.BashOutput) = node("bash_output", x.revision, pack(x.message))
+pack(x::C.ModelEntry) = node("entry_model", x.provider, x.model)
+pack(x::C.ThinkingEntry) = node("entry_thinking", x.level)
+pack(x::C.MessageEntry) = node("entry_message", packvalue(x.message))
+pack(x::C.NameEntry) = node("entry_name", x.name)
+pack(x::C.CompactionEntry) = pack(x, x.info)
+pack(x::C.CompactionEntry, ::Nothing) = node("entry_compaction", x.summary, x.firstkept, x.tokens_before, x.estimated_after)
+pack(x::C.CompactionEntry, info::C.ResponseInfo) = node("entry_compaction", x.summary, x.firstkept, x.tokens_before, x.estimated_after, pack(info))
+pack(x::C.SessionRecord) = node("session_record", x.revision, x.id, x.parent, x.timestamp, pack(x.entry))
+pack(x::C.ModelSelection) = node("model_selection", x.revision, pack(x.model), pack(x.thinking))
+pack(x::C.ContinueQueued) = node("continue_queued", x.revision)
+pack(x::C.Continue) = node("continue", x.revision)
 pack(x::C.Advance) = node("advance", x.revision)
 pack(x::C.Cancel) = node("cancel", x.revision)
-pack(x::C.History) = node("history", x.revision, packall(x.messages))
+pack(x::C.History) = pack(x, x.compaction)
+pack(x::C.History, ::Nothing) = node("history", x.revision, packall(x.messages))
+pack(x::C.History, info::C.ResponseInfo) = node("history", x.revision, packall(x.messages), pack(info))
+pack(x::C.SystemUpdate) = node("system_update", x.revision, packall(x.messages))
+pack(x::C.CompactionUsage) = node("compaction_usage", x.revision, pack(x.info))
 pack(x::C.Interrupt) = node("interrupt", x.revision, x.reason)
 pack(x::C.Abandon) = node("abandon", x.revision, x.reason)
 pack(x::K.Call) = node("call", x.name, packvalue(x.input))
@@ -153,24 +180,21 @@ pack(x::K.Plan) = node("plan", x.revision, x.id, pack(x.effect))
 pack(x::K.Observe) = node("observe", x.revision, x.id, pack(x.observation))
 pack(x::K.Finish) = node("finish", x.revision)
 
-function unpackall(xs, type)
-    xs isa Vector || return Rejected(:invalid_record)
-    items = type[]
-    for x in xs
-        item = unpack(x)
-        item isa type || return Rejected(:invalid_record)
-        push!(items, item)
-    end
-    items
-end
+unpackall(xs, type) = Rejected(:invalid_record)
+unpackall(xs::Vector, type) = foldl(unpackitem, xs; init=type[])
+unpackitem(rejected::Rejected, item) = rejected
+unpackitem(items::Vector, item) = unpacked(items, unpack(item))
+unpacked(items::Vector, item) = Rejected(:invalid_record)
+unpacked(items::Vector{T}, item::T) where T = push!(items, item)
 
 const nodetypes = Dict(
-    "user" => C.User, "raw" => C.RawMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant,
-    "tool_message" => C.ToolMessage, "model_request" => C.ModelRequest, "tool_request" => C.ToolRequest,
+    "user" => C.User, "user_images" => C.ImageUser, "summary" => C.Summary, "skill_context" => C.SkillContext, "raw" => C.RawMessage, "bash_message" => C.BashMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant, "response_info" => C.ResponseInfo, "usage" => Usage, "cost_breakdown" => CostBreakdown,
+    "tool_terminate_reply" => Terminate, "tool_message" => C.ToolMessage, "model_request" => C.ModelRequest, "tool_request" => C.ToolRequest,
     "skip_request" => C.SkipRequest, "model_reply" => C.ModelReply, "tool_reply" => C.ToolReply,
-    "model_failure" => C.ModelFailure, "abandoned" => C.Abandoned, "input" => C.Input, "steer" => C.Steer,
-    "followup" => C.Followup, "dequeue" => C.Dequeue, "session_name" => C.SessionName, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History,
-    "interrupt" => C.Interrupt, "abandon" => C.Abandon, "call" => K.Call, "return" => K.Return,
+    "tool_search_reply" => ToolLoaded, "tool_discovery_reply" => ToolDiscovery,
+    "model_failure" => C.ModelFailure, "abandoned" => C.Abandoned, "input" => C.Input, "input_images" => C.ImageInput, "steer" => C.Steer,
+    "followup" => C.Followup, "steer_images" => C.ImageSteer, "followup_images" => C.ImageFollowup, "steering_mode" => C.SteeringMode, "followup_mode" => C.FollowupMode, "dequeue" => C.Dequeue, "session_parent" => C.SessionParent, "session_name" => C.SessionName, "bash_output" => C.BashOutput, "entry_model" => C.ModelEntry, "entry_thinking" => C.ThinkingEntry, "entry_message" => C.MessageEntry, "entry_name" => C.NameEntry, "session_record" => C.SessionRecord, "model_selection" => C.ModelSelection, "continue_queued" => C.ContinueQueued, "continue" => C.Continue, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History, "compaction_usage" => C.CompactionUsage,
+    "entry_compaction" => C.CompactionEntry, "system_update" => C.SystemUpdate, "interrupt" => C.Interrupt, "abandon" => C.Abandon, "call" => K.Call, "return" => K.Return,
     "fail" => K.Fail, "plan" => K.Plan, "observe" => K.Observe, "finish" => K.Finish, "image" => C.Image,
 )
 
@@ -178,9 +202,18 @@ unpack(x) = Rejected(:invalid_record)
 unpack(x::Dict) = unpack(get(nodetypes, x["kind"], nothing), x["fields"])
 unpack(type, fields) = Rejected(:invalid_record)
 unpack(::Type{C.User}, f::Vector) = C.User(f[1])
+unpack(::Type{C.Summary}, f::Vector) = C.Summary(f[1])
+unpack(::Type{C.SkillContext}, f::Vector) = C.SkillContext(f[1])
+unpack(::Type{C.ImageUser}, f::Vector) = C.ImageUser(f[1], unpackall(f[2], C.Image))
 unpack(::Type{C.RawMessage}, f::Vector) = C.RawMessage(unvalue(f[1]))
+unpack(::Type{C.BashMessage}, f::Vector) = C.BashMessage(f[1], f[2], f[3], f[4], f[5], f[6], f[7], C.bashcontext(f[8]))
 unpack(::Type{C.ToolCall}, f::Vector) = C.ToolCall(f[1], f[2], f[3], unvalue(f[4]))
-unpack(::Type{C.Assistant}, f::Vector) = C.Assistant(f[1], unpackall(f[2], C.ToolCall), f[3], f[4], unvalue(f[5]))
+unpack(::Type{C.Assistant}, f::Vector) = C.Assistant(f[1], unpackall(f[2], C.ToolCall), f[3], f[4]; metadata=unvalue(f[5]), info=unpackinfo(get(f, 6, nothing)))
+unpackinfo(::Nothing) = nothing
+unpackinfo(value) = unpack(value)
+unpack(::Type{C.ResponseInfo}, f::Vector) = C.ResponseInfo(unpackinfo(f[1]), f[2], f[3], f[4], f[5])
+unpack(::Type{Usage}, f::Vector) = Usage(f[1], f[2], f[3], f[4], f[5], f[6], f[7], unpackinfo(get(f, 8, nothing)), get(f, 9, 0))
+unpack(::Type{CostBreakdown}, f::Vector) = CostBreakdown(f[1], f[2], f[3], f[4], f[5])
 unpackimage(::Nothing) = nothing
 unpackimage(value) = unpack(value)
 unpack(::Type{C.ToolMessage}, f::Vector) = C.ToolMessage(f[1], f[2], f[3], unpackimage(get(f, 4, nothing)))
@@ -190,16 +223,37 @@ unpack(::Type{C.SkipRequest}, f::Vector) = C.SkipRequest(unpack(f[1]))
 unpack(::Type{C.ModelReply}, f::Vector) = C.ModelReply(unpack(f[1]))
 unpack(::Type{C.ToolReply}, f::Vector) = C.ToolReply(f[1], f[2], unpackimage(get(f, 3, nothing)))
 unpack(::Type{C.Image}, f::Vector) = C.Image(f[1], f[2])
+unpack(::Type{Terminate}, f::Vector) = C.ToolReply(Terminate(unpack(f[1]).result))
+unpack(::Type{ToolDiscovery}, f::Vector) = C.ToolReply(ToolDiscovery(unpack(f[1]).result, String[f[2]...]))
+unpack(::Type{ToolLoaded}, f::Vector) = C.ToolReply(ToolLoaded(f[1], String[f[2]...]))
 unpack(::Type{C.ModelFailure}, f::Vector) = C.ModelFailure(f[1])
 unpack(::Type{C.Abandoned}, f::Vector) = C.Abandoned(f[1])
 unpack(::Type{C.Input}, f::Vector) = C.Input(f[1], f[2])
+unpack(::Type{C.ImageInput}, f::Vector) = C.ImageInput(f[1], f[2], unpackall(f[3], C.Image))
 unpack(::Type{C.Steer}, f::Vector) = C.Steer(f[1], f[2])
 unpack(::Type{C.Followup}, f::Vector) = C.Followup(f[1], f[2])
+unpack(::Type{C.ImageSteer}, f::Vector) = C.ImageSteer(f[1], f[2], unpackall(f[3], C.Image))
+unpack(::Type{C.ImageFollowup}, f::Vector) = C.ImageFollowup(f[1], f[2], unpackall(f[3], C.Image))
+unpack(::Type{C.SteeringMode}, f::Vector) = C.SteeringMode(f[1], C.queuetypes[f[2]]())
+unpack(::Type{C.FollowupMode}, f::Vector) = C.FollowupMode(f[1], C.queuetypes[f[2]]())
 unpack(::Type{C.Dequeue}, f::Vector) = C.Dequeue(f[1])
+unpack(::Type{C.SessionParent}, f::Vector) = C.SessionParent(f[1], f[2])
 unpack(::Type{C.SessionName}, f::Vector) = C.SessionName(f[1], f[2])
+unpack(::Type{C.BashOutput}, f::Vector) = C.BashOutput(f[1], unpack(f[2]))
+unpack(::Type{C.ModelEntry}, f::Vector) = C.ModelEntry(f[1], f[2])
+unpack(::Type{C.ThinkingEntry}, f::Vector) = C.ThinkingEntry(f[1])
+unpack(::Type{C.MessageEntry}, f::Vector) = C.MessageEntry(unvalue(f[1]))
+unpack(::Type{C.NameEntry}, f::Vector) = C.NameEntry(f[1])
+unpack(::Type{C.CompactionEntry}, f::Vector) = C.CompactionEntry(f[1], f[2], f[3], f[4], unpackinfo(get(f, 5, nothing)))
+unpack(::Type{C.SessionRecord}, f::Vector) = C.SessionRecord(f[1], f[2], f[3], f[4], unpack(f[5]))
+unpack(::Type{C.ModelSelection}, f::Vector) = C.ModelSelection(f[1], unpack(f[2]), unpack(f[3]))
+unpack(::Type{C.ContinueQueued}, f::Vector) = C.ContinueQueued(f[1])
+unpack(::Type{C.Continue}, f::Vector) = C.Continue(f[1])
 unpack(::Type{C.Advance}, f::Vector) = C.Advance(f[1])
 unpack(::Type{C.Cancel}, f::Vector) = C.Cancel(f[1])
-unpack(::Type{C.History}, f::Vector) = C.History(f[1], unpackall(f[2], C.Message))
+unpack(::Type{C.History}, f::Vector) = C.History(f[1], unpackall(f[2], C.Message), unpackinfo(get(f, 3, nothing)))
+unpack(::Type{C.SystemUpdate}, f::Vector) = C.SystemUpdate(f[1], unpackall(f[2], C.Message))
+unpack(::Type{C.CompactionUsage}, f::Vector) = C.CompactionUsage(f[1], unpack(f[2]))
 unpack(::Type{C.Interrupt}, f::Vector) = C.Interrupt(f[1], f[2])
 unpack(::Type{C.Abandon}, f::Vector) = C.Abandon(f[1], f[2])
 unpack(::Type{K.Call}, f::Vector) = K.Call(f[1], unvalue(f[2]))
@@ -213,33 +267,43 @@ encode(event::K.Event) = encoded(pack(event))
 encoded(rejected::Rejected) = rejected
 encoded(data) = Dict("format" => "JuliaForever.AgentEvent/1", "event" => data)
 
-function decode_event(record)
+decode_event(record) = Rejected(:invalid_record)
+function decode_event(record::Dict)
     try
-        record isa Dict && get(record, "format", nothing) == "JuliaForever.AgentEvent/1" || return Rejected(:invalid_record)
-        event = unpack(record["event"])
-        event isa K.Event && isequal(pack(event), record["event"]) ? event : Rejected(:invalid_record)
+        get(record, "format", nothing) == "JuliaForever.AgentEvent/1" || return Rejected(:invalid_record)
+        decoded_event(record, unpack(record["event"]))
     catch
         Rejected(:invalid_record)
     end
 end
 
+decoded_event(record, event) = Rejected(:invalid_record)
+decoded_event(record, event::K.Event) = isequal(pack(event), record["event"]) ? event : Rejected(:invalid_record)
+
 function encode_initial(state::C.State)
-    state.revision == 0 && state.kernel.revision == 0 && state.phase == C.Ready || return Rejected(:unsupported_value)
-    encode_initial(state, packall(state.messages))
+    state.revision == 0 && state.kernel.revision == 0 || return Rejected(:unsupported_value)
+    encode_initial(state, state.phase)
 end
 
+encode_initial(state::C.State, phase::C.Phase) = Rejected(:unsupported_value)
+encode_initial(state::C.State, ::C.ReadyPhase) = encode_initial(state, packall(state.messages))
 encode_initial(state::C.State, rejected::Rejected) = rejected
 encode_initial(state::C.State, messages::Vector) = Dict("format" => "JuliaForever.Agent/1", "id" => state.kernel.id, "automatic" => state.automatic, "messages" => messages)
 
-function decode_initial(record)
+decode_initial(record) = Rejected(:invalid_record)
+function decode_initial(record::Dict)
     try
-        record isa Dict && get(record, "format", nothing) == "JuliaForever.Agent/1" || return Rejected(:invalid_record)
-        messages = unpackall(record["messages"], C.Message)
-        messages isa Rejected && return messages
-        record["automatic"] isa Bool || return Rejected(:invalid_record)
-        state = C.State(record["id"]; automatic=record["automatic"], messages)
-        isequal(encode_initial(state), record) ? state : Rejected(:invalid_record)
+        get(record, "format", nothing) == "JuliaForever.Agent/1" || return Rejected(:invalid_record)
+        decode_initial(record, unpackall(record["messages"], C.Message))
     catch
         Rejected(:invalid_record)
     end
+end
+
+decode_initial(record, rejected::Rejected) = rejected
+decode_initial(record, messages::Vector) = decode_initial(record, messages, record["automatic"])
+decode_initial(record, messages::Vector, automatic) = Rejected(:invalid_record)
+function decode_initial(record, messages::Vector, automatic::Bool)
+    state = C.State(record["id"]; automatic, messages)
+    isequal(encode_initial(state), record) ? state : Rejected(:invalid_record)
 end

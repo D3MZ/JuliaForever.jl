@@ -29,29 +29,85 @@ struct ShellCancelled <: ShellOutcome end
 struct ShellStopFailed <: ShellOutcome end
 struct Signalled end
 
+struct WindowsJob
+    handle::Ptr{Cvoid}
+    started::UInt64
+end
+WindowsJob(handle::Ptr{Cvoid}) = WindowsJob(handle, time_ns())
+
+struct ShellTail
+    text::String
+    notice::String
+    file::Union{Nothing, String}
+end
+
+struct ShellReport
+    tail::ShellTail
+    file::Union{Nothing, String}
+    outcome::Union{ShellComplete, ShellTimeout, ShellCancelled, ShellStopFailed}
+    exitcode::Union{Nothing, Int}
+end
+
+abstract type ShellEscape end
+struct ShellText <: ShellEscape end
+struct ShellEsc <: ShellEscape end
+struct ShellCSI <: ShellEscape end
+struct ShellOSC <: ShellEscape end
+struct ShellOSCEsc <: ShellEscape end
+abstract type ShellChunkEnd end
+struct ShellMore <: ShellChunkEnd end
+struct ShellFinal <: ShellChunkEnd end
+
+mutable struct ShellChunks{F}
+    callback::F
+    offset::Int
+    pending::Vector{UInt8}
+    escape::Union{ShellText, ShellEsc, ShellCSI, ShellOSC, ShellOSCEsc}
+    file::String
+    io::IOStream
+    report::Union{Nothing, ShellReport}
+end
+
+function ShellChunks(callback)
+    file, io = mktemp(; cleanup=false)
+    ShellChunks(callback, 0, UInt8[], ShellText(), file, io, nothing)
+end
+(chunks::ShellChunks)(::ShellUpdate) = nothing
+
+function closechunks!(chunks::ShellChunks)
+    close(chunks.io)
+    keepchunks!(chunks.file, chunks.report)
+    nothing
+end
+keepchunks!(file, ::Nothing) = rm(file; force=true)
+keepchunks!(file, report::ShellReport) = removeoutput(file, report.file)
+
 mutable struct ShellRun
     process::Base.Process
+    job::Union{Nothing, WindowsJob}
     lock::ReentrantLock
     outcome::Union{Nothing, ShellOutcome}
     done::Channel{ShellOutcome}
 end
 
-ShellRun(process::Base.Process) = ShellRun(process, ReentrantLock(), nothing, Channel{ShellOutcome}(1))
+ShellRun(process::Base.Process, job=nothing) = ShellRun(process, job, ReentrantLock(), nothing, Channel{ShellOutcome}(1))
 
 mutable struct ShellCancellation
     lock::ReentrantLock
-    cancelled::Bool
-    runs::Set{ShellRun}
+    runs::Union{Nothing, Set{ShellRun}}
 end
 
-ShellCancellation() = ShellCancellation(ReentrantLock(), false, Set{ShellRun}())
+ShellCancellation() = ShellCancellation(ReentrantLock(), Set{ShellRun}())
 
 cancel!(::Nothing) = nothing
+cancelruns!(::Nothing) = nothing
+cancelruns!(runs::Set{ShellRun}) = foreach(run -> signal!(run, ShellCancelled()), runs)
 
 function cancel!(cancel::ShellCancellation)
     lock(cancel.lock) do
-        cancel.cancelled = true
-        foreach(run -> signal!(run, ShellCancelled()), cancel.runs)
+        runs = cancel.runs
+        cancel.runs = nothing
+        cancelruns!(runs)
     end
     nothing
 end
@@ -111,12 +167,12 @@ function stop(process::Base.Process)
     end
 end
 
-stop(process::Base.Process, ::ShellComplete) = ShellComplete()
-
-function stop(process::Base.Process, requested::Union{ShellTimeout, ShellCancelled})
-    result = Sys.iswindows() ? ShellStopFailed() : stop(process)
+function stop(process::Base.Process, job, requested::Union{ShellTimeout, ShellCancelled})
+    result = stop(process, job)
     stop(requested, result)
 end
+stop(process::Base.Process, ::Nothing) = Sys.iswindows() ? ShellStopFailed() : stop(process)
+stop(process::Base.Process, job, ::ShellComplete) = ShellComplete()
 
 stop(requested::ShellOutcome, ::Signalled) = requested
 stop(requested::ShellOutcome, result::Union{ShellComplete, ShellStopFailed}) = result
@@ -130,7 +186,7 @@ end
 signal!(run::ShellRun, outcome::ShellOutcome, previous::ShellOutcome) = nothing
 
 function signal!(run::ShellRun, outcome::ShellOutcome, ::Nothing)
-    result = stop(run.process, outcome)
+    result = stop(run.process, run.job, outcome)
     run.outcome = result
     put!(run.done, result)
     nothing
@@ -139,17 +195,20 @@ end
 cancellation(::Nothing) = ShellCancellation()
 cancellation(cancel::ShellCancellation) = cancel
 deadline(run::ShellRun, ::Nothing) = nothing
-deadline(run::ShellRun, timeout::Real) = Timer(_ -> signal!(run, ShellTimeout()), timeout)
+duration(::Nothing, timeout) = timeout
+duration(job::WindowsJob, timeout) = max(0.0, timeout - (time_ns() - job.started) / 1e9)
+deadline(run::ShellRun, timeout::Real) = Timer(_ -> signal!(run, ShellTimeout()), duration(run.job, timeout))
 waitfor(::Nothing, outcome::ShellOutcome) = nothing
 waitfor(task::Task, ::ShellStopFailed) = nothing
 waitfor(task::Task, outcome::ShellOutcome) = wait(task)
 cleanup!(::Nothing) = nothing
 cleanup!(timer::Timer) = close(timer)
-cleanup!(token::ShellCancellation, ::Nothing, watcher) = nothing
+removerun!(::Nothing, run) = nothing
+removerun!(runs::Set{ShellRun}, run) = delete!(runs, run)
 
 function cleanup!(token::ShellCancellation, run::ShellRun, watcher)
     lock(token.lock) do
-        delete!(token.runs, run)
+        removerun!(token.runs, run)
     end
     signal!(run, ShellCancelled())
     waitfor(watcher, run.outcome)
@@ -206,11 +265,53 @@ function sizeformat(bytes)
     "$(round(bytes / (1024 * 1024); digits=1))MB"
 end
 
-struct ShellTail
-    text::String
-    notice::String
-    file::Union{Nothing, String}
+struct ShellLines
+    lines::Vector{SubString{String}}
 end
+struct ShellBytes
+    lines::Vector{SubString{String}}
+end
+struct ShellFragment
+    line::SubString{String}
+end
+
+function selecttail(pieces)
+    selected = SubString{String}[]
+    used = 0
+    for piece in Iterators.reverse(pieces)
+        length(selected) == 2000 && return ShellLines(selected)
+        needed = ncodeunits(piece) + !isempty(selected)
+        used + needed > 51200 && return tailoverflow(selected, piece)
+        pushfirst!(selected, piece)
+        used += needed
+    end
+    ShellLines(selected)
+end
+
+function tailoverflow(selected, piece)
+    isempty(selected) || return ShellBytes(selected)
+    raw = collect(codeunits(piece))
+    start = max(1, length(raw) - 51200 + 1)
+    while start <= length(raw) && raw[start] & 0xc0 == 0x80
+        start += 1
+    end
+    ShellFragment(SubString(String(raw[start:end])))
+end
+
+tailstart(selection::ShellFragment, pieces, offset, preceding) = selection
+function tailstart(selection::Union{ShellLines, ShellBytes}, pieces, offset, preceding)
+    if offset > 0 && preceding != 0x0a && length(selection.lines) == length(pieces)
+        popfirst!(selection.lines)
+        return ShellBytes(selection.lines)
+    end
+    selection
+end
+tailtext(selection::Union{ShellLines, ShellBytes}) = join(selection.lines, '\n')
+tailtext(selection::ShellFragment) = String(selection.line)
+tailnotice(selection::ShellFragment, output, lines, lastsize, file) = "Showing last $(sizeformat(ncodeunits(output))) of line $lines (line is $(sizeformat(lastsize))). Full output: $file"
+tailnotice(selection::ShellLines, output, lines, lastsize, file) = tailnotice(selection.lines, lines, "", file)
+tailnotice(selection::ShellBytes, output, lines, lastsize, file) = tailnotice(selection.lines, lines, length(selection.lines) < 2000 ? " (50.0KB limit)" : "", file)
+tailnotice(selected, lines, limit, file) = "Showing lines $(lines - length(selected) + 1)-$lines of $lines$limit. Full output: $file"
 
 function tail(io, file, bytes, lines, lastsize)
     if bytes <= 51200 && lines <= 2000
@@ -223,56 +324,23 @@ function tail(io, file, bytes, lines, lastsize)
     data = read(io, bytes - offset)
     !isempty(data) && last(data) == 0x0a && pop!(data)
     pieces = split(String(data), '\n'; keepempty=true)
-    selected = SubString{String}[]
-    used = 0
-    partial = false
-    bybytes = false
-    for piece in Iterators.reverse(pieces)
-        length(selected) == 2000 && break
-        needed = ncodeunits(piece) + !isempty(selected)
-        if used + needed > 51200
-            bybytes = true
-            if isempty(selected)
-                raw = collect(codeunits(piece))
-                start = max(1, length(raw) - 51200 + 1)
-                while start <= length(raw) && raw[start] & 0xc0 == 0x80
-                    start += 1
-                end
-                pushfirst!(selected, SubString(String(raw[start:end])))
-                partial = true
-            end
-            break
-        end
-        pushfirst!(selected, piece)
-        used += needed
-    end
-    # The first fragment from a bounded read may start in the middle of an earlier line.
-    if offset > 0 && preceding != 0x0a && length(selected) == length(pieces) && !partial
-        popfirst!(selected)
-        bybytes = true
-    end
-    output = join(selected, '\n')
-    if partial
-        notice = "Showing last $(sizeformat(ncodeunits(output))) of line $lines (line is $(sizeformat(lastsize))). Full output: $file"
-    else
-        firstline = lines - length(selected) + 1
-        limit = bybytes && length(selected) < 2000 ? " (50.0KB limit)" : ""
-        notice = "Showing lines $firstline-$lines of $lines$limit. Full output: $file"
-    end
+    selection = tailstart(selecttail(pieces), pieces, offset, preceding)
+    output = tailtext(selection)
+    notice = tailnotice(selection, output, lines, lastsize, file)
     ShellTail(output, "\n\n[$notice]", file)
 end
 
-preserved(::Nothing) = false
-preserved(::String) = true
 remember!(saved, ::Nothing) = nothing
 remember!(saved, file::String) = (saved[] = file)
 removeoutput(file, ::Nothing) = rm(file; force=true)
 removeoutput(file, ::String) = nothing
+cleanupoutput(file, ::Nothing, saved) = removeoutput(file, saved)
+cleanupoutput(file, ::String, saved) = nothing
 
 function tail(io, file)
     result = tail(io, file, measure(io)...)
     result = bound(result, file, shelltext(result.text))
-    (result.text * result.notice, preserved(result.file))
+    (result.text * result.notice, result.file)
 end
 
 update(::Nothing, value) = nothing
@@ -353,6 +421,76 @@ function waitoutput(run::ShellRun, watcher, callback::F, file, saved) where {F}
     end
 end
 
+chunk!(chunks::ShellChunks, io) = chunk!(chunks, io, ShellMore())
+function chunk!(chunks::ShellChunks, io, ending::ShellChunkEnd)
+    seek(io, chunks.offset)
+    data = read(io)
+    chunks.offset += length(data)
+    append!(chunks.pending, data)
+    text = String(copy(chunks.pending))
+    ready = chunktext(text, ending)
+    consumed = chunkcount(text, ready, ending)
+    deleteat!(chunks.pending, 1:consumed)
+    cleaned = sanitize!(chunks, ready)
+    if !isempty(cleaned)
+        write(chunks.io, cleaned)
+        chunks.callback(cleaned)
+    end
+    nothing
+end
+chunktext(text, ::ShellMore) = live(text)
+chunktext(text, ::ShellFinal) = shelltext(text)
+chunkcount(text, ready, ::ShellFinal) = ncodeunits(text)
+chunkcount(text, ready, ::ShellMore) = ready == shelltext(text) ? ncodeunits(text) : lastindex(text) - 1
+
+function sanitize!(chunks::ShellChunks, text)
+    buffer = IOBuffer()
+    escape = chunks.escape
+    for char in text
+        escape = sanitize!(buffer, escape, char)
+    end
+    chunks.escape = escape
+    String(take!(buffer))
+end
+
+function sanitize!(io, ::ShellText, char)
+    char == '\e' && return ShellEsc()
+    (char == '\r' || '\x00' <= char <= '\x08' || '\x0b' <= char <= '\x0c' || '\x0e' <= char <= '\x1f' || '\ufff9' <= char <= '\ufffb') || print(io, char)
+    ShellText()
+end
+const shellescapes = Dict('[' => ShellCSI(), ']' => ShellOSC())
+sanitize!(io, ::ShellEsc, char) = get(shellescapes, char, ShellText())
+sanitize!(io, ::ShellCSI, char) = '@' <= char <= '~' ? ShellText() : ShellCSI()
+sanitize!(io, ::ShellOSC, char) = char == '\a' ? ShellText() : char == '\e' ? ShellOSCEsc() : ShellOSC()
+sanitize!(io, ::ShellOSCEsc, char) = char == '\\' ? ShellText() : ShellOSC()
+
+function waitoutput(run::ShellRun, watcher, chunks::ShellChunks, file, saved)
+    open(file) do io
+        while !isready(run.done)
+            chunk!(chunks, io)
+            sleep(0.1)
+        end
+        outcome = take!(run.done)
+        waitfor(watcher, outcome)
+        chunk!(chunks, io, ShellFinal())
+        outcome
+    end
+end
+
+finishreport!(callback, outcome, io, file, process) = nothing
+function finishreport!(chunks::ShellChunks, outcome, io, file, process)
+    flush(chunks.io)
+    snapshot = tail(chunks.io, chunks.file, measure(chunks.io)...)
+    snapshot = bound(snapshot, chunks.file, shelltext(snapshot.text))
+    retained = retainedfile(snapshot.file, chunks)
+    chunks.report = ShellReport(snapshot, retained, outcome, shellexit(outcome, process))
+    nothing
+end
+retainedfile(file::String, chunks) = file
+retainedfile(::Nothing, chunks) = chunks.offset > 51200 && filesize(chunks.io) > 0 ? chunks.file : nothing
+shellexit(::ShellOutcome, process) = nothing
+shellexit(::ShellComplete, process) = process.termsignal == 0 ? process.exitcode : 128 + process.termsignal
+
 function execute(tool::Union{Bash, PowerShell}, args; cancel=nothing, on_update=nothing)
     update(on_update, ShellUpdate("", nothing))
     timeout = get(args, :timeout, nothing)
@@ -366,15 +504,9 @@ function timeoutcheck(timeout)
     nothing
 end
 
-windowsupport(timeout, cancel) = Sys.iswindows() ? windowoptions(timeout, cancel) : nothing
-windowoptions(::Nothing, ::Nothing) = nothing
-windowoptions(::Nothing, cancel) = ToolFailure("Cancellation is not supported on Windows")
-windowoptions(timeout, cancel) = ToolFailure("Timeout is not supported on Windows")
-
 execute(tool::Union{Bash, PowerShell}, args, cancel, timeout, on_update, failure::ToolFailure) = failure
-execute(tool::Union{Bash, PowerShell}, args, cancel, timeout, on_update, ::Nothing) = shelloptions(tool, args, cancel, timeout, on_update, windowsupport(timeout, cancel))
-shelloptions(tool, args, cancel, timeout, on_update, failure::ToolFailure) = failure
-function shelloptions(tool, args, cancel, timeout, on_update, ::Nothing)
+execute(tool::Union{Bash, PowerShell}, args, cancel, timeout, on_update, ::Nothing) = shelloptions(tool, args, cancel, timeout, on_update)
+function shelloptions(tool, args, cancel, timeout, on_update)
     !isdir(tool.cwd) && return ToolFailure("Working directory does not exist: $(tool.cwd)\nCannot execute $(shellname(tool)) commands.")
     shell(tool, args, cancel, timeout, config(tool), on_update)
 end
@@ -382,57 +514,125 @@ end
 shell(tool::Bash, args, cancel, timeout, ::Nothing, on_update) = ToolFailure("No $(shellname(tool)) executable found.")
 shell(tool::PowerShell, args, cancel, timeout, ::Nothing, on_update) = ToolFailure(Sys.iswindows() ? "No $(shellname(tool)) executable found." : "The powershell tool is only available on Windows.")
 
-function shell(tool::Union{Bash, PowerShell}, args, cancel, timeout, settings::Tuple, on_update)
-    executable, arguments = settings
-    env = copy(ENV)
-    for key in ("PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL")
-        delete!(env, key)
+startshell!(::Nothing, command, io) = nothing
+function startshell!(runs::Set{ShellRun}, command, io)
+    process = run(pipeline(ignorestatus(command); stdin=devnull, stdout=io, stderr=io); wait=false)
+    shellrun = ShellRun(process)
+    push!(runs, shellrun)
+    shellrun
+end
+
+shellgate(tool::Union{Bash, PowerShell}, env, cancel, timeout, command) = nothing
+cleanupgate(::Nothing) = nothing
+cleanupgate(file::String) = rm(file; force=true)
+
+@static if Sys.iswindows()
+    include("system_windows.jl")
+else
+    shellcommand(tool::Union{Bash, PowerShell}, command, cancel, timeout, gate) = shellcommand(tool, command)
+    startshell!(token::ShellCancellation, command, io, cancel, timeout, gate) = lock(token.lock) do
+        startshell!(token.runs, command, io)
     end
-    command = Cmd(Cmd([executable; arguments; shellcommand(tool, args.command)]); dir=tool.cwd, detach=!Sys.iswindows(), env)
-    file, io = mktemp(; cleanup=false)
-    keep = false
-    saved = Ref{Union{Nothing, String}}(nothing)
-    token = cancellation(cancel)
-    shellrun = nothing
+end
+
+closejob(::Nothing) = nothing
+waitjob(outcome::ShellOutcome, ::Nothing) = outcome
+
+shellrun!(::Nothing, token, timeout, on_update, file, io, saved, keep) = ToolFailure("Command aborted")
+function shellrun!(shellrun::ShellRun, token, timeout, on_update, file, io, saved, keep)
     watcher = nothing
     timer = nothing
     try
-        shellrun = lock(token.lock) do
-            token.cancelled && return nothing
-            process = run(pipeline(ignorestatus(command); stdin=devnull, stdout=io, stderr=io); wait=false)
-            shellrun = ShellRun(process)
-            push!(token.runs, shellrun)
-            shellrun
-        end
-        isnothing(shellrun) && return ToolFailure("Command aborted")
         process = shellrun.process
         watcher = @async begin
             wait(process)
             signal!(shellrun, ShellComplete())
         end
         timer = deadline(shellrun, timeout)
-        outcome = waitoutput(shellrun, watcher, on_update, file, saved)
+        outcome = waitjob(waitoutput(shellrun, watcher, on_update, file, saved), shellrun.job)
         flush(io)
-        output, keep = tail(io, file)
+        finishreport!(on_update, outcome, io, file, process)
+        output, keep[] = tail(io, file)
         shellresult(outcome, output, timeout, process)
     finally
         cleanup!(timer)
-        cleanup!(token, shellrun, watcher)
-        close(io)
-        !keep && removeoutput(file, saved[])
+        try
+            cleanup!(token, shellrun, watcher)
+        finally
+            closejob(shellrun.job)
+        end
     end
 end
+
+function shell(tool::Union{Bash, PowerShell}, args, cancel, timeout, settings::Tuple, on_update)
+    env = copy(ENV)
+    for key in ("PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL")
+        delete!(env, key)
+    end
+    gate = shellgate(tool, env, cancel, timeout, args.command)
+    shell(tool, args, cancel, timeout, settings, on_update, env, gate)
+end
+
+shell(tool, args, cancel, timeout, settings, on_update, env, failure::ToolFailure) = failure
+function shell(tool, args, cancel, timeout, settings, on_update, env, gate)
+    executable, arguments = settings
+    try
+        command = Cmd(Cmd([executable; arguments; shellcommand(tool, args.command, cancel, timeout, gate)]); dir=tool.cwd, detach=!Sys.iswindows(), env)
+        file, io = mktemp(; cleanup=false)
+        keep = Ref{Union{Nothing, String}}(nothing)
+        saved = Ref{Union{Nothing, String}}(nothing)
+        token = cancellation(cancel)
+        try
+            shellrun = startshell!(token, command, io, cancel, timeout, gate)
+            shellrun!(shellrun, token, timeout, on_update, file, io, saved, keep)
+        finally
+            close(io)
+            cleanupoutput(file, keep[], saved[])
+        end
+    finally
+        cleanupgate(gate)
+    end
+end
+
+struct LimitedOutput
+    text::String
+end
+
+headtext(text::String) = text
+headtext(output::LimitedOutput) = output.text
+headnotice!(notices, ::String) = nothing
+headnotice!(notices, ::LimitedOutput) = push!(notices, "50.0KB limit reached")
 
 function head(lines)
     output = String[]
     bytes = 0
     for line in lines
         nextbytes = bytes + ncodeunits(line) + !isempty(output)
-        nextbytes > 51200 && return (join(output, '\n'), true)
+        nextbytes > 51200 && return LimitedOutput(join(output, '\n'))
         push!(output, line)
         bytes = nextbytes
     end
-    (join(output, '\n'), false)
+    join(output, '\n')
+end
+
+struct LimitedEntries
+    entries::Vector{String}
+end
+
+entrylist(entries::Vector{String}) = entries
+entrylist(entries::LimitedEntries) = entries.entries
+entrynotice!(notices, ::Vector{String}, limit) = nothing
+entrynotice!(notices, ::LimitedEntries, limit) = push!(notices, "$limit entries limit reached. Use limit=$(limit * 2) for more")
+
+function listentries(entries, directory, limit)
+    results = String[]
+    for entry in entries
+        length(results) >= limit && return LimitedEntries(results)
+        target = joinpath(directory, entry)
+        ispath(target) || continue
+        push!(results, entry * (isdir(target) ? "/" : ""))
+    end
+    results
 end
 
 function execute(tool::Ls, args)
@@ -441,22 +641,14 @@ function execute(tool::Ls, args)
     !isdir(directory) && return ToolFailure("Not a directory: $directory")
     entries = sort!(readdir(directory); by=lowercase)
     limit = get(args, :limit, 500)
-    results = String[]
-    reached = false
-    for entry in entries
-        if length(results) >= limit
-            reached = true
-            break
-        end
-        target = joinpath(directory, entry)
-        ispath(target) || continue
-        push!(results, entry * (isdir(target) ? "/" : ""))
-    end
+    result = listentries(entries, directory, limit)
+    results = entrylist(result)
     isempty(results) && return ToolResult("(empty directory)")
-    output, truncated = head(results)
+    bounded = head(results)
     notices = String[]
-    reached && push!(notices, "$limit entries limit reached. Use limit=$(limit * 2) for more")
-    truncated && push!(notices, "50.0KB limit reached")
+    entrynotice!(notices, result, limit)
+    headnotice!(notices, bounded)
+    output = headtext(bounded)
     !isempty(notices) && (output *= "\n\n[$(join(notices, ". "))]")
     ToolResult(output)
 end

@@ -150,6 +150,11 @@ end
         result = open(D.Store, path)
         @test result isa D.Rejected && result.reason == :corrupt_log
         @test read(path) == corrupt
+        write(path, good)
+        restored = open(D.Store, path)
+        @test restored isa D.Store
+        @test D.revision(restored) == 1
+        close(restored)
 
         for (seq, id) in ((true, 1), (1, true))
             path = joinpath(dir, "invalid-$seq-$id.jsonl")

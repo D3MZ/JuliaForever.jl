@@ -55,6 +55,15 @@ end
     @test isequal(K.Return(first), K.Return(second))
     @test !isequal(K.Return(first), K.Return(different))
 
+    firstdict = Dict{Any, Any}("value" => true)
+    seconddict = Dict{Any, Any}("value" => true)
+    differentdict = Dict{Any, Any}("value" => 1)
+    firstdict["self"] = firstdict
+    seconddict["self"] = seconddict
+    differentdict["self"] = differentdict
+    @test isequal(K.Return(firstdict), K.Return(seconddict))
+    @test !isequal(K.Return(firstdict), K.Return(differentdict))
+
     planned = K.step(K.State("strict"), K.Plan(0, "id", Probe("work")))
     observed = K.step(planned.state, K.Observe(1, "id", original))
     @test K.step(observed.state, K.Observe(1, "id", duplicate)) isa K.Duplicate

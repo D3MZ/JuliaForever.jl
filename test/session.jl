@@ -4,6 +4,7 @@ using JSON3
     S = JuliaForever.Sessions
     session = S.Session(; cwd=pwd())
     @test S.header(session)["version"] == 3
+    @test S.Session(; path=SubString("relative.jsonl", 1)).file == abspath("relative.jsonl")
     @test S.leaf(session) === nothing
     @test isempty(S.branch(session))
 
@@ -13,7 +14,7 @@ using JSON3
     question["content"] = "mutated"
     answer = S.record!(session, Dict("role" => "assistant", "content" => [Dict("type" => "text", "text" => "answer")], "timestamp" => 2))
     other = S.record!(session, Dict("role" => "user", "content" => "abandoned", "timestamp" => 3))
-    @test S.branch!(session, first)
+    @test S.branch!(session, SubString(first, 1))
     branch = S.record!(session, Dict("role" => "user", "content" => "new direction", "timestamp" => 4))
     @test [entry["id"] for entry in S.branch(session)] == [setup, first, branch]
     @test [entry["id"] for entry in S.branch(session, other)] == [setup, first, answer, other]
@@ -92,5 +93,35 @@ end
         write(corrupt, text * "{broken\n")
         @test open(S.Session, corrupt) == S.Rejected(:invalid_session)
         @test read(corrupt, String) == text * "{broken\n"
+    end
+end
+
+@testset "session row validation and branch boundaries" begin
+    S = JuliaForever.Sessions
+    mktempdir() do dir
+        file = joinpath(dir, "rows.jsonl")
+        header = Dict("type" => "session", "version" => 3, "id" => "session", "timestamp" => "2026", "cwd" => dir)
+        row = Dict("type" => "message", "id" => "one", "parentId" => nothing, "timestamp" => "2026")
+        invalid = [
+            (merge(header, Dict("type" => false)), [row]),
+            (merge(header, Dict("id" => 1)), [row]),
+            (header, [merge(row, Dict("type" => true))]),
+            (header, [merge(row, Dict("id" => nothing))]),
+            (header, [row, row]),
+            (header, [delete!(copy(row), "parentId")]),
+            (header, [merge(row, Dict("parentId" => false))]),
+            (header, [merge(row, Dict("timestamp" => 1))]),
+        ]
+        for (head, rows) in invalid
+            text = join(JSON3.write.([head; rows]), "\n") * "\n"
+            write(file, text)
+            @test open(S.Session, file) == S.Rejected(:invalid_session)
+            @test read(file, String) == text
+        end
+        text = join(JSON3.write.([header, merge(row, Dict("parentId" => "one"))]), "\n") * "\n"
+        write(file, text)
+        session = open(S.Session, file)
+        @test [entry["id"] for entry in S.branch(session)] == ["one"]
+        @test isempty(S.branch(session, "missing"))
     end
 end

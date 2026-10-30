@@ -2,26 +2,97 @@ struct OpenAIResponses
     base::String
     model::String
     key::String
+    extra::Vector{Pair{String, String}}
+    route::Union{DirectRoute, CatalogRoute}
+    thinking::Union{Nothing, String}
 end
+OpenAIResponses(base, model, key, extra, route) = OpenAIResponses(base, model, key, extra, route, nothing)
+OpenAIResponses(base, model, key) = OpenAIResponses(base, model, key, Pair{String, String}[], DirectRoute())
+OpenAIResponses(base, model, key, extra) = OpenAIResponses(base, model, key, extra, DirectRoute())
 
 Base.show(io::IO, provider::OpenAIResponses) = print(io, "OpenAIResponses(", repr(provider.model), ", [redacted])")
 StructTypes.StructType(::Type{OpenAIResponses}) = StructTypes.CustomStruct()
 StructTypes.lower(provider::OpenAIResponses) = (; model=provider.model, credentials="[redacted]")
 
-headers(provider::OpenAIResponses) = ["Authorization" => "Bearer $(provider.key)", "Content-Type" => "application/json"]
+headers(provider::OpenAIResponses) = mergeheaders(["Authorization" => "Bearer $(clientkey(provider.key))", "Content-Type" => "application/json"], provider.extra)
 endpoint(provider::OpenAIResponses) = "$(rstrip(provider.base, '/'))/responses"
 
-const inputtypes = Dict("tool" => Conversation.ToolMessage, "assistant" => Conversation.Assistant)
+const inputtypes = Dict("tool" => Conversation.ToolMessage, "assistant" => Conversation.Assistant, "user" => Conversation.User)
 tooloutput(content, ::Nothing) = content
 tooloutput(content, image) = [Dict("type" => "input_text", "text" => content), Dict("type" => "input_image", "detail" => "auto", "image_url" => "data:$(image["mime"]);base64,$(image["data"])")]
 
-function input(messages)
-    items = Any[]
-    foreach(message -> input!(items, get(inputtypes, message["role"], nothing), message), messages)
-    items
+struct ResponseThinking
+    provider::String
+    model::String
+    effort::String
 end
 
+responseprovider(::DirectRoute) = "openai"
+responseprovider(route::CatalogRoute) = route.name
+officialresponses(provider::OpenAIResponses) = lowercase(HTTP.URI(provider.base).host) == "api.openai.com"
+responsesignin(provider::OpenAIResponses) = responsesignin(provider, provider.route)
+responsesignin(provider, ::DirectRoute) = officialsignedin(provider)
+responsesignin(provider, route::CatalogRoute) = get(signinroutes, route.name, othersignin)(provider)
+officialsignedin(provider) = officialresponses(provider) && !startswith(provider.key, "sk-")
+othersignin(provider) = false
+const signinroutes = Dict("openai" => officialsignedin)
+responseauthoverride(provider::OpenAIResponses) = officialresponses(provider) && any(pair -> lowercase(first(pair)) == "authorization", provider.extra)
+thinkingupdate(::ChatGPT.Plan) = nothing
+thinkingupdate(provider::OpenAIResponses) = thinkingupdate(provider, provider.thinking)
+thinkingupdate(provider, ::Nothing) = nothing
+thinkingupdate(provider, effort::AbstractString) = thinkingupdate(provider, effort, get(responselevels, provider.model, nothing))
+thinkingupdate(provider, effort, ::Nothing) = nothing
+thinkingupdate(provider, effort, levels::AbstractDict) = thinkingupdate(provider, effort, thinkingwire(levels))
+thinkingupdate(provider, effort, ::DirectThinking) = nothing
+thinkingupdate(provider, effort, ::UpdateThinking) = thinkingupdate(provider, effort, provider.route)
+thinkingupdate(provider, effort, ::CatalogRoute) = nothing
+disabledthinking(provider, effort) = nothing
+function requestedthinking(provider, effort)
+    (responsesignin(provider) || responseauthoverride(provider)) && return nothing
+    ResponseThinking(responseprovider(provider.route), provider.model, String(effort))
+end
+const thinkingupdates = Dict("none" => disabledthinking)
+thinkingupdate(provider, effort, ::DirectRoute) = get(thinkingupdates, effort, requestedthinking)(provider, effort)
+
+function input(messages)
+    items = Any[]
+    foreach(message -> inputcontext!(items, message), messages)
+    items
+end
+input(messages, ::Nothing) = input(messages)
+function input(messages, update::ResponseThinking)
+    items = Any[]
+    foreach(message -> inputcontext!(items, message, update), messages)
+    responseupdate!(items, update.effort)
+    items
+end
+inputcontext!(items, message) = input!(items, get(inputtypes, message["role"], nothing), message)
+inputcontext!(items, message, update) = input!(items, get(inputtypes, message["role"], nothing), message, update)
+inputcontext!(items, message::ResponseContextUpdate) = append!(items, message.items)
+inputcontext!(items, message::ResponseContextUpdate, update) = append!(items, message.items)
+input!(items, type, message, update::ResponseThinking) = input!(items, type, message)
+function input!(items, ::Type{Conversation.Assistant}, message, update::ResponseThinking)
+    output = Any[]
+    input!(output, Conversation.Assistant, message)
+    replayupdate!(items, output, message, update)
+    append!(items, output)
+end
+function replayupdate!(items, output, message, update)
+    isempty(output) && return nothing
+    identity = (get(message, "provider", nothing), get(message, "api", nothing), get(message, "model", nothing))
+    identity == (update.provider, "openai-responses", update.model) || return nothing
+    responseupdate!(items, get(message, "providerThinkingLevel", nothing))
+end
+responseupdate!(items, value) = nothing
+responseupdate!(items, effort::AbstractString) = push!(items, Dict("type" => "configuration_update", "reasoning" => Dict("effort" => String(effort))))
+
 input!(items, ::Nothing, message) = inputcontent!(items, message["role"], get(message, "content", nothing))
+input!(items, ::Type{Conversation.User}, message) = inputuser!(items, message, get(message, "images", nothing))
+inputuser!(items, message, ::Nothing) = inputcontent!(items, "user", get(message, "content", nothing))
+function inputuser!(items, message, attachments::AbstractVector)
+    parts = [Dict("type" => "input_text", "text" => message["content"]), (Dict("type" => "input_image", "detail" => "auto", "image_url" => "data:$(image["mime"]);base64,$(image["data"])") for image in attachments)...]
+    push!(items, Dict("role" => "user", "content" => parts))
+end
 input!(items, ::Type{Conversation.ToolMessage}, message) = push!(items, Dict("type" => "function_call_output", "call_id" => message["tool_call_id"], "output" => tooloutput(message["content"], get(message, "image", nothing))))
 
 function input!(items, ::Type{Conversation.Assistant}, message)
@@ -37,10 +108,25 @@ end
 inputcontent!(items, role, ::Nothing) = nothing
 inputcontent!(items, role, content) = push!(items, Dict("role" => role, "content" => content))
 
+applythinking!(data, ::Nothing) = nothing
+plainreasoning!(data, effort) = (data["reasoning"] = Dict("effort" => effort))
+summarizedreasoning!(data, effort) = (data["reasoning"] = Dict("effort" => effort, "summary" => "auto"))
+const reasoningwriters = Dict("none" => plainreasoning!)
+applythinking!(data, effort::AbstractString) = get(reasoningwriters, effort, summarizedreasoning!)(data, effort)
+applythinking!(data, effort, ::Nothing) = applythinking!(data, effort)
+applythinking!(data, effort, ::ResponseThinking) = (data["reasoning"] = Dict("effort" => "medium", "summary" => "auto"))
+
+responsestool(provider, tool) = merge(Dict("type" => "function", "strict" => false), definition(tool)["function"])
+responsestool(provider, tool::ToolDeclaration) = responsestool(provider, tool, contextstrict(provider))
+responsestool(provider, tool::ToolDeclaration, ::ContextStrictUnsupported) = merge(Dict("type" => "function"), definition(tool)["function"])
+responsestool(provider, tool::ToolDeclaration, ::ContextStrictSupported) = merge(Dict("type" => "function", "strict" => false), definition(tool)["function"])
+
 function payload(provider::OpenAIResponses, messages, tools, parameters; streaming=false)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(parameters))
     data["model"] = provider.model
-    data["input"] = input(messages)
+    update = thinkingupdate(provider)
+    applythinking!(data, provider.thinking, update)
+    data["input"] = input(messages, update)
     data["stream"] = streaming
     get!(data, "store", false)
     include = get(data, "include", [])
@@ -49,14 +135,14 @@ function payload(provider::OpenAIResponses, messages, tools, parameters; streami
     delete!(data, "tools")
     delete!(data, "stream_options")
     if !isempty(tools)
-        data["tools"] = [merge(Dict("type" => "function", "strict" => false), definition(tool)["function"]) for tool in values(tools)]
+        data["tools"] = [responsestool(provider, tool) for tool in values(tools)]
     end
     JSON3.write(data)
 end
 
-usage(::OpenAIResponses, ::Nothing) = nothing
+usage(::Union{OpenAIResponses, ChatGPT.Plan}, ::Nothing) = nothing
 
-function usage(::OpenAIResponses, data)
+function usage(::Union{OpenAIResponses, ChatGPT.Plan}, data)
     raw_input = get(data, "input_tokens", 0)
     output = get(data, "output_tokens", 0)
     input_details = something(get(data, "input_tokens_details", nothing), Dict())
@@ -88,6 +174,15 @@ function message(output)
     end
     isempty(calls) || (result["tool_calls"] = calls)
     result
+end
+message(output, provider) = recordthinking!(message(output), thinkingupdate(provider))
+recordthinking!(message, ::Nothing) = message
+function recordthinking!(message, update::ResponseThinking)
+    message["provider"] = update.provider
+    message["api"] = "openai-responses"
+    message["model"] = update.model
+    message["providerThinkingLevel"] = update.effort
+    message
 end
 
 output!(result, calls, ::Nothing, item) = nothing
@@ -121,9 +216,16 @@ jointext(current, text) = current * text
 const responsestatuses = Dict("completed" => Finished())
 responsestatus(status) = get(responsestatuses, status, Unfinished())
 
-valid(call) = valid(call, responsestatus(get(call, "status", "completed")))
-valid(call, ::Unfinished) = false
-valid(call, ::Finished) = all(key -> get(call, key, nothing) isa AbstractString && !isempty(call[key]), ("id", "call_id", "name", "arguments"))
+const unfinishedcall = "Responses contained an unfinished function call"
+checkcall(call) = checkcall(call, responsestatus(get(call, "status", "completed")))
+checkcall(call, ::Unfinished) = unfinishedcall
+checkcall(call, ::Finished) = foldl((failure, key) -> checkfield(failure, call, key), ("id", "call_id", "name", "arguments"); init=nothing)
+checkfield(failure::String, call, key) = failure
+checkfield(::Nothing, call, key) = checkfield(get(call, key, nothing))
+checkfield(value) = unfinishedcall
+checkfield(value::AbstractString) = isempty(value) ? unfinishedcall : nothing
+callcheck(failure::String, call) = failure
+callcheck(::Nothing, call) = checkcall(call)
 
 function responsecalls(output)
     calls = Any[]
@@ -135,7 +237,7 @@ end
 responsecalls!(calls, item, type) = nothing
 responsecalls!(calls, item, ::Type{Conversation.ToolCall}) = push!(calls, item)
 
-completion(provider::OpenAIResponses, data::InvalidResponse; failure=nothing) = incomplete(data)
+completion(provider::Union{OpenAIResponses, ChatGPT.Plan}, data::InvalidResponse; failure=nothing) = incomplete(data)
 const saferesponsestatuses = Dict(status => status for status in ("failed", "incomplete", "cancelled", "canceled", "queued", "in_progress"))
 saferesponsestatus(status) = nothing
 saferesponsestatus(status::AbstractString) = get(saferesponsestatuses, status, nothing)
@@ -147,8 +249,9 @@ function responsefailure(data, raw, ::Unfinished, ::Nothing)
 end
 
 callfailure(calls, failure) = failure
-function callfailure(calls, ::Nothing)
-    any(call -> !valid(call), calls) && return "Responses contained an unfinished function call"
+callfailure(calls, ::Nothing) = checkedcalls(calls, foldl(callcheck, calls; init=nothing))
+checkedcalls(calls, failure::String) = failure
+function checkedcalls(calls, ::Nothing)
     length(unique(call["id"] for call in calls)) == length(calls) && length(unique(call["call_id"] for call in calls)) == length(calls) || return "Responses contained duplicate function call identifiers"
     nothing
 end
@@ -156,19 +259,19 @@ end
 responsefinish(raw, ::Unfinished, calls) = saferesponsestatus(raw)
 responsefinish(raw, ::Finished, ::Nothing) = "stop"
 responsefinish(raw, ::Finished, calls) = "tool_calls"
-responsecomplete(status, failure) = false
-responsecomplete(::Finished, ::Nothing) = true
+responsecomplete(status, failure) = Unfinished()
+responsecomplete(::Finished, ::Nothing) = Finished()
 
-function completion(provider::OpenAIResponses, data; failure=nothing)
+function completion(provider::Union{OpenAIResponses, ChatGPT.Plan}, data; failure=nothing)
     output = get(data, "output", [])
-    msg = message(output)
+    msg = message(output, provider)
     raw = get(data, "status", nothing)
     status = responsestatus(raw)
     failure = responsefailure(data, raw, status, failure)
     failure = callfailure(responsecalls(output), failure)
     used = usage(provider, get(data, "usage", nothing))
     finish = responsefinish(raw, status, get(msg, "tool_calls", nothing))
-    Completion(msg, used, finish, responsecomplete(status, failure), failure)
+    price(provider, Completion(msg, used, finish, responsecomplete(status, failure), failure))
 end
 
 requestcontext(::OpenAIResponses) = HTTP.RequestContext()
@@ -202,6 +305,7 @@ struct OutputDone <: ResponseEvent
 end
 struct ResponseEnded <: ResponseEvent
     response::Any
+    kind::String
 end
 struct ResponseError <: ResponseEvent
     failure::ProviderError
@@ -222,7 +326,7 @@ responseevent(::Type{ThinkingDelta}, data) = ThinkingDelta(data["type"], data["d
 responseevent(::Type{OutputAdded}, data) = OutputAdded(get(data, "output_index", nothing), data["item"])
 responseevent(::Type{ArgumentDelta}, data) = ArgumentDelta(get(data, "output_index", nothing), get(data, "item_id", nothing), data)
 responseevent(::Type{OutputDone}, data) = OutputDone(get(data, "output_index", nothing), data["item"])
-responseevent(::Type{ResponseEnded}, data) = ResponseEnded(data["response"])
+responseevent(::Type{ResponseEnded}, data) = ResponseEnded(data["response"], data["type"])
 responseevent(::Type{ResponseError}, data) = ResponseError(providererror(:openai_responses, data))
 
 mutable struct ResponseStream{F}
@@ -316,20 +420,37 @@ function record!(stream::ResponseStream, index, item)
     nothing
 end
 
-handle!(stream::ResponseStream, event::ResponseEnded) = (stream.terminal = event.response; nothing)
+handle!(stream::ResponseStream, event::ResponseEnded) = terminal!(stream, event, stream.terminal)
+function terminal!(stream::ResponseStream, event::ResponseEnded, ::Nothing)
+    terminalstatus!(stream, event.kind, event.response)
+    stream.terminal = event.response
+    nothing
+end
+function terminal!(stream::ResponseStream, event::ResponseEnded, previous)
+    stream.failure = "Responses stream contained multiple terminal events"
+    nothing
+end
+struct TerminalMatch end
+const terminalmatches = Dict(("response.completed", "completed") => TerminalMatch(), ("response.failed", "failed") => TerminalMatch(), ("response.incomplete", "incomplete") => TerminalMatch())
+terminalstatus!(stream, kind, response) = terminalstatus!(stream, get(terminalmatches, (kind, get(response, "status", nothing)), nothing))
+terminalstatus!(stream, ::TerminalMatch) = nothing
+terminalstatus!(stream, ::Nothing) = (stream.failure = "Responses stream terminal event did not match its status"; nothing)
 handle!(stream::ResponseStream, event::ResponseError) = (stream.failure = event.failure; nothing)
 
-function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), on_event=identity)
-    state = ResponseStream(on_event)
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=event -> receive!(state, event.data))
+requeststream(provider::OpenAIResponses, body, callback) = HTTP.post(endpoint(provider), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=callback)
+stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), on_event=identity) = streamresponse(provider, messages, tools; parameters, on_event)
+
+function streamresponse(provider::Union{OpenAIResponses, ChatGPT.Plan}, messages, tools; parameters=Dict(), on_event=identity)
+    state = ResponseStream(event -> on_event(priceevent(provider, event)))
+    response = requeststream(provider, payload(provider, messages, tools, parameters; streaming=true), event -> receive!(state, event.data))
     result = 200 <= response.status < 300 ? finish(provider, state, state.terminal) : incomplete(ProviderStatus(response.status))
     on_event((; type=completionevent(result), result))
     result
 end
 
-finish(provider::OpenAIResponses, state::ResponseStream, ::Nothing) = Completion(state.partial, nothing, nothing, false, something(state.failure, "Responses stream ended before a terminal event"))
+finish(provider::Union{OpenAIResponses, ChatGPT.Plan}, state::ResponseStream, ::Nothing) = Completion(state.partial, nothing, nothing, Unfinished(), something(state.failure, "Responses stream ended before a terminal event"))
 
-function finish(provider::OpenAIResponses, state::ResponseStream, data)
+function finish(provider::Union{OpenAIResponses, ChatGPT.Plan}, state::ResponseStream, data)
     finished = state.finished
     if !haskey(data, "output")
         data["output"] = [finished[index] for index in sort!(collect(keys(finished)))]
@@ -338,6 +459,7 @@ function finish(provider::OpenAIResponses, state::ResponseStream, data)
         recover_reasoning!(item, get(finished, index - 1, nothing))
     end
     failure = reconcile!(state, data, state.failure)
+    failure = plancheck(provider, state, data, failure)
     result = completion(provider, data; failure)
     emitusage(state.callback, result.usage)
     emitfinish(state.callback, result.finish)
@@ -397,3 +519,17 @@ function reconcile_done(data, index, failure, ::Type{Conversation.ToolCall})
 end
 reconcile_done(failure, type) = "Responses stream omitted a completed function call"
 reconcile_done(failure, ::Type{Conversation.ToolCall}) = failure
+
+plancheck(provider::OpenAIResponses, state, data, failure) = failure
+function plancheck(provider::ChatGPT.Plan, state, data, failure)
+    for (index, item) in enumerate(get(data, "output", []))
+        type = get(outputtypes, get(item, "type", nothing), nothing)
+        failure = plannamespace(item, get(state.finished, index - 1, Dict()), failure, type)
+    end
+    failure
+end
+plannamespace(item, done, failure, type) = failure
+plannamespace(item, done, failure, ::Type{Conversation.ToolCall}) = plannamespace(get(item, "namespace", nothing), get(done, "namespace", nothing), failure)
+plannamespace(namespace, done, failure) = "Responses contained an unsupported function namespace"
+plannamespace(::Nothing, ::Nothing, failure) = failure
+plannamespace(::Nothing, done, failure) = "Responses contained a mismatched function namespace"

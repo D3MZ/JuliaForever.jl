@@ -1,5 +1,15 @@
-detailed(::Conversation.ModelRequest) = true
-detailed(::Kernel.Effect) = false
+struct ContextCatalog <: Kernel.Effect end
+
+struct ContextModel <: Kernel.Effect
+    messages::Vector{Conversation.Message}
+    tools::ToolChanges
+    catalog::Vector{ToolDeclaration}
+    anchors::Vector{Union{Nothing, Some{Dict{String, Any}}}}
+end
+
+resulttype(::Conversation.ModelRequest) = Execution.ModelResult
+resulttype(::ContextModel) = Execution.ModelResult
+resulttype(::Kernel.Effect) = Kernel.Observation
 
 function register!(agent::Agent, handle::Execution.Handle)
     turn, failure = lock(agent.lock) do
@@ -18,9 +28,12 @@ submitted(agent::Agent, executor, effect, context, rejected::History.Rejected) =
 submitted(agent::Agent, executor, effect, context, ::Cancelled) = nothing
 submitted(agent::Agent, executor, effect, context, ::Union{Idle, Running}) = submitted(agent, executor, effect, context)
 
+exposure(tools) = nothing
+exposure(tools::ToolSet) = lock(() -> copy(tools.loaded), tools.lock)
+
 function submitted(agent::Agent, executor, effect, context, ::Nothing)
     handle = try
-        Execution.submit!(executor, effect, 1, context; detailed=detailed(effect.effect), on_handle=handle -> register!(agent, handle))
+        Execution.submit!(executor, effect, 1, context, resulttype(effect.effect); exposed=exposure(agent.tools), on_handle=handle -> register!(agent, handle))
     catch
         lock(agent.lock) do
             agent.handle = nothing
@@ -86,7 +99,7 @@ after_tool!(callback, ended, ::History.Store) = emit(callback, ended)
 
 function observe_tool!(agent, effect, messages, callback, results, call, reply::Conversation.ToolReply)
     result = reply.result
-    ended = (; type=:tool_execution_end, tool_call_id=call["id"], tool_name=callinfo(call).name, result, iserror=result.iserror)
+    ended = (; type=:tool_execution_end, tool_call_id=call["id"], tool_name=callinfo(call).name, result=visible(result), iserror=result.iserror)
     before_tool!(callback, ended, agent.history)
     transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, reply), agent)
     finish_tool!(agent, messages, callback, results, call, result, ended, transition, added)
@@ -105,7 +118,7 @@ respond_execution!(::Agent, prompt, ::Execution.Executor, context; kwargs...) = 
 
 function finish(message, result::Execution.ModelResult{Conversation.ModelReply})
     reply = result.observation.message
-    finish(message, Completion(message, result.usage, reply.finish, reply.done, result.error))
+    finish(message, Completion(message, result.usage, reply.finish, reply.status, result.error))
 end
 
 function respond_execution!(agent::Agent, prompt, executor::Execution.Executor, context::AbstractString; on_event, on_agent_event, parameters, tool_execution)
@@ -128,9 +141,10 @@ function execution_start!(agent, prompt, executor, context, ::Running; on_agent_
     models = Execution.ModelResult[]
     event_lock = ReentrantLock()
     callback = on_agent_event
-    on_agent_event = event -> lock(() -> emit(callback, event), event_lock)
+    on_agent_event = EventSink(event_lock, callback)
     run = (; agent, executor, context, messages, models, callback=on_agent_event)
     try
+        precompact!(agent, on_agent_event)
         emit(on_agent_event, (; type=:agent_start))
         emit(on_agent_event, (; type=:turn_start))
         execution_input_sync!(run, prompt, sync!(agent))
@@ -197,9 +211,35 @@ function execution_cancel_observed!(run, ::Kernel.Applied)
 end
 
 function execution_step!(run, effect, ::Union{Idle, Running})
+    execution_prepare!(run, effect, catalogeffect(run.callback, effect))
+end
+
+function execution_prepare!(run, effect, ::Nothing)
     outcome = submitted(run.agent, run.executor, effect, run.context)
     execution_outcome!(run, effect, outcome)
 end
+
+function execution_prepare!(run, effect, catalog::Kernel.Pending)
+    outcome = submitted(run.agent, run.executor, catalog, run.context)
+    execution_catalog!(run, effect, outcome)
+end
+
+execution_catalog!(run, effect, outcome) = execution_outcome!(run, effect, outcome)
+function execution_catalog!(run, effect, outcome::Execution.Completed)
+    execution_catalog!(run, effect, outcome.value, turnstate(run.agent))
+end
+execution_catalog!(run, effect, catalog, ::Cancelled) = execution_step!(run, effect, Cancelled())
+function execution_catalog!(run, effect, catalog::Vector{ToolDeclaration}, ::Union{Idle, Running})
+    tools = OrderedDict{String, Tool}(name(tool) => tool for tool in catalog)
+    request = requesteffect(run.callback, effect, tools, catalog)
+    execution_request!(run, effect, request, turnstate(run.agent))
+end
+execution_request!(run, effect, request, ::Cancelled) = execution_step!(run, effect, Cancelled())
+function execution_request!(run, effect, request, ::Union{Idle, Running})
+    outcome = submitted(run.agent, run.executor, request, run.context)
+    execution_outcome!(run, effect, outcome)
+end
+execution_catalog!(run, effect, value, ::Union{Idle, Running}) = execution_outcome!(run, effect, Execution.Rejected(:context_catalog))
 
 execution_outcome!(run, effect, outcome) = Execution.Turn(unresolved(run.agent, outcome), run.models)
 execution_outcome!(run, effect, outcome::Execution.Cancelled) = execution_cancel_outcome!(run, effect, outcome, turnstate(run.agent))
@@ -257,6 +297,7 @@ function execution_tools_done!(run, message, results::Vector)
 end
 execution_post_sync!(run, message, rejected::History.Rejected) = Execution.Turn(rejected, run.models)
 function execution_post_sync!(run, message, ::Nothing)
+    precompactnext!(run.agent, run.callback)
     result, added = transition!(revision -> Conversation.Advance(revision), run.agent)
     execution_next!(run, message, result, added)
 end
@@ -277,3 +318,72 @@ function interrupt!(agent::Agent, ::Nothing)
 end
 
 interrupt!(agent::Agent, ::History.Store) = interrupted!(agent)
+
+function finishauto!(agent, result::Execution.Turn, usage, settings::AutoCompaction, summarize, callback)
+    latest = isempty(result.models) ? nothing : last(result.models).usage
+    finishauto!(agent, result.value, latest, settings, summarize, callback)
+end
+finishauto!(agent, result::Execution.Turn, usage, settings::ChangingCompaction, summarize, callback) = finishauto!(agent, result, usage, settings.select(), summarize, callback)
+
+catalogeffect(callback, effect) = nothing
+catalogeffect(sink::EventSink, effect) = catalogeffect(sink.callback, effect)
+function catalogeffect(listener::Extensions.Listener, effect::Kernel.Pending{Conversation.ModelRequest})
+    hooks = (get(listener.events, :context, ())..., get(listener.events, :context_with_system, ())...)
+    catalogeffect(hooks, effect)
+end
+catalogeffect(::Tuple{}, effect) = nothing
+function catalogeffect(hooks::Tuple, effect)
+    Kernel.Pending(effect.id, ContextCatalog())
+end
+
+requesteffect(sink::EventSink, effect, tools, catalog) = lock(() -> requesteffect(sink.callback, effect, tools, catalog), sink.lock)
+function requesteffect(listener::Extensions.Listener, effect::Kernel.Pending{Conversation.ModelRequest}, tools, catalog)
+    original = Dict{String, Any}[convert(Dict{String, Any}, message) for message in effect.effect.messages]
+    seedtools!(original, tools)
+    request = requestview(listener, effect.effect.messages, tools, nothing)
+    messages = Conversation.Message[Conversation.RawMessage(message) for message in request.messages]
+    baseline = toolbaseline(contexthead(original), contexthead(request.messages))
+    anchors = Union{Nothing, Some{Dict{String, Any}}}[contextanchor(message) for message in effect.effect.messages]
+    Kernel.Pending(effect.id, ContextModel(messages, toolchanges(tools, request.tools, request.messages, baseline), catalog, anchors))
+end
+
+contextanchor(message::Conversation.Message) = nothing
+contextanchor(message::Conversation.Assistant) = contextanchor(get(message.metadata, "anthropic_usage_anchor", nothing))
+contextanchor(value) = nothing
+contextanchor(value::AbstractDict) = Some(Dict{String, Any}(string(key) => deepcopy(item) for (key, item) in pairs(value)))
+
+workcatalog(tools) = ToolDeclaration[declaration(tool) for tool in values(tools)]
+catalogentries(catalog) = Dict(name(tool) => tool.data for tool in catalog)
+
+function Execution.perform(work::Execution.Work{ContextCatalog}, cancellation::Execution.Cancellation)
+    capabilities = Execution.context(work.context)
+    try
+        workcatalog(Execution.worktools(capabilities.tools, work.exposed))
+    catch
+        Execution.Rejected(:context_catalog)
+    end
+end
+
+function Execution.perform(work::Execution.Work{ContextModel}, cancellation::Execution.Cancellation)
+    capabilities = Execution.context(work.context)
+    try
+        messages = modelmessages(work.effect.messages)
+        available = Execution.worktools(capabilities.tools, work.exposed)
+        catalogentries(workcatalog(available)) == catalogentries(work.effect.catalog) || return Execution.result(Conversation.ModelFailure("request context tool catalog changed"), work.result)
+        baseline = OrderedDict{String, Tool}(name(tool) => CatalogDeclaration(tool.data) for tool in work.effect.catalog)
+        tools = applychanges(baseline, work.effect.tools)
+        request = contextrequest(capabilities.provider, messages, currentsystem(messages), tools)
+        performcontext(work, capabilities, request)
+    catch
+        Execution.result(Conversation.ModelFailure("provider did not return"), work.result)
+    end
+end
+
+performcontext(work, capabilities, ::UnsupportedContextRequest) = Execution.result(contextfailure(), work.result)
+function performcontext(work, capabilities, request::RequestView)
+    parameters = deepcopy(capabilities.parameters)
+    answer = withcontext(work.effect.anchors) do
+        isempty(parameters) ? complete(capabilities.provider, request.messages, request.tools) : complete(capabilities.provider, request.messages, request.tools; parameters)
+    end
+    Execution.result(price(capabilities.provider, answer), work.result)
+end

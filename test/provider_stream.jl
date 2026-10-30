@@ -1,13 +1,13 @@
 using HTTP, JSON3, Base64, SHA
 
 @testset "provider configuration" begin
-    openai = JuliaForever.provider(Dict("OPENAI_MODEL" => "model-a", "OPENAI_API_KEY" => "synthetic-a"))
+    openai = JuliaForever.provider(Dict("OPENAI_MODEL" => "model-a", "OPENAI_API_KEY" => "synthetic-a", "PI_CODING_AGENT_DIR" => mktempdir()))
     @test openai.base == "https://api.openai.com/v1"
     @test openai.model == "model-a"
     @test openai.key == "synthetic-a"
     @test !occursin("synthetic-a", sprint(show, openai))
     @test !occursin("synthetic-a", sprint(show, MIME("text/plain"), openai))
-    router = JuliaForever.provider(Dict("JF_PROVIDER" => "openrouter", "OPENROUTER_MODEL" => "vendor/model-b", "OPENROUTER_API_KEY" => "synthetic-b", "OPENROUTER_BASE_URL" => "http://localhost/router/"))
+    router = JuliaForever.provider(Dict("JF_PROVIDER" => "openrouter", "OPENROUTER_MODEL" => "vendor/model-b", "OPENROUTER_API_KEY" => "synthetic-b", "OPENROUTER_BASE_URL" => "http://localhost/router/", "PI_CODING_AGENT_DIR" => mktempdir(), "JF_OPENROUTER_DIR" => joinpath(mktempdir(), "router")))
     @test router.base == "http://localhost/router/"
     @test router.model == "vendor/model-b"
     @test router.key == "synthetic-b"
@@ -49,6 +49,7 @@ sse(data) = "data: $(JSON3.write(data))\n\n"
         @test request.body.stream_options.include_usage == true
         @test request.body.temperature == 0.2
         @test !haskey(request.body, :tools)
+        @test result.status isa JuliaForever.Finished
         @test result.done
         @test result.error === nothing
         @test result.finish == "tool_calls"
@@ -192,7 +193,7 @@ end
     try
         base = "http://$(HTTP.server_addr(server))/api/v1"
         project = dirname(@__DIR__)
-        cmd = addenv(`$(Base.julia_cmd()) --project=$project -m JuliaForever --no-session --login-openrouter hello`, "OPENROUTER_BASE_URL" => base, "OPENROUTER_MODEL" => "fixture/model")
+        cmd = addenv(`$(Base.julia_cmd()) --project=$project -m JuliaForever --no-session --login-openrouter hello`, "OPENROUTER_BASE_URL" => base, "OPENROUTER_MODEL" => "fixture/model", "JF_OPENROUTER_DIR" => joinpath(mktempdir(), "router"))
         output = mktemp() do path, io
             write(io, "synthetic-code\n")
             flush(io)
