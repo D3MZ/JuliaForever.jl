@@ -592,6 +592,7 @@ readcommand!(terminal, agent, extensions, history, line, input, sessiondir, temp
 readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, command::TerminalCommand) = command!(command, terminal, agent, history, input, sessiondir, extensions)
 
 include("live_json.jl")
+include("session_export.jl")
 include("headless.jl")
 starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates::Union{AbstractDict, Skills.Resources}, ::RPCMode) = Headless.rpc!(terminal, agent, extensions, store, args, sessiondir, templates)
 

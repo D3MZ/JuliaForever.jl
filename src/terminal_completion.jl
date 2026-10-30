@@ -17,6 +17,7 @@ const builtins = Item[
     Item("compact", "Compact the current context"),
     Item("resume", "Resume a different session"),
     Item("reload", "Reload skills"),
+    Item("export", "Export the session as HTML or JSONL"),
     Item("exit", "Exit the session"),
 ]
 

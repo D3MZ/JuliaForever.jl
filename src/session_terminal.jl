@@ -7,6 +7,10 @@ struct NewCommand <: TerminalCommand end
 struct CloneCommand <: TerminalCommand end
 struct ForkCommand <: TerminalCommand end
 struct ExitCommand <: TerminalCommand end
+struct ExportCommand{P} <: TerminalCommand
+    path::P
+end
+ExportCommand() = ExportCommand(nothing)
 struct ShowName <: TerminalCommand end
 struct SetName <: TerminalCommand
     name::String
@@ -16,12 +20,19 @@ struct SetModel <: TerminalCommand
     model::String
 end
 
-const terminalcommands = Dict{String, TerminalCommand}("/compact" => CompactCommand(), "/reload" => ReloadCommand(), "/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand(), "/clone" => CloneCommand(), "/fork" => ForkCommand(), "/exit" => ExitCommand(), "/model" => SelectModel())
+const terminalcommands = Dict{String, TerminalCommand}("/compact" => CompactCommand(), "/reload" => ReloadCommand(), "/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand(), "/clone" => CloneCommand(), "/fork" => ForkCommand(), "/exit" => ExitCommand(), "/model" => SelectModel(), "/export" => ExportCommand())
 const namepattern = r"\A/name(?: +([\s\S]*))?\z"
 const modelpattern = r"\A/model +([^\r\n]+)\z"
+const exportpattern = r"\A/export +([^\r\n]*)\z"
 terminalcommand(text) = terminalcommand(get(terminalcommands, text, nothing), text)
 terminalcommand(command::TerminalCommand, text) = command
-terminalcommand(::Nothing, text) = modelcommand(namecommand(match(namepattern, text)), text)
+terminalcommand(::Nothing, text) = modelcommand(exportcommand(namecommand(match(namepattern, text)), text), text)
+exportcommand(command::TerminalCommand, text) = command
+exportcommand(::Nothing, text) = exportcommand(match(exportpattern, text))
+exportcommand(::Nothing) = nothing
+exportcommand(found::RegexMatch) = exportpath(match(r"\A\s*(?:\"([^\"]*)\"|'([^']*)'|(?![\"'])(\S+))", found[1]))
+exportpath(::Nothing) = ExportCommand()
+exportpath(found::RegexMatch) = ExportCommand(String(something(found[1], found[2], found[3], "")))
 modelcommand(command::TerminalCommand, text) = command
 modelcommand(::Nothing, text) = modelcommand(match(modelpattern, text))
 modelcommand(::Nothing) = nothing
