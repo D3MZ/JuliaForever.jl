@@ -58,6 +58,8 @@ Explicit skill commands add two branch entries for matching a discovered name an
 
 Interactive command completion adds 22 branch entries for fuzzy matching, menu selection, and layout, and no dispatch candidates.
 
+Interactive file completion adds 69 branch entries for token parsing, directory walking, ranking, and menu updates, and no dispatch candidates. File kinds, request modes, and cancellation states use typed dispatch.
+
 Markdown rendering in conversation exports adds six branch entries and no dispatch candidates.
 
 The ChatGPT adapter and conversation export add 142 branch entries and no dispatch candidates relative to their integrated base.

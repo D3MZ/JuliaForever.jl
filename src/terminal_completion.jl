@@ -144,4 +144,6 @@ dismiss(menu::Menu) = Dismissed(menu.prefix)
 move!(menu::Menu, offset::Int) = (menu.index = mod1(menu.index + offset, length(menu.items)); nothing)
 page!(menu::Menu, offset::Int) = (menu.index = clamp(menu.index + offset, 1, length(menu.items)); nothing)
 
+include("terminal_files.jl")
+
 end
