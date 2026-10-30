@@ -163,6 +163,12 @@ include("codemode_compat.jl")
 include("mcp.jl")
 include("mcp_image.jl")
 include("mcp_resources.jl")
+module MCPProgressTests
+include("mcp_progress_native.jl")
+end
+module MCPProgressHTTPTests
+include("mcp_progress_http.jl")
+end
 module MCPHTTPTests
 include("mcp_http.jl")
 end
@@ -172,6 +178,7 @@ end
 if haskey(ENV, "PI_SOURCE")
     include("tool_search_differential.jl")
     include("mcp_differential.jl")
+    include("mcp_progress.jl")
     include("mcp_resources_differential.jl")
     include("mcp_roots_differential.jl")
 end

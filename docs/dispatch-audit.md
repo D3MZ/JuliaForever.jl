@@ -39,3 +39,5 @@ Durable replay dispatches on decoded records and rejection outcomes. The `Val` c
 The subsequent merge with tool selection, MCP roots, and the dispatch changes adds no entries beyond its parents' multiset union; 18 branch entries and 13 dispatch candidates were retired.
 
 Compaction planning now partitions messages and finds the last user turn through dispatch. Constructor arguments for completion and tool results are checked for typed Boolean predicates and status-field reads; provider completion helpers now return typed outcomes. This merge adds no entries beyond its parents' multiset union and retires six branch entries and seven dispatch candidates.
+
+The MCP progress slice adds 13 branch entries and retires two, changing the inventory from 1,238 to 1,249. They cover token and timer validation, generation and request identity checks, cancellation writer acquisition, the bounded callback queue, and the callback exception boundary. The dispatch inventory remains at 239: two channel-presence checks are retired, while a callback-queue sentinel and a lock-acquisition check are added.

@@ -48,11 +48,29 @@ rootvalues(callback) = callback()
 rootcapabilities(::NoRoots) = Dict{String, Any}()
 rootcapabilities(::Roots) = Dict("roots" => Dict{String, Any}())
 
+struct NoProgress end
+mutable struct Progress{F}
+    callback::F
+    queue::Vector{Any}
+    task::Union{Nothing, Task}
+end
+
+progress(::Nothing) = NoProgress()
+progress(callback) = Progress(callback, Any[], nothing)
+
+mutable struct Pending
+    result::Channel{Any}
+    progress::Union{NoProgress, Progress}
+    timeout::Float64
+    timer::Union{Nothing, Timer}
+    generation::Int
+end
+
 mutable struct Client{R}
     process::Union{Base.Process, HttpTransport}
     lock::ReentrantLock
     writer::ReentrantLock
-    pending::Dict{Int, Channel{Any}}
+    pending::Dict{Int, Pending}
     nextid::Int
     connection::Connection
     server::Any
@@ -87,6 +105,17 @@ function send(client::Client, message)
         send(client, message, connection)
     end
 end
+
+function sendrequest(client::Client, message, id)
+    lock(client.writer) do
+        pending, connection = lock(client.lock) do
+            get(client.pending, id, nothing), client.connection
+        end
+        sendrequest(client, message, pending, connection)
+    end
+end
+sendrequest(client::Client, message, ::Nothing, connection) = nothing
+sendrequest(client::Client, message, ::Pending, connection) = send(client, message, connection)
 
 send(client::Client, message, ::Closed) = Failure(:closed, "MCP connection is not open")
 
@@ -143,6 +172,9 @@ function sseread!(client::Client, stream, id)
     ssemessage!(client, data, event, id)
 end
 
+httptimeout(::Nothing, client::Client) = client.timeout
+httptimeout(id, client::Client) = 0
+
 function httprequest(client::Client, transport::HttpTransport, message)
     id = haskey(message, "method") ? get(message, "id", nothing) : nothing
     context = HTTP.RequestContext()
@@ -155,7 +187,7 @@ function httprequest(client::Client, transport::HttpTransport, message)
         admitted || return false
     end
     try
-        HTTP.open("POST", transport.url, httpheaders(transport); status_exception=false, request_timeout=client.timeout, retry=false, redirect=false, cookies=false, context) do stream
+        HTTP.open("POST", transport.url, httpheaders(transport); status_exception=false, request_timeout=httptimeout(id, client), retry=false, redirect=false, cookies=false, context) do stream
             write(stream, JSON3.write(message))
             response = HTTP.startread(stream)
             200 <= response.status < 300 || return httpfailure!(client, message, Failure(:http, "MCP HTTP status $(response.status)", response.status))
@@ -184,8 +216,8 @@ end
 
 function httpfailure!(client::Client, message, failure::Failure)
     haskey(message, "id") || return false
-    channel = lock(() -> pop!(client.pending, message["id"], nothing), client.lock)
-    isnothing(channel) || put!(channel, failure)
+    pending = lock(() -> retire!(client, message["id"]), client.lock)
+    deliver!(pending, failure)
     true
 end
 
@@ -195,22 +227,37 @@ function send(client::Client, message, transport::HttpTransport)
 end
 
 function fail!(client::Client, failure::Failure)
-    channels = lock(client.lock) do
+    pending = lock(client.lock) do
         takepending!(client, client.connection)
     end
-    foreach(channel -> put!(channel, failure), channels)
+    foreach(entry -> deliver!(entry, failure), pending)
     @async shutdown(client)
     nothing
 end
 
-takepending!(client::Client, ::Closed) = Channel{Any}[]
+takepending!(client::Client, ::Closed) = Pending[]
 
 function takepending!(client::Client, ::Connection)
     client.connection = Closed()
-    channels = collect(values(client.pending))
+    pending = collect(values(client.pending))
     empty!(client.pending)
-    channels
+    foreach(retire!, pending)
+    pending
 end
+
+retire!(::Nothing) = nothing
+function retire!(pending::Pending)
+    closetimer!(pending.timer)
+    clear!(pending.progress)
+    pending
+end
+retire!(client::Client, id) = retire!(pop!(client.pending, id, nothing))
+closetimer!(::Nothing) = nothing
+closetimer!(timer::Timer) = close(timer)
+clear!(::NoProgress) = nothing
+clear!(progress::Progress) = empty!(progress.queue)
+deliver!(::Nothing, result) = nothing
+deliver!(pending::Pending, result) = put!(pending.result, result)
 
 function shutdown(client::Client)
     pending = lock(() -> claim!(client, client.shutdown), client.lock)
@@ -306,25 +353,31 @@ function received(client::Client, message)
             (id isa AbstractString || (id isa Integer && !(id isa Bool))) || return false
             return get(serverrequests, method, missingrequest)(client, id)
         end
+        method == "notifications/progress" && progress!(client, get(message, "params", nothing))
         return true
     end
     haskey(message, "id") || return false
     id = message["id"]
     (id isa AbstractString || (id isa Integer && !(id isa Bool))) || return false
     (haskey(message, "result") != haskey(message, "error")) || return false
-    channel = lock(() -> pop!(client.pending, id, nothing), client.lock)
-    isnothing(channel) && return true
+    pending = lock(() -> retire!(client, id), client.lock)
+    response!(pending, message)
+    true
+end
+
+response!(::Nothing, message) = nothing
+function response!(pending::Pending, message)
     if haskey(message, "error")
         detail = message["error"]
         if detail isa AbstractDict && get(detail, "code", nothing) isa Integer && !(detail["code"] isa Bool) && get(detail, "message", nothing) isa AbstractString
-            put!(channel, Failure(:rpc, detail["message"], detail))
+            deliver!(pending, Failure(:rpc, detail["message"], detail))
         else
-            put!(channel, Failure(:protocol, "Invalid JSON-RPC error"))
+            deliver!(pending, Failure(:protocol, "Invalid JSON-RPC error"))
         end
     else
-        put!(channel, message["result"])
+        deliver!(pending, message["result"])
     end
-    true
+    nothing
 end
 
 function readmessages(client::Client)
@@ -355,45 +408,169 @@ admit(::Connection, ::Connection) = false
 admit(::Connecting, ::Connecting) = true
 admit(::Open, ::Connection) = true
 
-request(client::Client, method, params; timeout=client.timeout) = request(client, method, params, Open(); timeout)
+request(client::Client, method, params; timeout=client.timeout, on_progress=nothing) = request(client, method, params, Open(); timeout, on_progress)
 
-function request(client::Client, method, params, required::Connection; timeout=client.timeout)
-    reservation = lock(() -> admission!(client, client.connection, required), client.lock)
-    request(client, method, params, timeout, reservation)
+function request(client::Client, method, params, required::Connection; timeout=client.timeout, on_progress=nothing)
+    reservation = lock(() -> admission!(client, client.connection, required, timeout, progress(on_progress)), client.lock)
+    request(client, method, params, reservation)
 end
 
-admission!(client::Client, ::Connection, ::Connection) = Failure(:closed, "MCP connection is not open")
-admission!(client::Client, ::Connecting, ::Connecting) = reserve!(client)
-admission!(client::Client, ::Open, ::Connection) = reserve!(client)
-function reserve!(client::Client)
+admission!(client::Client, current::Connection, required::Connection) = admission!(client, current, required, client.timeout, NoProgress())
+admission!(client::Client, ::Connection, ::Connection, timeout, progress) = Failure(:closed, "MCP connection is not open")
+admission!(client::Client, ::Connecting, ::Connecting, timeout, progress) = reserve!(client, timeout, progress)
+admission!(client::Client, ::Open, ::Connection, timeout, progress) = reserve!(client, timeout, progress)
+function reserve!(client::Client, timeout, progress)
     client.nextid += 1
-    channel = Channel{Any}(1)
-    client.pending[client.nextid] = channel
-    client.nextid, channel
+    id = client.nextid
+    pending = Pending(Channel{Any}(1), progress, Float64(timeout), nothing, 0)
+    client.pending[id] = pending
+    arm!(client, id, pending)
+    id, pending
 end
 
-request(client::Client, method, params, timeout, failure::Failure) = failure
-function request(client::Client, method, params, timeout, reservation::Tuple{Int, Channel{Any}})
-    id, channel = reservation
-    message = Dict("jsonrpc" => "2.0", "id" => id, "method" => method, "params" => params)
-    transmitted!(client, send(client, message))
-    timer = Timer(timeout) do _
-        pending, connection = lock(client.lock) do
-            pop!(client.pending, id, nothing), client.connection
+function arm!(client::Client, id, pending::Pending)
+    closetimer!(pending.timer)
+    pending.timer = nothing
+    pending.generation += 1
+    isfinite(pending.timeout) && pending.timeout > 0 || return nothing
+    generation = pending.generation
+    pending.timer = Timer(pending.timeout) do _
+        expired, connection = lock(client.lock) do
+            current = get(client.pending, id, nothing)
+            current === pending && pending.generation == generation || return (nothing, client.connection)
+            retire!(client, id), client.connection
         end
-        expire!(client, id, pending, connection)
+        expire!(client, id, expired, connection)
     end
-    result = take!(channel)
-    close(timer)
+end
+
+request(client::Client, method, params, failure::Failure) = failure
+function request(client::Client, method, params, reservation::Tuple{Int, Pending})
+    id, pending = reservation
+    try
+        message = Dict("jsonrpc" => "2.0", "id" => id, "method" => method, "params" => progressparams(params, id, pending.progress))
+        transmitted!(client, sendrequest(client, message, id))
+        take!(pending.result)
+    finally
+        abandoned, connection = lock(client.lock) do
+            retire!(client, id), client.connection
+        end
+        abandon!(client, id, abandoned, connection)
+    end
+end
+
+progressparams(params, id, ::NoProgress) = params
+progressparams(::Nothing, id, ::Progress) = Dict("_meta" => progressmeta(nothing, id))
+function progressparams(params, id, ::Progress)
+    result = Dict{String, Any}(string(key) => value for (key, value) in pairs(params))
+    result["_meta"] = progressmeta(get(result, "_meta", nothing), id)
+    result
+end
+progressmeta(meta, id) = Dict{String, Any}("progressToken" => id)
+progressmeta(meta::NamedTuple, id) = progressmeta(Dict(string(key) => value for (key, value) in pairs(meta)), id)
+function progressmeta(meta::AbstractDict, id)
+    result = Dict{String, Any}(string(key) => value for (key, value) in meta)
+    result["progressToken"] = id
     result
 end
 
 expire!(client::Client, id, ::Nothing, connection::Connection) = nothing
-
-function expire!(client::Client, id, pending::Channel, connection::Connection)
-    cancelrequest!(client, id, connection)
+function expire!(client::Client, id, pending::Pending, connection::Connection)
     cancelhttp!(client.process, client, id)
-    put!(pending, Failure(:timeout, "MCP request timed out"))
+    queuecancel!(client, id, connection, "Request timed out")
+    deliver!(pending, Failure(:timeout, "MCP request timed out"))
+    nothing
+end
+
+abandon!(client::Client, id, ::Nothing, connection::Connection) = nothing
+function abandon!(client::Client, id, pending::Pending, connection::Connection)
+    cancelhttp!(client.process, client, id)
+    queuecancel!(client, id, connection, "Request cancelled")
+    nothing
+end
+
+function queuecancel!(client, id, connection, reason)
+    ready = Channel{Nothing}(1)
+    @async begin
+        acquired = trylock(client.writer)
+        try
+            put!(ready, nothing)
+            cancelrequest!(client, id, connection, reason)
+        finally
+            acquired && unlock(client.writer)
+        end
+    end
+    take!(ready)
+    nothing
+end
+
+struct ProgressStarted end
+struct ProgressQueued end
+struct ProgressOverflow
+    id::Int
+    pending::Pending
+    connection::Connection
+end
+
+progress!(client::Client, params) = nothing
+progress!(client::Client, params::AbstractDict) = progress!(client, get(params, "progressToken", nothing), get(params, "progress", nothing), params)
+progress!(client::Client, token, value, params) = nothing
+progress!(client::Client, token::Bool, value::Real, params) = nothing
+progress!(client::Client, token::Real, value::Bool, params) = nothing
+progress!(client::Client, token::Bool, value::Bool, params) = nothing
+function progress!(client::Client, token::Real, value::Real, params)
+    isfinite(token) || return nothing
+    action = lock(client.lock) do
+        enqueue!(client, token, get(client.pending, token, nothing), params)
+    end
+    progressed!(client, action)
+end
+
+enqueue!(client, token, ::Nothing, params) = nothing
+enqueue!(client, token, pending::Pending, params) = enqueue!(client, Int(token), pending, pending.progress, params)
+enqueue!(client, id, pending, ::NoProgress, params) = nothing
+function enqueue!(client, id, pending, progress::Progress, params)
+    arm!(client, id, pending)
+    if length(progress.queue) >= 64
+        retire!(client, id)
+        return ProgressOverflow(id, pending, client.connection)
+    end
+    push!(progress.queue, params)
+    startprogress!(client, id, pending, progress, progress.task)
+end
+
+function startprogress!(client, id, pending, progress, ::Nothing)
+    progress.task = @async progressloop!(client, id, pending, progress)
+    ProgressStarted()
+end
+startprogress!(client, id, pending, progress, ::Task) = ProgressQueued()
+progressed!(client, ::Nothing) = nothing
+progressed!(client, ::ProgressQueued) = nothing
+progressed!(client, ::ProgressStarted) = yield()
+function progressed!(client, overflow::ProgressOverflow)
+    cancelhttp!(client.process, client, overflow.id)
+    queuecancel!(client, overflow.id, overflow.connection, "Progress callback queue exceeded")
+    deliver!(overflow.pending, Failure(:progress, "MCP progress callback queue exceeded 64 notifications"))
+    nothing
+end
+
+function progressloop!(client, id, pending, progress::Progress)
+    while true
+        params = lock(client.lock) do
+            get(client.pending, id, nothing) === pending || return nothing
+            if isempty(progress.queue)
+                progress.task = nothing
+                return nothing
+            end
+            popfirst!(progress.queue)
+        end
+        isnothing(params) && return nothing
+        try
+            Base.invokelatest(progress.callback, params)
+        catch exception
+            @warn "MCP progress callback failed" exception
+        end
+    end
 end
 
 cancelhttp!(::Base.Process, client, id) = nothing
@@ -402,8 +579,8 @@ function cancelhttp!(transport::HttpTransport, client, id)
     isnothing(context) || HTTP.cancel!(context)
 end
 
-cancelrequest!(client::Client, id, ::Connection) = nothing
-cancelrequest!(client::Client, id, ::Open) = transmitted!(client, send(client, Dict("jsonrpc" => "2.0", "method" => "notifications/cancelled", "params" => Dict("requestId" => id, "reason" => "Request timed out"))))
+cancelrequest!(client::Client, id, ::Connection, reason) = nothing
+cancelrequest!(client::Client, id, ::Open, reason) = transmitted!(client, send(client, Dict("jsonrpc" => "2.0", "method" => "notifications/cancelled", "params" => Dict("requestId" => id, "reason" => reason))))
 
 activate!(client::Client, ::Connection) = Failure(:closed, "MCP connection closed during initialization")
 
@@ -416,7 +593,7 @@ initparams(client::Client) = Dict("protocolVersion" => first(versions), "capabil
 
 function connect(url::AbstractString; timeout=30.0, headers=Pair{String, String}[], roots=nothing)
     transport = HttpTransport(String(url), Pair{String, String}[String(k) => String(v) for (k, v) in headers], "", "", Dict{Int, HTTP.RequestContext}())
-    client = Client(transport, ReentrantLock(), ReentrantLock(), Dict{Int, Channel{Any}}(), 0, Connecting(), nothing, Float64(timeout), 0.0, false, Base.Event(), nothing, rootsource(roots))
+    client = Client(transport, ReentrantLock(), ReentrantLock(), Dict{Int, Pending}(), 0, Connecting(), nothing, Float64(timeout), 0.0, false, Base.Event(), nothing, rootsource(roots))
     initialize!(client, request(client, "initialize", initparams(client), Connecting()))
 end
 
@@ -426,7 +603,7 @@ function connect(command::Cmd; timeout=30.0, grace=0.5, roots=nothing)
     catch exception
         return Failure(:start, sprint(showerror, exception))
     end
-    client = Client(process, ReentrantLock(), ReentrantLock(), Dict{Int, Channel{Any}}(), 0, Connecting(), nothing, Float64(timeout), Float64(grace), ShutdownReady(), Base.Event(), nothing, rootsource(roots))
+    client = Client(process, ReentrantLock(), ReentrantLock(), Dict{Int, Pending}(), 0, Connecting(), nothing, Float64(timeout), Float64(grace), ShutdownReady(), Base.Event(), nothing, rootsource(roots))
     client.reader = @async readmessages(client)
     initialize!(client, request(client, "initialize", initparams(client), Connecting()))
 end
@@ -464,9 +641,9 @@ function initialized!(client::Client, ::Nothing)
     end
 end
 
-function call(client::Client, tool::AbstractString, args; timeout=client.timeout)
+function call(client::Client, tool::AbstractString, args; timeout=client.timeout, on_progress=nothing)
     haskey(client.server["capabilities"], "tools") || return Failure(:capability, "MCP server did not advertise tools")
-    toolresponse(request(client, "tools/call", Dict("name" => tool, "arguments" => args); timeout))
+    toolresponse(request(client, "tools/call", Dict("name" => tool, "arguments" => args); timeout, on_progress))
 end
 
 toolresponse(failure::Failure) = failure
