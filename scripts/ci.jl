@@ -1,5 +1,8 @@
 using Pkg
 
+# Tests that isolate the user directory must still see the installed packages.
+ENV["JULIA_DEPOT_PATH"] = join(DEPOT_PATH, Sys.iswindows() ? ';' : ':')
+
 if ARGS == ["--native-only"]
     pop!(ENV, "PI_SOURCE", nothing)
     println("Running native tests; Pi differential tests are skipped.")

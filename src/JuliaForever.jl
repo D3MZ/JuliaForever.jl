@@ -48,6 +48,9 @@ include("session_terminal.jl")
 include("terminal_live.jl")
 include("mcp.jl")
 
+const tuimode = Base.ScopedValues.ScopedValue{LiveTerminal.Mode}(LiveTerminal.FullscreenMode())
+const tuimodes = Dict("fullscreen" => LiveTerminal.FullscreenMode(), "regular" => LiveTerminal.RegularMode())
+
 missingmodel(env, info, ::Nothing) = isempty(strip(get(env, info.model, ""))) ? [info.model] : String[]
 missingmodel(env, info, model::AbstractString) = isempty(strip(model)) ? [info.model] : String[]
 
@@ -81,6 +84,7 @@ end
 struct HistoryConflict end
 include("cli_models.jl")
 include("chatgpt_cli.jl")
+include("history_export.jl")
 
 historyinspect(::Nothing) = HistoryInspection()
 historyinspect(action::HistoryInspection) = action
@@ -217,9 +221,10 @@ registered(terminal, registry, name, ::Bool) = registry
 registered(terminal, registry, name, result::Extensions.Rejected) = pluginfailure!(terminal, name, result)
 
 function help!()
-    println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-chatgpt [prompt] | jf --logout-chatgpt | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
+    println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --export PATH [OUTPUT.html|OUTPUT.json] | jf --history PATH --abandon REASON | jf [options] --login-chatgpt [prompt] | jf --logout-chatgpt | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
     println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --fork PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
     println("Tools: --tools (-t) LIST, --exclude-tools (-xt) LIST, --no-builtin-tools (-nbt), --no-tools (-nt).")
+    println("Terminal: --tui-mode fullscreen|regular (default: fullscreen).")
     println("Output: --mode text|json.")
     println("Use @PATH to include a text file or image in the initial prompt.")
     println("Models: --list-models [search] lists models for configured providers; --model accepts provider/model or a model name.")
@@ -241,6 +246,7 @@ function (@main)(args)
     baseline = ToolSelection.Defaults()
     rules = ToolSelection.Inherit()
     excluded = Regex[]
+    tui = LiveTerminal.FullscreenMode()
     outputmode = TextMode()
     while !isempty(args)
         if first(args) == "--"
@@ -248,6 +254,13 @@ function (@main)(args)
             break
         elseif first(args) in ("--help", "-h")
             return help!()
+        elseif first(args) == "--tui-mode"
+            if length(args) < 2 || !haskey(tuimodes, args[2])
+                println(stderr, "--tui-mode requires regular or fullscreen.")
+                return 2
+            end
+            tui = tuimodes[args[2]]
+            args = args[3:end]
         elseif first(args) == "--codemode"
             codemode = true
             args = args[2:end]
@@ -363,13 +376,20 @@ function (@main)(args)
         elseif first(args) == "--inspect-history"
             action = historyinspect(action)
             args = args[2:end]
+        elseif first(args) == "--export"
+            if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
+                println(stderr, "--export requires a session path.")
+                return 2
+            end
+            action = exportaction(action, args[2])
+            args = args[3:end]
         else
             push!(positional, first(args))
             args = args[2:end]
         end
     end
     args = positional
-    options = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, outputmode, output=stdout)
+    options = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, tui, outputmode, output=stdout)
     selectedmode(action, options, outputmode)
 end
 
@@ -429,7 +449,9 @@ function launchprovider(options)
     name = providername(auth, selected)
     info = providerinfo(name)
     model = acquire(auth, info, requested_model)
-    launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, provider(outputmode, name))
+    Base.ScopedValues.with(tuimode => LiveTerminal.withprovider(options.tui, name)) do
+        launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, provider(outputmode, name))
+    end
 end
 
 historyaction(::HistoryInspection, options) = inspectrequest!(options.session, options.auth, options.sessionname, options.args)
@@ -610,7 +632,7 @@ interact!(terminal, agent, extensions, input, output, store, sessiondir, templat
 
 function interact!(terminal, agent, extensions, input::Base.TTY, output::Base.TTY, store, sessiondir, templates)
     get(ENV, "TERM", "") in ("", "dumb") && return readloop!(terminal, agent, extensions, input, output, store, sessiondir, templates)
-    LiveTerminal.loop!(terminal, agent, extensions, store, input, sessiondir, templates)
+    LiveTerminal.loop!(terminal, agent, extensions, store, input, sessiondir, templates, tuimode[])
 end
 
 function readloop!(terminal, agent, extensions, input, output, store, sessiondir, templates)

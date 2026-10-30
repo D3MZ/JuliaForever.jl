@@ -37,7 +37,7 @@ end
 
 complete(provider::ChatGPT.Plan, messages, tools; parameters=Dict()) = stream(provider, messages, tools; parameters)
 
-struct ManagedChatGPT{P, R, N}
+struct ManagedChatGPT{P, R, N, C}
     store::ChatGPT.Store
     client::String
     subject::String
@@ -46,8 +46,9 @@ struct ManagedChatGPT{P, R, N}
     post::P
     refresh::R
     now::N
+    catalog::C
 end
-ManagedChatGPT(store, client, subject, model, secrets; post=HTTP.post, refresh=ChatGPT.posttoken, now=time) = ManagedChatGPT(store, client, subject, model, secrets, post, refresh, now)
+ManagedChatGPT(store, client, subject, model, secrets; post=HTTP.post, refresh=ChatGPT.posttoken, now=time, catalog=chatgptmodels) = ManagedChatGPT(store, client, subject, model, secrets, post, refresh, now, catalog)
 
 Base.show(io::IO, ::ManagedChatGPT) = print(io, "ManagedChatGPT([redacted])")
 StructTypes.StructType(::Type{ManagedChatGPT}) = StructTypes.CustomStruct()

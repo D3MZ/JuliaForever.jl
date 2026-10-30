@@ -171,7 +171,9 @@ end
 
 function launchchatgpt(options, mode::ChatGPTSelection)
     model = acquirechatgpt(options.requested_model, mode)
-    launch(options.output, model, options.packages, options.environments, options.codemode, options.session, options.sessiondir, options.args, options.sessionname, options.baseline, options.rules, options.excluded, provider(options.outputmode, "chatgpt"))
+    Base.ScopedValues.with(tuimode => LiveTerminal.withprovider(options.tui, "chatgpt")) do
+        launch(options.output, model, options.packages, options.environments, options.codemode, options.session, options.sessiondir, options.args, options.sessionname, options.baseline, options.rules, options.excluded, provider(options.outputmode, "chatgpt"))
+    end
 end
 
 function launch(output, model::ManagedChatGPT, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode)
@@ -209,3 +211,34 @@ function logoutresult(::ChatGPT.RevocationUnconfirmed)
     0
 end
 logoutresult(result) = chatgptfailure("ChatGPT sign-out failed; the stored account may have changed.")
+
+LiveTerminal.modelname(provider::ManagedChatGPT) = provider.model
+
+function setmodel!(terminal, agent::Agent{P}, history, model::AbstractString) where {P<:ManagedChatGPT}
+    isempty(model) && return agent, history, 0
+    lock(agent.lock) do
+        previous = agent.provider
+        agent.provider = ManagedChatGPT(previous.store, previous.client, previous.subject, String(model), previous.secrets, previous.post, previous.refresh, previous.now, previous.catalog)
+    end
+    println(terminal.diagnostics, "Model set: ", redact(terminal, model))
+    flush(terminal.diagnostics)
+    agent, history, 0
+end
+
+function LiveTerminal.modeloptions(session, provider::ManagedChatGPT)
+    choices = try
+        credential = ChatGPT.refresh(provider.store, provider.client, provider.subject; post=provider.refresh, now=provider.now)
+        chatgptchoices(provider, credential)
+    catch
+        String[]
+    end
+    [(; id=model, name=model) for model in choices]
+end
+chatgptchoices(provider, failure) = String[]
+function chatgptchoices(provider, session::ChatGPT.Credential)
+    ChatGPT.direct in split(session.scope) || return String[]
+    append!(provider.secrets, filter(secret -> !isempty(secret) && !(secret in provider.secrets), chatgptsecrets(session)))
+    chatgptchoices(provider.catalog(session))
+end
+chatgptchoices(models) = String[]
+chatgptchoices(models::AbstractVector) = models
