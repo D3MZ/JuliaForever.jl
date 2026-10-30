@@ -8,6 +8,7 @@ const dispatchresultflags = Dict(:Completion => 5, :ToolResult => 3, :ToolReply 
 const dispatchresultproperties = Dict(:Completion => :done, :CodeResult => :ok)
 const dispatchresultvariables = Set([:iserror, :failed, :failure, :ok, :done, :success, :cancelled, :truncated, :flag])
 const dispatchflagvariables = union(dispatchresultvariables, Set([:exclude, :negate, :enabled]))
+const dispatchpresencefields = union(Set(dispatchfields), dispatchflagvariables, Set([:error, :is_error, :isError]))
 
 struct DispatchPredicates
     booleans::Set{Symbol}
@@ -28,6 +29,14 @@ function dispatchfield(expression)
         return key isa QuoteNode ? key.value : key isa String ? Symbol(key) : nothing
     end
     nothing
+end
+
+function dispatchpresence(expression)
+    expression isa Expr && expression.head == :call && length(expression.args) == 3 || return false
+    dispatchcallee(first(expression.args)) === :haskey || return false
+    key = last(expression.args)
+    key = key isa QuoteNode ? key.value : key isa String ? Symbol(key) : nothing
+    key in dispatchpresencefields
 end
 
 function dispatchpredicate(expression, predicates=DispatchPredicates())
@@ -58,6 +67,7 @@ dispatchdynamic(value) = value isa Bool || !(value isa Union{Number, AbstractStr
 
 function dispatchprobe(expression)
     expression isa Expr || return false
+    dispatchpresence(expression) && return true
     if expression.head == :curly && length(expression.args) == 2 && dispatchcallee(first(expression.args)) === :Val && last(expression.args) isa Bool
         return true
     end
@@ -79,6 +89,7 @@ function dispatchcheck(expression, direct)
     expression === :iserror && return direct
     direct && expression isa Symbol && expression ∉ (:true, :false, :nothing) && return true
     expression isa Expr || return false
+    dispatchpresence(expression) && return true
     direct && expression.head in (:., :ref) && return true
     expression.head == :. && last(expression.args) == QuoteNode(:iserror) && return true
     expression.head == :call || return false

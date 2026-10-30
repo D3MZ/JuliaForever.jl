@@ -1,7 +1,7 @@
 module GoogleAPI
 
 using HTTP, JSON3, Random, SHA
-import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, protocolfield, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute
 
 struct Google
     base::String
@@ -251,8 +251,10 @@ function receive!(state::State, ::Nothing, data::AbstractDict, callback)
     receiveusage!(state, get(data, "usageMetadata", nothing), callback)
     candidates = get(data, "candidates", [])
     isempty(candidates) || receivecandidate!(state, first(candidates), callback)
-    haskey(data, "error") && (state.failure = providererror(:google, data["error"]))
+    receiveerror!(state, protocolfield(data, "error"))
 end
+receiveerror!(state, ::Nothing) = nothing
+receiveerror!(state, error::Some) = (state.failure = providererror(:google, something(error)))
 receive!(state::State, failure, data::AbstractDict, callback) = nothing
 receive!(state::State, failure::InvalidResponse, callback) = fail!(state, state.failure, failure)
 fail!(state, ::Nothing, failure) = (state.failure = failure)

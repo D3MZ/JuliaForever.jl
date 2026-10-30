@@ -51,6 +51,12 @@ end
             @test !occursin(secret, String(take!(terminal.diagnostics)))
         end
 
+        data = Dict("error" => nothing, "choices" => [Dict("delta" => Dict("content" => "ignored"), "finish_reason" => "stop")])
+        put!(fixture.replies, ("text/event-stream", provider_error_sse(data) * "data: [DONE]\n\n"))
+        result = stream(openai, [], Dict())
+        @test !result.done && result.error isa JuliaForever.ProviderError && result.error.kind == :unknown
+        @test result.message["content"] === nothing
+
         data = Dict("error" => Dict("type" => "server_error", "code" => 503, "message" => secret))
         put!(fixture.replies, ("text/event-stream", provider_error_sse(data) * "data: [DONE]\n\n"))
         history = JuliaForever.History.Memory()
