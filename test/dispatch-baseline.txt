@@ -25,7 +25,6 @@ agent.jl	:(name === :cancelled)
 agent.jl	:(name === :events)
 agent.jl	:(name === :running)
 agent.jl	:returned
-agent_history.jl	:(fault.reason in (:uncertain_effect, :incomplete_turn))
 agent_history.jl	:complete
 codemode.jl	:(call.status == :running)
 codemode.jl	:(cancel.cancelled[])

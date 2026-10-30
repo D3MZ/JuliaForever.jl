@@ -45,4 +45,13 @@ end
     @test length(provider.requests) == 1
 end
 
+@testset "unrecoverable history faults are retained" begin
+    history = H.Memory()
+    agent = Agent(nothing, []; history)
+    agent.fault = H.Rejected(:revision)
+    before = H.snapshot(history).revision
+    @test JuliaForever.abandon!(agent, "checked") == H.Rejected(:revision)
+    @test H.snapshot(history).revision == before
+end
+
 end
