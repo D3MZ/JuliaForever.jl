@@ -1,7 +1,7 @@
 module AnthropicAPI
 
 using HTTP, JSON3, SHA
-import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, provider, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute, Models, contextkey, price, priceevent
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, provider, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute, Models, contextkey, price, priceevent, ToolDeclaration, AnthropicContextUpdate, NativeAnthropicTools
 import ..Conversation
 
 abstract type ThinkingMode end
@@ -48,14 +48,29 @@ thinkingbetas(::BudgetThinking) = ["interleaved-thinking-2025-05-14"]
 toolbetas(::ToolStreaming, tools) = String[]
 const legacybetas = Dict(true => String[], false => ["fine-grained-tool-streaming-2025-05-14"])
 toolbetas(::Legacy, tools) = legacybetas[isempty(tools)]
+inlinebetas(tools) = String[]
+inlinebetas(::NativeAnthropicTools) = ["inline-tools-2026-09-15"]
 betaheaders(betas) = isempty(betas) ? Pair{String, String}[] : ["anthropic-beta" => join(betas, ",")]
 headers(provider::Anthropic) = headers(provider, ())
 function headers(provider::Anthropic, tools)
-    betas = [toolbetas(effectivestreaming(provider), tools); thinkingbetas(provider.thinking)]
-    mergeheaders(vcat(isempty(provider.key) ? Pair{String, String}[] : ["x-api-key" => provider.key], ["anthropic-version" => "2023-06-01", "content-type" => "application/json"], betaheaders(betas)), provider.extra)
+    betas = [toolbetas(effectivestreaming(provider), tools); thinkingbetas(provider.thinking); inlinebetas(tools)]
+    result = mergeheaders(vcat(isempty(provider.key) ? Pair{String, String}[] : ["x-api-key" => provider.key], ["anthropic-version" => "2023-06-01", "content-type" => "application/json"], betaheaders(betas)), provider.extra)
+    inlineheaders(result, tools)
+end
+inlineheaders(headers, tools) = headers
+function inlineheaders(headers, ::NativeAnthropicTools)
+    previous = [last(header) for header in headers if lowercase(first(header)) == "anthropic-beta"]
+    features = split(join(previous, ","), ','; keepempty=false)
+    push!(features, "inline-tools-2026-09-15")
+    mergeheaders(headers, ["anthropic-beta" => join(unique(strip.(features)), ",")])
 end
 toolfields(::ToolStreaming) = Dict{String, Any}()
 toolfields(::Eager) = Dict{String, Any}("eager_input_streaming" => true)
+inlinefields(provider) = inlinefields(provider, provider.toolstreaming)
+inlinefields(provider, ::Automatic) = Dict{String, Any}("eager_input_streaming" => true)
+inlinefields(provider, mode::ToolStreaming) = toolfields(mode)
+requesttoolfields(provider, tools) = toolfields(effectivestreaming(provider))
+requesttoolfields(provider, ::NativeAnthropicTools) = inlinefields(provider)
 endpoint(provider::Anthropic) = "$(rstrip(provider.base, '/'))/v1/messages"
 origin(provider::Anthropic) = bytes2hex(sha256(provider.base)) * ":" * provider.model
 
@@ -79,11 +94,25 @@ mutable struct Transcript
     system::Vector{String}
     messages::Vector{Any}
     tools::Vector{Any}
+    updates::Vector{Any}
     attachments::Vector{Any}
     calls::Dict{String, String}
     origin::String
 end
-Transcript(provider::Anthropic) = Transcript(String[], [], [], [], Dict{String, String}(), origin(provider))
+Transcript(provider::Anthropic) = Transcript(String[], [], [], [], [], Dict{String, String}(), origin(provider))
+
+function flushupdates!(transcript::Transcript)
+    append!(transcript.messages, transcript.updates)
+    empty!(transcript.updates)
+end
+
+function consume!(transcript::Transcript, message)
+    data = Dict{String, Any}(string(key) => value for (key, value) in pairs(message))
+    add!(transcript, messages[data["role"]](data))
+end
+function consume!(transcript::Transcript, update::AnthropicContextUpdate)
+    isempty(update.blocks) || push!(transcript.updates, Dict("role" => "system", "content" => update.blocks))
+end
 
 function flush!(transcript::Transcript)
     isempty(transcript.tools) || push!(transcript.messages, Dict("role" => "user", "content" => [transcript.tools; transcript.attachments]))
@@ -134,7 +163,10 @@ end
 appendtext!(blocks, ::Nothing) = nothing
 appendtext!(blocks, text) = push!(blocks, Dict("type" => "text", "text" => text))
 function add!(transcript::Transcript, data, blocks)
-    isempty(blocks) || push!(transcript.messages, Dict("role" => "assistant", "content" => blocks))
+    if !isempty(blocks)
+        flushupdates!(transcript)
+        push!(transcript.messages, Dict("role" => "assistant", "content" => blocks))
+    end
 end
 
 function add!(transcript::Transcript, message::Tool)
@@ -157,13 +189,27 @@ function toolcontent!(transcript, data, image, ::ErrorImage)
     data["content"] * "\n(image attached after the tool results)"
 end
 
+toolschema(tool) = definition(tool)["function"]["parameters"]
+function toolschema(tool::ToolDeclaration)
+    parameters = definition(tool)["function"]["parameters"]
+    Dict("type" => "object", "properties" => get(parameters, "properties", Dict()), "required" => get(parameters, "required", []))
+end
+
+tooldata(tool, fields) = merge(Dict("name" => definition(tool)["function"]["name"], "description" => definition(tool)["function"]["description"], "input_schema" => toolschema(tool)), fields)
+function toolpayload!(data, tools, fields)
+    isempty(tools) || (data["tools"] = [tooldata(tool, fields) for tool in values(tools)])
+end
+function toolpayload!(data, tools::NativeAnthropicTools, fields)
+    definitions = [tooldata(tool, fields) for tool in values(tools)]
+    push!(definitions, Dict("name" => "__pi_deferred_placeholder__", "description" => "Reserved placeholder. Never available. Never call this.", "input_schema" => Dict("type" => "object", "properties" => Dict(), "required" => []), "defer_loading" => true))
+    data["tools"] = definitions
+end
+
 function payload(provider::Anthropic, input, tools, parameters; streaming=false)
     transcript = Transcript(provider)
-    for message in input
-        data = Dict{String, Any}(string(key) => value for (key, value) in pairs(message))
-        add!(transcript, messages[data["role"]](data))
-    end
+    foreach(message -> consume!(transcript, message), input)
     flush!(transcript)
+    flushupdates!(transcript)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(parameters))
     data["model"] = provider.model
     data["messages"] = transcript.messages
@@ -171,10 +217,7 @@ function payload(provider::Anthropic, input, tools, parameters; streaming=false)
     thinking!(data, provider.thinking, input, tools, provider)
     isempty(transcript.system) || (data["system"] = join(transcript.system, "\n\n"))
     delete!(data, "tools")
-    if !isempty(tools)
-        fields = toolfields(effectivestreaming(provider))
-        data["tools"] = [merge(Dict("name" => fn["name"], "description" => fn["description"], "input_schema" => fn["parameters"]), fields) for fn in (definition(tool)["function"] for tool in values(tools))]
-    end
+    toolpayload!(data, tools, requesttoolfields(provider, tools))
     JSON3.write(data)
 end
 

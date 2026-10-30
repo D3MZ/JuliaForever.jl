@@ -1,7 +1,7 @@
 module GoogleAPI
 
 using HTTP, JSON3, Random, SHA
-import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, protocolfield, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute, price, priceevent
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, mergeheaders, endpoint, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, protocolfield, Completion, Finished, Unfinished, Usage, DirectRoute, CatalogRoute, price, priceevent, ToolDeclaration
 
 struct Google
     base::String
@@ -139,6 +139,33 @@ function resultimage!(transcript, result, image, ::SeparateImage)
     push!(transcript.contents, Dict("role" => "user", "parts" => [Dict("text" => "Tool result image:"), imagepart(image)]))
 end
 
+abstract type SchemaPart end
+struct SchemaNode <: SchemaPart end
+struct SchemaNames <: SchemaPart end
+struct SchemaLiteral <: SchemaPart end
+const schemaparts = Dict{String, SchemaPart}(
+    (key => SchemaNames() for key in ("properties", "patternProperties", "\$defs", "definitions", "dependentSchemas", "dependencies"))...,
+    (key => SchemaNode() for key in ("additionalProperties", "unevaluatedProperties", "propertyNames", "items", "prefixItems", "additionalItems", "unevaluatedItems", "contains", "allOf", "anyOf", "oneOf", "not", "if", "then", "else", "contentSchema"))...,
+)
+rewriteschema(value, part::SchemaPart) = value
+rewriteschema(value::AbstractVector, part::SchemaNode) = [rewriteschema(item, part) for item in value]
+rewriteschema(value::AbstractDict, ::SchemaNames) = Dict(string(key) => rewriteschema(item, SchemaNode()) for (key, item) in pairs(value))
+function rewriteschema(value::AbstractDict, ::SchemaNode)
+    result = Dict{String, Any}(string(key) => rewriteschema(item, get(schemaparts, string(key), SchemaLiteral())) for (key, item) in pairs(value))
+    rewriteconst!(result, get(result, "const", nothing))
+    result
+end
+rewriteconst!(result, value) = nothing
+rewriteconst!(result, value::Bool) = nothing
+function rewriteconst!(result, value::Union{AbstractString, Real})
+    haskey(result, "enum") && return nothing
+    delete!(result, "const")
+    result["enum"] = [value]
+    nothing
+end
+toolparams(tool) = definition(tool)["function"]["parameters"]
+toolparams(tool::ToolDeclaration) = rewriteschema(definition(tool)["function"]["parameters"], SchemaNode())
+
 function payload(provider::Google, input, tools, parameters; streaming=false)
     transcript = Transcript(provider)
     for message in input
@@ -152,7 +179,7 @@ function payload(provider::Google, input, tools, parameters; streaming=false)
     isempty(transcript.system) || (data["systemInstruction"] = Dict("parts" => [Dict("text" => join(transcript.system, "\n\n"))]))
     delete!(data, "tools")
     if !isempty(tools)
-        data["tools"] = [Dict("functionDeclarations" => [Dict("name" => fn["name"], "description" => fn["description"], "parametersJsonSchema" => fn["parameters"]) for fn in (definition(tool)["function"] for tool in values(tools))])]
+        data["tools"] = [Dict("functionDeclarations" => [Dict("name" => definition(tool)["function"]["name"], "description" => definition(tool)["function"]["description"], "parametersJsonSchema" => toolparams(tool)) for tool in values(tools)])]
     end
     JSON3.write(data)
 end

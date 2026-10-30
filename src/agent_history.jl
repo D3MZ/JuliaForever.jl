@@ -279,7 +279,7 @@ function recorded_cancel_observed!(run, ::Kernel.Applied)
 end
 
 function recorded_step!(run, effect, ::Union{Idle, Running})
-    request = modelmessages(effect.effect.messages)
+    request = requestview(run.callback, effect.effect.messages, run.agent.tools, run.agent.provider)
     answer = withcontext(effect.effect.messages) do
         response(run.agent, request, run.parameters, run.on_event, run.callback)
     end

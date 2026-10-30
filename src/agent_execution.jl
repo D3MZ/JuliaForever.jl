@@ -1,4 +1,10 @@
+struct ContextModel <: Kernel.Effect
+    messages::Vector{Conversation.Message}
+    tools::ToolChanges
+end
+
 resulttype(::Conversation.ModelRequest) = Execution.ModelResult
+resulttype(::ContextModel) = Execution.ModelResult
 resulttype(::Kernel.Effect) = Kernel.Observation
 
 function register!(agent::Agent, handle::Execution.Handle)
@@ -131,7 +137,7 @@ function execution_start!(agent, prompt, executor, context, ::Running; on_agent_
     models = Execution.ModelResult[]
     event_lock = ReentrantLock()
     callback = on_agent_event
-    on_agent_event = event -> lock(() -> emit(callback, event), event_lock)
+    on_agent_event = EventSink(event_lock, callback)
     run = (; agent, executor, context, messages, models, callback=on_agent_event)
     try
         precompact!(agent, on_agent_event)
@@ -201,7 +207,7 @@ function execution_cancel_observed!(run, ::Kernel.Applied)
 end
 
 function execution_step!(run, effect, ::Union{Idle, Running})
-    outcome = submitted(run.agent, run.executor, effect, run.context)
+    outcome = submitted(run.agent, run.executor, requesteffect(run.callback, effect, run.agent.tools), run.context)
     execution_outcome!(run, effect, outcome)
 end
 
@@ -288,3 +294,47 @@ function finishauto!(agent, result::Execution.Turn, usage, settings::AutoCompact
     finishauto!(agent, result.value, latest, settings, summarize, callback)
 end
 finishauto!(agent, result::Execution.Turn, usage, settings::ChangingCompaction, summarize, callback) = finishauto!(agent, result, usage, settings.select(), summarize, callback)
+
+requesteffect(callback, effect, tools) = effect
+requesteffect(sink::EventSink, effect, tools) = lock(() -> requesteffect(sink.callback, effect, tools), sink.lock)
+function requesteffect(listener::Extensions.Listener, effect::Kernel.Pending{Conversation.ModelRequest}, tools)
+    isempty(get(listener.events, :context, ())) && isempty(get(listener.events, :context_with_system, ())) && return effect
+    original = Dict{String, Any}[convert(Dict{String, Any}, message) for message in effect.effect.messages]
+    seedtools!(original, tools)
+    request = requestview(listener, effect.effect.messages, tools, nothing)
+    messages = Conversation.Message[Conversation.RawMessage(message) for message in request.messages]
+    baseline = toolbaseline(contexthead(original), contexthead(request.messages))
+    Kernel.Pending(effect.id, ContextModel(messages, toolchanges(tools, request.tools, request.messages, baseline)))
+end
+
+initialnames(messages, role) = Set{String}()
+initialnames(messages, ::ContextSystem) = Set(String(tool["name"]) for tool in get(first(messages), "toolsAdded", []))
+seedworkertools!(messages, available, tools, ::ClearTools) = messages
+function seedworkertools!(messages, available, tools, ::RetainTools)
+    names = initialnames(messages, contexthead(messages))
+    missing = OrderedDict{String, Tool}(key => value for (key, value) in pairs(available) if haskey(tools, key) && key ∉ names)
+    seedtools!(messages, missing)
+end
+
+function Execution.perform(work::Execution.Work{ContextModel}, cancellation::Execution.Cancellation)
+    capabilities = Execution.context(work.context)
+    try
+        messages = modelmessages(work.effect.messages)
+        available = Execution.worktools(capabilities.tools, work.exposed)
+        tools = applychanges(available, work.effect.tools)
+        seedworkertools!(messages, available, tools, work.effect.tools.baseline)
+        request = contextrequest(capabilities.provider, messages, currentsystem(messages), tools)
+        performcontext(work, capabilities, request)
+    catch
+        Execution.result(Conversation.ModelFailure("provider did not return"), work.result)
+    end
+end
+
+performcontext(work, capabilities, ::UnsupportedContextRequest) = Execution.result(contextfailure(), work.result)
+function performcontext(work, capabilities, request::RequestView)
+    parameters = deepcopy(capabilities.parameters)
+    answer = withcontext(work.effect.messages) do
+        isempty(parameters) ? complete(capabilities.provider, request.messages, request.tools) : complete(capabilities.provider, request.messages, request.tools; parameters)
+    end
+    Execution.result(price(capabilities.provider, answer), work.result)
+end

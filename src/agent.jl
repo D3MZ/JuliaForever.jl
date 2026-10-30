@@ -507,11 +507,11 @@ function request!(f, agent::Agent, partial, started)
     end
 end
 
-function response(agent, messages, parameters, ::Nothing, on_agent_event)
+function response(agent, request, parameters, ::Nothing, on_agent_event)
     partial = Dict{String, Any}("role" => "assistant", "content" => nothing)
     info = responseinfo(agent.provider, round(Int, 1000time()))
     result = request!(agent, partial, Ref{MessagePresentation}(Unannounced())) do
-        message = isempty(parameters) ? complete(agent.provider, messages, agent.tools) : complete(agent.provider, messages, agent.tools; parameters)
+        message = isempty(parameters) ? complete(agent.provider, request.messages, request.tools) : complete(agent.provider, request.messages, request.tools; parameters)
         message = price(agent.provider, message)
         response(message)
     end
@@ -520,7 +520,7 @@ end
 
 providercomplete!(callback, result) = nothing
 
-function response(agent, messages, parameters, on_event, on_agent_event)
+function response(agent, request, parameters, on_event, on_agent_event)
     partial = Dict{String, Any}("role" => "assistant", "content" => nothing)
     calls = Dict{Any, Any}()
     started = Ref{MessagePresentation}(Unannounced())
@@ -531,7 +531,7 @@ function response(agent, messages, parameters, on_event, on_agent_event)
     end
     info = responseinfo(agent.provider, round(Int, 1000time()))
     answer = request!(agent, partial, started) do
-        result = price(agent.provider, stream(agent.provider, messages, agent.tools; parameters, on_event=callback))
+        result = price(agent.provider, stream(agent.provider, request.messages, request.tools; parameters, on_event=callback))
         providercomplete!(on_event, result)
         (; message=result.message, result, started=started[])
     end
@@ -724,9 +724,9 @@ finish(message, result::Completion, ::Type{Truncated}) = Truncated(result)
 function modelresponse(agent, effect, parameters, on_event, on_agent_event)
     answer = nothing
     try
-        messages = modelmessages(effect.effect.messages)
+        request = requestview(on_agent_event, effect.effect.messages, agent.tools, agent.provider)
         received = withcontext(effect.effect.messages) do
-            response(agent, messages, parameters, on_event, on_agent_event)
+            response(agent, request, parameters, on_event, on_agent_event)
         end
         rememberusage!(received.result)
         answer = received
