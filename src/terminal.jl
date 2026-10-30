@@ -33,33 +33,51 @@ end
 status(::Terminal, ::ToolSuccess) = "ok"
 status(terminal::Terminal, result::ToolFailure) = "error: " * redact(terminal, result.text)
 
-ignore_event!(terminal, event) = nothing
+abstract type TerminalEvent end
+struct AssistantEnded <: TerminalEvent
+    content::Any
+end
+struct ToolStarted <: TerminalEvent
+    name::Any
+end
+struct ToolEnded <: TerminalEvent
+    name::Any
+    result::Any
+end
 
-function render_assistant!(terminal::Terminal, event)
-    showcontent!(terminal, get(event.message, "content", nothing))
+const terminaleventtypes = Dict(:message_end => AssistantEnded, :tool_execution_start => ToolStarted, :tool_execution_end => ToolEnded)
+const terminalroles = Dict("assistant" => AssistantEnded)
+terminalevent(event) = terminalevent(get(terminaleventtypes, event.type, nothing), event)
+terminalevent(::Nothing, event) = nothing
+terminalevent(::Type{AssistantEnded}, event) = terminalassistant(get(terminalroles, get(event.message, "role", nothing), nothing), event.message)
+terminalevent(::Type{ToolStarted}, event) = ToolStarted(event.tool_name)
+terminalevent(::Type{ToolEnded}, event) = ToolEnded(event.tool_name, event.result)
+terminalassistant(::Nothing, message) = nothing
+terminalassistant(::Type{AssistantEnded}, message) = AssistantEnded(get(message, "content", nothing))
+
+render!(terminal::Terminal, event) = render!(terminal, terminalevent(event))
+render!(terminal::Terminal, ::Nothing) = nothing
+
+function render!(terminal::Terminal, event::AssistantEnded)
+    showcontent!(terminal, event.content)
     line!(terminal)
     terminal.streamed = false
 end
 
 showcontent!(terminal::Terminal, content) = nothing
 showcontent!(terminal::Terminal, content::AbstractString) = terminal.streamed || text!(terminal, content)
-const messagerenders = Dict("assistant" => render_assistant!)
-render_message!(terminal::Terminal, event) = get(messagerenders, get(event.message, "role", nothing), ignore_event!)(terminal, event)
 
-function render_tool_start!(terminal::Terminal, event)
-    println(terminal.diagnostics, "[tool] ", redact(terminal, something(event.tool_name, "unknown")), ": started")
+function render!(terminal::Terminal, event::ToolStarted)
+    println(terminal.diagnostics, "[tool] ", redact(terminal, something(event.name, "unknown")), ": started")
     flush(terminal.diagnostics)
 end
 
-function render_tool_end!(terminal::Terminal, event)
-    name = redact(terminal, something(event.tool_name, "unknown"))
+function render!(terminal::Terminal, event::ToolEnded)
+    name = redact(terminal, something(event.name, "unknown"))
     result = status(terminal, event.result)
     println(terminal.diagnostics, "[tool] ", name, ": ", result)
     flush(terminal.diagnostics)
 end
-
-const terminalrenders = Dict(:message_end => render_message!, :tool_execution_start => render_tool_start!, :tool_execution_end => render_tool_end!)
-render!(terminal::Terminal, event) = get(terminalrenders, event.type, ignore_event!)(terminal, event)
 
 const finishdetails = Dict("content_filter" => "content was filtered", "failed" => "the provider reported failure", "incomplete" => "the provider reported incomplete output")
 result!(terminal::Terminal, result::Completion) = result!(terminal, result, result.error)
@@ -192,9 +210,13 @@ function request!(f, terminal::Terminal)
     (; value=fetch(task), status=0)
 end
 
-streamtext!(terminal::Terminal, event) = text!(terminal, event.text)
-const streamrenders = Dict(:text => streamtext!)
-streamrender!(terminal::Terminal, event) = get(streamrenders, event.type, ignore_event!)(terminal, event)
+const streamtypes = Dict(:text => TextDelta)
+streamevent(event) = streamevent(get(streamtypes, event.type, nothing), event)
+streamevent(::Nothing, event) = nothing
+streamevent(::Type{TextDelta}, event) = TextDelta(event.text)
+streamrender!(terminal::Terminal, event) = streamrender!(terminal, streamevent(event))
+streamrender!(terminal::Terminal, ::Nothing) = nothing
+streamrender!(terminal::Terminal, event::TextDelta) = text!(terminal, event.text)
 
 function run!(terminal::Terminal, agent::Agent, prompt)
     result = request!(terminal) do

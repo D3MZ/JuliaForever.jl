@@ -204,27 +204,15 @@ provider.jl	:denied
 provider.jl	:streaming
 provider.jl	:success
 provider.jl	:success
-responses.jl	:(get((data["output"])[index + 1], "type", nothing) != "function_call")
-responses.jl	:(get(call, "status", "completed") == "completed")
 responses.jl	:(get(call, key, nothing) isa AbstractString)
-responses.jl	:(get(data, "status", nothing) == "completed")
 responses.jl	:(get(done, "type", nothing) == "reasoning")
-responses.jl	:(get(item, "type", nothing) == "function_call")
-responses.jl	:(get(item, "type", nothing) == "function_call")
-responses.jl	:(get(item, "type", nothing) == "function_call")
 responses.jl	:(get(item, "type", nothing) == "reasoning")
 responses.jl	:(isnothing(done))
 responses.jl	:(isnothing(done))
-responses.jl	:(isnothing(failure))
-responses.jl	:(isnothing(failure))
-responses.jl	:(isnothing(failure))
 responses.jl	:(isnothing(get(done, "encrypted_content", nothing)))
 responses.jl	:(isnothing(get(item, "encrypted_content", nothing)))
 responses.jl	:(isnothing(result.finish))
 responses.jl	:(isnothing(result.usage))
-responses.jl	:(status != "completed")
-responses.jl	:(status == "completed")
-responses.jl	:(status == "completed")
 scheduler.jl	:(isnothing(request))
 scheduler.jl	:(key !== nothing)
 scheduler.jl	:(name === :cancelled)
@@ -239,7 +227,6 @@ scheduler.jl	:cancelled
 scheduler.jl	:success
 search.jl	:(isnothing(filterregex))
 search.jl	:(isnothing(filterregex))
-search.jl	:(isnothing(repo))
 search.jl	:(isnothing(stop))
 search.jl	:(rule.directory)
 search.jl	:anchored
@@ -254,12 +241,8 @@ search.jl	:directory
 search.jl	:directory
 search.jl	:exclude
 search.jl	:exclude
-search.jl	:findmode
-search.jl	:findmode
-search.jl	:findmode
 search.jl	:ignorecase
 search.jl	:ignorecase
-search.jl	:inside
 search.jl	:isdirectory
 search.jl	:limited
 search.jl	:literal
