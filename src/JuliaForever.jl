@@ -6,6 +6,7 @@ export Execution
 export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, CodeSuccess, CodeFailure, cancel!, codeexecute, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Anthropic, Google, Usage, Completion, InvalidResponse, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
 
 include("instructions.jl")
+include("prompts.jl")
 include("tools.jl")
 include("system.jl")
 include("provider.jl")
@@ -196,6 +197,7 @@ function runsession!(history, terminal, model, tools, args, sessiondir)
         agent = Agent(model, Dict{String, Tool}(name(tool) => tool for tool in tools), messages; history)
         agent isa History.Rejected && return result!(terminal, agent)
         isnothing(agent.fault) || return sessionfault!(terminal, agent.fault, history)
+        templates = Prompts.load(pwd())
         if isempty(args)
             status = 0
             for line in terminalinput(stdin, stderr)
@@ -205,11 +207,11 @@ function runsession!(history, terminal, model, tools, args, sessiondir)
                     status = max(status, result)
                     continue
                 end
-                status = max(status, run!(terminal, agent, line))
+                status = max(status, run!(terminal, agent, Prompts.expand(line, templates)))
             end
             return status
         else
-            return run!(terminal, agent, join(args, " "))
+            return run!(terminal, agent, Prompts.expand(join(args, " "), templates))
         end
     finally
         isnothing(history) || close(history)
