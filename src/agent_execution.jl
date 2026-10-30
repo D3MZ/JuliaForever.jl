@@ -117,87 +117,22 @@ respond_execution!(agent::Agent, prompt, executor::Execution.Executor, context::
 
 function respond_execution!(agent::Agent, prompt, executor::Execution.Executor, context::AbstractString, ::Nothing, ::Nothing; on_agent_event, parameters, tool_execution)
     isempty(parameters) || return Execution.Rejected(:parameters)
-    tool_execution == :sequential || return Execution.Rejected(:parallel_tools)
+    execution_mode!(agent, prompt, executor, context, toolmode(tool_execution); on_agent_event)
+end
+execution_mode!(agent, prompt, executor, context, mode; kwargs...) = Execution.Rejected(:parallel_tools)
+
+function execution_mode!(agent, prompt, executor, context, ::Sequential; on_agent_event)
     begin!(agent) || return :busy
     messages = Dict{String, Any}[]
     models = Execution.ModelResult[]
     event_lock = ReentrantLock()
     callback = on_agent_event
     on_agent_event = event -> lock(() -> emit(callback, event), event_lock)
+    run = (; agent, executor, context, messages, models, callback=on_agent_event)
     try
         emit(on_agent_event, (; type=:agent_start))
         emit(on_agent_event, (; type=:turn_start))
-        synced = sync!(agent)
-        synced isa History.Rejected && return Execution.Turn(synced, models)
-        next, added = transition!(revision -> Conversation.Input(revision, prompt), agent)
-        next isa Kernel.Applied || return Execution.Turn(next, models)
-        present!(agent, added, messages, on_agent_event)
-        if cancelled(agent) && !agent.state.cancelled
-            next, _ = transition!(revision -> Conversation.Cancel(revision), agent)
-            next isa Kernel.Applied || return Execution.Turn(next, models)
-        end
-        synced = sync!(agent)
-        synced isa History.Rejected && return Execution.Turn(synced, models)
-        next, added = transition!(revision -> Conversation.Advance(revision), agent)
-        next isa Kernel.Applied || return Execution.Turn(next, models)
-        present!(agent, added, messages, on_agent_event)
-        if cancelled(agent)
-            emit(on_agent_event, (; type=:turn_end, message=nothing, tool_results=Dict{String, Any}[]))
-            return Execution.Turn(:cancelled, models)
-        end
-        effect = only(next.effects)
-        while true
-            if cancelled(agent)
-                observed, _ = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("cancelled before dispatch")), agent)
-                observed isa Kernel.Applied || return Execution.Turn(observed, models)
-                emit(on_agent_event, (; type=:turn_end, message=nothing, tool_results=Dict{String, Any}[]))
-                return Execution.Turn(:cancelled, models)
-            end
-            outcome = submitted(agent, executor, effect, context)
-            if outcome isa Execution.Cancelled && cancelled(agent)
-                observed, _ = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("cancelled before dispatch")), agent)
-                observed isa Kernel.Applied || return Execution.Turn(observed, models)
-                emit(on_agent_event, (; type=:turn_end, message=nothing, tool_results=Dict{String, Any}[]))
-                return Execution.Turn(:cancelled, models)
-            end
-            outcome isa Execution.Completed || return Execution.Turn(unresolved(agent, outcome), models)
-            outcome.value isa Execution.ModelResult || return Execution.Turn(unresolved(agent, Execution.Rejected(:unexpected_result)), models)
-            model = outcome.value
-            push!(models, model)
-            reply = model.observation
-            if reply isa Conversation.ModelFailure
-                observed, _ = transition!(revision -> Kernel.Observe(revision, effect.id, reply), agent)
-                observed isa Kernel.Applied || return Execution.Turn(observed, models)
-                return Execution.Turn(Execution.Rejected(:provider_failure), models)
-            end
-            if !isnothing(model.error) && reply.message.done
-                observed, _ = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("provider reported an error")), agent)
-                observed isa Kernel.Applied || return Execution.Turn(observed, models)
-                return Execution.Turn(Execution.Rejected(:provider_error), models)
-            end
-            transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, reply), agent)
-            transition isa Kernel.Applied || return Execution.Turn(transition, models)
-            message = convert(Dict{String, Any}, reply.message)
-            if !reply.message.done
-                emit(on_agent_event, (; type=:message_start, message=deepcopy(message)))
-                emit(on_agent_event, (; type=:message_end, message=deepcopy(message)))
-                emit(on_agent_event, (; type=:turn_end, message=deepcopy(message), tool_results=Dict{String, Any}[]))
-                return Execution.Turn(cancelled(agent) ? :cancelled : Execution.Rejected(:incomplete_model), models)
-            end
-            present!(agent, added, messages, on_agent_event)
-            results = execution_tools!(agent, executor, context, transition.effects, messages, on_agent_event)
-            results isa Vector || return Execution.Turn(unresolved(agent, results), models)
-            emit(on_agent_event, (; type=:turn_end, message=deepcopy(message), tool_results=deepcopy(results)))
-            synced = sync!(agent)
-            synced isa History.Rejected && return Execution.Turn(synced, models)
-            next, added = transition!(revision -> Conversation.Advance(revision), agent)
-            next isa Kernel.Applied || return Execution.Turn(next, models)
-            cancelled(agent) && return Execution.Turn(:cancelled, models)
-            isempty(next.effects) && return Execution.Turn(finish(message, model), models)
-            emit(on_agent_event, (; type=:turn_start))
-            present!(agent, added, messages, on_agent_event)
-            effect = only(next.effects)
-        end
+        execution_input_sync!(run, prompt, sync!(agent))
     finally
         try
             interrupt!(agent, agent.history)
@@ -206,6 +141,132 @@ function respond_execution!(agent::Agent, prompt, executor::Execution.Executor, 
             finish!(agent)
         end
     end
+end
+
+execution_input_sync!(run, prompt, rejected::History.Rejected) = Execution.Turn(rejected, run.models)
+function execution_input_sync!(run, prompt, ::Nothing)
+    result, added = transition!(revision -> Conversation.Input(revision, prompt), run.agent)
+    execution_input!(run, result, added)
+end
+
+execution_input!(run, result, added) = Execution.Turn(result, run.models)
+function execution_input!(run, result::Kernel.Applied, added)
+    present!(run.agent, added, run.messages, run.callback)
+    agent = run.agent
+    execution_cancelled!(run, cancel_transition!(agent, turnstate(agent)))
+end
+
+execution_cancelled!(run, result) = Execution.Turn(result, run.models)
+execution_cancelled!(run, ::Union{Nothing, Kernel.Applied}) = execution_advance_sync!(run, sync!(run.agent))
+execution_advance_sync!(run, rejected::History.Rejected) = Execution.Turn(rejected, run.models)
+function execution_advance_sync!(run, ::Nothing)
+    result, added = transition!(revision -> Conversation.Advance(revision), run.agent)
+    execution_advance!(run, result, added)
+end
+
+execution_advance!(run, result, added) = Execution.Turn(result, run.models)
+function execution_advance!(run, result::Kernel.Applied, added)
+    present!(run.agent, added, run.messages, run.callback)
+    execution_ready!(run, result, turnstate(run.agent))
+end
+function execution_ready!(run, result, ::Cancelled)
+    emit(run.callback, (; type=:turn_end, message=nothing, tool_results=Dict{String, Any}[]))
+    Execution.Turn(:cancelled, run.models)
+end
+execution_ready!(run, result, ::Union{Idle, Running}) = execution_loop!(run, only(result.effects))
+
+function execution_loop!(run, effect)
+    pending = Kernel.Pending[effect]
+    result = Ref{Any}()
+    while !isempty(pending)
+        next = execution_step!(run, pop!(pending), turnstate(run.agent))
+        schedule_pending!(pending, result, next)
+    end
+    result[]
+end
+
+function execution_step!(run, effect, ::Cancelled)
+    result, _ = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("cancelled before dispatch")), run.agent)
+    execution_cancel_observed!(run, result)
+end
+execution_cancel_observed!(run, result) = Execution.Turn(result, run.models)
+function execution_cancel_observed!(run, ::Kernel.Applied)
+    emit(run.callback, (; type=:turn_end, message=nothing, tool_results=Dict{String, Any}[]))
+    Execution.Turn(:cancelled, run.models)
+end
+
+function execution_step!(run, effect, ::Union{Idle, Running})
+    outcome = submitted(run.agent, run.executor, effect, run.context)
+    execution_outcome!(run, effect, outcome)
+end
+
+execution_outcome!(run, effect, outcome) = Execution.Turn(unresolved(run.agent, outcome), run.models)
+execution_outcome!(run, effect, outcome::Execution.Cancelled) = execution_cancel_outcome!(run, effect, outcome, turnstate(run.agent))
+execution_cancel_outcome!(run, effect, outcome, ::Union{Idle, Running}) = Execution.Turn(unresolved(run.agent, outcome), run.models)
+execution_cancel_outcome!(run, effect, outcome, turn::Cancelled) = execution_step!(run, effect, turn)
+execution_outcome!(run, effect, outcome::Execution.Completed) = execution_model!(run, effect, outcome.value)
+execution_model!(run, effect, value) = Execution.Turn(unresolved(run.agent, Execution.Rejected(:unexpected_result)), run.models)
+
+function execution_model!(run, effect, model::Execution.ModelResult)
+    push!(run.models, model)
+    execution_reply!(run, effect, model, model.observation)
+end
+
+function execution_reply!(run, effect, model, reply::Conversation.ModelFailure)
+    result, _ = transition!(revision -> Kernel.Observe(revision, effect.id, reply), run.agent)
+    execution_failure!(run, result, :provider_failure)
+end
+execution_reply!(run, effect, model, reply) = execution_error!(run, effect, model, reply, model.error)
+execution_error!(run, effect, model, reply, ::Nothing) = execution_observe!(run, effect, reply)
+execution_error!(run, effect, model, reply, error) = execution_error!(run, effect, model, reply, error, getfield(reply.message, :status))
+execution_error!(run, effect, model, reply, error, ::Unfinished) = execution_observe!(run, effect, reply)
+function execution_error!(run, effect, model, reply, error, ::Finished)
+    result, _ = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("provider reported an error")), run.agent)
+    execution_failure!(run, result, :provider_error)
+end
+execution_failure!(run, result, reason) = Execution.Turn(result, run.models)
+execution_failure!(run, ::Kernel.Applied, reason) = Execution.Turn(Execution.Rejected(reason), run.models)
+
+function execution_observe!(run, effect, reply)
+    result, added = transition!(revision -> Kernel.Observe(revision, effect.id, reply), run.agent)
+    execution_observed!(run, reply, result, added)
+end
+execution_observed!(run, reply, result, added) = Execution.Turn(result, run.models)
+execution_observed!(run, reply, result::Kernel.Applied, added) = execution_observed!(run, reply, result, added, getfield(reply.message, :status))
+function execution_observed!(run, reply, result::Kernel.Applied, added, ::Unfinished)
+    message = convert(Dict{String, Any}, reply.message)
+    emit(run.callback, (; type=:message_start, message=deepcopy(message)))
+    emit(run.callback, (; type=:message_end, message=deepcopy(message)))
+    emit(run.callback, (; type=:turn_end, message=deepcopy(message), tool_results=Dict{String, Any}[]))
+    execution_incomplete!(run, turnstate(run.agent))
+end
+function execution_observed!(run, reply, result::Kernel.Applied, added, ::Finished)
+    message = convert(Dict{String, Any}, reply.message)
+    present!(run.agent, added, run.messages, run.callback)
+    results = execution_tools!(run.agent, run.executor, run.context, result.effects, run.messages, run.callback)
+    execution_tools_done!(run, message, results)
+end
+execution_incomplete!(run, ::Cancelled) = Execution.Turn(:cancelled, run.models)
+execution_incomplete!(run, ::Union{Idle, Running}) = Execution.Turn(Execution.Rejected(:incomplete_model), run.models)
+
+execution_tools_done!(run, message, result) = Execution.Turn(unresolved(run.agent, result), run.models)
+function execution_tools_done!(run, message, results::Vector)
+    emit(run.callback, (; type=:turn_end, message=deepcopy(message), tool_results=deepcopy(results)))
+    execution_post_sync!(run, message, sync!(run.agent))
+end
+execution_post_sync!(run, message, rejected::History.Rejected) = Execution.Turn(rejected, run.models)
+function execution_post_sync!(run, message, ::Nothing)
+    result, added = transition!(revision -> Conversation.Advance(revision), run.agent)
+    execution_next!(run, message, result, added)
+end
+execution_next!(run, message, result, added) = Execution.Turn(result, run.models)
+execution_next!(run, message, result::Kernel.Applied, added) = execution_next!(run, message, result, added, turnstate(run.agent))
+execution_next!(run, message, result, added, ::Cancelled) = Execution.Turn(:cancelled, run.models)
+function execution_next!(run, message, result, added, ::Union{Idle, Running})
+    isempty(result.effects) && return Execution.Turn(finish(message, last(run.models)), run.models)
+    emit(run.callback, (; type=:turn_start))
+    present!(run.agent, added, run.messages, run.callback)
+    only(result.effects)
 end
 
 function interrupt!(agent::Agent, ::Nothing)

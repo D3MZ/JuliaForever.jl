@@ -149,6 +149,23 @@ end
     @test_throws TaskFailedException JuliaForever.request!(() -> 1 + "synthetic", terminal)
 end
 
+@testset "terminal provider and history outcomes" begin
+    terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), String[])
+    message = Dict{String, Any}("role" => "assistant", "content" => nothing)
+    for (finish, detail) in (("content_filter", "content was filtered"), ("failed", "the provider reported failure"), ("incomplete", "the provider reported incomplete output"), ("other", "the provider stream did not finish"), (nothing, "the provider stream did not finish"))
+        @test JuliaForever.result!(terminal, Completion(message, nothing, finish, false, nothing)) == 1
+        @test String(take!(terminal.diagnostics)) == "Response incomplete: $detail\n"
+    end
+    @test JuliaForever.result!(terminal, Completion(message, nothing, nothing, false, JuliaForever.InvalidResponse())) == 1
+    @test String(take!(terminal.diagnostics)) == "Request failed (invalid provider response).\n"
+    @test JuliaForever.result!(terminal, :cancelled) == 130
+    @test String(take!(terminal.diagnostics)) == "Request cancelled.\n"
+    @test JuliaForever.result!(terminal, JuliaForever.History.Rejected(:not_interrupted)) == 1
+    @test String(take!(terminal.diagnostics)) == "History has no interrupted turn to abandon.\n"
+    @test JuliaForever.result!(terminal, JuliaForever.History.Rejected(:custom)) == 1
+    @test String(take!(terminal.diagnostics)) == "History rejected: custom.\n"
+end
+
 function terminal_process(mode, args; input="", key="synthetic-secret")
     project = dirname(@__DIR__)
     script = joinpath(@__DIR__, "terminal_process.jl")

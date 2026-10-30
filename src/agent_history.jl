@@ -21,8 +21,9 @@ end
 openagent(provider, tools, messages, initial, history::History.Store, revision::Integer) = Agent(provider, tools, messages, initial, initial, Kernel.Event[], ReentrantLock(), Idle(), ShellCancellation(), nothing, history, revision, nothing)
 replay(rejected::History.Rejected, batches) = rejected
 
-function replay(initial::Conversation.State, batches)
-    initial.automatic && return History.Rejected(:invalid_record)
+replay(initial::Conversation.State, batches) = replay(initial, batches, getfield(initial, :mode))
+replay(initial::Conversation.State, batches, ::Conversation.Automatic) = History.Rejected(:invalid_record)
+function replay(initial::Conversation.State, batches, ::Conversation.Manual)
     foldl(batches; init=(initial, Kernel.Event[])) do state, batch
         replay(state, batch)
     end
@@ -174,8 +175,10 @@ end
 
 respond_recorded!(agent::Agent, prompt, rejected::History.Rejected; kwargs...) = rejected
 
-function respond_recorded!(agent::Agent, prompt, ::Nothing; on_event, on_agent_event, parameters, tool_execution)
-    tool_execution == :sequential || return History.Rejected(:unsupported_execution)
+respond_recorded!(agent::Agent, prompt, ::Nothing; on_event, on_agent_event, parameters, tool_execution) = recorded_mode!(agent, prompt, toolmode(tool_execution); on_event, on_agent_event, parameters)
+recorded_mode!(agent, prompt, mode; kwargs...) = History.Rejected(:unsupported_execution)
+
+function recorded_mode!(agent, prompt, ::Sequential; on_event, on_agent_event, parameters)
     begin!(agent) || return :busy
     messages = Dict{String, Any}[]
     event_lock = ReentrantLock()
@@ -214,11 +217,7 @@ end
 recorded_cancel!(run, rejected::History.Rejected) = rejected
 function recorded_cancel!(run, ::Nothing)
     agent = run.agent
-    if cancelled(agent) && !agent.state.cancelled
-        result, _ = transition!(revision -> Conversation.Cancel(revision), agent)
-        return recorded_cancelled!(run, result)
-    end
-    recorded_cancelled!(run, nothing)
+    recorded_cancelled!(run, cancel_transition!(agent, turnstate(agent)))
 end
 
 recorded_cancelled!(run, result) = result
@@ -250,13 +249,13 @@ function recorded_loop!(run, effect)
     result = Ref{Any}()
     while !isempty(pending)
         next = recorded_step!(run, pop!(pending), turnstate(run.agent))
-        recorded_schedule!(pending, result, next)
+        schedule_pending!(pending, result, next)
     end
     result[]
 end
 
-recorded_schedule!(pending, result, next::Kernel.Pending) = push!(pending, next)
-recorded_schedule!(pending, result, value) = (result[] = value)
+schedule_pending!(pending, result, next::Kernel.Pending) = push!(pending, next)
+schedule_pending!(pending, result, value) = (result[] = value)
 
 function recorded_step!(run, effect, ::Cancelled)
     result, _ = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("cancelled before dispatch")), run.agent)
@@ -284,9 +283,12 @@ end
 recorded_observed!(run, answer, result, added) = result
 recorded_observed!(run, answer, result::Kernel.Applied, added) = recorded_result!(run, answer, result, added, answer.result)
 recorded_result!(run, answer, transition, added, ::Nothing) = recorded_complete!(run, answer, transition, added)
-function recorded_result!(run, answer, transition, added, result)
-    result.done && return recorded_complete!(run, answer, transition, added)
-    answer.started || emit(run.callback, (; type=:message_start, message=deepcopy(answer.message)))
+recorded_result!(run, answer, transition, added, result::Completion) = recorded_result!(run, answer, transition, added, result, getfield(result, :status))
+recorded_result!(run, answer, transition, added, result) = recorded_result!(run, answer, transition, added, result, completionstatus(result.done))
+recorded_result!(run, answer, transition, added, result, ::Finished) = recorded_complete!(run, answer, transition, added)
+recorded_result!(run, answer, transition, added, result, ::Unfinished) = recorded_partial!(run, answer, result)
+function recorded_partial!(run, answer, result)
+    message_start!(run.callback, answer.message, answer.started)
     emit(run.callback, (; type=:message_end, message=deepcopy(answer.message)))
     emit(run.callback, (; type=:turn_end, message=deepcopy(answer.message), tool_results=Dict{String, Any}[]))
     recorded_incomplete!(run, result, run.agent.fault)

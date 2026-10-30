@@ -53,15 +53,66 @@ end
 
 State() = State(0, 0, Dict{Int, Record}(), Dict{Tuple{Int, String}, Int}())
 
+abstract type Health end
+struct Healthy <: Health end
+struct Broken <: Health end
+abstract type Access end
+struct Open <: Access end
+struct Closed <: Access end
+abstract type Occupancy end
+struct Free <: Occupancy end
+struct Busy <: Occupancy end
+abstract type Lifetime end
+struct Live <: Lifetime end
+struct Expired <: Lifetime end
+
+const healthstates = Dict(false => Healthy(), true => Broken())
+const accessstates = Dict(false => Open(), true => Closed())
+const occupancystates = Dict(false => Free(), true => Busy())
+const lifetimes = Dict(false => Expired(), true => Live())
+health(value) = healthstates[convert(Bool, value)]
+access(value) = accessstates[convert(Bool, value)]
+occupancy(value) = occupancystates[convert(Bool, value)]
+lifetime(value) = lifetimes[convert(Bool, value)]
+failed(::Healthy) = false
+failed(::Broken) = true
+closed(::Open) = false
+closed(::Closed) = true
+busy(::Free) = false
+busy(::Busy) = true
+active(::Live) = true
+active(::Expired) = false
+
 mutable struct Store
     io::IOStream
     state::State
     nextid::Int
     lock::ReentrantLock
-    failed::Bool
-    closed::Bool
-    busy::Bool
+    health::Health
+    access::Access
+    occupancy::Occupancy
+
+    function Store(io, state, nextid, lock, health::Health, access::Access, occupancy::Occupancy)
+        new(io, state, nextid, lock, health, access, occupancy)
+    end
 end
+
+Store(io, state, nextid, lock, failed, closed, busy) = Store(io, state, nextid, lock, health(failed), access(closed), occupancy(busy))
+
+function Base.getproperty(store::Store, name::Symbol)
+    name === :failed && return failed(getfield(store, :health))
+    name === :closed && return closed(getfield(store, :access))
+    name === :busy && return busy(getfield(store, :occupancy))
+    getfield(store, name)
+end
+
+function Base.setproperty!(store::Store, name::Symbol, value)
+    name === :failed && return failed(setfield!(store, :health, health(value)))
+    name === :closed && return closed(setfield!(store, :access, access(value)))
+    name === :busy && return busy(setfield!(store, :occupancy, occupancy(value)))
+    setfield!(store, name, convert(fieldtype(Store, name), value))
+end
+Base.propertynames(::Store, private::Bool=false) = (:io, :state, :nextid, :lock, :failed, :closed, :busy, :health, :access, :occupancy)
 
 mutable struct Transaction
     store::Store
@@ -69,9 +120,24 @@ mutable struct Transaction
     writes::Vector{Record}
     minted::Set{Int}
     owner::Core.Task
-    active::Bool
+    lifetime::Lifetime
     failure::Union{Nothing, Rejected}
+
+    function Transaction(store, state, writes, minted, owner, lifetime::Lifetime, failure)
+        new(store, state, writes, minted, owner, lifetime, failure)
+    end
 end
+
+Transaction(store, state, writes, minted, owner, active, failure) = Transaction(store, state, writes, minted, owner, lifetime(active), failure)
+function Base.getproperty(tx::Transaction, name::Symbol)
+    name === :active && return active(getfield(tx, :lifetime))
+    getfield(tx, name)
+end
+function Base.setproperty!(tx::Transaction, name::Symbol, value)
+    name === :active && return active(setfield!(tx, :lifetime, lifetime(value)))
+    setfield!(tx, name, convert(fieldtype(Transaction, name), value))
+end
+Base.propertynames(::Transaction, private::Bool=false) = (:store, :state, :writes, :minted, :owner, :active, :failure, :lifetime)
 
 encode(::Nothing) = nothing
 encode(parent::Tuple{Int, Int}) = (; conversation=parent[1], at=parent[2])
@@ -302,23 +368,32 @@ end
 
 function Base.close(store::Store)
     lock(store.lock) do
-        store.busy && return Rejected(:busy)
-        if !store.closed
-            store.closed = true
-            close(store.io)
-        end
+        close(store, getfield(store, :occupancy))
     end
 end
+Base.close(store::Store, ::Busy) = Rejected(:busy)
+Base.close(store::Store, ::Free) = close(store, getfield(store, :access))
+Base.close(store::Store, ::Closed) = nothing
+function Base.close(store::Store, ::Open)
+    setfield!(store, :access, Closed())
+    close(store.io)
+end
 
-status(store::Store) = store.closed ? Rejected(:closed) : store.failed ? Rejected(:failed) : nothing
-status(tx::Transaction) = !tx.active ? Rejected(:expired_transaction) : tx.owner !== current_task() ? Rejected(:foreign_task) : tx.failure
+status(store::Store) = status(getfield(store, :access), getfield(store, :health))
+status(::Closed, ::Health) = Rejected(:closed)
+status(::Open, ::Broken) = Rejected(:failed)
+status(::Open, ::Healthy) = nothing
+status(tx::Transaction) = status(tx, getfield(tx, :lifetime))
+status(tx::Transaction, ::Expired) = Rejected(:expired_transaction)
+status(tx::Transaction, ::Live) = tx.owner !== current_task() ? Rejected(:foreign_task) : tx.failure
 
 function revision(store::Store)
     lock(store.lock) do
-        result = status(store)
-        result === nothing ? store.state.seq : result
+        revision(store, status(store))
     end
 end
+revision(store::Store, rejected::Rejected) = rejected
+revision(store::Store, ::Nothing) = store.state.seq
 
 selected(::Type{T}, record) where {T <: Record} = nothing
 selected(::Type{T}, record::T) where {T <: Record} = deepcopy(record)
@@ -327,21 +402,21 @@ matches(::Type{T}, record::T, conversation) where {T <: Record} = belongs(record
 
 function Base.get(store::Store, ::Type{T}, id::Integer) where {T <: Record}
     lock(store.lock) do
-        result = status(store)
-        result === nothing || return result
-        record = get(store.state.records, id, nothing)
-        selected(T, record)
+        readrecord(store, T, id, status(store))
     end
 end
+readrecord(owner, type, id, rejected::Rejected) = rejected
+readrecord(owner, type, id, ::Nothing) = selected(type, get(owner.state.records, id, nothing))
 
 function Base.get(store::Store, ::Type{Submission}, conversation::Integer, request::AbstractString)
     lock(store.lock) do
-        result = status(store)
-        result === nothing || return result
-        id = get(store.state.requests, (conversation, String(request)), nothing)
-        id === nothing ? nothing : deepcopy(store.state.records[id])
+        readsubmission(store, conversation, request, status(store))
     end
 end
+readsubmission(store, conversation, request, rejected::Rejected) = rejected
+readsubmission(store, conversation, request, ::Nothing) = readsubmission(store, get(store.state.requests, (conversation, String(request)), nothing))
+readsubmission(store, ::Nothing) = nothing
+readsubmission(store, id::Integer) = deepcopy(store.state.records[id])
 
 belongs(record::Conversation, conversation::Integer) = record.id == conversation
 belongs(record::Record, conversation::Integer) = record.conversation == conversation
@@ -349,12 +424,14 @@ belongs(record::Record, ::Nothing) = true
 
 function scan(store::Store, ::Type{T}; conversation::Union{Nothing, Integer}=nothing) where {T <: Record}
     lock(store.lock) do
-        result = status(store)
-        result === nothing || return result
-        records = T[record for record in values(store.state.records) if matches(T, record, conversation)]
-        sort!(records; by=record -> record.id)
-        deepcopy(records)
+        scan(store, T, conversation, status(store))
     end
+end
+scan(store, type, conversation, rejected::Rejected) = rejected
+function scan(store, ::Type{T}, conversation, ::Nothing) where {T <: Record}
+    records = T[record for record in values(store.state.records) if matches(T, record, conversation)]
+    sort!(records; by=record -> record.id)
+    deepcopy(records)
 end
 
 entry(::Record, conversation, upper) = false
@@ -386,16 +463,10 @@ end
 
 entries(tx::Transaction, conversation::Integer) = copyentries(tx.state, conversation, status(tx))
 
-function Base.get(tx::Transaction, ::Type{T}, id::Integer) where {T <: Record}
-    result = status(tx)
-    result === nothing || return result
-    record = get(tx.state.records, id, nothing)
-    selected(T, record)
-end
-
-function mint!(tx::Transaction)
-    result = status(tx)
-    result === nothing || return result
+Base.get(tx::Transaction, ::Type{T}, id::Integer) where {T <: Record} = readrecord(tx, T, id, status(tx))
+mint!(tx::Transaction) = mint!(tx, status(tx))
+mint!(tx::Transaction, rejected::Rejected) = rejected
+function mint!(tx::Transaction, ::Nothing)
     tx.store.nextid += 1
     id = tx.store.nextid
     push!(tx.minted, id)
@@ -411,18 +482,20 @@ forkcheck(tx::Transaction, record::Conversation) = forkcheck(tx, record, get(tx.
 forkcheck(tx::Transaction, record::Conversation, ::Nothing) = forkcheck(tx.store.state, record)
 forkcheck(::Transaction, ::Conversation, ::Record) = nothing
 
-function put!(tx::Transaction, record::Record)
-    result = status(tx)
-    result === nothing || return result
+put!(tx::Transaction, record::Record) = put_ready!(tx, record, status(tx))
+put_ready!(tx::Transaction, record::Record, rejected::Rejected) = rejected
+function put_ready!(tx::Transaction, record::Record, ::Nothing)
     haskey(tx.state.records, record.id) || record.id in tx.minted || return reject!(tx, :unminted_id)
-    put!(tx, record, forkcheck(tx, record))
+    put_checked!(tx, record, forkcheck(tx, record))
 end
 
-put!(tx::Transaction, ::Record, result::Rejected) = reject!(tx, result.reason)
-function put!(tx::Transaction, record::Record, ::Nothing)
+put_checked!(tx::Transaction, ::Record, result::Rejected) = reject!(tx, result.reason)
+function put_checked!(tx::Transaction, record::Record, ::Nothing)
     saved = detach(record)
-    result = apply!(tx.state, saved)
-    result === nothing || return reject!(tx, result.reason)
+    put_saved!(tx, record, saved, apply!(tx.state, saved))
+end
+put_saved!(tx, record, saved, rejected::Rejected) = reject!(tx, rejected.reason)
+function put_saved!(tx, record, saved, ::Nothing)
     push!(tx.writes, saved)
     record.id
 end
@@ -434,42 +507,53 @@ function fork!(tx::Transaction, conversation::Integer, at::Integer, ::Nothing; v
     put!(tx, Conversation(id, value, (conversation, at)))
 end
 
+const submissionstates = Dict("input" => "queued", "write" => "queued", "continue" => "placed")
 function submit!(tx::Transaction, conversation::Integer; request::Union{Nothing, String}=nothing, kind::String="input", value=nothing)
-    result = status(tx)
-    result === nothing || return result
-    kind in ("input", "write", "continue") || return reject!(tx, :submission_type)
-    if request !== nothing
-        id = get(tx.state.requests, (conversation, request), nothing)
-        if id !== nothing
-            previous = tx.state.records[id]
-            previous.kind == kind || return reject!(tx, :request_type)
-            return id
-        end
-    end
+    submit!(tx, conversation, request, kind, value, status(tx))
+end
+submit!(tx, conversation, request, kind, value, rejected::Rejected) = rejected
+submit!(tx, conversation, request, kind, value, ::Nothing) = submit_kind!(tx, conversation, request, kind, value, get(submissionstates, kind, nothing))
+submit_kind!(tx, conversation, request, kind, value, ::Nothing) = reject!(tx, :submission_type)
+submit_kind!(tx, conversation, request, kind, value, state::String) = submit_request!(tx, conversation, request, kind, value, state)
+submit_request!(tx, conversation, ::Nothing, kind, value, state) = newsubmission!(tx, conversation, nothing, kind, value, state)
+submit_request!(tx, conversation, request::String, kind, value, state) = submit_existing!(tx, conversation, request, kind, value, state, get(tx.state.requests, (conversation, request), nothing))
+submit_existing!(tx, conversation, request, kind, value, state, ::Nothing) = newsubmission!(tx, conversation, request, kind, value, state)
+function submit_existing!(tx, conversation, request, kind, value, state, id::Integer)
+    previous = tx.state.records[id]
+    previous.kind == kind || return reject!(tx, :request_type)
+    id
+end
+function newsubmission!(tx, conversation, request, kind, value, state)
     id = mint!(tx)
-    put!(tx, Submission(id, conversation, request, kind, kind == "continue" ? "placed" : "queued", value))
+    put!(tx, Submission(id, conversation, request, kind, state, value))
 end
 
 function commit!(f, store::Store)
     lock(store.lock) do
-        result = status(store)
-        result === nothing || return result
-        store.busy && return Rejected(:busy)
-        store.busy = true
-        try
-            tx = Transaction(store, deepcopy(store.state), Record[], Set{Int}(), current_task(), true, nothing)
-            value = try
-                f(tx)
-            finally
-                tx.active = false
-            end
-            tx.failure === nothing || return tx.failure
-            commit!(store, tx, value, forkcheck(tx.state, tx.writes))
-        finally
-            store.busy = false
-        end
+        commit!(f, store, status(store))
     end
 end
+commit!(f, store::Store, rejected::Rejected) = rejected
+commit!(f, store::Store, ::Nothing) = commit!(f, store, getfield(store, :occupancy))
+commit!(f, store::Store, ::Busy) = Rejected(:busy)
+
+function commit!(f, store::Store, ::Free)
+    setfield!(store, :occupancy, Busy())
+    try
+        tx = Transaction(store, deepcopy(store.state), Record[], Set{Int}(), current_task(), true, nothing)
+        value = try
+            f(tx)
+        finally
+            setfield!(tx, :lifetime, Expired())
+        end
+        committed!(store, tx, value, tx.failure)
+    finally
+        setfield!(store, :occupancy, Free())
+    end
+end
+
+committed!(store::Store, tx::Transaction, value, rejected::Rejected) = rejected
+committed!(store::Store, tx::Transaction, value, ::Nothing) = commit!(store, tx, value, forkcheck(tx.state, tx.writes))
 
 commit!(::Store, ::Transaction, value, result::Rejected) = result
 function commit!(store::Store, tx::Transaction, value, ::Nothing)
@@ -487,7 +571,7 @@ function commit!(store::Store, tx::Transaction, value, ::Nothing)
         store.state = tx.state
         adopted = true
     finally
-        adopted || (store.failed = true)
+        adopted || setfield!(store, :health, Broken())
     end
     value
 end

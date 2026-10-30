@@ -107,37 +107,63 @@ end
 jointext(::Nothing, text) = text
 jointext(current, text) = current * text
 
-function valid(call)
-    all(key -> get(call, key, nothing) isa AbstractString && !isempty(call[key]), ("id", "call_id", "name", "arguments")) && get(call, "status", "completed") == "completed"
+const responsestatuses = Dict("completed" => Finished())
+responsestatus(status) = get(responsestatuses, status, Unfinished())
+
+valid(call) = valid(call, responsestatus(get(call, "status", "completed")))
+valid(call, ::Unfinished) = false
+valid(call, ::Finished) = all(key -> get(call, key, nothing) isa AbstractString && !isempty(call[key]), ("id", "call_id", "name", "arguments"))
+
+function responsecalls(output)
+    calls = Any[]
+    for item in output
+        responsecalls!(calls, item, get(outputtypes, get(item, "type", nothing), nothing))
+    end
+    calls
 end
+responsecalls!(calls, item, type) = nothing
+responsecalls!(calls, item, ::Type{Conversation.ToolCall}) = push!(calls, item)
 
 completion(provider::OpenAIResponses, data::InvalidResponse; failure=nothing) = incomplete(data)
-const responsestatuses = Dict(status => status for status in ("failed", "incomplete", "cancelled", "canceled", "queued", "in_progress"))
-responsestatus(status) = nothing
-responsestatus(status::AbstractString) = get(responsestatuses, status, nothing)
+const saferesponsestatuses = Dict(status => status for status in ("failed", "incomplete", "cancelled", "canceled", "queued", "in_progress"))
+saferesponsestatus(status) = nothing
+saferesponsestatus(status::AbstractString) = get(saferesponsestatuses, status, nothing)
+
+responsefailure(data, raw, status, failure) = failure
+function responsefailure(data, raw, ::Unfinished, ::Nothing)
+    reason = something(get(data, "error", nothing), get(data, "incomplete_details", nothing), raw, "missing status")
+    providererror(:openai_responses, reason)
+end
+
+callfailure(calls, failure) = failure
+function callfailure(calls, ::Nothing)
+    any(call -> !valid(call), calls) && return "Responses contained an unfinished function call"
+    length(unique(call["id"] for call in calls)) == length(calls) && length(unique(call["call_id"] for call in calls)) == length(calls) || return "Responses contained duplicate function call identifiers"
+    nothing
+end
+
+responsefinish(raw, ::Unfinished, calls) = saferesponsestatus(raw)
+responsefinish(raw, ::Finished, ::Nothing) = "stop"
+responsefinish(raw, ::Finished, calls) = "tool_calls"
+responsecomplete(status, failure) = false
+responsecomplete(::Finished, ::Nothing) = true
 
 function completion(provider::OpenAIResponses, data; failure=nothing)
     output = get(data, "output", [])
     msg = message(output)
-    status = get(data, "status", nothing)
-    if isnothing(failure) && status != "completed"
-        reason = something(get(data, "error", nothing), get(data, "incomplete_details", nothing), status, "missing status")
-        failure = providererror(:openai_responses, reason)
-    end
-    calls = [item for item in output if get(item, "type", nothing) == "function_call"]
-    if isnothing(failure) && any(call -> !valid(call), calls)
-        failure = "Responses contained an unfinished function call"
-    elseif isnothing(failure) && (length(unique(call["id"] for call in calls)) != length(calls) || length(unique(call["call_id"] for call in calls)) != length(calls))
-        failure = "Responses contained duplicate function call identifiers"
-    end
-    raw_usage = get(data, "usage", nothing)
-    used = usage(provider, raw_usage)
-    finish = status == "completed" ? (haskey(msg, "tool_calls") ? "tool_calls" : "stop") : responsestatus(status)
-    Completion(msg, used, finish, status == "completed" && isnothing(failure), failure)
+    raw = get(data, "status", nothing)
+    status = responsestatus(raw)
+    failure = responsefailure(data, raw, status, failure)
+    failure = callfailure(responsecalls(output), failure)
+    used = usage(provider, get(data, "usage", nothing))
+    finish = responsefinish(raw, status, get(msg, "tool_calls", nothing))
+    Completion(msg, used, finish, responsecomplete(status, failure), failure)
 end
 
+requestcontext(::OpenAIResponses) = HTTP.RequestContext()
+
 function complete(provider::OpenAIResponses, messages, tools; parameters=Dict())
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false, status_exception=false)
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
     200 <= response.status < 300 || return incomplete(ProviderStatus(response.status))
     completion(provider, decode(String(response.body)))
 end
@@ -284,9 +310,9 @@ handle!(stream::ResponseStream, event::ResponseError) = (stream.failure = event.
 
 function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), on_event=identity)
     state = ResponseStream(on_event)
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, sse_callback=event -> receive!(state, event.data))
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=event -> receive!(state, event.data))
     result = 200 <= response.status < 300 ? finish(provider, state, state.terminal) : incomplete(ProviderStatus(response.status))
-    on_event((; type=result.done ? :done : :incomplete, result))
+    on_event((; type=completionevent(result), result))
     result
 end
 
@@ -311,22 +337,35 @@ function finish(provider::OpenAIResponses, state::ResponseStream, data)
 end
 
 reconcile!(state::ResponseStream, data, failure::InvalidResponse) = failure
+reconcile!(state::ResponseStream, data, failure) = reconcile!(state, data, failure, responsestatus(get(data, "status", nothing)))
+reconcile!(state::ResponseStream, data, failure, ::Unfinished) = failure
 
-function reconcile!(state::ResponseStream, data, failure)
-    get(data, "status", nothing) == "completed" || return failure
+function reconcile!(state::ResponseStream, data, failure, ::Finished)
     !isempty(state.active) && (failure = "Responses stream contained an unfinished function call")
     for (index, item) in enumerate(data["output"])
-        if get(item, "type", nothing) == "function_call"
-            done = get(state.finished, index - 1, nothing)
-            if isnothing(done) || any(key -> get(item, key, nothing) != get(done, key, nothing), ("id", "call_id", "name", "arguments"))
-                failure = "Responses stream contained an unfinished or mismatched function call"
-            end
-        end
+        type = get(outputtypes, get(item, "type", nothing), nothing)
+        failure = reconcile_item(state, index, item, failure, type)
     end
     for (index, item) in state.finished
-        if get(item, "type", nothing) == "function_call" && (index >= length(data["output"]) || get(data["output"][index + 1], "type", nothing) != "function_call")
-            failure = "Responses stream omitted a completed function call"
-        end
+        type = get(outputtypes, get(item, "type", nothing), nothing)
+        failure = reconcile_done(data, index, failure, type)
     end
     failure
 end
+
+reconcile_item(state, index, item, failure, type) = failure
+function reconcile_item(state, index, item, failure, ::Type{Conversation.ToolCall})
+    done = get(state.finished, index - 1, nothing)
+    isnothing(done) && return "Responses stream contained an unfinished or mismatched function call"
+    any(key -> get(item, key, nothing) != get(done, key, nothing), ("id", "call_id", "name", "arguments")) && return "Responses stream contained an unfinished or mismatched function call"
+    failure
+end
+
+reconcile_done(data, index, failure, type) = failure
+function reconcile_done(data, index, failure, ::Type{Conversation.ToolCall})
+    index >= length(data["output"]) && return "Responses stream omitted a completed function call"
+    item = data["output"][index + 1]
+    reconcile_done(failure, get(outputtypes, get(item, "type", nothing), nothing))
+end
+reconcile_done(failure, type) = "Responses stream omitted a completed function call"
+reconcile_done(failure, ::Type{Conversation.ToolCall}) = failure

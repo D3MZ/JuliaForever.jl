@@ -115,7 +115,7 @@ end
 @testset "nested repository ignore boundaries" begin
     mktempdir() do dir
         nestedfixture(dir)
-        @test length(unique(typeof.(first(JuliaForever.initialrules(joinpath(dir, "nested"), true))))) == 2
+        @test length(unique(typeof.(first(JuliaForever.initialrules(joinpath(dir, "nested"), Find(dir)))))) == 2
         @test execute(Find(dir), (; pattern="blocked.txt")).text == "nested/blocked.txt"
         @test execute(Find(dir), (; pattern="private.txt")).text == "nested/private.txt"
         @test execute(Find(dir), (; pattern="local-only.txt")).text == "No files found matching pattern"

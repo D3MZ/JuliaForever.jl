@@ -4,6 +4,12 @@ struct OpenAI
     key::String
 end
 
+# Keep request cancellation scoped to the calling task without changing provider APIs.
+const requestkey = gensym(:request_context)
+requestcontext() = get(task_local_storage(), requestkey, nothing)
+requestcontext(provider) = nothing
+requestcontext(::OpenAI) = HTTP.RequestContext()
+
 struct InvalidResponse end
 struct ProviderStatus
     status::Int
@@ -77,14 +83,18 @@ end
 
 Base.show(io::IO, provider::OpenAI) = print(io, "OpenAI(", repr(provider.model), ", [redacted])")
 
-function providerinfo(selected)
-    selected == "openai" && return (; factory=OpenAI, base="OPENAI_BASE_URL", url="https://api.openai.com/v1", model="OPENAI_MODEL", key="OPENAI_API_KEY")
-    selected == "openai-responses" && return (; factory=OpenAIResponses, base="OPENAI_BASE_URL", url="https://api.openai.com/v1", model="OPENAI_MODEL", key="OPENAI_API_KEY")
-    selected == "openrouter" && return (; factory=OpenAI, base="OPENROUTER_BASE_URL", url="https://openrouter.ai/api/v1", model="OPENROUTER_MODEL", key="OPENROUTER_API_KEY")
-    selected == "anthropic" && return (; factory=Anthropic, base="ANTHROPIC_BASE_URL", url="https://api.anthropic.com", model="ANTHROPIC_MODEL", key="ANTHROPIC_API_KEY")
-    selected == "google" && return (; factory=Google, base="GEMINI_BASE_URL", url="https://generativelanguage.googleapis.com/v1beta", model="GEMINI_MODEL", key="GEMINI_API_KEY")
-    nothing
-end
+openai(base, model, key) = OpenAI(base, model, key)
+responses(base, model, key) = OpenAIResponses(base, model, key)
+anthropic(base, model, key) = Anthropic(base, model, key)
+google(base, model, key) = Google(base, model, key)
+const providerinfos = Dict(
+    "openai" => (; factory=openai, base="OPENAI_BASE_URL", url="https://api.openai.com/v1", model="OPENAI_MODEL", key="OPENAI_API_KEY"),
+    "openai-responses" => (; factory=responses, base="OPENAI_BASE_URL", url="https://api.openai.com/v1", model="OPENAI_MODEL", key="OPENAI_API_KEY"),
+    "openrouter" => (; factory=openai, base="OPENROUTER_BASE_URL", url="https://openrouter.ai/api/v1", model="OPENROUTER_MODEL", key="OPENROUTER_API_KEY"),
+    "anthropic" => (; factory=anthropic, base="ANTHROPIC_BASE_URL", url="https://api.anthropic.com", model="ANTHROPIC_MODEL", key="ANTHROPIC_API_KEY"),
+    "google" => (; factory=google, base="GEMINI_BASE_URL", url="https://generativelanguage.googleapis.com/v1beta", model="GEMINI_MODEL", key="GEMINI_API_KEY"),
+)
+providerinfo(selected) = get(providerinfos, selected, nothing)
 
 modelvalue(env, name, ::Nothing) = env[name]
 modelvalue(env, name, model::AbstractString) = model
@@ -180,15 +190,62 @@ struct Usage
     cost::Union{Nothing, Float64}
 end
 
+abstract type CompletionStatus end
+struct Finished <: CompletionStatus end
+struct Unfinished <: CompletionStatus end
+const completionstatuses = Dict(true => Finished(), false => Unfinished())
+completionstatus(done::Bool) = completionstatuses[done]
+finished(::Finished) = true
+finished(::Unfinished) = false
+completionevent(::Finished) = :done
+completionevent(::Unfinished) = :incomplete
+JSON3.StructTypes.StructType(::Type{<:CompletionStatus}) = JSON3.StructTypes.CustomStruct()
+JSON3.StructTypes.lowertype(::Type{<:CompletionStatus}) = Bool
+JSON3.StructTypes.lower(status::CompletionStatus) = finished(status)
+JSON3.StructTypes.construct(::Type{CompletionStatus}, done::Bool) = completionstatus(done)
+
 struct Completion
     message::Dict{String, Any}
     usage::Union{Nothing, Usage}
     finish::Union{Nothing, String}
-    done::Bool
+    status::CompletionStatus
     error::Union{Nothing, String, InvalidResponse, ProviderStatus, ProviderError, UnsupportedImage}
+
+    function Completion(message, usage, finish, status::CompletionStatus, error)
+        new(message, usage, finish, status, error)
+    end
 end
+Completion(message, usage, finish, done, error) = Completion(message, usage, finish, completionstatus(convert(Bool, done)), error)
+Base.getproperty(result::Completion, name::Symbol) = name === :done ? finished(getfield(result, :status)) : getfield(result, name)
+Base.propertynames(::Completion, private::Bool=false) = (:message, :usage, :finish, :done, :error, :status)
+completionevent(result::Completion) = completionevent(getfield(result, :status))
+JSON3.StructTypes.names(::Type{Completion}) = ((:status, :done),)
 
 incomplete(failure::Union{InvalidResponse, ProviderStatus, UnsupportedImage}) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, failure)
+
+abstract type ChatFinish end
+struct ChatAccepted <: ChatFinish
+    reason::String
+end
+struct ChatRejected <: ChatFinish
+    reason::String
+end
+struct ChatMissing <: ChatFinish end
+const chatfinishes = Dict("stop" => ChatAccepted, "end" => ChatAccepted, "length" => ChatAccepted, "tool_calls" => ChatAccepted, "function_call" => ChatAccepted)
+chatfinish(::Nothing) = ChatMissing()
+chatfinish(reason) = ChatMissing()
+chatfinish(reason::AbstractString) = get(chatfinishes, reason, ChatRejected)(String(reason))
+
+chatcompletion(message, used, ::ChatMissing) = Completion(message, used, nothing, false, providererror(:openai_compatible, nothing))
+chatcompletion(message, used, status::ChatAccepted) = Completion(message, used, status.reason, true, nothing)
+chatcompletion(message, used, status::ChatRejected) = Completion(message, used, safefinish(status.reason), false, providererror(:openai_compatible, status.reason))
+
+finishfailure!(failure, ::Union{ChatMissing, ChatAccepted}, previous) = nothing
+finishfailure!(failure, status::ChatRejected, ::Nothing) = (failure[] = providererror(:openai_compatible, status.reason))
+finishfailure!(failure, ::ChatRejected, previous) = nothing
+finishdone(::ChatMissing, marker, failure) = false
+finishdone(::Union{ChatAccepted, ChatRejected}, marker, ::Nothing) = marker
+finishdone(::Union{ChatAccepted, ChatRejected}, marker, failure) = false
 
 usage(::Nothing) = nothing
 details(::Nothing) = Dict()
@@ -286,7 +343,7 @@ headers(provider::OpenAI) = ["Authorization" => "Bearer $(provider.key)", "Conte
 endpoint(provider::OpenAI) = "$(rstrip(provider.base, '/'))/chat/completions"
 
 function complete(provider::OpenAI, messages, tools; parameters=Dict())
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false, status_exception=false)
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
     200 <= response.status < 300 || return incomplete(ProviderStatus(response.status))
     complete(provider, decode(String(response.body)))
 end
@@ -296,12 +353,9 @@ complete(provider::OpenAI, failure::InvalidResponse) = incomplete(failure)
 function complete(provider::OpenAI, data::AbstractDict)
     choice = first(data["choices"])
     reason = get(choice, "finish_reason", nothing)
-    finish = safefinish(reason)
     raw_usage = get(data, "usage", nothing)
     used = usage(raw_usage)
-    done = finish in ("stop", "end", "length", "tool_calls", "function_call")
-    failure = done ? nothing : providererror(:openai_compatible, reason)
-    Completion(choice["message"], used, finish, done, failure)
+    chatcompletion(choice["message"], used, chatfinish(reason))
 end
 
 function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=identity)
@@ -313,7 +367,7 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
     failure = Ref{Union{Nothing, String, InvalidResponse, ProviderError}}(nothing)
     marker = Ref(false)
     reasoningfield = Ref{Union{Nothing, String}}(nothing)
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, sse_callback=event -> begin
+    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=event -> begin
         failure[] isa InvalidResponse && return
         if event.data == "[DONE]"
             marker[] = true
@@ -374,10 +428,9 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
         return result
     end
     isempty(order) || (message["tool_calls"] = [calls[index] for index in order])
-    if !(failure[] isa InvalidResponse) && !isnothing(finish[]) && !(finish[] in ("stop", "end", "length", "tool_calls", "function_call"))
-        failure[] = something(failure[], providererror(:openai_compatible, finish[]))
-    end
-    result = Completion(message, reported_usage[], safefinish(finish[]), marker[] && !isnothing(finish[]) && isnothing(failure[]), failure[])
-    on_event((; type=result.done ? :done : :incomplete, result))
+    status = chatfinish(finish[])
+    finishfailure!(failure, status, failure[])
+    result = Completion(message, reported_usage[], safefinish(finish[]), finishdone(status, marker[], failure[]), failure[])
+    on_event((; type=completionevent(result), result))
     result
 end

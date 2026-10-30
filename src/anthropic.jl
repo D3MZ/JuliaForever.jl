@@ -1,7 +1,7 @@
 module AnthropicAPI
 
 using HTTP, JSON3, SHA
-import ..JuliaForever: complete, stream, payload, headers, endpoint, provider, definition, decode, incomplete, images, UnsupportedImage, InvalidResponse, ProviderError, providererror, Completion, Usage
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, endpoint, provider, definition, decode, incomplete, images, UnsupportedImage, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Usage
 
 struct Anthropic
     base::String
@@ -121,9 +121,16 @@ function usage(data::AbstractDict)
 end
 usage(::Nothing) = nothing
 
-const finishes = Dict("end_turn" => "stop", "stop_sequence" => "stop", "pause_turn" => "stop", "max_tokens" => "length", "tool_use" => "tool_calls")
+abstract type Finish end
+struct End <: Finish end
+struct Limit <: Finish end
+struct ToolUse <: Finish end
+const finishes = Dict("end_turn" => End(), "stop_sequence" => End(), "pause_turn" => End(), "max_tokens" => Limit(), "tool_use" => ToolUse())
 finish(::Nothing) = nothing
 finish(reason) = get(finishes, reason, nothing)
+finishname(::End) = "stop"
+finishname(::Limit) = "length"
+finishname(::ToolUse) = "tool_calls"
 
 abstract type Block end
 struct Text <: Block
@@ -180,7 +187,8 @@ function callids(blocks)
     ids
 end
 uniqueids(blocks) = allunique(callids(blocks))
-consistent(blocks, mapped) = isempty(callids(blocks)) != (mapped == "tool_calls")
+consistent(blocks, ::Union{End, Limit}) = isempty(callids(blocks))
+consistent(blocks, ::ToolUse) = !isempty(callids(blocks))
 
 function result(blocks, reason, used, failure)
     mapped = finish(reason)
@@ -193,21 +201,23 @@ function result(blocks, reason, used, failure, ::Nothing)
     Completion(content(blocks), used, nothing, false, failure)
 end
 
-function result(blocks, reason, used, failure, mapped::AbstractString)
+function result(blocks, reason, used, failure, mapped::Finish)
     failure = all(valid, blocks) && uniqueids(blocks) && consistent(blocks, mapped) ? failure : something(failure, "Anthropic response contained an unsupported or invalid content block")
-    outcome(blocks, used, mapped, failure)
+    outcome(blocks, used, finishname(mapped), failure)
 end
 
 outcome(blocks, used, mapped, ::Nothing) = Completion(content(blocks), used, mapped, true, nothing)
 outcome(blocks, used, mapped, failure) = Completion(content(blocks), used, mapped, false, failure)
+
+requestcontext(::Anthropic) = HTTP.RequestContext()
 
 function complete(provider::Anthropic, input, tools; parameters=Dict())
     complete(provider, payload(provider, input, tools, parameters))
 end
 complete(provider::Anthropic, failure::UnsupportedImage) = incomplete(failure)
 function complete(provider::Anthropic, body::AbstractString)
-    response = HTTP.post(endpoint(provider), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false)
-    200 <= response.status < 300 || return incomplete("Anthropic HTTP $(response.status)")
+    response = HTTP.post(endpoint(provider), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
+    200 <= response.status < 300 || return incomplete(ProviderStatus(response.status))
     tagged(completion(decode(String(response.body))), provider)
 end
 incomplete(failure::String) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, failure)
@@ -364,7 +374,7 @@ function receive!(state::State, ::Running, event::Delta, callback)
     report!(callback, reason)
 end
 report!(callback, ::Nothing) = nothing
-report!(callback, reason) = callback((; type=:finish, reason))
+report!(callback, reason::Finish) = callback((; type=:finish, reason=finishname(reason)))
 receive!(state::State, ::Running, ::Stop, callback) = (state.phase = Stopped())
 receive!(state::State, ::Phase, event::Failure, callback) = (state.failure = providererror(:anthropic, event.data["error"]))
 receive!(state::State, ::Phase, ::Ignore, callback) = nothing
@@ -380,9 +390,9 @@ function stream(provider::Anthropic, failure::UnsupportedImage, on_event)
 end
 function stream(provider::Anthropic, body::AbstractString, on_event)
     state = State()
-    response = HTTP.post(endpoint(provider), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, sse_callback=raw -> receive!(state, decode(raw.data), on_event))
+    response = HTTP.post(endpoint(provider), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=raw -> receive!(state, decode(raw.data), on_event))
     if !(200 <= response.status < 300)
-        answer = incomplete("Anthropic HTTP $(response.status)")
+        answer = incomplete(ProviderStatus(response.status))
         on_event((; type=:incomplete, result=answer))
         return answer
     end

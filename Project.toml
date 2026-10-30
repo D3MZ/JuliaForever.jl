@@ -14,6 +14,7 @@ SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 SQLite = "0aa819cd-b072-5ff4-a722-6bc24af294d9"
 StructTypes = "856f2bd8-1eba-4b0a-8007-ebc267875bd4"
 Unicode = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
+YAML = "ddb6d928-2868-570f-bddf-ab3f9cf99eb6"
 
 [compat]
 Aqua = "0.8"
@@ -33,6 +34,7 @@ StructTypes = "1"
 TOML = "1"
 Test = "1.11"
 Unicode = "1.11"
+YAML = "0.4"
 julia = "1.12"
 
 [apps.jf]

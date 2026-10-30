@@ -3,8 +3,10 @@ function dispatchcallee(expression)
     expression
 end
 
+const dispatchfields = (:type, :kind, :status, :phase, :reason, :role, :finish, :mode, :state, :outcome, :selected)
+
 function dispatchfield(expression)
-    expression isa Symbol && expression in (:type, :kind, :status, :phase, :reason, :role, :finish, :mode, :state, :outcome) && return expression
+    expression isa Symbol && expression in dispatchfields && return expression
     expression isa Expr || return nothing
     if expression.head == :. && last(expression.args) isa QuoteNode
         return last(expression.args).value
@@ -24,6 +26,30 @@ function dispatchpredicate(expression)
     false
 end
 
+const dispatchstatuses = Set(["cancelled", "canceled", "complete", "completed", "done", "end", "error", "failed", "function_call", "idle", "in_progress", "incomplete", "length", "pending", "placed", "queued", "ready", "running", "stop", "success", "timed_out", "timeout", "tool_calls"])
+dispatchstatus(value) = false
+dispatchstatus(value::String) = value in dispatchstatuses
+dispatchstatus(value::Expr) = value.head in (:tuple, :vect) && any(dispatchstatus, value.args)
+
+function dispatchstatuscheck(expression)
+    expression isa Expr && expression.head == :call || return false
+    dispatchcallee(first(expression.args)) in (:(===), :(!==), :(==), :(!=), :in, :∈) || return false
+    args = expression.args[2:end]
+    any(dispatchstatus, args) || any(arg -> dispatchfield(arg) in dispatchfields, args)
+end
+
+function dispatchprobe(expression)
+    expression isa Expr && expression.head == :call || return false
+    callee = dispatchcallee(first(expression.args))
+    if callee === :Val && length(expression.args) == 2
+        value = last(expression.args)
+        return !(value isa Union{Number, AbstractString, Char, QuoteNode} || value in (:true, :false, :nothing))
+    end
+    callee in (:isa, :isnothing, :ismissing) && return true
+    callee in (:(===), :(!==), :(==), :(!=)) || return false
+    any(arg -> arg in (:nothing, :missing) || arg isa Bool, expression.args[2:end])
+end
+
 function dispatchcheck(expression, direct)
     expression === :iserror && return true
     direct && expression isa Symbol && expression ∉ (:true, :false, :nothing) && return true
@@ -38,15 +64,16 @@ function dispatchcheck(expression, direct)
     callee in (:(===), :(!==), :(==), :(!=)) && any(arg -> arg isa Bool, expression.args[2:end]) && return true
     if callee in (:(===), :(!==), :(==), :(!=), :in, :∈)
         args = expression.args[2:end]
+        any(dispatchstatus, args) && return true
         any(arg -> arg isa QuoteNode && arg.value isa Symbol, args) && return true
         any(arg -> arg isa Expr && arg.head in (:tuple, :vect) && any(item -> item isa QuoteNode && item.value isa Symbol, arg.args), args) && return true
-        any(arg -> dispatchfield(arg) in (:type, :kind, :status, :phase, :reason, :role, :finish, :mode, :state, :outcome), args) && return true
+        any(arg -> dispatchfield(arg) in dispatchfields, args) && return true
     end
     callee in (:get, :getfield, :getproperty) && QuoteNode(:iserror) in expression.args
 end
 
 function dispatchchecks!(checks, expression, condition=false, direct=true)
-    if condition && dispatchcheck(expression, direct)
+    if (condition && dispatchcheck(expression, direct)) || (!condition && (dispatchstatuscheck(expression) || dispatchprobe(expression)))
         value = expression isa Expr ? Base.remove_linenums!(deepcopy(expression)) : expression
         push!(checks, replace(sprint(show, value), '\n' => ' '))
         return checks

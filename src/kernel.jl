@@ -1,5 +1,7 @@
 module Kernel
 
+import ..JuliaForever: JSON3
+
 abstract type Effect end
 abstract type Observation end
 abstract type Event end
@@ -91,20 +93,42 @@ struct Observed{O <: Observation}
     observation::O
 end
 
+abstract type Status end
+struct Open <: Status end
+struct Closed <: Status end
+const statuses = Dict(false => Open(), true => Closed())
+status(value::Bool) = statuses[value]
+closed(::Open) = false
+closed(::Closed) = true
+
+JSON3.StructTypes.StructType(::Type{<:Status}) = JSON3.StructTypes.CustomStruct()
+JSON3.StructTypes.lowertype(::Type{<:Status}) = Bool
+JSON3.StructTypes.lower(status::Status) = closed(status)
+JSON3.StructTypes.construct(::Type{Status}, value::Bool) = status(value)
+
 struct State
     id::String
     revision::Int
     pending::Vector{Pending}
     observations::Vector{Observed}
-    closed::Bool
+    status::Status
+
+    function State(id, revision, pending, observations, status::Status)
+        new(id, revision, pending, observations, status)
+    end
 end
 
+State(id, revision, pending, observations, value) = State(id, revision, pending, observations, status(convert(Bool, value)))
 State(id::AbstractString) = State(String(id), 0, Pending[], Observed[], false)
 
 function Base.getproperty(state::State, name::Symbol)
+    name === :closed && return closed(getfield(state, :status))
     value = getfield(state, name)
     name === :pending || name === :observations ? deepcopy(value) : value
 end
+
+Base.propertynames(::State, private::Bool=false) = (:id, :revision, :pending, :observations, :closed, :status)
+JSON3.StructTypes.names(::Type{State}) = ((:status, :closed),)
 
 struct Plan{E <: Effect} <: Event
     revision::Int
@@ -138,7 +162,10 @@ end
 
 function step(state::State, event::Plan)
     event.revision == state.revision || return Rejected(state, :revision)
-    state.closed && return Rejected(state, :closed)
+    step(state, event, getfield(state, :status))
+end
+step(state::State, event::Plan, ::Closed) = Rejected(state, :closed)
+function step(state::State, event::Plan, ::Open)
     pending = getfield(state, :pending)
     observations = getfield(state, :observations)
     any(item -> item.id == event.id, pending) && return Rejected(state, :effect_in_use)
@@ -158,7 +185,11 @@ function step(state::State, event::Observe)
         return Rejected(state, :observation_conflict)
     end
     event.revision == state.revision || return Rejected(state, :revision)
-    state.closed && return Rejected(state, :closed)
+    step(state, event, getfield(state, :status))
+end
+step(state::State, event::Observe, ::Closed) = Rejected(state, :closed)
+function step(state::State, event::Observe, ::Open)
+    observations = getfield(state, :observations)
     pending = getfield(state, :pending)
     index = findfirst(item -> item.id == event.id, pending)
     index === nothing && return Rejected(state, :effect_missing)
@@ -172,7 +203,10 @@ end
 
 function step(state::State, event::Finish)
     event.revision == state.revision || return Rejected(state, :revision)
-    state.closed && return Rejected(state, :closed)
+    step(state, event, getfield(state, :status))
+end
+step(state::State, event::Finish, ::Closed) = Rejected(state, :closed)
+function step(state::State, event::Finish, ::Open)
     isempty(getfield(state, :pending)) || return Rejected(state, :pending)
     updated = State(state.id, state.revision + 1, copy(getfield(state, :pending)), copy(getfield(state, :observations)), true)
     Applied(updated, ())

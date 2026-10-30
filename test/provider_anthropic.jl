@@ -1,5 +1,30 @@
 using HTTP, JSON3
 
+@testset "Anthropic finish reasons" begin
+    reason = Ref("end_turn")
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        data = Dict("content" => [Dict("type" => "text", "text" => "partial")], "stop_reason" => reason[])
+        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(data))
+    end
+    try
+        model = Anthropic("http://$(HTTP.server_addr(server))", "claude-fixture", "synthetic")
+        for (value, expected) in (("end_turn", "stop"), ("max_tokens", "length"))
+            reason[] = value
+            result = JuliaForever.complete(model, [], Dict())
+            @test result.done && result.finish == expected
+        end
+        reason[] = "tool_use"
+        result = JuliaForever.complete(model, [], Dict())
+        @test !result.done && occursin("invalid content", result.error)
+        reason[] = "unknown"
+        result = JuliaForever.complete(model, [], Dict())
+        @test !result.done && result.error isa ProviderError && result.error.provider == :anthropic && result.error.kind == :unknown
+    finally
+        close(server)
+        wait(server)
+    end
+end
+
 anthropicsse(event) = "event: " * event["type"] * "\ndata: " * JSON3.write(event) * "\n\n"
 
 @testset "Anthropic messages" begin
@@ -128,10 +153,10 @@ end
             @test interrupted isa Completion && !interrupted.done
             @test !isfile(joinpath(dir, "a.txt"))
             failed = JuliaForever.complete(model, [Dict("role" => "user", "content" => "hi")], Dict())
-            @test !failed.done && occursin("401", failed.error)
+            @test !failed.done && failed.error isa ProviderStatus && failed.error.status == 401
             @test !occursin("synthetic-secret", sprint(show, failed))
             failedstream = JuliaForever.stream(model, [Dict("role" => "user", "content" => "hi")], Dict())
-            @test !failedstream.done && occursin("401", failedstream.error)
+            @test !failedstream.done && failedstream.error isa ProviderStatus && failedstream.error.status == 401
             @test !occursin("synthetic-secret", sprint(show, failedstream))
         end
         tool = Dict("role" => "tool", "content" => "failed", "tool_call_id" => "id", "is_error" => true)

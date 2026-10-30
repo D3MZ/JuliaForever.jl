@@ -1,7 +1,7 @@
 module GoogleAPI
 
 using HTTP, JSON3, Random, SHA
-import ..JuliaForever: complete, stream, payload, headers, endpoint, definition, decode, incomplete, images, UnsupportedImage, InvalidResponse, ProviderError, providererror, Completion, Usage
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, endpoint, definition, decode, incomplete, images, UnsupportedImage, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Usage
 
 struct Google
     base::String
@@ -240,10 +240,21 @@ function receivecandidate!(state, candidate, callback)
 end
 reportfinish!(callback, ::Nothing, calls) = nothing
 const finishreasons = merge(Dict("STOP" => "stop", "MAX_TOKENS" => "length"), Dict(reason => reason for reason in ("FINISH_REASON_UNSPECIFIED", "SAFETY", "RECITATION", "LANGUAGE", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL", "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_OTHER", "NO_IMAGE", "IMAGE_RECITATION", "UNEXPECTED_TOOL_CALL", "TOO_MANY_TOOL_CALLS", "MISSING_THOUGHT_SIGNATURE", "MALFORMED_RESPONSE", "ESCALATION", "PUP_LIMITED_DISABLED", "CONTINUATION")))
-reportfinish!(callback, reason, calls) = reportknownfinish!(callback, get(finishreasons, reason, nothing), calls)
-reportknownfinish!(callback, ::Nothing, calls) = nothing
-function reportknownfinish!(callback, mapped::String, calls)
-    name = mapped == "stop" && !isempty(calls) ? "tool_calls" : mapped
+abstract type Finish end
+struct Stop <: Finish end
+struct Limit <: Finish end
+struct Other <: Finish
+    reason
+end
+const finishes = Dict("STOP" => Stop(), "MAX_TOKENS" => Limit())
+finish(reason) = get(finishes, reason, Other(reason))
+finishname(::Stop, calls) = isempty(calls) ? "stop" : "tool_calls"
+finishname(::Limit, calls) = "length"
+finishname(other::Other, calls) = get(finishreasons, other.reason, nothing)
+
+reportfinish!(callback, reason, calls) = reportknownfinish!(callback, finishname(finish(reason), calls))
+reportknownfinish!(callback, ::Nothing) = nothing
+function reportknownfinish!(callback, name::String)
     callback((; type=:finish, reason=name))
 end
 
@@ -256,27 +267,27 @@ function result(message, state, ::Nothing)
     Completion(message, state.used, nothing, false, something(state.failure, "Google stream ended without a finish reason"))
 end
 function result(message, state, reason::AbstractString)
-    mapped = get(Dict("STOP" => "stop", "MAX_TOKENS" => "length"), reason, nothing)
-    result(message, state, reason, mapped)
+    result(message, state, reason, finish(reason))
 end
-function result(message, state, reason, ::Nothing)
+function result(message, state, reason, ::Other)
     Completion(message, state.used, nothing, false, something(state.failure, providererror(:google, reason)))
 end
-function result(message, state, reason, mapped::AbstractString)
-    finish = mapped == "stop" && !isempty(state.calls) ? "tool_calls" : mapped
-    outcome(message, state, finish, state.failure)
+function result(message, state, reason, mapped::Union{Stop, Limit})
+    outcome(message, state, finishname(mapped, state.calls), state.failure)
 end
 outcome(message, state, finish, ::Nothing) = Completion(message, state.used, finish, true, nothing)
 outcome(message, state, finish, failure) = Completion(message, state.used, finish, false, failure)
 
-httpfailure(status) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, "Google HTTP $status")
+httpfailure(status) = incomplete(ProviderStatus(status))
+
+requestcontext(::Google) = HTTP.RequestContext()
 
 function complete(provider::Google, input, tools; parameters=Dict())
     complete(provider, payload(provider, input, tools, parameters))
 end
 complete(provider::Google, failure::UnsupportedImage) = incomplete(failure)
 function complete(provider::Google, body::AbstractString)
-    response = HTTP.post(endpoint(provider), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false)
+    response = HTTP.post(endpoint(provider), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
     200 <= response.status < 300 || return httpfailure(response.status)
     state = State()
     receive!(state, decode(String(response.body)), identity)
@@ -292,7 +303,7 @@ function stream(provider::Google, failure::UnsupportedImage, on_event)
 end
 function stream(provider::Google, body::AbstractString, on_event)
     state = State()
-    response = HTTP.post(endpoint(provider, stream), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, sse_callback=raw -> receive!(state, decode(raw.data), on_event))
+    response = HTTP.post(endpoint(provider, stream), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=raw -> receive!(state, decode(raw.data), on_event))
     if !(200 <= response.status < 300)
         answer = httpfailure(response.status)
         on_event((; type=:incomplete, result=answer))

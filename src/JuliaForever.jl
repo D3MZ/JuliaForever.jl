@@ -6,6 +6,7 @@ export Execution, ContextEstimates
 export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, CodeSuccess, CodeFailure, cancel!, codeexecute, Image, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Anthropic, Google, Usage, Completion, Truncated, InvalidResponse, ProviderStatus, ProviderError, UnsupportedImage, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
 
 include("instructions.jl")
+include("prompts.jl")
 include("tools.jl")
 include("system.jl")
 include("provider.jl")
@@ -31,6 +32,7 @@ include("search.jl")
 include("context.jl")
 include("codemode.jl")
 include("terminal.jl")
+include("terminal_editor.jl")
 include("tree_terminal.jl")
 include("session_terminal.jl")
 include("mcp.jl")
@@ -381,11 +383,19 @@ end
 
 startsession!(terminal, agent, extensions, store, args, sessiondir, ::PendingInputs) = 1
 
-function startsession!(terminal, agent, extensions, store, args, sessiondir, ::Nothing)
+startsession!(terminal, agent, extensions, store, args, sessiondir, ::Nothing) = starttemplates!(terminal, agent, extensions, store, args, sessiondir, attempt(() -> Prompts.load(pwd())))
+
+function starttemplates!(terminal, agent, extensions, store, args, sessiondir, failure::ToolFailure)
+    println(terminal.diagnostics, "Failed to load prompt templates: ", redact(terminal, failure.text))
+    flush(terminal.diagnostics)
+    1
+end
+
+function starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates::AbstractDict)
     if isempty(args)
-        return interact!(terminal, agent, extensions, stdin, stderr, store, sessiondir)
+        return interact!(terminal, agent, extensions, stdin, stderr, store, sessiondir, templates)
     else
-        return run!(terminal, agent, join(args, " "), extensions)
+        return run!(terminal, agent, Prompts.expand(join(args, " "), templates), extensions)
     end
 end
 
@@ -399,15 +409,15 @@ function prompt!(output, input::Base.TTY)
 end
 
 interact!(terminal, agent, extensions, input, output) = interact!(terminal, agent, extensions, input, output, Ref{Union{Nothing, History.Store}}(agent.history), SessionCatalog.directory(ENV))
-interact!(terminal, agent, extensions, input, output, store, sessiondir) = readloop!(terminal, agent, extensions, input, output, store, sessiondir)
+interact!(terminal, agent, extensions, input, output, store, sessiondir) = interact!(terminal, agent, extensions, input, output, store, sessiondir, Dict{String, String}())
+interact!(terminal, agent, extensions, input, output, store, sessiondir, templates) = readloop!(terminal, agent, extensions, input, output, store, sessiondir, templates)
 
-function interact!(terminal, agent, extensions, input::Base.TTY, output::Base.TTY, store, sessiondir)
-    get(ENV, "TERM", "") in ("", "dumb") && return readloop!(terminal, agent, extensions, input, output, store, sessiondir)
-    println(output, "Julia Forever — Enter sends; Ctrl+J adds a line; /exit quits")
-    edit!(terminal, agent, extensions, store, sessiondir)
+function interact!(terminal, agent, extensions, input::Base.TTY, output::Base.TTY, store, sessiondir, templates)
+    get(ENV, "TERM", "") in ("", "dumb") && return readloop!(terminal, agent, extensions, input, output, store, sessiondir, templates)
+    edit!(terminal, agent, extensions, input, output, store, sessiondir, templates)
 end
 
-function readloop!(terminal, agent, extensions, input, output, store, sessiondir)
+function readloop!(terminal, agent, extensions, input, output, store, sessiondir, templates)
     intro!(output, input)
     status = 0
     while true
@@ -420,7 +430,7 @@ function readloop!(terminal, agent, extensions, input, output, store, sessiondir
             status = max(status, result)
             continue
         end
-        status = max(status, run!(terminal, agent, line, extensions))
+        status = max(status, run!(terminal, agent, Prompts.expand(line, templates), extensions))
     end
     status
 end

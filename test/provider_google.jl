@@ -2,6 +2,28 @@ using HTTP, JSON3
 
 googlesse(data) = "data: $(JSON3.write(data))\n\n"
 
+@testset "Google finish reasons" begin
+    reason = Ref("STOP")
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        data = Dict("candidates" => [Dict("content" => Dict("parts" => [Dict("text" => "partial")]), "finishReason" => reason[])])
+        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(data))
+    end
+    try
+        model = Google("http://$(HTTP.server_addr(server))/v1beta", "gemini-fixture", "synthetic")
+        for (value, expected) in (("STOP", "stop"), ("MAX_TOKENS", "length"))
+            reason[] = value
+            result = JuliaForever.complete(model, [], Dict())
+            @test result.done && result.finish == expected
+        end
+        reason[] = "SAFETY"
+        result = JuliaForever.complete(model, [], Dict())
+        @test !result.done && result.error isa ProviderError && result.error.provider == :google && result.error.kind == :safety
+    finally
+        close(server)
+        wait(server)
+    end
+end
+
 function google_chunks()
     [
         Dict("candidates" => [Dict("content" => Dict("role" => "model", "parts" => [Dict("thought" => true, "text" => "thinking")]))]),
@@ -118,10 +140,10 @@ end
             malformed = JuliaForever.stream(model, [], Dict())
             @test !malformed.done && malformed.error isa InvalidResponse
             failed = JuliaForever.complete(model, [], Dict())
-            @test !failed.done && occursin("401", failed.error)
+            @test !failed.done && failed.error isa ProviderStatus && failed.error.status == 401
             @test !occursin("test-secret", sprint(show, failed))
             failedstream = JuliaForever.stream(model, [], Dict())
-            @test !failedstream.done && occursin("401", failedstream.error)
+            @test !failedstream.done && failedstream.error isa ProviderStatus && failedstream.error.status == 401
             @test !occursin("test-secret", sprint(show, failedstream))
         end
     finally

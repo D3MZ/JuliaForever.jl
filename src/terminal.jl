@@ -39,26 +39,57 @@ end
 status(::Terminal, ::ToolSuccess) = "ok"
 status(terminal::Terminal, result::ToolFailure) = "error: " * redact(terminal, result.text)
 
-function render!(terminal::Terminal, event)
-    if event.type == :message_end && get(event.message, "role", nothing) == "assistant"
-        content = get(event.message, "content", nothing)
-        !terminal.streamed && content isa AbstractString && text!(terminal, content)
-        line!(terminal)
-        terminal.streamed = false
-    elseif event.type == :tool_execution_start
-        println(terminal.diagnostics, "[tool] ", redact(terminal, something(event.tool_name, "unknown")), ": started")
-        flush(terminal.diagnostics)
-    elseif event.type == :tool_execution_end
-        name = redact(terminal, something(event.tool_name, "unknown"))
-        result = status(terminal, event.result)
-        println(terminal.diagnostics, "[tool] ", name, ": ", result)
-        flush(terminal.diagnostics)
-    end
+abstract type TerminalEvent end
+struct AssistantEnded <: TerminalEvent
+    content::Any
+end
+struct ToolStarted <: TerminalEvent
+    name::Any
+end
+struct ToolEnded <: TerminalEvent
+    name::Any
+    result::Any
 end
 
+const terminaleventtypes = Dict(:message_end => AssistantEnded, :tool_execution_start => ToolStarted, :tool_execution_end => ToolEnded)
+const terminalroles = Dict("assistant" => AssistantEnded)
+terminalevent(event) = terminalevent(get(terminaleventtypes, event.type, nothing), event)
+terminalevent(::Nothing, event) = nothing
+terminalevent(::Type{AssistantEnded}, event) = terminalassistant(get(terminalroles, get(event.message, "role", nothing), nothing), event.message)
+terminalevent(::Type{ToolStarted}, event) = ToolStarted(event.tool_name)
+terminalevent(::Type{ToolEnded}, event) = ToolEnded(event.tool_name, event.result)
+terminalassistant(::Nothing, message) = nothing
+terminalassistant(::Type{AssistantEnded}, message) = AssistantEnded(get(message, "content", nothing))
+
+render!(terminal::Terminal, event) = render!(terminal, terminalevent(event))
+render!(terminal::Terminal, ::Nothing) = nothing
+
+function render!(terminal::Terminal, event::AssistantEnded)
+    showcontent!(terminal, event.content)
+    line!(terminal)
+    terminal.streamed = false
+end
+
+showcontent!(terminal::Terminal, content) = nothing
+showcontent!(terminal::Terminal, content::AbstractString) = terminal.streamed || text!(terminal, content)
+
+function render!(terminal::Terminal, event::ToolStarted)
+    println(terminal.diagnostics, "[tool] ", redact(terminal, something(event.name, "unknown")), ": started")
+    flush(terminal.diagnostics)
+end
+
+function render!(terminal::Terminal, event::ToolEnded)
+    name = redact(terminal, something(event.name, "unknown"))
+    result = status(terminal, event.result)
+    println(terminal.diagnostics, "[tool] ", name, ": ", result)
+    flush(terminal.diagnostics)
+end
+
+const finishdetails = Dict("content_filter" => "content was filtered", "failed" => "the provider reported failure", "incomplete" => "the provider reported incomplete output")
 result!(terminal::Terminal, result::Completion) = result!(terminal, result, result.error)
-result!(terminal::Terminal, ::Completion, failure::InvalidResponse) = failure!(terminal, failure)
-result!(terminal::Terminal, ::Completion, failure::ProviderStatus) = failure!(terminal, failure)
+result!(terminal::Terminal, result::Completion, error::InvalidResponse) = failure!(terminal, error)
+result!(terminal::Terminal, result::Completion, error::ProviderStatus) = failure!(terminal, error)
+
 function result!(terminal::Terminal, ::Completion, ::UnsupportedImage)
     println(terminal.diagnostics, "The selected provider does not support image attachments in tool results.")
     flush(terminal.diagnostics)
@@ -71,17 +102,18 @@ function result!(terminal::Terminal, ::Truncated)
     1
 end
 
-function result!(terminal::Terminal, result::Completion, ::Union{Nothing, String, ProviderError})
-    detail = result.finish == "content_filter" ? "content was filtered" : result.finish == "failed" ? "the provider reported failure" : result.finish == "incomplete" ? "the provider reported incomplete output" : "the provider stream did not finish"
+function result!(terminal::Terminal, result::Completion, error)
+    detail = get(finishdetails, result.finish, "the provider stream did not finish")
     println(terminal.diagnostics, "Response incomplete: ", detail)
     flush(terminal.diagnostics)
     1
 end
 
+const resultstatuses = Dict(:cancelled => 130)
 function result!(terminal::Terminal, result::Symbol)
     println(terminal.diagnostics, "Request ", result, ".")
     flush(terminal.diagnostics)
-    result == :cancelled ? 130 : 1
+    get(resultstatuses, result, 1)
 end
 
 result!(::Terminal, ::Union{AbstractString, Nothing}) = 0
@@ -107,48 +139,54 @@ function checkqueues!(terminal::Terminal, state::Conversation.State, history)
     PendingInputs()
 end
 
+const historydiagnostics = Dict(
+    :uncertain_effect => "History has an uncertain pending effect. It was not retried. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.",
+    :incomplete_turn => "History has an incomplete turn. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.",
+    :not_interrupted => "History has no interrupted turn to abandon.",
+)
+
 function result!(terminal::Terminal, result::History.Rejected)
-    if result.reason == :uncertain_effect
-        println(terminal.diagnostics, "History has an uncertain pending effect. It was not retried. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.")
-    elseif result.reason == :incomplete_turn
-        println(terminal.diagnostics, "History has an incomplete turn. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.")
-    elseif result.reason == :not_interrupted
-        println(terminal.diagnostics, "History has no interrupted turn to abandon.")
-    else
-        println(terminal.diagnostics, "History rejected: ", result.reason, ".")
-    end
+    println(terminal.diagnostics, get(historydiagnostics, result.reason, "History rejected: $(result.reason)."))
     flush(terminal.diagnostics)
     1
 end
 
-function historyagent(f, terminal::Terminal, path)
+function historyagent(f, terminal::Terminal, path::AbstractString)
     path = expanduser(path)
     if !isfile(path)
         println(terminal.diagnostics, "Recovery requires an existing history file.")
         return 2
     end
-    history = SessionCatalog.adapt(open(History.SQLite, path; create=false))
-    history isa History.Rejected && return result!(terminal, history)
+    historyagent(f, terminal, SessionCatalog.adapt(open(History.SQLite, path; create=false)))
+end
+historyagent(f, terminal::Terminal, rejected::History.Rejected) = result!(terminal, rejected)
+
+function historyagent(f, terminal::Terminal, history::History.Store)
     try
-        snapshot = History.snapshot(history)
-        snapshot isa History.Rejected && return result!(terminal, snapshot)
-        snapshot.revision == 0 && return result!(terminal, History.Rejected(:not_interrupted))
-        agent = Agent(nothing, []; history)
-        agent isa History.Rejected && return result!(terminal, agent)
-        f(agent)
+        historysnapshot(f, terminal, history, History.snapshot(history))
     finally
         close(history)
     end
 end
 
+historysnapshot(f, terminal, history, rejected::History.Rejected) = result!(terminal, rejected)
+function historysnapshot(f, terminal, history, snapshot::History.Snapshot)
+    snapshot.revision == 0 && return result!(terminal, History.Rejected(:not_interrupted))
+    historyopened(f, terminal, Agent(nothing, []; history))
+end
+historyopened(f, terminal, rejected::History.Rejected) = result!(terminal, rejected)
+historyopened(f, terminal, agent::Agent) = f(agent)
+
 function abandonhistory!(terminal::Terminal, path, reason)
     historyagent(terminal, path) do agent
-        result = abandon!(agent, reason)
-        result isa History.Rejected && return result!(terminal, result)
-        println(terminal.output, "Interrupted turn abandoned. No effect was retried or undone.")
-        flush(terminal.output)
-        0
+        abandoned!(terminal, abandon!(agent, reason))
     end
+end
+abandoned!(terminal::Terminal, rejected::History.Rejected) = result!(terminal, rejected)
+function abandoned!(terminal::Terminal, result)
+    println(terminal.output, "Interrupted turn abandoned. No effect was retried or undone.")
+    flush(terminal.output)
+    0
 end
 
 function inspect!(terminal::Terminal, effect::Union{Conversation.ToolRequest, Conversation.SkipRequest})
@@ -158,9 +196,12 @@ end
 
 inspect!(terminal::Terminal, ::Conversation.ModelRequest) = println(terminal.output, "Pending model request")
 
+historystatus(::Nothing) = "ready"
+historystatus(fault::History.Rejected) = string(fault.reason)
+
 function inspecthistory!(terminal::Terminal, path)
     historyagent(terminal, path) do agent
-        println(terminal.output, "History status: ", isnothing(agent.fault) ? "ready" : string(agent.fault.reason))
+        println(terminal.output, "History status: ", historystatus(agent.fault))
         for pending in agent.state.kernel.pending
             println(terminal.output, "Effect ID: ", repr(pending.id))
             inspect!(terminal, pending.effect)
@@ -232,6 +273,14 @@ function request!(f, terminal::Terminal)
     (; value=fetch(task), status=0)
 end
 
+const streamtypes = Dict(:text => TextDelta)
+streamevent(event) = streamevent(get(streamtypes, event.type, nothing), event)
+streamevent(::Nothing, event) = nothing
+streamevent(::Type{TextDelta}, event) = TextDelta(event.text)
+streamrender!(terminal::Terminal, event) = streamrender!(terminal, streamevent(event))
+streamrender!(terminal::Terminal, ::Nothing) = nothing
+streamrender!(terminal::Terminal, event::TextDelta) = text!(terminal, event.text)
+
 function failures!(terminal::Terminal, listener::Extensions.Listener)
     for failure in Extensions.failures(listener)
         println(terminal.diagnostics, "[plugin] ", redact(terminal, failure.plugin), " ", failure.event, ": ", redact(terminal, sprint(showerror, failure.exception)))
@@ -250,7 +299,7 @@ function run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::Nothing)
     callback = observer(terminal, snapshot)
     result = try
         request!(terminal) do
-            respond!(agent, prompt; on_event=event -> event.type == :text && text!(terminal, event.text), on_agent_event=callback)
+            respond!(agent, prompt; on_event=event -> streamrender!(terminal, event), on_agent_event=callback)
         end
     finally
         failures!(terminal, callback)
@@ -259,119 +308,16 @@ function run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::Nothing)
     result!(terminal, result.value)
 end
 
-mutable struct InputHistory <: REPL.LineEdit.HistoryProvider
-    entries::Vector{String}
-    drafts::Dict{Int, String}
-    index::Int
-end
-
-InputHistory() = InputHistory(String[], Dict{Int, String}(), 1)
-
-function reset!(history::InputHistory)
-    empty!(history.drafts)
-    history.index = length(history.entries) + 1
-    nothing
-end
-
-function REPL.LineEdit.add_history(history::InputHistory, state::REPL.LineEdit.PromptState)
-    text = REPL.LineEdit.input_string(state)
-    isempty(text) || text == "/exit" || push!(history.entries, text)
-    reset!(history)
-end
-
-function history!(state::REPL.LineEdit.MIState, history::InputHistory, step)
-    target = history.index + step
-    if target < 1 || target > length(history.entries) + 1
-        REPL.LineEdit.beep(state)
-        return
-    end
-    history.drafts[history.index] = REPL.LineEdit.input_string(state)
-    history.index = target
-    text = get(history.drafts, target, target <= length(history.entries) ? history.entries[target] : "")
-    REPL.LineEdit.replace_line(state, text)
-    if step < 0
-        REPL.LineEdit.move_input_start(state)
-        REPL.LineEdit.move_line_end(state)
-    else
-        REPL.LineEdit.move_input_end(state)
-    end
-    REPL.LineEdit.refresh_line(state)
-end
-
-REPL.LineEdit.history_prev(state::REPL.LineEdit.MIState, history::InputHistory) = history!(state, history, -1)
-REPL.LineEdit.history_next(state::REPL.LineEdit.MIState, history::InputHistory) = history!(state, history, 1)
-REPL.LineEdit.history_first(state::REPL.LineEdit.MIState, history::InputHistory) = history!(state, history, 1 - history.index)
-REPL.LineEdit.history_last(state::REPL.LineEdit.MIState, history::InputHistory) = history!(state, history, length(history.entries) + 1 - history.index)
-
-function unsupported!(state::REPL.LineEdit.MIState, action)
-    edit = REPL.LineEdit
-    edit.move_input_end(state)
-    edit.refresh_line(state)
-    println(edit.terminal(state))
-    println(edit.terminal(state), action, " is not supported.")
-    edit.state(state).ias = edit.InputAreaState(0, 0)
-    edit.refresh_line(state)
-end
-
-function edit!(terminal::Terminal, agent::Agent, snapshot, store, sessiondir)
-    edit = REPL.LineEdit
-    history = InputHistory()
-    newline = (state, args...) -> edit.edit_insert_newline(state, 0)
-    keymap = Dict{Any, Any}(
-        '\n' => newline,
-        "\e[13;2u" => newline,
-        "\e[27;2;13~" => newline,
-        "\e\r" => (state, args...) -> unsupported!(state, "Alt+Enter follow-up"),
-        "\e\n" => (state, args...) -> unsupported!(state, "Alt+Enter follow-up"),
-        "^G" => (state, args...) -> unsupported!(state, "External editor"),
-        "\ee" => (state, args...) -> unsupported!(state, "External editor"),
-        "\em" => nothing,
-        "\e." => nothing,
-        "\e[200~" => (state, args...) -> begin
-            text = readuntil(edit.terminal(state), "\e[201~")
-            edit.edit_insert(state, replace(text, "\r\n" => "\n", '\r' => '\n'))
-        end,
-        "^D" => (state, args...) -> begin
-            if isempty(edit.input_string(state))
-                println(edit.terminal(state))
-                :abort
-            else
-                edit.edit_delete(state)
-            end
-        end,
-        "^C" => (state, args...) -> begin
-            edit.cancel_beep(state)
-            edit.move_input_end(state)
-            edit.refresh_line(state)
-            print(edit.terminal(state), "^C\n")
-            edit.transition(state, :reset)
-            reset!(history)
-            edit.refresh_line(state)
-        end,
-    )
-    prompt = edit.Prompt("> "; hist=history, keymap_dict=edit.keymap(Dict{Any, Any}[keymap, edit.history_keymap, edit.default_keymap, edit.escape_defaults]))
-    interface = edit.ModalInterface(edit.TextInterface[prompt])
-    tty = REPL.Terminals.TTYTerminal(get(ENV, "TERM", ""), stdin, stderr, stderr)
-    state = edit.init_state(tty, interface)
+function edit!(terminal::Terminal, agent::Agent, snapshot, input, output, store, sessiondir, templates)
     status = 0
-    while true
-        buffer, ok, suspend = edit.prompt!(tty, interface, state)
-        if suspend
-            @static if Sys.isunix()
-                ccall(:jl_repl_raise_sigtstp, Cint, ())
-            end
-            continue
-        end
-        ok || break
-        text = String(take!(buffer))
-        edit.reset_state(state)
+    for text in terminalinput(input, output)
         text == "/exit" && break
         if haskey(terminalcommands, text)
-            agent, store[], result = command!(terminalcommands[text], terminal, agent, store[], stdin, sessiondir, snapshot)
+            agent, store[], result = command!(terminalcommands[text], terminal, agent, store[], input, sessiondir, snapshot)
             status = max(status, result)
             continue
         end
-        status = max(status, run!(terminal, agent, text, snapshot))
+        status = max(status, run!(terminal, agent, Prompts.expand(text, templates), snapshot))
     end
     status
 end

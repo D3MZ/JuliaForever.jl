@@ -14,6 +14,28 @@ response_done(output; status="completed", usage=nothing) = Dict("id" => "resp_1"
     @test provider(Dict("OPENAI_MODEL" => "old", "OPENAI_API_KEY" => "synthetic")) isa OpenAI
 end
 
+@testset "Responses completion status and call validation" begin
+    model = OpenAIResponses("http://localhost/v1", "fixture", "synthetic")
+    call = response_call("fc_1", "call_1", "one.txt", "one")
+    completed = JuliaForever.completion(model, response_done([call]))
+    @test completed.done && completed.finish == "tool_calls" && completed.error === nothing
+    text = JuliaForever.completion(model, response_done([response_text("answer")]))
+    @test text.done && text.finish == "stop"
+    for (status, kind) in (("failed", :failed), ("incomplete", :incomplete), (nothing, :unknown))
+        result = JuliaForever.completion(model, response_done([call]; status))
+        @test !result.done && result.finish === status
+        @test result.error isa ProviderError && result.error.provider == :openai_responses && result.error.kind == kind
+    end
+    unfinished = merge(call, Dict("status" => "in_progress"))
+    result = JuliaForever.completion(model, response_done([unfinished]))
+    @test !result.done && result.error == "Responses contained an unfinished function call"
+    duplicate = merge(call, Dict("id" => "fc_2"))
+    result = JuliaForever.completion(model, response_done([call, duplicate]))
+    @test !result.done && result.error == "Responses contained duplicate function call identifiers"
+    result = JuliaForever.completion(model, response_done([unfinished]); failure="earlier failure")
+    @test !result.done && result.error == "earlier failure"
+end
+
 @testset "Responses nonstreamed function loop and replay" begin
     requests = Any[]
     calls = [response_call("fc_1", "call_1", "a.txt", "first"), response_call("fc_2", "call_2", "b.txt", "second")]

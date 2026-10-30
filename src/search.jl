@@ -158,7 +158,14 @@ function ancestors(root)
     dirs
 end
 
-function initialrules(root, findmode)
+gitignore(::Find, inside) = true
+gitignore(::Grep, inside) = inside
+inrepo(::Nothing, i) = false
+inrepo(repo::Integer, i) = i >= repo
+hasrepo(::Nothing) = false
+hasrepo(repo::Integer) = true
+
+function initialrules(root, tool::Union{Find, Grep})
     dirs = ancestors(root)
     repo = findlast(dir -> ispath(joinpath(dir, ".git")), [dirs; root])
     result = IgnoreRule[]
@@ -167,14 +174,14 @@ function initialrules(root, findmode)
             filter!(keep, result)
             append!(result, rules(joinpath(dir, ".git", "info", "exclude"), GitRule; base=dir))
         end
-        (findmode || (!isnothing(repo) && i >= repo)) && append!(result, rules(joinpath(dir, ".gitignore"), GitRule))
+        gitignore(tool, inrepo(repo, i)) && append!(result, rules(joinpath(dir, ".gitignore"), GitRule))
         append!(result, rules(joinpath(dir, ".ignore"), FileRule))
     end
-    result, findmode || !isnothing(repo)
+    result, gitignore(tool, hasrepo(repo))
 end
 
-function walksearch(visit, root, findmode; whitelist=(target -> false))
-    inherited, inside = initialrules(root, findmode)
+function walksearch(visit, root, tool::Union{Find, Grep}; whitelist=(target -> false))
+    inherited, inside = initialrules(root, tool)
     function walk(dir, inherited, inside)
         ruleset = copy(inherited)
         if ispath(joinpath(dir, ".git"))
@@ -182,7 +189,7 @@ function walksearch(visit, root, findmode; whitelist=(target -> false))
             append!(ruleset, rules(joinpath(dir, ".git", "info", "exclude"), GitRule; base=dir))
             inside = true
         end
-        (findmode || inside) && append!(ruleset, rules(joinpath(dir, ".gitignore"), GitRule))
+        gitignore(tool, inside) && append!(ruleset, rules(joinpath(dir, ".gitignore"), GitRule))
         append!(ruleset, rules(joinpath(dir, ".ignore"), FileRule))
         for entry in readdir(dir)
             entry == ".git" && continue
@@ -220,7 +227,7 @@ function execute(tool::Find, args)
         return ToolFailure(sprint(showerror, exception))
     end
     found = String[]
-    walksearch(root, true) do target, directory
+    walksearch(root, tool) do target, directory
         relative = posix(relpath(target, root))
         candidate = occursin('/', pattern) ? (startswith(pattern, '/') ? posix(target) : relative) : basename(target)
         if occursin(regex, candidate)
@@ -295,7 +302,7 @@ function execute(tool::Grep, args)
         true
     end
     whitelist = target -> !isnothing(filterregex) && !exclude && selected(target)
-    directory ? walksearch(visit, root, false; whitelist) : visit(root, false)
+    directory ? walksearch(visit, root, tool; whitelist) : visit(root, false)
     isempty(output) && return ToolResult("No matches found")
     # Match limits count matches, not context rows.
     limited = count >= limit
