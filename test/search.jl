@@ -1,3 +1,17 @@
+@testset "repository ignore scope dispatch" begin
+    mktempdir() do dir
+        write(joinpath(dir, ".gitignore"), "ignored.txt\n")
+        rules = JuliaForever.IgnoreRule[]
+        JuliaForever.gitignore!(rules, dir, Find(dir), nothing)
+        @test length(rules) == 1
+        empty!(rules)
+        JuliaForever.gitignore!(rules, dir, Grep(dir), nothing)
+        @test isempty(rules)
+        JuliaForever.gitignore!(rules, dir, Grep(dir), dir)
+        @test length(rules) == 1
+    end
+end
+
 function searchfixture(dir)
     mkpath(joinpath(dir, ".git"))
     mkpath(joinpath(dir, "src", "deep"))
