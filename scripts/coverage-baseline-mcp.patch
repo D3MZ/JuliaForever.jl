@@ -1,0 +1,22 @@
+diff --git a/test/mcp_http_sse.jl b/test/mcp_http_sse.jl
+index 0a3dc2d..71155bc 100644
+--- a/test/mcp_http_sse.jl
++++ b/test/mcp_http_sse.jl
+@@ -13,7 +13,7 @@ server = HTTP.serve!("127.0.0.1", 0; listenany=true) do req
+     HTTP.Response(200, ["Content-Type" => "text/event-stream; charset=utf-8", "Mcp-Session-Id" => "sse-session"], payload)
+ end
+ try
+-    client = MCP.connect("http://$(HTTP.server_addr(server))/mcp"; timeout=2)
++    client = MCP.connect("http://$(HTTP.server_addr(server))/mcp"; timeout=30)
+     @test client isa MCP.Client
+     if client isa MCP.Client
+         @test MCP.call(client, "echo", Dict())["content"][1]["text"] == "streamed"
+@@ -56,7 +56,7 @@ server = HTTP.listen!("127.0.0.1", 0; listenany=true) do io
+     end
+ end
+ try
+-    client = MCP.connect("http://$(HTTP.server_addr(server))/mcp"; timeout=2)
++    client = MCP.connect("http://$(HTTP.server_addr(server))/mcp"; timeout=30)
+     task = @async MCP.request(client, "timeout", Dict(); timeout=0.2)
+     @test take!(started) == "timeout"
+     @test fetch(task).kind == :timeout
