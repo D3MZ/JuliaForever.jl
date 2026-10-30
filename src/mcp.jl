@@ -161,15 +161,15 @@ function httpheaders(transport::HttpTransport)
     headers
 end
 
-include("mcp_sse_json.jl")
+include("mcp_json.jl")
 
 function ssemessage!(client::Client, data, event, id)
     (isempty(data) || !(event in ("", "message"))) && return false
-    ssereply(client, sseparse(data), id)
+    ssereply(client, jsonmessage(join(data, "\n")), id)
 end
-ssereply(client, invalid::InvalidSSE, id) = false
+ssereply(client, invalid::InvalidMessage, id) = false
 function ssereply(client, value::AbstractDict, id)
-    value = ssevalid(value)
+    value = validmessage(value)
     received(client, value) || return false
     get(value, "id", nothing) == id && !haskey(value, "method")
 end
@@ -178,7 +178,7 @@ struct ServerStream end
 function servermessage!(client::Client, data, event)
     (isempty(data) || !(event in ("", "message"))) && return nothing
     try
-        received(client, ssevalid(sseparse(data)))
+        received(client, validmessage(jsonmessage(join(data, "\n"))))
     catch
     end
     nothing
@@ -439,7 +439,7 @@ resumed(::StreamEnded) = StreamStopped()
 resumed(::StreamAnswered) = StreamAnswered()
 
 function jsonhttp!(client, stream, message, id, type)
-    value = JSON3.read(read(stream), Dict{String, Any})
+    value = validmessage(jsonmessage(String(read(stream))))
     received(client, value) || httpfailure!(client, message, Failure(:protocol, "Invalid JSON-RPC message"))
 end
 unsupportedhttp!(client, stream, message, id, type) = httpfailure!(client, message, Failure(:protocol, "Unsupported MCP HTTP response content type: $type"))
@@ -737,16 +737,7 @@ function readmessages(client::Client)
                 fail!(client, Failure(:protocol, "Incomplete JSON-RPC message"))
                 return
             end
-            message = try
-                JSON3.read(codeunits(line), Dict{String, Any})
-            catch
-                fail!(client, Failure(:protocol, "Invalid JSON-RPC message"))
-                return
-            end
-            if !received(client, message)
-                fail!(client, Failure(:protocol, "Invalid JSON-RPC message"))
-                return
-            end
+            received(client, validmessage(jsonmessage(line)))
         end
         fail!(client, Failure(:closed, "MCP server closed its output"))
     catch exception

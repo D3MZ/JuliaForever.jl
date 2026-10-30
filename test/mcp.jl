@@ -90,8 +90,8 @@ end
             end
             failure = MCP.call(client, "protocol_error", Dict())
             @test failure isa MCP.Failure && failure.kind == :rpc && failure.data["code"] == -32602
-            failure = MCP.call(client, "invalid_error", Dict())
-            @test failure isa MCP.Failure && failure.kind == :protocol
+            failure = MCP.call(client, "invalid_error", Dict(); timeout=1)
+            @test failure isa MCP.Failure && failure.kind == :timeout
             @test MCP.call(client, "invalid_result", Dict()) isa MCP.Failure
             failed = MCP.RemoteTool(client, "tool_error", "failed", "", Dict("type" => "object"))
             result = execute(failed, Dict())
@@ -208,7 +208,7 @@ end
         broken = MCP.connect(mcpserver("malformed", marker); timeout=10, grace=0.2)
         @test broken isa MCP.Client
         if broken isa MCP.Client
-            @test MCP.call(broken, "anything", Dict()) isa MCP.Failure
+            @test MCP.call(broken, "anything", Dict(); timeout=1) isa MCP.Failure
             close(broken)
             @test process_exited(broken.process)
         end
