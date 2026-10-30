@@ -177,12 +177,7 @@ function handlecode!(context, event::CodeCall)
     nothing
 end
 
-codeoutcome(::Nothing, result, failure) = result, failure
-codeoutcome(event::CodeReply, result, failure) = event, failure
-codeoutcome(value::Tuple, result, failure) = result, value
-
-codecomplete(result, failure::Tuple, output, calls, stdout, stderr, pid) = CodeFailure(nothing, output, calls, Dict{String, Any}(), failure[1], failure[2], stdout, stderr, pid)
-codecomplete(result, ::Nothing, output, calls, stdout, stderr, pid) = codecomplete(result, output, calls, stdout, stderr, pid)
+codecomplete(failure::Tuple, output, calls, stdout, stderr, pid) = CodeFailure(nothing, output, calls, Dict{String, Any}(), failure[1], failure[2], stdout, stderr, pid)
 codecomplete(result::CodeErrored, output, calls, stdout, stderr, pid) = CodeFailure(nothing, output, calls, Dict{String, Any}(), :script, String(result.message), stdout, stderr, pid)
 codecomplete(result::CodeReturned, output, calls, stdout, stderr, pid) = CodeSuccess(result.value, output, calls, Dict{String, Any}(String(key) => value for (key, value) in pairs(result.writes)), String.(result.deletes), nothing, "", stdout, stderr, pid)
 
@@ -190,6 +185,49 @@ function codefailure(cancel, timedout, started, timeout)
     cancel.cancelled[] && return (:cancelled, "Execution cancelled")
     (timedout[] || (time_ns() - started) / 1e9 >= timeout) && return (:timeout, "Execution timed out")
     nothing
+end
+
+startcode!(f, ::Nothing) = f()
+startcode!(f, failure::Tuple) = nothing
+
+codeeventresult(context, event, failure::Tuple) = failure
+function codeeventresult(context, event, ::Nothing)
+    try
+        handlecode!(context, codeevent(event))
+    catch exception
+        (:worker, sprint(showerror, exception))
+    end
+end
+
+codecycle(context, cancel, timedout, started, timeout) = codecycle(context, cancel, timedout, started, timeout, codefailure(cancel, timedout, started, timeout))
+codecycle(context, cancel, timedout, started, timeout, failure::Tuple) = failure
+function codecycle(context, cancel, timedout, started, timeout, ::Nothing)
+    event = try
+        take!(context.events)
+    catch
+        nothing
+    end
+    codeeventresult(context, event, codefailure(cancel, timedout, started, timeout))
+end
+
+capturecode!(events, result, ::Nothing) = nothing
+function capturecode!(events, result, outcome::Union{CodeReply, Tuple})
+    result[] = outcome
+    close(events)
+    nothing
+end
+codefinished(outcome::Union{CodeReply, Tuple}, failure) = outcome
+codefinished(::Nothing, failure::Tuple) = failure
+codefinished(::Nothing, ::Nothing) = (:worker, "Worker connection closed")
+
+codewait!(context, cancel, timedout, started, timeout, failure::Tuple) = failure
+function codewait!(context, cancel, timedout, started, timeout, ::Nothing)
+    result = Ref{Any}(nothing)
+    while isopen(context.events)
+        capturecode!(context.events, result, codecycle(context, cancel, timedout, started, timeout))
+        yield()
+    end
+    codefinished(result[], codefailure(cancel, timedout, started, timeout))
 end
 
 codeimage(result::ToolResult, ::Nothing) = result
@@ -239,8 +277,7 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
         pid = 0
         output = String[]
         calls = NamedTuple[]
-        result = nothing
-        failure = nothing
+        outcome = nothing
         try
             if isfinite(mode.timeout)
                 timer = Timer(max(0.0, mode.timeout - (time_ns() - started) / 1e9))
@@ -254,7 +291,7 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
                 end
             end
             failure = codefailure(cancel, timedout, started, mode.timeout)
-            if isnothing(failure)
+            startcode!(failure) do
                 process = open(pipeline(cmd; stderr=stderrfile), "r+")
                 pid = getpid(process)
                 request = JSON3.write((; code=String(code), store, tools=[(; name=name(tool), description=description(tool), schema=schema(tool)) for tool in values(mode.tools)])) * "\n"
@@ -277,24 +314,8 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
                     enqueue(events, CodeClosed())
                 end
             end
-            while isnothing(result) && isnothing(failure)
-                failure = codefailure(cancel, timedout, started, mode.timeout)
-                isnothing(failure) || break
-                event = try
-                    take!(events)
-                catch
-                    nothing
-                end
-                failure = codefailure(cancel, timedout, started, mode.timeout)
-                isnothing(failure) || break
-                try
-                    context = (; mode, output, calls, events, process, lockwrite, done)
-                    result, failure = codeoutcome(handlecode!(context, codeevent(event)), result, failure)
-                catch exception
-                    failure = (:worker, sprint(showerror, exception))
-                end
-                yield()
-            end
+            context = (; mode, output, calls, events, process, lockwrite, done)
+            outcome = codewait!(context, cancel, timedout, started, mode.timeout, failure)
         finally
             done[] = true
             lock(cancel.lock) do
@@ -312,7 +333,7 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
         end
         stdout = isfile(stdoutfile) ? read(stdoutfile, String) : ""
         stderr = isfile(stderrfile) ? read(stderrfile, String) : ""
-        codecomplete(result, failure, output, calls, stdout, stderr, pid)
+        codecomplete(outcome, output, calls, stdout, stderr, pid)
     end
 end
 
