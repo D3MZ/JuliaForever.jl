@@ -62,18 +62,6 @@ kernel.jl	:(same(x, y, seen))
 kernel.jl	:found
 logs.jl	:empty
 logs.jl	:first
-mcp.jl	:(detail isa AbstractDict)
-mcp.jl	:(detail["code"] isa Bool)
-mcp.jl	:(get(detail, "code", nothing) isa Integer)
-mcp.jl	:(get(detail, "message", nothing) isa AbstractString)
-mcp.jl	:(id isa AbstractString)
-mcp.jl	:(id isa AbstractString)
-mcp.jl	:(id isa Bool)
-mcp.jl	:(id isa Bool)
-mcp.jl	:(id isa Integer)
-mcp.jl	:(id isa Integer)
-mcp.jl	:(message isa AbstractDict)
-mcp.jl	:(method isa AbstractString)
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :state)
