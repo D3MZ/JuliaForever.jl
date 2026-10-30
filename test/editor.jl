@@ -23,7 +23,7 @@ using Test, JSON3
         process = run(ignorestatus(`$python $(joinpath(@__DIR__, "editor_pty.py")) $root $cases $julia`))
         @test success(process)
         if !isnothing(Sys.which("tmux"))
-            process = run(ignorestatus(`$python $(joinpath(@__DIR__, "tmux_exit_test.py")`))
+            process = run(ignorestatus(`$python $(joinpath(@__DIR__, "tmux_exit_test.py"))`))
             @test success(process)
             process = run(ignorestatus(`$python $(joinpath(@__DIR__, "live_pty.py")) $root $julia`))
             @test success(process)

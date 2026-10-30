@@ -437,6 +437,8 @@ function response(agent, messages, parameters, ::Nothing, on_agent_event)
     end
 end
 
+providercomplete!(callback, result) = nothing
+
 function response(agent, messages, parameters, on_event, on_agent_event)
     partial = Dict{String, Any}("role" => "assistant", "content" => nothing)
     calls = Dict{Any, Any}()
@@ -447,6 +449,7 @@ function response(agent, messages, parameters, on_event, on_agent_event)
     end
     request!(agent, partial, started) do
         result = stream(agent.provider, messages, agent.tools; parameters, on_event=callback)
+        providercomplete!(on_event, result)
         (; message=result.message, result, started=started[])
     end
 end
