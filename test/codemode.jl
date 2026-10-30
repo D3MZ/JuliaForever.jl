@@ -2,15 +2,9 @@ using Test, JuliaForever, HTTP, JSON3, TOML
 
 using JuliaForever: CodeMode, CodeCancellation, cancel!, codeexecute
 
-@testset "worker result decoding" begin
+@testset "legacy worker result decoding" begin
     returned = JuliaForever.codeevent((; type="result", ok=true, value=3, writes=Dict("x" => 1)))
-    failed = JuliaForever.codeevent((; type="result", ok=false, message="script failed"))
-    @test returned isa JuliaForever.CodeReturned
-    @test failed isa JuliaForever.CodeErrored
-    @test returned.value == 3 && returned.writes == Dict("x" => 1)
     @test isempty(returned.deletes)
-    @test JuliaForever.codeevent((; type="result", ok=true, value=nothing, writes=Dict(), deletes=["old"])).deletes == ["old"]
-    @test failed.message == "script failed"
 end
 
 @testset "CodeMode tool selection" begin

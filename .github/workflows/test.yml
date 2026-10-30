@@ -19,7 +19,7 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
@@ -31,6 +31,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '25'
+      - name: Test coverage report
+        if: runner.os == 'Linux'
+        run: python3 -B -m unittest discover -s scripts/tests -v
       - name: Prepare pinned Pi reference
         run: |
           git clone --filter=blob:none https://github.com/earendil-works/pi.git "$RUNNER_TEMP/pi-source"
@@ -41,4 +44,21 @@ jobs:
         env:
           PI_SOURCE: ${{ runner.temp }}/pi-source
           JULIA_NUM_THREADS: 4
-        run: julia --startup-file=no --project=. scripts/ci.jl
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            julia --startup-file=no --project=. scripts/ci.jl --coverage
+          else
+            julia --startup-file=no --project=. scripts/ci.jl
+          fi
+      - name: Summarize coverage
+        if: runner.os == 'Linux'
+        run: python3 scripts/coverage.py --output coverage/report.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: julia-coverage
+          path: |
+            coverage/report.json
+            src/**/*.cov
+          if-no-files-found: error
