@@ -1,6 +1,7 @@
 abstract type TerminalCommand end
 struct TreeCommand <: TerminalCommand end
 struct ResumeCommand <: TerminalCommand end
+struct CompactCommand <: TerminalCommand end
 struct NewCommand <: TerminalCommand end
 struct ExitCommand <: TerminalCommand end
 struct ShowName <: TerminalCommand end
@@ -8,7 +9,7 @@ struct SetName <: TerminalCommand
     name::String
 end
 
-const terminalcommands = Dict{String, TerminalCommand}("/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand(), "/exit" => ExitCommand())
+const terminalcommands = Dict{String, TerminalCommand}("/compact" => CompactCommand(), "/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand(), "/exit" => ExitCommand())
 const namepattern = r"\A/name(?: +([\s\S]*))?\z"
 terminalcommand(text) = terminalcommand(get(terminalcommands, text, nothing), text)
 terminalcommand(command::TerminalCommand, text) = command
@@ -16,6 +17,16 @@ terminalcommand(::Nothing, text) = namecommand(match(namepattern, text))
 namecommand(::Nothing) = nothing
 namecommand(found::RegexMatch) = namecommand(Conversation.sessionname(something(found[1], "")))
 namecommand(name::String) = isempty(name) ? ShowName() : SetName(name)
+
+command!(::CompactCommand, terminal, agent, history, input, directory, snapshot) = (agent, history, compactresult!(terminal, compact!(agent)))
+
+function compactresult!(terminal, summary::AbstractString)
+    println(terminal.diagnostics, "Context compacted.")
+    flush(terminal.diagnostics)
+    0
+end
+
+compactresult!(terminal, result) = result!(terminal, result)
 
 command!(::TreeCommand, terminal, agent, history, input, directory, snapshot) = tree!(terminal, agent, history, input, snapshot)
 command!(::ResumeCommand, terminal, agent, history, input, directory, snapshot) = resume!(terminal, agent, history, input, directory)

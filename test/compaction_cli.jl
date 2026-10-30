@@ -1,0 +1,36 @@
+using Test, JuliaForever, JSON3
+
+@testset "terminal compaction survives process restart" begin
+    mktempdir() do root
+        workspace = joinpath(root, "project")
+        sessions = joinpath(root, "sessions")
+        requests = joinpath(root, "requests.jsonl")
+        input = joinpath(root, "input")
+        output = joinpath(root, "output")
+        diagnostics = joinpath(root, "diagnostics")
+        mkpath(workspace)
+        project = dirname(@__DIR__)
+        script = joinpath(@__DIR__, "compaction_cli_process.jl")
+        function runcli(args, text)
+            write(input, text)
+            cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --project=$project $script $args`; dir=workspace)
+            cmd = addenv(cmd, "JF_COMPACTION_REQUESTS" => requests, "JF_SESSION_DIR" => sessions, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "fixture", "JF_INSTRUCTIONS_DIR" => nothing)
+            process = run(pipeline(ignorestatus(cmd); stdin=input, stdout=output, stderr=diagnostics))
+            (; status=process.exitcode, output=read(output, String), diagnostics=read(diagnostics, String))
+        end
+
+        first = runcli(String[], "first\nsecond\n/compact\n/exit\n")
+        @test first.status == 0
+        @test first.output == "reply:first\nreply:second\n"
+        @test occursin("Context compacted.", first.diagnostics)
+        second = runcli(["--continue", "third"], "")
+        @test second.status == 0
+        @test second.output == "reply:third\n"
+        calls = [JSON3.read(line, Dict{String, Any}) for line in eachline(requests)]
+        @test [call["operation"] for call in calls] == ["respond", "respond", "summarize", "respond"]
+        @test occursin("reply:first", calls[3]["messages"][1]["content"])
+        @test !occursin("reply:second", calls[3]["messages"][1]["content"])
+        final = calls[4]["messages"]
+        @test [message["content"] for message in final] == [JuliaForever.summaryprefix * "checkpoint" * JuliaForever.summarysuffix, "second", "reply:second", "third"]
+    end
+end

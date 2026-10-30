@@ -484,6 +484,7 @@ function modelresponse(agent, effect, parameters, on_event, on_agent_event)
     try
         messages = [convert(Dict{String, Any}, message) for message in effect.effect.messages]
         answer = response(agent, messages, parameters, on_event, on_agent_event)
+        rememberusage!(answer.result)
         returned = true
         answer
     finally
@@ -503,8 +504,13 @@ Run a turn and queued messages. `on_event` receives provider stream events; `on_
 
 Supplying `executor` and `context` selects the executor-backed path, including for a recorded agent. It returns an `Execution.Turn` with the outcome and per-model usage and error metadata; unsupported combinations return `Execution.Rejected` before starting. See `docs/execution.md` for its limitations.
 """
-function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential, executor=nothing, context=nothing)
-    respond!(agent, prompt, executor, context; on_event, on_agent_event, parameters, tool_execution)
+function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential, executor=nothing, context=nothing, auto_compaction=nothing, summarize=Summarizer(agent.provider))
+    used = Ref{Union{Nothing, Usage}}(nothing)
+    result = task_local_storage(:jf_compaction_usage, used) do
+        respond!(agent, prompt, executor, context; on_event, on_agent_event, parameters, tool_execution)
+    end
+    finishauto!(agent, result, used[], auto_compaction, summarize, on_agent_event)
+    result
 end
 
 respond!(agent::Agent, prompt, executor, context; kwargs...) = respond_execution!(agent, prompt, executor, context; kwargs...)

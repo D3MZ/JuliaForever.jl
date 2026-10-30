@@ -120,6 +120,7 @@ packed(items::Vector, item) = push!(items, item)
 
 pack(x) = Rejected(:unsupported_value)
 pack(x::C.User) = node("user", x.content)
+pack(x::C.Summary) = node("summary", x.content)
 pack(x::C.RawMessage) = node("raw", packvalue(x.value))
 pack(x::C.ToolCall) = node("tool_call", x.id, x.name, x.arguments, packvalue(x.metadata))
 pack(x::C.Assistant) = node("assistant", x.content, packall(x.calls), x.finish, x.done, packvalue(x.metadata))
@@ -167,7 +168,7 @@ function unpackall(xs, type)
 end
 
 const nodetypes = Dict(
-    "user" => C.User, "raw" => C.RawMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant,
+    "user" => C.User, "summary" => C.Summary, "raw" => C.RawMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant,
     "tool_message" => C.ToolMessage, "model_request" => C.ModelRequest, "tool_request" => C.ToolRequest,
     "skip_request" => C.SkipRequest, "model_reply" => C.ModelReply, "tool_reply" => C.ToolReply,
     "tool_search_reply" => ToolLoaded,
@@ -181,6 +182,7 @@ unpack(x) = Rejected(:invalid_record)
 unpack(x::Dict) = unpack(get(nodetypes, x["kind"], nothing), x["fields"])
 unpack(type, fields) = Rejected(:invalid_record)
 unpack(::Type{C.User}, f::Vector) = C.User(f[1])
+unpack(::Type{C.Summary}, f::Vector) = C.Summary(f[1])
 unpack(::Type{C.RawMessage}, f::Vector) = C.RawMessage(unvalue(f[1]))
 unpack(::Type{C.ToolCall}, f::Vector) = C.ToolCall(f[1], f[2], f[3], unvalue(f[4]))
 unpack(::Type{C.Assistant}, f::Vector) = C.Assistant(f[1], unpackall(f[2], C.ToolCall), f[3], f[4], unvalue(f[5]))
