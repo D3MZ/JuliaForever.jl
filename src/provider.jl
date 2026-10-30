@@ -397,7 +397,8 @@ function mergeheaders(defaults, extra)
     end
     result
 end
-headers(provider::OpenAI) = mergeheaders(["Authorization" => "Bearer $(provider.key)", "Content-Type" => "application/json"], provider.extra)
+headers(provider::OpenAI) = mergeheaders(["Authorization" => "Bearer $(clientkey(provider.key))", "Content-Type" => "application/json"], provider.extra)
+clientkey(key) = isempty(key) ? "unused" : key
 endpoint(provider::OpenAI) = "$(rstrip(provider.base, '/'))/chat/completions"
 
 function complete(provider::OpenAI, messages, tools; parameters=Dict())

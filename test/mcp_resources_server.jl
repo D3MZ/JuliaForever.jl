@@ -53,6 +53,8 @@ for line in eachline(stdin)
             reply(message["id"], Dict("contents" => []))
         elseif uri == "docs://multi"
             reply(message["id"], Dict("contents" => [Dict("uri" => "docs://a", "text" => "one"), Dict("uri" => "docs://b", "text" => "two")]))
+        elseif uri == "docs://both"
+            reply(message["id"], Dict("contents" => [Dict("uri" => uri, "text" => "visible", "blob" => "aGVsbG8=")]))
         elseif uri == "docs://image"
             reply(message["id"], Dict("contents" => [Dict("uri" => uri, "mimeType" => "image/png", "blob" => "aGVsbG8=")]))
         else

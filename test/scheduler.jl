@@ -79,6 +79,24 @@ if Sys.isunix()
     end
 end
 
+@testset "failed scheduler recovery releases its store" begin
+    mktempdir() do dir
+        path = joinpath(dir, "invalid.jsonl")
+        store = open(D.Store, path)
+        D.commit!(store) do tx
+            convo = D.mint!(tx)
+            D.put!(tx, D.Conversation(convo, nothing))
+            id = D.mint!(tx)
+            D.put!(tx, D.Task(id, convo, Dict("scheduler" => "JuliaForever.Scheduler/1")))
+        end
+        close(store)
+        @test_throws KeyError open(D.Scheduler, path)
+        reopened = open(D.Store, path)
+        @test reopened isa D.Store
+        close(reopened)
+    end
+end
+
 @testset "typed durable phases and admission" begin
     mktempdir() do dir
         path = joinpath(dir, "tasks.jsonl")

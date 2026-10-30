@@ -55,6 +55,7 @@ include("dispatch_checks.jl")
     @test length(dispatchchecks(Meta.parseall("selected(x::String) = if isempty(x); true; else; return false; end\nf(xs) = filter(selected, xs)"))) == 1
     @test isempty(dispatchchecks(Meta.parseall("selected(x) = x > 0\nf(x) = selected(x) ? 1 : 0")))
     @test length(dispatchchecks(Meta.parseall("flag(::Nothing) = false\nflag(::String) = true\nf(x) = Completion(Dict(), nothing, nothing, flag(x), nothing)"))) == 1
+    @test length(dispatchchecks(Meta.parseall("forced(::Nothing) = false\nforced(::String) = true\nf(x) = g(; force=forced(x))"))) == 1
     @test length(dispatchchecks(Meta.parse("f(x) = ToolReply(x.text, x.iserror)"))) == 1
     @test length(dispatchchecks(Meta.parse("f() = ToolResult(\"cancelled\", true)"))) == 1
     @test length(dispatchchecks(Meta.parse("f(image) = ToolResult(\"ok\", false, image)"))) == 1

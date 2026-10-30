@@ -337,7 +337,7 @@ configuredchatgpt(options, registry, result::Models.Resolution) = fallbackchatgp
 configuredchatgpt(options, registry, result::Models.Resolved) = configuredchatgpt(options, registry, result, get(registry.providers, result.model.provider, nothing))
 configuredchatgpt(options, registry, result, ::Nothing) = fallbackchatgpt(options)
 function configuredchatgpt(options, registry, result, settings::AbstractDict)
-    builtin = providerinfo(result.model.provider)
+    builtin = catalogbuiltin(result.model.provider)
     key = configuredkey(result.model.provider, settings, builtin, ENV)
     configuredchatgpt(options, registry, result, key, builtin)
 end
@@ -364,14 +364,15 @@ end
 function launchprovider(options)
     (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, outputmode, output) = options
     name = providername(auth, selected)
-    info = launchinfo(auth, options.modelconfig, name, requested_model)
+    info = launchinfo(auth, options.modelconfig, name, requested_model, get(options, :catalog_provider, nothing))
     model = acquire(auth, info, requested_model, outputmode)
     Base.ScopedValues.with(tuimode => LiveTerminal.withprovider(options.tui, name)) do
         launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, provider(outputmode, name))
     end
 end
-launchinfo(::APIKeyAuth, registry::Models.Registry, name, model) = configuredinfo(registry, name, model, ENV)
-launchinfo(::OpenRouterAuth, registry::Models.Registry, name, model) = providerinfo(name)
+launchinfo(::APIKeyAuth, registry::Models.Registry, name, model, ::Nothing) = configuredinfo(registry, name, model, ENV)
+launchinfo(::APIKeyAuth, registry::Models.Registry, name, model, provider::AbstractString) = configuredinfo(registry, name, model, ENV, provider)
+launchinfo(::OpenRouterAuth, registry::Models.Registry, name, model, provider) = providerinfo(name)
 
 historyaction(::HistoryInspection, options) = inspectrequest!(options.session, options.auth, options.sessionname, options.args)
 historyaction(::HistoryConflict, options) = invalidinspection()

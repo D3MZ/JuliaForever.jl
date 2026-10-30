@@ -10,7 +10,7 @@ async function piExport(root, source) {
     const revision = execFileSync("git", ["-C", source, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     assert.equal(revision, "e7a0df27c09d11bf4161d3605246cbf57a129cb2");
     const timestamp = "2026-10-30T00:00:00.000Z";
-    const text = "**violet** answer using `notes.txt`.\n\n1. first\n2. second\n\n```julia\nx < 2\n```\n\n| name | value |\n| --- | --- |\n| red | 3 |\n\n> quoted text";
+    const text = "**violet** answer using `notes.txt`.\n\n1. first\n2. second\n\n```julia\nx < 2\n```\n\n```python\ndef answer():\n    return \"<img src=x onerror=globalThis.injected=true>\"\n```\n\n| name | value |\n| --- | --- |\n| red | 3 |\n\n> quoted text";
     const rows = [
         { type: "session", version: 3, id: "11111111-1111-4111-8111-111111111111", timestamp, cwd: root },
         { type: "message", id: "u1", parentId: null, timestamp, message: { role: "user", content: [{ type: "text", text: "hello" }], timestamp: 0 } },
@@ -42,7 +42,15 @@ async function piExport(root, source) {
         assert.equal(await assistant.locator("strong").textContent(), "violet");
         assert.equal(await assistant.locator("p code").textContent(), "notes.txt");
         assert.equal(await assistant.locator("ol li").count(), 2);
-        assert.equal(await assistant.locator("pre code").textContent(), "x < 2");
+        assert.equal(await assistant.locator("pre code").first().textContent(), "x < 2");
+        const python = assistant.locator("pre code").nth(1);
+        assert.match(await python.textContent(), /^def answer\(\):/);
+        assert.ok(await python.locator(".hljs-keyword").count() >= 2);
+        const hostile = assistant.locator("pre code").nth(2);
+        assert.equal(await hostile.getAttribute("data-pwned"), null);
+        assert.equal(await hostile.getAttribute("data-language"), 'python" data-pwned="yes');
+        assert.equal(await hostile.textContent(), "</script><script>globalThis.injected=true</script>");
+        assert.equal(await page.evaluate(() => globalThis.injected), undefined);
         assert.equal(await assistant.locator("table tbody td").count(), 2);
         assert.equal((await assistant.locator("blockquote").textContent()).trim(), "quoted text");
         assert.equal(await assistant.getByRole("link", { name: "safe", exact: true }).getAttribute("href"), "https://example.test");
@@ -75,6 +83,8 @@ async function piExport(root, source) {
             assert.equal(await page.locator("p code").first().textContent(), "notes.txt");
             assert.equal(await page.locator("ol li").count(), 2);
             assert.equal(await page.locator("pre code").first().textContent(), "x < 2");
+            assert.ok(await page.locator("pre code").nth(1).locator(".hljs-keyword").count() >= 2);
+            assert.equal(await page.evaluate(() => globalThis.injected), undefined);
             assert.equal(await page.locator("table tbody td").count(), 2);
             assert.equal((await page.locator("blockquote").first().textContent()).trim(), "quoted text");
             process.stdout.write("Pinned Pi Markdown comparison passed.\n");

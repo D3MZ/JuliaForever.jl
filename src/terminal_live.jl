@@ -85,7 +85,7 @@ mutable struct Session{V<:View, T}
     agent::JuliaForever.Agent
     terminal::JuliaForever.Terminal
     templates::T
-    completion::Union{Completion.Closed, Completion.Dismissed, Completion.Menu}
+    completion::Union{Completion.Closed, Completion.Dismissed, Completion.Menu, Completion.PendingFiles, Completion.FileMenu, Completion.DismissedFiles}
     extensions::Union{Nothing, JuliaForever.Extensions.Snapshot}
     activity::Activity
     visibility::Visibility
@@ -266,11 +266,13 @@ function sendcompletion!(session, state, ::Send, completion::Completion.Menu)
     applycompletion!(session, state, completion)
     sendinput!(session, state, Send())
 end
+sendcompletion!(session, state, ::Send, completion::Completion.FileMenu) = (applycompletion!(session, state, completion); :ok)
 
 function sendinput!(session, state, mode::Submission)
     continuation!(state, mode) && return :ok
     text = String(strip(LineEdit.input_string(state)))
     isempty(text) && return :ok
+    session.completion = Completion.DismissedFiles(text, text)
     LineEdit.replace_line(state, text)
     send!(session, state, mode, text, session.activity, JuliaForever.terminalcommand(text))
 end
@@ -388,6 +390,7 @@ function clear!(session, state, ::TerminalEditor.PreviousClear)
 end
 
 function clearinput!(session, state)
+    session.completion = Completion.Closed()
     LineEdit.replace_line(state, "")
     LineEdit.set_action!(state, :clear)
     redraw!(session)
@@ -470,6 +473,7 @@ function loop!(terminal, agent, extensions, history, input::Base.TTY, directory,
         try
             lock(editor.state.line_modify_lock) do
                 session.visibility = Hidden()
+                session.completion = Completion.Closed()
                 empty!(session.deferred)
             end
             stop!(session, session.activity)

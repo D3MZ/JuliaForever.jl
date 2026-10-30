@@ -20,7 +20,7 @@ record(value::Kernel.Rejected) = (; type="rejected", state=record(value.state), 
 record(value::Conversation.User) = (; type="user", value.content)
 record(value::Conversation.SkillContext) = (; type="skill_context", value.content)
 record(value::Conversation.RawMessage) = (; type="raw_message", value.value)
-record(value::Conversation.BashMessage) = (; type="bash_message", value.command, value.output, value.exitcode, cancelled=Conversation.bashcancelled(value.status), truncated=Conversation.bashtruncated(value.extent), value.file, value.timestamp, exclude=Conversation.bashexcluded(value.context))
+record(value::Conversation.BashMessage) = (; type="bash_message", message=convert(Dict{String, Any}, value))
 record(value::Conversation.ToolCall) = (; type="tool_call", value.id, value.name, value.arguments, value.metadata)
 record(value::Conversation.Assistant) = (; type="assistant", value.content, calls=map(record, value.calls), value.finish, value.done, value.metadata)
 record(value::Conversation.ToolMessage) = record(value, value.image)
@@ -38,6 +38,8 @@ record(value::Conversation.Abandoned) = (; type="abandoned", value.reason)
 record(value::Conversation.Input) = (; type="input", value.revision, value.text)
 record(value::Conversation.Steer) = (; type="steer", value.revision, value.text)
 record(value::Conversation.Followup) = (; type="followup", value.revision, value.text)
+record(value::Conversation.SteeringMode) = (; type="steering_mode", value.revision, mode=Conversation.queuecode(value.mode))
+record(value::Conversation.FollowupMode) = (; type="followup_mode", value.revision, mode=Conversation.queuecode(value.mode))
 record(value::Conversation.Dequeue) = (; type="dequeue", value.revision)
 record(value::Conversation.SessionName) = (; type="session_name", value.revision, value.name)
 record(value::Conversation.BashOutput) = (; type="bash_output", value.revision, message=record(value.message))
@@ -50,7 +52,7 @@ record(value::Conversation.Advance) = (; type="advance", value.revision)
 record(value::Conversation.Cancel) = (; type="cancel", value.revision)
 record(value::Conversation.History) = (; type="history", value.revision, messages=map(record, value.messages))
 record(value::Conversation.Interrupt) = (; type="interrupt", value.revision, value.reason)
-record(value::Conversation.State) = (; type="conversation", kernel=record(value.kernel), value.revision, messages=map(record, value.messages), phase=string(value.phase), value.order, calls=map(record, value.calls), value.steering, value.followups, value.automatic, value.cancelled, value.flushed)
+record(value::Conversation.State) = (; type="conversation", kernel=record(value.kernel), value.revision, messages=map(record, value.messages), phase=string(value.phase), value.order, calls=map(record, value.calls), value.steering, value.followups, steeringmode=Conversation.queuecode(value.steeringmode), followupmode=Conversation.queuecode(value.followupmode), value.automatic, value.cancelled, value.flushed)
 
 """
     json([io,] history; project=record)
@@ -107,11 +109,24 @@ summary{cursor:pointer;font-weight:600}[hidden]{display:none!important}output{mi
 .markdown p{margin:.5rem 0}.markdown code{font-family:ui-monospace,monospace}.markdown pre{background:#f4f4f4;padding:.75rem;overflow:auto}
 .markdown table{border-collapse:collapse}.markdown th,.markdown td{border:1px solid #ddd;padding:.35rem .6rem;text-align:left}
 .markdown blockquote{border-left:3px solid #ddd;margin:.5rem 0;padding-left:.8rem}
+.hljs-comment,.hljs-quote{color:#5f6d76}.hljs-keyword,.hljs-selector-tag,.hljs-meta{color:#a21e43}
+.hljs-number,.hljs-literal{color:#075b9b}.hljs-string,.hljs-doctag{color:#087036}
+.hljs-title,.hljs-section,.hljs-name{color:#7343a1}.hljs-type,.hljs-built_in{color:#875000}
 @media(max-width:36rem){input[type=search]{flex-basis:100%}output{min-width:0}}
 """
 
 const conversationscript = raw"""
 (() => {
+  for (const code of document.querySelectorAll(".markdown pre code")) {
+    const language = code.dataset.language;
+    try {
+      const result = language && hljs.getLanguage(language)
+        ? hljs.highlight(code.textContent, { language })
+        : hljs.highlightAuto(code.textContent);
+      code.innerHTML = result.value;
+      code.classList.add("hljs");
+    } catch { /* Keep the escaped source visible if highlighting fails. */ }
+  }
   const search = document.getElementById("conversation-search");
   const status = document.getElementById("search-status");
   const showTools = document.getElementById("show-tools");
@@ -157,7 +172,8 @@ function conversationhtml(io::IO, messages; title="Julia Forever conversation")
     for message in messages
         conversationmessage(io, get(message, "role", ""), message)
     end
-    print(io, "</main><script>", conversationscript, "</script></body></html>\n")
+    assets = joinpath(@__DIR__, "..", "assets")
+    print(io, "</main><script>/*\n", read(joinpath(assets, "highlight-LICENSE"), String), "\n*/\n", read(joinpath(assets, "highlight.min.js"), String), "\n</script><script>", conversationscript, "</script></body></html>\n")
     nothing
 end
 

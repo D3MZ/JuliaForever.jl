@@ -64,9 +64,17 @@ requestedid(model::AbstractString, builtin, env) = String(model)
 requestedid(::Nothing, ::Nothing, env) = nothing
 requestedid(::Nothing, builtin::NamedTuple, env) = envvalue(get(env, builtin.model, nothing))
 
-function configuredinfo(registry::Models.Registry, name, model, env)
-    builtin = providerinfo(name)
-    provider = get(modelconstraints, name, name)
+catalogbuiltin(name) = catalogbuiltin(name, name)
+catalogbuiltin(name, provider) = catalogbuiltinfrom(name, get(modelconstraints, provider, nothing))
+catalogbuiltinfrom(name, ::Nothing) = providerinfo(name)
+catalogbuiltinfrom(name, ::AbstractString) = nothing
+catalogprovider(registry::Models.Registry, name::AbstractString) = catalogprovider(name, get(registry.providers, name, nothing))
+catalogprovider(name, ::Nothing) = get(modelconstraints, name, name)
+catalogprovider(name, ::AbstractDict) = name
+
+configuredinfo(registry::Models.Registry, name, model, env) = configuredinfo(registry, name, model, env, catalogprovider(registry, name))
+function configuredinfo(registry::Models.Registry, name, model, env, provider)
+    builtin = catalogbuiltin(name, provider)
     settings = get(registry.providers, provider, nothing)
     configuredinfo(registry, provider, model, env, builtin, settings)
 end
@@ -134,7 +142,7 @@ modelapi(provider::ConfiguredProvider) = modelapi(provider.model, provider)
 modelapi(model::Models.Model, provider) = model.api
 modelapi(::Nothing, provider) = fallbackapi(provider.builtin, provider.settings)
 fallbackapi(::Nothing, settings) = get(settings, "api", "")
-fallbackapi(info::NamedTuple, settings) = get(builtinapis, info.factory, "")
+fallbackapi(info::NamedTuple, settings) = get(settings, "api", get(builtinapis, info.factory, ""))
 
 const modelapis = Dict("openai-completions" => OpenAI, "openai-responses" => OpenAIResponses, "anthropic-messages" => Anthropic, "google-generative-ai" => Google)
 const unsupportedmodelsettings = ("compat", "samplingParams", "samplingParamsByThinkingLevel", "thinkingLevelMap", "promptCache", "inputLimits")
@@ -179,8 +187,24 @@ function acquire(::APIKeyAuth, provider::ConfiguredProvider, model, ::Models.Val
     headers = configheaders(provider, ENV, key)
     base = modelbase(provider, ENV)
     factory = get(modelapis, modelapi(provider), nothing)
-    configuredmodel(factory, base, provider.id, key, headers, CatalogRoute(provider.name, provider.registry))
+    configuredmodel(factory, base, provider.id, key, headers, CatalogRoute(provider.name, provider.registry), provider, ENV)
 end
+configuredmodel(factory, base, id, key::AbstractString, headers, route, provider, env) = configuredmodel(factory, base, id, key, headers, route)
+function configuredmodel(factory, base, id, ::Nothing, headers, route, provider, env)
+    keylessmodel(factory, base, id, headers, route, provider.builtin, get(provider.settings, "apiKey", nothing), storedmodelkey(provider.name, provider.builtin, env))
+end
+keylessmodel(factory, base, id, headers, route, builtin, configured, stored) = invalidmodelconfig()
+function keylessmodel(factory::Type, base::AbstractString, id::AbstractString, headers::Vector{Pair{String, String}}, route::CatalogRoute, ::Nothing, ::Nothing, ::Nothing)
+    isempty(base) && return invalidmodelconfig()
+    isempty(id) && return invalidmodelconfig()
+    requestauth(factory, headers) || return invalidmodelconfig()
+    factory(String(base), String(id), "", headers, route)
+end
+requestauth(factory, headers) = false
+requestauth(::Type{OpenAI}, headers) = hasrequestheader(headers, ("authorization", "cf-aig-authorization"))
+requestauth(::Type{OpenAIResponses}, headers) = hasrequestheader(headers, ("authorization", "cf-aig-authorization"))
+requestauth(::Type{Anthropic}, headers) = hasrequestheader(headers, ("authorization", "x-api-key", "cf-aig-authorization"))
+hasrequestheader(headers, names) = any(pair -> lowercase(first(pair)) in names && !isempty(strip(last(pair))), mergeheaders(Pair{String, String}[], headers))
 configuredmodel(factory, base, id, key, headers, route) = invalidmodelconfig()
 function configuredmodel(factory::Type, base::AbstractString, id::AbstractString, key::AbstractString, headers::Vector{Pair{String, String}}, route::CatalogRoute)
     isempty(base) && return invalidmodelconfig()
@@ -197,6 +221,9 @@ modelcatalog(provider) = Models.catalog()
 modelcatalog(provider::Union{OpenAI, OpenAIResponses, Anthropic, Google}) = modelcatalog(provider.route)
 modelcatalog(::DirectRoute) = Models.catalog()
 modelcatalog(route::CatalogRoute) = route.registry.models
+modelcatalogname(provider, fallback) = modelconstraint(fallback)
+modelcatalogname(provider::Union{OpenAI, OpenAIResponses, Anthropic, Google}, fallback) = modelcatalogname(provider.route, fallback)
+modelcatalogname(route::CatalogRoute, fallback) = route.name
 
 modelchange(provider, model, ::DirectRoute) = typeof(provider)(provider.base, String(model), provider.key, provider.extra, provider.route)
 function modelchange(provider, model, route::CatalogRoute)
