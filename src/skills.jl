@@ -3,7 +3,7 @@ module Skills
 import YAML
 import ..Prompts
 using ..Prompts: frontmatter
-import ..JuliaForever: FileRule, ToolFailure, attempt, ignored, rules
+import ..JuliaForever: FileRule, ToolFailure, Tool, name, attempt, ignored, rules
 import ..Conversation
 
 struct Automatic end
@@ -149,13 +149,39 @@ end
 
 escape(text) = replace(text, "&" => "&amp;", "<" => "&lt;", ">" => "&gt;", "\"" => "&quot;", "'" => "&apos;")
 
-function render(skills)
+abstract type Reader end
+struct ReadReader <: Reader end
+struct BashReader <: Reader end
+struct IndirectReader <: Reader end
+struct NoReader <: Reader end
+
+const readers = Dict("read" => ReadReader(), "bash" => BashReader())
+readernames(tool::Tool) = (name(tool),)
+readercandidate(name) = get(readers, name, NoReader())
+preferreader(current::ReadReader, ::Reader) = current
+preferreader(::BashReader, candidate::ReadReader) = candidate
+preferreader(current::BashReader, ::Reader) = current
+preferreader(::NoReader, candidate::Reader) = candidate
+selectedreader(direct::Union{ReadReader, BashReader}, ::Reader) = direct
+selectedreader(::NoReader, ::NoReader) = NoReader()
+selectedreader(::NoReader, ::Union{ReadReader, BashReader}) = IndirectReader()
+function reader(tools)
+    direct = foldl(preferreader, (readercandidate(name(tool)) for tool in tools); init=NoReader())
+    indirect = foldl(preferreader, (readercandidate(name) for tool in tools for name in readernames(tool)); init=NoReader())
+    selectedreader(direct, indirect)
+end
+hint(::ReadReader) = "Use the read tool to load a skill's file when the task matches its description."
+hint(::BashReader) = "Use bash to load a skill's file when the task matches its description."
+hint(::IndirectReader) = "Load a skill's file when the task matches its description."
+render(skills) = render(skills, ReadReader())
+render(skills, ::NoReader) = nothing
+function render(skills, reader::Reader)
     available = Any[]
     for skill in skills
         available!(available, skill, skill.invocation)
     end
     isempty(available) && return nothing
-    lines = ["<skills>", "The following skills provide specialized instructions for specific tasks.", "Use the read tool to load a skill's file when the task matches its description.", "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.", "", "<available_skills>"]
+    lines = ["<skills>", "The following skills provide specialized instructions for specific tasks.", hint(reader), "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.", "", "<available_skills>"]
     for skill in available
         append!(lines, ["  <skill>", "    <name>$(escape(skill.name))</name>", "    <description>$(escape(skill.description))</description>", "    <location>$(escape(skill.path))</location>", "  </skill>"])
     end

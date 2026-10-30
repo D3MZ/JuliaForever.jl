@@ -421,7 +421,7 @@ function initial(extensions, skills::Vector{Skills.Skill})
     files = Instructions.load(cwd; agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing))
     prompt = context(cwd, Extensions.tools(extensions), files)
     messages = Conversation.Message[Conversation.RawMessage(Dict("role" => "system", "content" => prompt))]
-    Skills.appendprompt!(messages, Skills.render(skills))
+    Skills.appendprompt!(messages, Skills.render(skills, Skills.reader(Extensions.tools(extensions))))
     messages
 end
 
@@ -508,9 +508,18 @@ startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname,
 startname!(agent, ::Nothing) = nothing
 startname!(agent, name::String) = name!(agent, name)
 startnamed!(terminal, agent, extensions, store, args, sessiondir, skills, rejected::History.Rejected) = result!(terminal, rejected)
-startnamed!(terminal, agent, extensions, store, args, sessiondir, skills, ::Nothing) = starttemplates!(terminal, agent, extensions, store, args, sessiondir, attempt(() -> Skills.Resources(Prompts.load(pwd()), currentskills(skills))))
+startnamed!(terminal, agent, extensions, store, args, sessiondir, skills, ::Nothing) = startresources!(terminal, agent, extensions, store, args, sessiondir, skills, attempt(() -> Skills.Resources(Prompts.load(pwd()), currentskills(skills))))
 currentskills(::Nothing) = Skills.load(pwd())
 currentskills(skills::Vector{Skills.Skill}) = skills
+
+startresources!(terminal, agent, extensions, store, args, sessiondir, skills, failure::ToolFailure) = starttemplates!(terminal, agent, extensions, store, args, sessiondir, failure)
+startresources!(terminal, agent, extensions, store, args, sessiondir, skills::Vector{Skills.Skill}, resources::Skills.Resources) = starttemplates!(terminal, agent, extensions, store, args, sessiondir, resources)
+function startresources!(terminal, agent, extensions, store, args, sessiondir, ::Nothing, resources::Skills.Resources)
+    startrefreshed!(terminal, agent, extensions, store, args, sessiondir, resources, attempt(() -> refreshskills!(agent, resources.skills)))
+end
+startrefreshed!(terminal, agent, extensions, store, args, sessiondir, resources, failure::ToolFailure) = starttemplates!(terminal, agent, extensions, store, args, sessiondir, failure)
+startrefreshed!(terminal, agent, extensions, store, args, sessiondir, resources, rejected::History.Rejected) = sessionfault!(terminal, rejected, store[])
+startrefreshed!(terminal, agent, extensions, store, args, sessiondir, resources, ::Nothing) = starttemplates!(terminal, agent, extensions, store, args, sessiondir, resources)
 
 function starttemplates!(terminal, agent, extensions, store, args, sessiondir, failure::ToolFailure)
     println(terminal.diagnostics, "Failed to load prompt templates or skills: ", redact(terminal, failure.text))
@@ -596,7 +605,7 @@ end
 
 readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, ::Nothing) = (agent, history, run!(terminal, agent, Prompts.expand(line, templates), extensions))
 readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, ::ForkCommand) = forkcommand!(terminal, agent, history, input, sessiondir, extensions, text -> Prompts.expand(text, templates))
-readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, command::Union{ReloadCommand, NewCommand}) = command!(command, terminal, agent, history, input, sessiondir, extensions, Ref(""), templates)
+readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, command::Union{ReloadCommand, NewCommand, ResumeCommand}) = command!(command, terminal, agent, history, input, sessiondir, extensions, Ref(""), templates)
 readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, command::TerminalCommand) = command!(command, terminal, agent, history, input, sessiondir, extensions)
 
 include("live_json.jl")

@@ -1,6 +1,6 @@
 module Extensions
 
-using ..JuliaForever: Tool, name
+using ..JuliaForever: Tool, ToolResult, name, Terminate
 
 "A value plugin. Packages can instead define `tools` and `hooks` for their own types."
 struct Plugin{T, H}
@@ -135,11 +135,17 @@ end
 "Return the hook failures captured by a listener."
 failures(listener::Listener) = lock(() -> copy(listener.errors), listener.lock)
 
-"A tool-call hook response that blocks execution."
-struct Block
-    reason::String
+struct Proceed{T<:ToolResult}
+    result::T
 end
-Block() = Block("Tool execution was blocked")
+
+"A tool-call hook response that blocks execution."
+struct Block{T}
+    reason::String
+    termination::T
+end
+const terminations = Dict(false => identity, true => Terminate)
+Block(reason="Tool execution was blocked"; terminate=false) = Block(String(reason), terminations[terminate])
 
 
 end
@@ -167,9 +173,13 @@ end
 discovery(original::ToolResult, result::ToolResult) = result
 discovery(original::ToolLoaded, result::ToolLoaded) = result
 discovery(original::ToolLoaded, result::ToolResult) = ToolDiscovery(result, loaded(original))
+discovery(original::ToolLoaded, result::Terminate) = Terminate(ToolDiscovery(result.result, loaded(original)))
 
+resultvalue(current::ToolResult, result::Extensions.Proceed) = result.result
 resultvalue(current::ToolResult, ::Nothing) = current
 resultvalue(current::ToolResult, result::ToolResult) = result
+resultvalue(current::Terminate, result::ToolResult) = Terminate(result)
+resultvalue(current::Terminate, result::Terminate) = result
 
 function interceptcall(listener::Extensions.Listener, call, input)
     lock(listener.lock) do
@@ -182,4 +192,4 @@ callhooks(hooks::Tuple, event) = callhook(first(hooks), Base.tail(hooks), event)
 callhook(hook, hooks, event) = nextcall(hook.handler(event), hooks, event)
 nextcall(block::Extensions.Block, hooks, event) = block
 nextcall(value, hooks, event) = callhooks(hooks, event)
-prepare(tool::Tool, input, block::Extensions.Block) = ToolFailure(isempty(block.reason) ? "Tool execution was blocked" : block.reason)
+prepare(tool::Tool, input, block::Extensions.Block) = block.termination(ToolFailure(isempty(block.reason) ? "Tool execution was blocked" : block.reason))

@@ -82,7 +82,7 @@ search.jl	:(visit(item))
 search.jl	:(walkentry(walk, item, ruleset, inside))
 search.jl	:anchored
 session_terminal.jl	:(Kernel.same(agent.messages, plan.original))
-session_terminal.jl	:(Kernel.same(original, message.value))
+session_terminal.jl	:(Kernel.same(projected, agent.messages))
 session_terminal.jl	:(Kernel.same(projected, agent.messages))
 session_terminal.jl	:(Kernel.same(projected, plan.original))
 session_terminal.jl	:(history === selected)

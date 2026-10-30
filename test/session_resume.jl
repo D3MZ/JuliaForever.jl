@@ -58,6 +58,23 @@ Base.close(store::ResumeHistory.SQLite{ResumeDatabase}) = (store.db.closes += 1;
     @test third.store.closes == 1
 end
 
+@testset "running session cannot be replaced" begin
+    for state in (:running, :cancelled)
+        terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), String[])
+        source = resumetree()
+        target = resumetree()
+        agent = Agent(ResumeProvider(), []; history=source)
+        Agent(ResumeProvider(), []; history=target)
+        JuliaForever.startturn!(agent)
+        state == :cancelled && cancel!(agent)
+        before = (deepcopy(ResumeHistory.snapshot(source).batches), deepcopy(ResumeHistory.snapshot(target).batches))
+        previous, history, status = JuliaForever.resume!(terminal, agent, source, target)
+        @test status == 1 && previous === agent && history === source
+        @test source.store.closes == 0 && target.store.closes == 1
+        @test before == (ResumeHistory.snapshot(source).batches, ResumeHistory.snapshot(target).batches)
+    end
+end
+
 @testset "resume session failure cleanup" begin
     terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), ["synthetic\tsecret"])
     current = resumetree()

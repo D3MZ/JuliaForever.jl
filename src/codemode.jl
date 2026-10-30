@@ -10,6 +10,7 @@ register!(tools::Dict{String, Tool}, ::CodeMode) = tools
 register!(tools::Dict{String, Tool}, tool) = (tools[name(tool)] = tool; tools)
 CodeMode(tools; timeout=300.0) = CodeMode(foldl(register!, tools; init=Dict{String, Tool}()), Float64(timeout), Dict{String, Any}(), ReentrantLock())
 name(::CodeMode) = "codemode"
+Skills.readernames(tool::CodeMode) = (name(tool), keys(tool.tools)...)
 schema(::CodeMode) = Dict("type" => "object", "properties" => Dict("code" => Dict("type" => "string")), "required" => ["code"])
 guidance(::CodeMode) = "Run Julia source in a separate process. Call tools.read((; path=\"...\")) or tools[\"name\"](args); each tool returns an object with text and iserror. ALL_TOOLS lists names, descriptions, and argument schemas. text(value) adds output; the last expression is the result. store(key, value) and load(key) keep JSON values across successful calls; forget!(key) deletes a key. The process inherits the host permissions and environment, including permitted filesystem, network, and subprocess access; it is not a security sandbox."
 function description(mode::CodeMode)

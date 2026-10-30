@@ -141,8 +141,8 @@ end
                 resources = skills.Resources(Dict{String, String}(), skills.load(root))
                 history = FailingHistory(H.Memory(), false)
                 terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), String[])
-                seed = Agent(nothing, [])
-                agent = Agent(nothing, [], JuliaForever.initial(seed, nothing); history)
+                seed = Agent(nothing, [Read(root)])
+                agent = Agent(nothing, seed.tools, JuliaForever.initial(seed, nothing); history)
                 before = deepcopy(agent.messages)
                 putskill(root, "added", "Added body.")
                 history.fail = true
