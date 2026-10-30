@@ -68,16 +68,10 @@ kernel.jl	:(same(x, y, seen))
 kernel.jl	:found
 logs.jl	:empty
 logs.jl	:first
-mcp.jl	:(cursor isa AbstractString)
 mcp.jl	:(detail isa AbstractDict)
 mcp.jl	:(detail["code"] isa Bool)
-mcp.jl	:(doc isa AbstractString)
-mcp.jl	:(execution isa AbstractDict)
 mcp.jl	:(get(detail, "code", nothing) isa Integer)
 mcp.jl	:(get(detail, "message", nothing) isa AbstractString)
-mcp.jl	:(get(item, "inputSchema", nothing) isa AbstractDict)
-mcp.jl	:(get(item, "name", nothing) isa AbstractString)
-mcp.jl	:(get(page, "tools", nothing) isa AbstractVector)
 mcp.jl	:(get(result, "capabilities", nothing) isa AbstractDict)
 mcp.jl	:(get(result, "serverInfo", nothing) isa AbstractDict)
 mcp.jl	:(get(result["capabilities"], "tools", Dict()) isa AbstractDict)
@@ -89,14 +83,11 @@ mcp.jl	:(id isa Bool)
 mcp.jl	:(id isa Bool)
 mcp.jl	:(id isa Integer)
 mcp.jl	:(id isa Integer)
-mcp.jl	:(item isa AbstractDict)
 mcp.jl	:(message isa AbstractDict)
 mcp.jl	:(method isa AbstractString)
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :state)
-mcp.jl	:(page isa AbstractDict)
-mcp.jl	:(page isa Failure)
 mcp.jl	:(received(client, message))
 mcp.jl	:(received(client, value))
 mcp.jl	:(received(client, value))
@@ -175,10 +166,7 @@ sqlite_history.jl	:complete
 sqlite_history.jl	:create
 sqlite_history.jl	:create
 sqlite_history.jl	:create
-system.jl	:(isnothing(shellrun))
-system.jl	:(token.cancelled)
 system.jl	:bybytes
-system.jl	:keep
 system.jl	:partial
 system.jl	:partial
 system.jl	:reached

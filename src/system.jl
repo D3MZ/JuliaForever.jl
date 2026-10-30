@@ -40,18 +40,20 @@ ShellRun(process::Base.Process) = ShellRun(process, ReentrantLock(), nothing, Ch
 
 mutable struct ShellCancellation
     lock::ReentrantLock
-    cancelled::Bool
-    runs::Set{ShellRun}
+    runs::Union{Nothing, Set{ShellRun}}
 end
 
-ShellCancellation() = ShellCancellation(ReentrantLock(), false, Set{ShellRun}())
+ShellCancellation() = ShellCancellation(ReentrantLock(), Set{ShellRun}())
 
 cancel!(::Nothing) = nothing
+cancelruns!(::Nothing) = nothing
+cancelruns!(runs::Set{ShellRun}) = foreach(run -> signal!(run, ShellCancelled()), runs)
 
 function cancel!(cancel::ShellCancellation)
     lock(cancel.lock) do
-        cancel.cancelled = true
-        foreach(run -> signal!(run, ShellCancelled()), cancel.runs)
+        runs = cancel.runs
+        cancel.runs = nothing
+        cancelruns!(runs)
     end
     nothing
 end
@@ -145,11 +147,12 @@ waitfor(task::Task, ::ShellStopFailed) = nothing
 waitfor(task::Task, outcome::ShellOutcome) = wait(task)
 cleanup!(::Nothing) = nothing
 cleanup!(timer::Timer) = close(timer)
-cleanup!(token::ShellCancellation, ::Nothing, watcher) = nothing
+removerun!(::Nothing, run) = nothing
+removerun!(runs::Set{ShellRun}, run) = delete!(runs, run)
 
 function cleanup!(token::ShellCancellation, run::ShellRun, watcher)
     lock(token.lock) do
-        delete!(token.runs, run)
+        removerun!(token.runs, run)
     end
     signal!(run, ShellCancelled())
     waitfor(watcher, run.outcome)
@@ -262,17 +265,17 @@ function tail(io, file, bytes, lines, lastsize)
     ShellTail(output, "\n\n[$notice]", file)
 end
 
-preserved(::Nothing) = false
-preserved(::String) = true
 remember!(saved, ::Nothing) = nothing
 remember!(saved, file::String) = (saved[] = file)
 removeoutput(file, ::Nothing) = rm(file; force=true)
 removeoutput(file, ::String) = nothing
+cleanupoutput(file, ::Nothing, saved) = removeoutput(file, saved)
+cleanupoutput(file, ::String, saved) = nothing
 
 function tail(io, file)
     result = tail(io, file, measure(io)...)
     result = bound(result, file, shelltext(result.text))
-    (result.text * result.notice, preserved(result.file))
+    (result.text * result.notice, result.file)
 end
 
 update(::Nothing, value) = nothing
@@ -382,29 +385,19 @@ end
 shell(tool::Bash, args, cancel, timeout, ::Nothing, on_update) = ToolFailure("No $(shellname(tool)) executable found.")
 shell(tool::PowerShell, args, cancel, timeout, ::Nothing, on_update) = ToolFailure(Sys.iswindows() ? "No $(shellname(tool)) executable found." : "The powershell tool is only available on Windows.")
 
-function shell(tool::Union{Bash, PowerShell}, args, cancel, timeout, settings::Tuple, on_update)
-    executable, arguments = settings
-    env = copy(ENV)
-    for key in ("PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL")
-        delete!(env, key)
-    end
-    command = Cmd(Cmd([executable; arguments; shellcommand(tool, args.command)]); dir=tool.cwd, detach=!Sys.iswindows(), env)
-    file, io = mktemp(; cleanup=false)
-    keep = false
-    saved = Ref{Union{Nothing, String}}(nothing)
-    token = cancellation(cancel)
-    shellrun = nothing
+startshell!(::Nothing, command, io) = nothing
+function startshell!(runs::Set{ShellRun}, command, io)
+    process = run(pipeline(ignorestatus(command); stdin=devnull, stdout=io, stderr=io); wait=false)
+    shellrun = ShellRun(process)
+    push!(runs, shellrun)
+    shellrun
+end
+
+shellrun!(::Nothing, token, timeout, on_update, file, io, saved, keep) = ToolFailure("Command aborted")
+function shellrun!(shellrun::ShellRun, token, timeout, on_update, file, io, saved, keep)
     watcher = nothing
     timer = nothing
     try
-        shellrun = lock(token.lock) do
-            token.cancelled && return nothing
-            process = run(pipeline(ignorestatus(command); stdin=devnull, stdout=io, stderr=io); wait=false)
-            shellrun = ShellRun(process)
-            push!(token.runs, shellrun)
-            shellrun
-        end
-        isnothing(shellrun) && return ToolFailure("Command aborted")
         process = shellrun.process
         watcher = @async begin
             wait(process)
@@ -413,13 +406,33 @@ function shell(tool::Union{Bash, PowerShell}, args, cancel, timeout, settings::T
         timer = deadline(shellrun, timeout)
         outcome = waitoutput(shellrun, watcher, on_update, file, saved)
         flush(io)
-        output, keep = tail(io, file)
+        output, keep[] = tail(io, file)
         shellresult(outcome, output, timeout, process)
     finally
         cleanup!(timer)
         cleanup!(token, shellrun, watcher)
+    end
+end
+
+function shell(tool::Union{Bash, PowerShell}, args, cancel, timeout, settings::Tuple, on_update)
+    executable, arguments = settings
+    env = copy(ENV)
+    for key in ("PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL")
+        delete!(env, key)
+    end
+    command = Cmd(Cmd([executable; arguments; shellcommand(tool, args.command)]); dir=tool.cwd, detach=!Sys.iswindows(), env)
+    file, io = mktemp(; cleanup=false)
+    keep = Ref{Union{Nothing, String}}(nothing)
+    saved = Ref{Union{Nothing, String}}(nothing)
+    token = cancellation(cancel)
+    try
+        shellrun = lock(token.lock) do
+            startshell!(token.runs, command, io)
+        end
+        shellrun!(shellrun, token, timeout, on_update, file, io, saved, keep)
+    finally
         close(io)
-        !keep && removeoutput(file, saved[])
+        cleanupoutput(file, keep[], saved[])
     end
 end
 
