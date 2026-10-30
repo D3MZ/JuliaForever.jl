@@ -51,6 +51,7 @@ function dispatchprobe(expression)
     end
     callee in (:isa, :isnothing, :ismissing) && return true
     callee in (:(===), :(!==), :(==), :(!=)) || return false
+    any(arg -> arg isa Expr && arg.head == :call && dispatchcallee(first(arg.args)) === :typeof, expression.args[2:end]) && return true
     any(arg -> arg in (:nothing, :missing) || arg isa Bool, expression.args[2:end])
 end
 
