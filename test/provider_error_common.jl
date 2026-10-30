@@ -45,7 +45,7 @@ end
             check_provider_error(result, secret, provider, kind, status)
             @test any(event -> event.type == :provider && occursin(secret, JSON3.write(event.data)), events)
             @test any(event -> event.type == :incomplete, events)
-            @test JuliaForever.Execution.result(result, true).error === result.error
+            @test JuliaForever.Execution.result(result, JuliaForever.Execution.ModelResult).error === result.error
             terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), [secret])
             @test JuliaForever.result!(terminal, result) == 1
             @test !occursin(secret, String(take!(terminal.diagnostics)))
