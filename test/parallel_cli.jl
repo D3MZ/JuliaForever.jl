@@ -27,7 +27,7 @@ const C = JuliaForever.Conversation
                 project = dirname(@__DIR__)
                 base = "http://$(HTTP.server_addr(server))/v1"
                 cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever --history $path 'run both'`; dir=root)
-                cmd = addenv(cmd, "HOME" => root, "PI_CODING_AGENT_DIR" => joinpath(root, "empty-pi"), "JF_PROVIDER" => "openai", "OPENAI_BASE_URL" => base, "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic", "JF_INSTRUCTIONS_DIR" => nothing)
+                cmd = addenv(cmd, "HOME" => root, "JULIA_DEPOT_PATH" => join(DEPOT_PATH, ':'), "PI_CODING_AGENT_DIR" => joinpath(root, "empty-pi"), "JF_PROVIDER" => "openai", "OPENAI_BASE_URL" => base, "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic", "JF_INSTRUCTIONS_DIR" => nothing)
                 process = run(pipeline(ignorestatus(cmd); stdout=output, stderr=diagnostics))
                 @test success(process)
                 @test read(output, String) == "done\n"
