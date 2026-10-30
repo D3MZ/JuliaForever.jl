@@ -39,6 +39,9 @@ include("dispatch_checks.jl")
     @test length(dispatchchecks(Meta.parse("f(x) = x isa Int"))) == 1
     @test length(dispatchchecks(Meta.parse("f(x) = x !== nothing"))) == 1
     @test length(dispatchchecks(Meta.parse("f(x) = x === false"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(matches, exclude) = matches != exclude"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(matches, done) = matches == done"))) == 1
+    @test isempty(dispatchchecks(Meta.parse("f(left, right) = left == right")))
     @test length(dispatchchecks(Meta.parse("f(x) = typeof(x) === String"))) == 1
     @test length(dispatchchecks(Meta.parse("f(x) = Base.typeof(x) != Int"))) == 1
     @test isempty(dispatchchecks(Meta.parse("f(x) = typeof(x)")))
@@ -81,6 +84,11 @@ include("dispatch_checks.jl")
     @test length(dispatchchecks(Meta.parse("f(value) = value == \"stop\""))) == 1
     @test length(dispatchchecks(Meta.parse("f(selected) = selected == \"future-provider\" ? 1 : 0"))) == 1
     @test length(dispatchchecks(Meta.parse("f(event) = event.status == \"custom\""))) == 1
+    @test length(dispatchchecks(Meta.parse("f(args) = first(args) == \"--codemode\" ? 1 : 0"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(option) = option in (\"--tools\", \"-t\") ? 1 : 0"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(option) = option == \"-h\" ? 1 : 0"))) == 1
+    @test isempty(dispatchchecks(Meta.parse("f(args) = first(args) == \"--\"")))
+    @test isempty(dispatchchecks(Meta.parse("f(value) = value == \"-1\"")))
     @test dispatchchecks(Meta.parseall("f() = if timedwait(() -> true, 1) == :ok; 1; end")) == dispatchchecks(Meta.parseall("\n\nf() = if timedwait(() -> true, 1) == :ok; 1; end"))
     @test isempty(dispatchchecks(Meta.parse("f(x::Int) = x > 0 ? 1 : 0")))
     @test isempty(dispatchchecks(Meta.parse("f(x) = x == \"hello\"")))

@@ -1,5 +1,19 @@
 using Test, JuliaForever
 
+@testset "ChatGPT login options reject mixed providers" begin
+    mktempdir() do directory
+        project = dirname(@__DIR__)
+        for args in (["--login-chatgpt", "--login-openrouter"], ["--login-openrouter", "--login-chatgpt"])
+            cmd = `$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever $args`
+            cmd = addenv(cmd, "JF_CHATGPT_DIR" => directory)
+            diagnostics = joinpath(directory, "error.txt")
+            process = run(pipeline(ignorestatus(cmd); stdout=devnull, stderr=diagnostics))
+            @test process.exitcode == 2
+            @test occursin("login mode", read(diagnostics, String))
+        end
+    end
+end
+
 @testset "ChatGPT terminal model selection" begin
     mktempdir() do directory
         store = JuliaForever.ChatGPT.Store(directory)

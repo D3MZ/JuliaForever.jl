@@ -38,6 +38,9 @@ using Test, JuliaForever, HTTP, JSON3, Base64
             original = only(message for message in requests[2].messages if message.role == "user" && message.content isa JSON3.Array)
             @test original.content[2].image_url.url == "data:image/png;base64," * base64encode(image)
             @test last(requests[2].messages).content == "next"
+            literal = cli(["--no-session", "--", "--help"])
+            @test literal.status == 0 && literal.output == "done\n"
+            @test last(requests[end].messages).content == "--help"
         end
     finally
         close(server)

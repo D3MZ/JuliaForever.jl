@@ -180,19 +180,23 @@ end
 function step(state::State, event::Observe)
     observations = getfield(state, :observations)
     previous = findfirst(item -> item.id == event.id, observations)
-    if previous !== nothing
-        isequal(observations[previous].observation, event.observation) && return Duplicate(state)
-        return Rejected(state, :observation_conflict)
-    end
+    observed(state, event, previous)
+end
+observed(state, event, index::Int) = isequal(getfield(state, :observations)[index].observation, event.observation) ? Duplicate(state) : Rejected(state, :observation_conflict)
+function observed(state, event, ::Nothing)
     event.revision == state.revision || return Rejected(state, :revision)
     step(state, event, getfield(state, :status))
 end
 step(state::State, event::Observe, ::Closed) = Rejected(state, :closed)
 function step(state::State, event::Observe, ::Open)
-    observations = getfield(state, :observations)
     pending = getfield(state, :pending)
     index = findfirst(item -> item.id == event.id, pending)
-    index === nothing && return Rejected(state, :effect_missing)
+    observe(state, event, index)
+end
+observe(state, event, ::Nothing) = Rejected(state, :effect_missing)
+function observe(state, event, index::Int)
+    pending = getfield(state, :pending)
+    observations = getfield(state, :observations)
     next = copy(pending)
     deleteat!(next, index)
     results = copy(observations)

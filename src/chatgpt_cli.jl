@@ -1,13 +1,4 @@
 struct ChatGPTAuth <: Authentication end
-haslogin(::ChatGPTAuth) = true
-struct LoginConflict <: Authentication end
-haslogin(::LoginConflict) = true
-chatgptauth(::APIKeyAuth) = ChatGPTAuth()
-chatgptauth(::Authentication) = LoginConflict()
-function loginprovider(::LoginConflict, selected, options)
-    println(stderr, "Select only one login mode.")
-    2
-end
 abstract type ChatGPTSelection end
 struct ResumeChatGPT <: ChatGPTSelection end
 struct ChooseChatGPT <: ChatGPTSelection end

@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 const [source, fixture] = process.argv.slice(2);
 const { resolveModelReference } = await import(pathToFileURL(join(source, "packages/coding-agent/src/core/model-resolver.ts")));
 const { models, cases, listing } = JSON.parse(await readFile(fixture, "utf8"));
-if (listing) {
+if (listing !== undefined) {
     const hooks = registerHooks({
         resolve(specifier, context, next) {
             if (specifier === "@earendil-works/pi-tui") {

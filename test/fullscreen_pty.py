@@ -10,6 +10,20 @@ from terminal_pty import Session
 
 julia, project = sys.argv[1], Path(sys.argv[2])
 oracle = json.loads(subprocess.check_output(["node", str(project / "test/fullscreen_pi.mjs")]))
+for args in (("--tui-mode",), ("--tui-mode", "invalid")):
+    result = subprocess.run([julia, "--startup-file=no", "--compiled-modules=existing", f"--project={project}", "-m", "JuliaForever", *args], capture_output=True, text=True)
+    assert result.returncode == 2, (args, result.stdout, result.stderr)
+    assert "--tui-mode requires regular or fullscreen." in result.stderr
+with tempfile.TemporaryDirectory(prefix="jf-regular-pty-") as directory:
+    session = Session(julia, project, directory, args=("--tui-mode", "regular"))
+    try:
+        session.until(lambda: b"> " in session.output, "regular prompt", timeout=90)
+        os.write(session.master, b"/exit\r")
+        session.wait_exit()
+        assert session.process.returncode == 0, session.output
+        assert b"\x1b[?1049h" not in session.output, session.output
+    finally:
+        session.close()
 with tempfile.TemporaryDirectory(prefix="jf-fullscreen-pty-") as directory:
     session = Session(julia, project, directory, args=("--tui-mode", "fullscreen"))
     try:
