@@ -209,3 +209,5 @@ Integrating queue modes with RPC session records yields 1,573 branch entries. Th
 RPC queue-mode commands dispatch to the shared queue policies and add no branch or dispatch entries.
 
 RPC thinking controls add nine branch entries, from 1,572 to 1,581, for mapped-level collection, clamping, cycling, and restoration. Provider and history alternatives dispatch on their concrete types.
+
+After reconciling upstream changes, authorization filtering adds one loop, bringing the inventory from 1,577 to 1,578.

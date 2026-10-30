@@ -437,7 +437,7 @@ end
         oracle = joinpath(@__DIR__, "headless_reference.mjs")
         pi = Cmd(`node $oracle $source --mode rpc --no-session --provider openai --model gpt-4.1-mini --approve`; dir=workspace)
         jf = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session`; dir=workspace)
-        env = ["PI_SOURCE" => source, "HOME" => workspace, "PI_CODING_AGENT_DIR" => joinpath(workspace, "agent"), "PI_OFFLINE" => "1", "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "gpt-4.1-mini", "OPENAI_API_KEY" => "fixture", "JF_FIXTURE" => "text", "JF_INSTRUCTIONS_DIR" => workspace]
+        env = ["PI_SOURCE" => source, "HOME" => workspace, "USERPROFILE" => workspace, "PI_CODING_AGENT_DIR" => joinpath(workspace, "agent"), "PI_OFFLINE" => "1", "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "gpt-4.1-mini", "OPENAI_API_KEY" => "fixture", "JF_FIXTURE" => "text", "JF_INSTRUCTIONS_DIR" => workspace]
         commands = [(; id="state", type="get_state"), (; id="messages", type="get_messages"), (; id="commands", type="get_commands"), (; id="clear", type="clear_queue"), (; id="bad", type="no_such_command"), (; id="export-empty", type="export_html", outputPath=joinpath(workspace, "report.html")), (; id="levels", type="get_available_thinking_levels"), (; id="cycle", type="cycle_thinking_level"), (; id="thinking", type="set_thinking_level", level="off"), (; id="steering-mode", type="set_steering_mode", mode="one-at-a-time"), (; id="follow-mode", type="set_follow_up_mode", mode="one-at-a-time"), (; id="compaction", type="set_auto_compaction", enabled=false), (; id="retry", type="set_auto_retry", enabled=false), (; id="abort-retry", type="abort_retry"), (; id="abort-bash", type="abort_bash")]
         input = join(JSON3.write.(commands), "\n") * "\n{\n"
         expected = runprocess(pi, input, env)
@@ -484,6 +484,21 @@ end
         @test get(get(get(actual_empty, "state", Dict()), "data", Dict()), "model", nothing) == expected_empty["state"]["data"]["model"]
         @test get(actual_empty, "models", nothing) == expected_empty["models"]
         @test get(get(actual_empty, "prompt", Dict()), "success", nothing) == expected_empty["prompt"]["success"] == false
+
+        customdir = joinpath(workspace, "custom-provider")
+        mkpath(customdir)
+        write(joinpath(customdir, "models.json"), JSON3.write((; providers=(; fixture=(; baseUrl="https://example.invalid/v1", api="openai-responses", apiKey="fixture-key", models=[(; id="alpha")])))))
+        customenv = vcat([pair for pair in env if !(first(pair) in ("PI_CODING_AGENT_DIR", "JF_PROVIDER"))], ["PI_CODING_AGENT_DIR" => customdir, "JF_PROVIDER" => "fixture"])
+        custompi = Cmd(`node $oracle $source --mode rpc --no-session --provider fixture --model alpha --approve`; dir=workspace)
+        customjf = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session --provider fixture --model alpha`; dir=workspace)
+        custominput = join(JSON3.write.([(; id="state", type="get_state"), (; id="entries", type="get_entries")]), "\n") * "\n"
+        expected_custom = runprocess(custompi, custominput, customenv)
+        actual_custom = runprocess(customjf, custominput, customenv)
+        expected_custom_state, actual_custom_state = responses(expected_custom.output), responses(actual_custom.output)
+        @test expected_custom.status == actual_custom.status == 0
+        @test actual_custom_state["state"]["data"]["model"]["provider"] == expected_custom_state["state"]["data"]["model"]["provider"]
+        modelentry(result) = only(entry["provider"] for entry in result["entries"]["data"]["entries"] if entry["type"] == "model_change")
+        @test modelentry(actual_custom_state) == modelentry(expected_custom_state)
 
         if Sys.isunix()
             expected_bash = exchangebash(pi, env)
@@ -540,6 +555,16 @@ end
         @test [get(jf_thoughts, id, nothing) for id in ("levels", "low", "cycle")] == [pi_thoughts[id] for id in ("levels", "low", "cycle")]
         thinkingevents(run) = [(item["type"], item["level"]) for item in records(run.output) if get(item, "type", "") == "thinking_level_changed"]
         @test thinkingevents(jf_thought) == thinkingevents(pi_thought)
+
+        restricted = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session --model openai/gpt-6-luna:off`; dir=workspace)
+        restrictedenv = vcat(modeenv(joinpath(workspace, "restricted")), ["OPENAI_BASE_URL" => "https://api.openai.com/v1"])
+        restrictedinput = join(JSON3.write.([(; id="levels", type="get_available_thinking_levels"), (; id="low", type="set_thinking_level", level="low"), (; id="state", type="get_state")]), "\n") * "\n"
+        restriction = runprocess(restricted, restrictedinput, restrictedenv)
+        restrictedresponses = responses(restriction.output)
+        @test restriction.status == 0
+        @test get(get(get(restrictedresponses, "levels", Dict()), "data", Dict()), "levels", nothing) == ["off"]
+        @test get(get(restrictedresponses, "low", Dict()), "success", false)
+        @test get(get(get(restrictedresponses, "state", Dict()), "data", Dict()), "thinkingLevel", nothing) == "off"
     end
 end
 
@@ -562,7 +587,7 @@ end
             oracle = joinpath(@__DIR__, "headless_reference.mjs")
             pi = Cmd(`node $oracle $source --mode rpc --session-dir $(joinpath(workspace, "pi-sessions")) --model openai/gpt-5.2:high --approve`; dir=workspace)
             jf = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $(joinpath(workspace, "jf-sessions")) --model openai/gpt-5.2:high`; dir=workspace)
-            env(agentdir) = ["PI_SOURCE" => source, "HOME" => workspace, "PI_CODING_AGENT_DIR" => agentdir, "PI_OFFLINE" => "1", "JF_PROVIDER" => "openai", "OPENAI_API_KEY" => "fixture", "OPENAI_BASE_URL" => base, "JF_INSTRUCTIONS_DIR" => workspace]
+            env(agentdir) = ["PI_SOURCE" => source, "HOME" => workspace, "USERPROFILE" => workspace, "PI_CODING_AGENT_DIR" => agentdir, "PI_OFFLINE" => "1", "JF_PROVIDER" => "openai", "OPENAI_API_KEY" => "fixture", "OPENAI_BASE_URL" => base, "JF_INSTRUCTIONS_DIR" => workspace]
             reference = exchangethinking(pi, env(piagent))
             actual = exchangethinking(jf, env(joinpath(workspace, "jf-agent")))
             pi_request, jf_request = take!(requests), take!(requests)
@@ -571,6 +596,16 @@ end
             thinkingentries(result) = [entry["thinkingLevel"] for entry in result.entries["data"]["entries"] if entry["type"] == "thinking_level_change"]
             @test thinkingentries(actual) == thinkingentries(reference)
             @test actual.low == reference.low && actual.new == reference.new && actual.switched == reference.switched
+
+            pi6 = Cmd(`node $oracle $source --mode rpc --session-dir $(joinpath(workspace, "pi6-sessions")) --model openai/gpt-6-luna:high --approve`; dir=workspace)
+            jf6 = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $(joinpath(workspace, "jf6-sessions")) --model openai/gpt-6-luna:high`; dir=workspace)
+            reference6 = exchangethinking(pi6, env(piagent))
+            actual6 = exchangethinking(jf6, env(joinpath(workspace, "jf-agent")))
+            pi_request6, jf_request6 = take!(requests), take!(requests)
+            updates(request) = [item for item in request["input"] if get(item, "type", "") == "configuration_update"]
+            @test jf_request6["reasoning"] == pi_request6["reasoning"]
+            @test updates(jf_request6) == updates(pi_request6) == [Dict("type" => "configuration_update", "reasoning" => Dict("effort" => "low"))]
+            @test [result["data"]["thinkingLevel"] for result in (actual6.state, actual6.newstate, actual6.restored)] == [result["data"]["thinkingLevel"] for result in (reference6.state, reference6.newstate, reference6.restored)]
         end
     finally
         close(server)
@@ -622,7 +657,7 @@ toolview(value) = (; role=value["role"], id=value["toolCallId"], name=value["too
             oracle = joinpath(@__DIR__, "headless_reference.mjs")
             pi = Cmd(`node $oracle $source --mode json --no-session --provider openai --model fixture hello`; dir=workspace)
             jf = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode json --no-session hello`; dir=workspace)
-            env = ["PI_SOURCE" => source, "HOME" => workspace, "PI_CODING_AGENT_DIR" => agentdir, "PI_OFFLINE" => "1", "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "fixture", "OPENAI_BASE_URL" => base, "JF_INSTRUCTIONS_DIR" => workspace]
+            env = ["PI_SOURCE" => source, "HOME" => workspace, "USERPROFILE" => workspace, "PI_CODING_AGENT_DIR" => agentdir, "PI_OFFLINE" => "1", "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "fixture", "OPENAI_BASE_URL" => base, "JF_INSTRUCTIONS_DIR" => workspace]
             reference = runprocess(pi, "", env)
             actual = runprocess(jf, "", env)
             @test reference.status == actual.status == 0

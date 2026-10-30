@@ -3,18 +3,20 @@ struct FixedThinking <: ThinkingChoices end
 struct ReasoningChoices <: ThinkingChoices
     levels::Vector{String}
     efforts::Dict{String, String}
+    wire::Union{J.DirectThinking, J.UpdateThinking}
 end
 
 const thinkinglevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 function reasoningchoices(levels::AbstractDict)
     entries = Pair{String, String}[]
+    wire = J.thinkingwire(levels)
     for level in thinkinglevels
-        addeffort!(entries, level, get(levels, level, nothing), J.thinkingwire(levels))
+        addeffort!(entries, level, get(levels, level, nothing), wire)
     end
-    reasoningchoices(entries)
+    reasoningchoices(entries, wire)
 end
-reasoningchoices(entries::Vector{Pair{String, String}}) = isempty(entries) ? FixedThinking() : ReasoningChoices(first.(entries), Dict(entries))
+reasoningchoices(entries::Vector{Pair{String, String}}, wire::J.ThinkingWire) = isempty(entries) ? FixedThinking() : ReasoningChoices(first.(entries), Dict(entries), wire)
 addeffort!(entries, level, ::Nothing, wire::J.ThinkingWire) = nothing
 addeffort!(entries, level, effort::AbstractString, wire::J.ThinkingWire) = addeffort!(entries, level, effort, J.supportedthinking(wire, effort))
 addeffort!(entries, level, effort::AbstractString, ::J.Models.InvalidConfig) = nothing
@@ -24,11 +26,22 @@ const responsechoices = Dict{String, Union{FixedThinking, ReasoningChoices}}(nam
 const emptychoices = Dict{String, Union{FixedThinking, ReasoningChoices}}()
 const thinkingcatalogs = Dict("openai" => responsechoices)
 thinkingchoices(provider) = FixedThinking()
-thinkingchoices(provider::J.OpenAIResponses) = thinkingchoices(provider.route, provider.model)
+thinkingchoices(provider::J.OpenAIResponses) = permittedchoices(provider, thinkingchoices(provider.route, provider.model))
 thinkingchoices(::J.DirectRoute, model) = get(responsechoices, model, FixedThinking())
 thinkingchoices(route::J.CatalogRoute, model) = catalogchoices(get(route.registry.providers, route.name, nothing), route.name, model)
 catalogchoices(settings, name, model) = FixedThinking()
 catalogchoices(::Nothing, name, model) = get(get(thinkingcatalogs, name, emptychoices), model, FixedThinking())
+permittedchoices(provider, choices::FixedThinking) = choices
+permittedchoices(provider, choices::ReasoningChoices) = permittedchoices(provider, choices, choices.wire)
+permittedchoices(provider, choices::ReasoningChoices, ::J.DirectThinking) = choices
+function permittedchoices(provider, choices::ReasoningChoices, wire::J.UpdateThinking)
+    entries = Pair{String, String}[]
+    for level in choices.levels
+        effort = choices.efforts[level]
+        addeffort!(entries, level, effort, J.authorizedthinking(wire, provider, effort))
+    end
+    reasoningchoices(entries, wire)
+end
 
 levels(::FixedThinking) = ["off"]
 levels(choices::ReasoningChoices) = choices.levels
