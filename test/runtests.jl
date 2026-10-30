@@ -230,6 +230,8 @@ include("codemode_store.jl")
 include("codemode_compat.jl")
 include("mcp.jl")
 include("mcp_image.jl")
+include("image_formats.jl")
+include("image_switch_rpc.jl")
 include("mcp_resources.jl")
 module MCPWriteRaceTests
 include("mcp_write_race.jl")

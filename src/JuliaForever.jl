@@ -1,6 +1,8 @@
 module JuliaForever
 
 using HTTP, JSON3, StructTypes, Unicode, Base64, Random, SHA, REPL
+using Giflib_jll: libgif
+using libwebp_jll: libwebp
 
 export Execution, ContextEstimates
 export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, CodeSuccess, CodeFailure, cancel!, codeexecute, Image, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Anthropic, Google, Usage, Completion, Truncated, InvalidResponse, ProviderStatus, ProviderError, UnsupportedImage, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
@@ -9,6 +11,7 @@ export ToolSet, ToolNamespace, expose!, register!, unregister!
 include("instructions.jl")
 include("prompts.jl")
 include("tools.jl")
+include("image_formats.jl")
 include("tool_search.jl")
 include("file_arguments.jl")
 include("system.jl")

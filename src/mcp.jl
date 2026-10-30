@@ -2,7 +2,7 @@ module MCP
 
 using JSON3, Base64
 import HTTP, JSON
-import ..JuliaForever: Tool, ToolResult, ToolFailure, tooltype, Image, imagelimit, imageformat, imageproblem, name, description, schema, execute
+import ..JuliaForever: Tool, ToolResult, ToolFailure, tooltype, Image, readlimit, limitmessage, imageformat, imageproblem, name, description, schema, execute
 
 struct Failure
     kind::Symbol
@@ -1068,22 +1068,25 @@ end
 image(content) = image(content.mime, content.data)
 image(mime, data) = Failure(:protocol, "Malformed image content")
 
-function image(mime::AbstractString, data::AbstractString)
-    mime in ("image/png", "image/jpeg") || return Failure(:capability, "Image MIME type $mime is not supported")
-    ncodeunits(data) <= 4 * cld(imagelimit, 3) || return Failure(:capability, "Image exceeds the 10 MiB limit")
+const imagemimes = Dict("image/png" => MIME"image/png"(), "image/jpeg" => MIME"image/jpeg"(), "image/gif" => MIME"image/gif"(), "image/webp" => MIME"image/webp"())
+image(mime::AbstractString, data::AbstractString) = imageinput(mime, data, get(imagemimes, mime, nothing))
+imageinput(mime, data, ::Nothing) = Failure(:capability, "Image MIME type $mime is not supported")
+function imageinput(mime, data, format::MIME)
+    limit = readlimit(format)
+    ncodeunits(data) <= 4 * cld(limit, 3) || return Failure(:capability, limitmessage(format))
     bytes = try
         base64decode(data)
     catch
         return Failure(:protocol, "Invalid image base64")
     end
     base64encode(bytes) == data || return Failure(:protocol, "Invalid image base64")
-    length(bytes) <= imagelimit || return Failure(:capability, "Image exceeds the 10 MiB limit")
+    length(bytes) <= limit || return Failure(:capability, limitmessage(format))
     image(mime, data, bytes, imageformat(bytes))
 end
 
 image(mime, data, bytes, ::MIME) = Failure(:protocol, "Mismatched image data for $mime")
 
-function image(mime, data, bytes, format::Union{MIME"image/png", MIME"image/jpeg"})
+function image(mime, data, bytes, format::Union{MIME"image/png", MIME"image/jpeg", MIME"image/gif", MIME"image/webp"})
     mime == string(format) || return Failure(:protocol, "Mismatched image data for $mime")
     image(mime, data, imageproblem(format, bytes))
 end
