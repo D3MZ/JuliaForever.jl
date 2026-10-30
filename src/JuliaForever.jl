@@ -3,7 +3,7 @@ module JuliaForever
 using HTTP, JSON3, Unicode, Base64, Random, SHA
 
 export Execution
-export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, CodeSuccess, CodeFailure, cancel!, codeexecute, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Usage, Completion, InvalidResponse, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
+export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, CodeSuccess, CodeFailure, cancel!, codeexecute, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Anthropic, Google, Usage, Completion, InvalidResponse, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
 
 include("instructions.jl")
 include("tools.jl")
@@ -17,6 +17,8 @@ include("sqlite_history.jl")
 include("agent.jl")
 include("agent_history.jl")
 include("responses.jl")
+include("anthropic.jl")
+include("google.jl")
 include("sessions.jl")
 include("session_catalog.jl")
 include("execution.jl")
@@ -31,7 +33,7 @@ include("mcp.jl")
 
 function configured(env, login)
     selected = get(env, "JF_PROVIDER", "openai")
-    required = login ? ("OPENROUTER_MODEL",) : selected in ("openai", "openai-responses") ? ("OPENAI_MODEL", "OPENAI_API_KEY") : selected == "openrouter" ? ("OPENROUTER_MODEL", "OPENROUTER_API_KEY") : ()
+    required = login ? ("OPENROUTER_MODEL",) : selected in ("openai", "openai-responses") ? ("OPENAI_MODEL", "OPENAI_API_KEY") : selected == "openrouter" ? ("OPENROUTER_MODEL", "OPENROUTER_API_KEY") : selected == "anthropic" ? ("ANTHROPIC_MODEL", "ANTHROPIC_API_KEY") : selected == "google" ? ("GEMINI_MODEL", "GEMINI_API_KEY") : ()
     missing = filter(name -> !haskey(env, name), required)
     isempty(missing) && return true
     println(stderr, "Set ", join(missing, " and "), ".")
@@ -92,7 +94,7 @@ function (@main)(args)
         end
     end
     if args == ["--help"] || args == ["-h"]
-        println("jf [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [--codemode] [--history PATH] --login-openrouter [prompt] | jf [--codemode] [--history PATH] --login-openrouter-callback [prompt]\nSet OPENAI_API_KEY and OPENAI_MODEL. Set JF_PROVIDER=openai-responses for Responses or JF_PROVIDER=openrouter and OPENROUTER_API_KEY and OPENROUTER_MODEL for OpenRouter. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
+        println("jf [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [--codemode] [--history PATH] --login-openrouter [prompt] | jf [--codemode] [--history PATH] --login-openrouter-callback [prompt]\nSet OPENAI_API_KEY and OPENAI_MODEL. Set JF_PROVIDER=openai-responses for Responses or JF_PROVIDER=openrouter and OPENROUTER_API_KEY and OPENROUTER_MODEL for OpenRouter; or JF_PROVIDER=anthropic and ANTHROPIC_API_KEY and ANTHROPIC_MODEL for Anthropic; or JF_PROVIDER=google and GEMINI_API_KEY and GEMINI_MODEL for Google. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
         println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --session-dir DIR, --no-session. Set JF_SESSION_DIR to choose the default directory.")
         return 0
     end
@@ -152,7 +154,7 @@ function (@main)(args)
         model = provider()
     end
     if isnothing(model)
-        println(stderr, "Unknown JF_PROVIDER; choose openai, openai-responses, or openrouter.")
+        println(stderr, "Unknown JF_PROVIDER; choose openai, openai-responses, openrouter, anthropic, or google.")
         return 2
     end
     tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
