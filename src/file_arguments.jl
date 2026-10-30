@@ -35,7 +35,11 @@ resolved(paths, ::Nothing) = first(paths)
 resolved(paths, index::Integer) = paths[index]
 fileurl(text) = startswith(text, "file://") ? fileurl(HTTP.URI(text), text) : text
 fileurl(uri::HTTP.URI, text) = fileurl(uri, text, uri.host)
-fileurl(uri, text, host) = host in ("", "localhost") ? HTTP.unescapeuri(uri.path) : text
+fileurl(uri, text, host) = host in ("", "localhost") ? urlpath(HTTP.unescapeuri(uri.path)) : text
+function urlpath(path)
+    Sys.iswindows() && occursin(r"^/[a-zA-Z]:/", path) && return path[2:end]
+    path
+end
 
 function load(files, cwd)
     text = IOBuffer()
