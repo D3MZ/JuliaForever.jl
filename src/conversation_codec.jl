@@ -150,6 +150,7 @@ pack(x::C.ImageFollowup) = node("followup_images", x.revision, x.text, packall(x
 pack(x::C.SteeringMode) = node("steering_mode", x.revision, C.queuecode(x.mode))
 pack(x::C.FollowupMode) = node("followup_mode", x.revision, C.queuecode(x.mode))
 pack(x::C.Dequeue) = node("dequeue", x.revision)
+pack(x::C.SessionParent) = node("session_parent", x.revision, x.path)
 pack(x::C.SessionName) = node("session_name", x.revision, x.name)
 pack(x::C.BashOutput) = node("bash_output", x.revision, pack(x.message))
 pack(x::C.ModelEntry) = node("entry_model", x.provider, x.model)
@@ -192,7 +193,7 @@ const nodetypes = Dict(
     "skip_request" => C.SkipRequest, "model_reply" => C.ModelReply, "tool_reply" => C.ToolReply,
     "tool_search_reply" => ToolLoaded, "tool_discovery_reply" => ToolDiscovery,
     "model_failure" => C.ModelFailure, "abandoned" => C.Abandoned, "input" => C.Input, "input_images" => C.ImageInput, "steer" => C.Steer,
-    "followup" => C.Followup, "steer_images" => C.ImageSteer, "followup_images" => C.ImageFollowup, "steering_mode" => C.SteeringMode, "followup_mode" => C.FollowupMode, "dequeue" => C.Dequeue, "session_name" => C.SessionName, "bash_output" => C.BashOutput, "entry_model" => C.ModelEntry, "entry_thinking" => C.ThinkingEntry, "entry_message" => C.MessageEntry, "entry_name" => C.NameEntry, "session_record" => C.SessionRecord, "model_selection" => C.ModelSelection, "continue_queued" => C.ContinueQueued, "continue" => C.Continue, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History, "compaction_usage" => C.CompactionUsage,
+    "followup" => C.Followup, "steer_images" => C.ImageSteer, "followup_images" => C.ImageFollowup, "steering_mode" => C.SteeringMode, "followup_mode" => C.FollowupMode, "dequeue" => C.Dequeue, "session_parent" => C.SessionParent, "session_name" => C.SessionName, "bash_output" => C.BashOutput, "entry_model" => C.ModelEntry, "entry_thinking" => C.ThinkingEntry, "entry_message" => C.MessageEntry, "entry_name" => C.NameEntry, "session_record" => C.SessionRecord, "model_selection" => C.ModelSelection, "continue_queued" => C.ContinueQueued, "continue" => C.Continue, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History, "compaction_usage" => C.CompactionUsage,
     "entry_compaction" => C.CompactionEntry, "system_update" => C.SystemUpdate, "interrupt" => C.Interrupt, "abandon" => C.Abandon, "call" => K.Call, "return" => K.Return,
     "fail" => K.Fail, "plan" => K.Plan, "observe" => K.Observe, "finish" => K.Finish, "image" => C.Image,
 )
@@ -236,6 +237,7 @@ unpack(::Type{C.ImageFollowup}, f::Vector) = C.ImageFollowup(f[1], f[2], unpacka
 unpack(::Type{C.SteeringMode}, f::Vector) = C.SteeringMode(f[1], C.queuetypes[f[2]]())
 unpack(::Type{C.FollowupMode}, f::Vector) = C.FollowupMode(f[1], C.queuetypes[f[2]]())
 unpack(::Type{C.Dequeue}, f::Vector) = C.Dequeue(f[1])
+unpack(::Type{C.SessionParent}, f::Vector) = C.SessionParent(f[1], f[2])
 unpack(::Type{C.SessionName}, f::Vector) = C.SessionName(f[1], f[2])
 unpack(::Type{C.BashOutput}, f::Vector) = C.BashOutput(f[1], unpack(f[2]))
 unpack(::Type{C.ModelEntry}, f::Vector) = C.ModelEntry(f[1], f[2])

@@ -358,6 +358,11 @@ struct SessionName <: K.Event
     name::String
 end
 
+struct SessionParent <: K.Event
+    revision::Int
+    path::String
+end
+
 struct BashOutput{M<:BashMessage} <: K.Event
     revision::Int
     message::M
@@ -553,6 +558,11 @@ function K.step(state::State, event::Dequeue)
 end
 
 function K.step(state::State, event::SessionName)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    K.Applied(update(state), ())
+end
+
+function K.step(state::State, event::SessionParent)
     event.revision == state.revision || return K.Rejected(state, :revision)
     K.Applied(update(state), ())
 end

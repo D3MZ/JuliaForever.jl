@@ -8,6 +8,7 @@ struct ExportSnapshot{S}
     timestamp::String
     stamp::Int
     cwd::String
+    parent::Union{Nothing, String}
     messages::Vector{Conversation.Message}
 end
 
@@ -27,6 +28,9 @@ exportid(history, agent) = LiveJSON.id(history)
 exportid(::Union{Nothing, History.Memory}, agent) = bytes2hex(sha256(agent.initial.kernel.id))[1:32]
 exportid(history::History.Tree, agent) = exportid(history.store, agent)
 
+exportparent(history::History.Tree) = SessionCatalog.parent(history)
+exportparent(history) = nothing
+
 exportargument(::Nothing) = nothing
 exportargument(path::String) = isempty(path) ? nothing : path
 exportformat(::Nothing) = ExportHTML()
@@ -34,7 +38,7 @@ exportformat(path::String) = endswith(path, ".jsonl") ? ExportJSONL() : ExportHT
 
 function exportsnapshot(agent, history)
     lock(agent.lock) do
-        ExportSnapshot(exportsource(history), exportid(history, agent), LiveJSON.isotime(), LiveJSON.nowms(), pwd(), deepcopy(getfield(agent.state, :messages)))
+        ExportSnapshot(exportsource(history), exportid(history, agent), LiveJSON.isotime(), LiveJSON.nowms(), pwd(), exportparent(history), deepcopy(getfield(agent.state, :messages)))
     end
 end
 
@@ -91,7 +95,8 @@ function exporthtml!(messages, value::Conversation.BashMessage)
 end
 
 function writeexport(io::IO, ::ExportJSONL, data::ExportSnapshot)
-    header = (; type="session", version=3, id=data.id, timestamp=data.timestamp, cwd=data.cwd, juliaForever=(; usage="unavailable values are zero", messageTimestamps="recorded when available; otherwise export time"))
+    header = Dict{String, Any}("type" => "session", "version" => 3, "id" => data.id, "timestamp" => data.timestamp, "cwd" => data.cwd, "juliaForever" => (; usage="unavailable values are zero", messageTimestamps="recorded when available; otherwise export time"))
+    exportparent!(header, data.parent)
     JSON3.write(io, header)
     write(io, '\n')
     entries = Dict{String, Any}[]
@@ -105,6 +110,9 @@ function writeexport(io::IO, ::ExportJSONL, data::ExportSnapshot)
     end
     nothing
 end
+
+exportparent!(header, ::Nothing) = header
+exportparent!(header, parent::String) = (header["parentSession"] = parent; header)
 
 function exportentry!(entries, value, timestamp)
     index = length(entries) + 1

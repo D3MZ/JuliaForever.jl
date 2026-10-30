@@ -44,6 +44,7 @@ record(value::Conversation.ImageUser) = (; type="user_images", value.content, im
 record(value::Conversation.SteeringMode) = (; type="steering_mode", value.revision, mode=Conversation.queuecode(value.mode))
 record(value::Conversation.FollowupMode) = (; type="followup_mode", value.revision, mode=Conversation.queuecode(value.mode))
 record(value::Conversation.Dequeue) = (; type="dequeue", value.revision)
+record(value::Conversation.SessionParent) = (; type="session_parent", value.revision, value.path)
 record(value::Conversation.SessionName) = (; type="session_name", value.revision, value.name)
 record(value::Conversation.BashOutput) = (; type="bash_output", value.revision, message=record(value.message))
 record(value::Conversation.ModelEntry) = (; type="model_change", value.provider, modelId=value.model)
