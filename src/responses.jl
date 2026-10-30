@@ -60,9 +60,9 @@ function payload(provider::OpenAIResponses, messages, tools, parameters; streami
     JSON3.write(data)
 end
 
-usage(::OpenAIResponses, ::Nothing) = nothing
+usage(::Union{OpenAIResponses, ChatGPT.Plan}, ::Nothing) = nothing
 
-function usage(::OpenAIResponses, data)
+function usage(::Union{OpenAIResponses, ChatGPT.Plan}, data)
     raw_input = get(data, "input_tokens", 0)
     output = get(data, "output_tokens", 0)
     input_details = something(get(data, "input_tokens_details", nothing), Dict())
@@ -148,7 +148,7 @@ end
 responsecalls!(calls, item, type) = nothing
 responsecalls!(calls, item, ::Type{Conversation.ToolCall}) = push!(calls, item)
 
-completion(provider::OpenAIResponses, data::InvalidResponse; failure=nothing) = incomplete(data)
+completion(provider::Union{OpenAIResponses, ChatGPT.Plan}, data::InvalidResponse; failure=nothing) = incomplete(data)
 const saferesponsestatuses = Dict(status => status for status in ("failed", "incomplete", "cancelled", "canceled", "queued", "in_progress"))
 saferesponsestatus(status) = nothing
 saferesponsestatus(status::AbstractString) = get(saferesponsestatuses, status, nothing)
@@ -173,7 +173,7 @@ responsefinish(raw, ::Finished, calls) = "tool_calls"
 responsecomplete(status, failure) = Unfinished()
 responsecomplete(::Finished, ::Nothing) = Finished()
 
-function completion(provider::OpenAIResponses, data; failure=nothing)
+function completion(provider::Union{OpenAIResponses, ChatGPT.Plan}, data; failure=nothing)
     output = get(data, "output", [])
     msg = message(output)
     raw = get(data, "status", nothing)
@@ -216,6 +216,7 @@ struct OutputDone <: ResponseEvent
 end
 struct ResponseEnded <: ResponseEvent
     response::Any
+    kind::String
 end
 struct ResponseError <: ResponseEvent
     failure::ProviderError
@@ -236,7 +237,7 @@ responseevent(::Type{ThinkingDelta}, data) = ThinkingDelta(data["type"], data["d
 responseevent(::Type{OutputAdded}, data) = OutputAdded(get(data, "output_index", nothing), data["item"])
 responseevent(::Type{ArgumentDelta}, data) = ArgumentDelta(get(data, "output_index", nothing), get(data, "item_id", nothing), data)
 responseevent(::Type{OutputDone}, data) = OutputDone(get(data, "output_index", nothing), data["item"])
-responseevent(::Type{ResponseEnded}, data) = ResponseEnded(data["response"])
+responseevent(::Type{ResponseEnded}, data) = ResponseEnded(data["response"], data["type"])
 responseevent(::Type{ResponseError}, data) = ResponseError(providererror(:openai_responses, data))
 
 mutable struct ResponseStream{F}
@@ -330,20 +331,37 @@ function record!(stream::ResponseStream, index, item)
     nothing
 end
 
-handle!(stream::ResponseStream, event::ResponseEnded) = (stream.terminal = event.response; nothing)
+handle!(stream::ResponseStream, event::ResponseEnded) = terminal!(stream, event, stream.terminal)
+function terminal!(stream::ResponseStream, event::ResponseEnded, ::Nothing)
+    terminalstatus!(stream, event.kind, event.response)
+    stream.terminal = event.response
+    nothing
+end
+function terminal!(stream::ResponseStream, event::ResponseEnded, previous)
+    stream.failure = "Responses stream contained multiple terminal events"
+    nothing
+end
+struct TerminalMatch end
+const terminalmatches = Dict(("response.completed", "completed") => TerminalMatch(), ("response.failed", "failed") => TerminalMatch(), ("response.incomplete", "incomplete") => TerminalMatch())
+terminalstatus!(stream, kind, response) = terminalstatus!(stream, get(terminalmatches, (kind, get(response, "status", nothing)), nothing))
+terminalstatus!(stream, ::TerminalMatch) = nothing
+terminalstatus!(stream, ::Nothing) = (stream.failure = "Responses stream terminal event did not match its status"; nothing)
 handle!(stream::ResponseStream, event::ResponseError) = (stream.failure = event.failure; nothing)
 
-function stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), on_event=identity)
+requeststream(provider::OpenAIResponses, body, callback) = HTTP.post(endpoint(provider), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=callback)
+stream(provider::OpenAIResponses, messages, tools; parameters=Dict(), on_event=identity) = streamresponse(provider, messages, tools; parameters, on_event)
+
+function streamresponse(provider::Union{OpenAIResponses, ChatGPT.Plan}, messages, tools; parameters=Dict(), on_event=identity)
     state = ResponseStream(on_event)
-    response = HTTP.post(endpoint(provider), headers(provider), payload(provider, messages, tools, parameters; streaming=true); redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext(), sse_callback=event -> receive!(state, event.data))
+    response = requeststream(provider, payload(provider, messages, tools, parameters; streaming=true), event -> receive!(state, event.data))
     result = 200 <= response.status < 300 ? finish(provider, state, state.terminal) : incomplete(ProviderStatus(response.status))
     on_event((; type=completionevent(result), result))
     result
 end
 
-finish(provider::OpenAIResponses, state::ResponseStream, ::Nothing) = Completion(state.partial, nothing, nothing, Unfinished(), something(state.failure, "Responses stream ended before a terminal event"))
+finish(provider::Union{OpenAIResponses, ChatGPT.Plan}, state::ResponseStream, ::Nothing) = Completion(state.partial, nothing, nothing, Unfinished(), something(state.failure, "Responses stream ended before a terminal event"))
 
-function finish(provider::OpenAIResponses, state::ResponseStream, data)
+function finish(provider::Union{OpenAIResponses, ChatGPT.Plan}, state::ResponseStream, data)
     finished = state.finished
     if !haskey(data, "output")
         data["output"] = [finished[index] for index in sort!(collect(keys(finished)))]
@@ -352,6 +370,7 @@ function finish(provider::OpenAIResponses, state::ResponseStream, data)
         recover_reasoning!(item, get(finished, index - 1, nothing))
     end
     failure = reconcile!(state, data, state.failure)
+    failure = plancheck(provider, state, data, failure)
     result = completion(provider, data; failure)
     emitusage(state.callback, result.usage)
     emitfinish(state.callback, result.finish)
@@ -411,3 +430,17 @@ function reconcile_done(data, index, failure, ::Type{Conversation.ToolCall})
 end
 reconcile_done(failure, type) = "Responses stream omitted a completed function call"
 reconcile_done(failure, ::Type{Conversation.ToolCall}) = failure
+
+plancheck(provider::OpenAIResponses, state, data, failure) = failure
+function plancheck(provider::ChatGPT.Plan, state, data, failure)
+    for (index, item) in enumerate(get(data, "output", []))
+        type = get(outputtypes, get(item, "type", nothing), nothing)
+        failure = plannamespace(item, get(state.finished, index - 1, Dict()), failure, type)
+    end
+    failure
+end
+plannamespace(item, done, failure, type) = failure
+plannamespace(item, done, failure, ::Type{Conversation.ToolCall}) = plannamespace(get(item, "namespace", nothing), get(done, "namespace", nothing), failure)
+plannamespace(namespace, done, failure) = "Responses contained an unsupported function namespace"
+plannamespace(::Nothing, ::Nothing, failure) = failure
+plannamespace(::Nothing, done, failure) = "Responses contained a mismatched function namespace"

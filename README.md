@@ -10,7 +10,9 @@ An opt-in [context estimate](docs/context-estimates.md) combines a caller-select
 
 ## Run from a checkout
 
-Julia 1.12 or newer runs the package and its native tests. Node.js is needed only for differential tests that run the original Pi implementation. Set `OPENAI_API_KEY` and `OPENAI_MODEL`, and optionally `OPENAI_BASE_URL` (default `https://api.openai.com/v1`). Set `JF_PROVIDER=openai-responses` to use the Responses API.
+Julia 1.12 or newer runs the package and its native tests. Node.js is needed only for differential tests that run the original Pi implementation. On macOS or Linux, run `jf` and choose Continue with ChatGPT to connect an eligible ChatGPT plan. The browser sign-in registers Julia Forever and requests permission to use the plan. Use `jf --login-chatgpt` to add or reauthorize an account and `jf --logout-chatgpt` to sign out. This flow has synthetic test coverage but has not yet been verified with a real account. See [ChatGPT sign-in](docs/chatgpt-auth.md).
+
+For API-key billing, set `OPENAI_API_KEY` and `OPENAI_MODEL`, and optionally `OPENAI_BASE_URL` (default `https://api.openai.com/v1`). Set `JF_PROVIDER=openai-responses` to use the Responses API.
 
 For Anthropic set `JF_PROVIDER=anthropic`, `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`; for Google set `JF_PROVIDER=google`, `GEMINI_API_KEY` and `GEMINI_MODEL`.
 
