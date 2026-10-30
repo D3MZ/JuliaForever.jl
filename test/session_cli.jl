@@ -14,7 +14,7 @@ function session_process(requests, workspace, directory, args; input="", fail=fa
 end
 
 @testset "session diagnostics redact provider credentials" begin
-    for key in ("session-test-secret", join(("synthetic", "\"", "\\", "\$", "secret")))
+    for key in ("session-test-secret", join(("synthetic", "\"", "\\", "\$", "secret")), "synthetic" * Char(0x80))
         mktempdir() do root
             workspace = joinpath(root, "project")
             sessions = joinpath(root, "sessions-" * key)
@@ -27,10 +27,15 @@ end
             @test blocked.status == 1 && occursin("History file:", blocked.diagnostics)
             @test occursin("[redacted]", blocked.diagnostics)
             @test !occursin(key, blocked.diagnostics) && !occursin(escaped, blocked.diagnostics)
-            invalid = session_process(requests, workspace, sessions, ["--session", joinpath(root, "missing-" * key), "not sent"]; key)
+            selected = session_process(requests, workspace, sessions, ["--session", only(readdir(sessions; join=true)), "not retried"]; key)
+            @test selected.status == 1 && occursin("History file:", selected.diagnostics)
+            @test occursin("[redacted]", selected.diagnostics) && !occursin(key, selected.diagnostics)
+            contextual = chop(repr(key * "a"); head=1, tail=1)
+            invalid = session_process(requests, workspace, sessions, ["--session", joinpath(root, "missing-" * key * "a"), "not sent"]; key)
             @test invalid.status == 2
-            @test occursin("[redacted]", invalid.diagnostics)
+            @test occursin("missing-[redacted]a", invalid.diagnostics)
             @test !occursin(key, invalid.diagnostics) && !occursin(escaped, invalid.diagnostics)
+            @test !occursin(contextual, invalid.diagnostics)
         end
     end
 end
@@ -61,6 +66,8 @@ end
         @test resumed.status == 0 && resumed.output == "reply:chosen\n"
         messages = JSON3.read(last(readlines(requests)))
         @test [m.content for m in messages if m.role in ("user", "assistant")] == ["before " * key * " after", "reply:before " * key * " after", "chosen"]
+        byid = session_process(requests, workspace, sessions, ["--session", key, "chosen-by-id"]; key)
+        @test byid.status == 0 && byid.output == "reply:chosen-by-id\n"
     end
 end
 

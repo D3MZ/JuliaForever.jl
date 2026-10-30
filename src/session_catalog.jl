@@ -164,15 +164,15 @@ choose(::Conflict, dir, cwd, input, output) = Invalid("Choose only one session o
 choose(::Recent, dir, cwd, input, output) = recent(list(dir, cwd), dir, cwd)
 recent(items, dir, cwd) = isempty(items) ? new(dir, cwd) : openinfo(first(items))
 
-function choose(request::Target, dir, cwd, input, output)
+function choose(request::Target, dir, cwd, input, output, redact=identity)
     path = expanduser(request.value)
     isfile(path) && return open(H.SQLite, path; create=false)
     matches = filter(item -> occursin(lowercase(request.value), item.id), list(dir, cwd))
-    named(matches, request.value)
+    named(matches, request.value, redact)
 end
 
-function named(items, value)
-    length(items) == 1 || return Invalid("No unique session found matching " * repr(value) * ".")
+function named(items, value, redact=identity)
+    length(items) == 1 || return Invalid("No unique session found matching " * repr(redact(value)) * ".")
     openinfo(only(items))
 end
 
