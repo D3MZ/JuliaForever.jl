@@ -10,6 +10,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from tmux_exit import wait_for_exit
+
 root = pathlib.Path(sys.argv[1]).resolve()
 julia = sys.argv[2]
 more = threading.Event()
@@ -192,8 +194,8 @@ with tempfile.TemporaryDirectory(prefix="jf-live-pty-") as directory:
         assert [m["content"] for m in requests[6] if m["role"] == "user"][-1] == "another\n\nafter\n\ncurrent", requests[6]
         send("/exit")
         key("Enter")
-        wait_for(lambda: run("display-message", "-p", "-t", "live", "#{pane_dead}").stdout.strip() == "1", "terminal failed to exit", 15)
-        assert run("display-message", "-p", "-t", "live", "#{pane_dead_status}").stdout.strip() == "0", screen()
+        status, death_signal = wait_for_exit(run, "live")
+        assert status == "0", f"exit status={status!r}; signal={death_signal!r}; screen={history()!r}"
         assert len(list(pathlib.Path(directory).glob("*.sqlite"))) == 1
         resumed = shlex.join([julia, "--startup-file=no", "--compiled-modules=existing", f"--project={root}", "-e", "using JuliaForever; exit(JuliaForever.main(ARGS))", "--", "--tui-mode", "regular", "--continue"])
         run("new-window", "-t", "live", "-n", "resumed", "-c", directory, resumed)

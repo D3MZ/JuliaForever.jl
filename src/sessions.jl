@@ -62,9 +62,12 @@ JSON3.StructTypes.names(::Type{Session}) = ((:persistence, :flushed), (:ending, 
 timestamp() = Dates.format(Dates.now(Dates.UTC), dateformat"yyyy-mm-ddTHH:MM:SS.sss") * "Z"
 id(n::Integer) = bytes2hex(rand(UInt8, n))
 
+sessionpath(::Nothing) = nothing
+sessionpath(path) = abspath(path)
+
 function Session(; cwd=pwd(), path=nothing)
     header = Dict{String, Any}("type" => "session", "version" => 3, "id" => id(16), "timestamp" => timestamp(), "cwd" => abspath(cwd))
-    Session(isnothing(path) ? nothing : abspath(path), header, Dict{String, Any}[], Dict{String, Dict{String, Any}}(), nothing, false, true)
+    Session(sessionpath(path), header, Dict{String, Any}[], Dict{String, Dict{String, Any}}(), nothing, false, true)
 end
 
 Session(path::AbstractString; cwd=pwd()) = Session(; cwd, path)
@@ -147,7 +150,7 @@ function Base.open(::Type{Session}, path::AbstractString)
     for line in eachline(IOBuffer(text))
         isempty(strip(line)) && continue
         row = try
-            JSON3.read(line, Dict{String, Any})
+            JSON3.read(codeunits(line), Dict{String, Any})
         catch
             return Rejected(:invalid_session)
         end
@@ -216,8 +219,9 @@ end
 addmessage!(result, entry, ::Nothing) = nothing
 addmessage!(result, entry, ::Type{C.Message}) = push!(result, entry["message"])
 
-function branch!(session::Session, from::Union{Nothing, AbstractString})
-    isnothing(from) || haskey(session.index, from) || return false
+branch!(session::Session, ::Nothing) = (session.leaf = nothing; true)
+function branch!(session::Session, from::AbstractString)
+    haskey(session.index, from) || return false
     session.leaf = from
     true
 end
@@ -255,7 +259,7 @@ function persist_role!(session, entry, path, ::Type{<:C.Message})
 end
 
 function record!(session::Session, type::AbstractString, fields::AbstractDict)
-    entry = JSON3.read(JSON3.write(fields), Dict{String, Any})
+    entry = JSON3.read(codeunits(JSON3.write(fields)), Dict{String, Any})
     entryid = id(4)
     while haskey(session.index, entryid)
         entryid = id(4)

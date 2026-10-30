@@ -248,7 +248,7 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
                 reader = Threads.@spawn begin
                     try
                         for line in eachline(process)
-                            enqueue(events, JSON3.read(line))
+                            enqueue(events, JSON3.read(codeunits(line)))
                         end
                     catch exception
                         enqueue(events, CodeTransportError(sprint(showerror, exception)))

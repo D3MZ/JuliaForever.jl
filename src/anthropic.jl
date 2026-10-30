@@ -1,7 +1,7 @@
 module AnthropicAPI
 
 using HTTP, JSON3, SHA
-import ..JuliaForever: requestcontext, complete, stream, payload, headers, endpoint, provider, definition, decode, incomplete, images, UnsupportedImage, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Usage
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, endpoint, provider, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Usage
 
 struct Anthropic
     base::String
@@ -36,13 +36,16 @@ mutable struct Transcript
     system::Vector{String}
     messages::Vector{Any}
     tools::Vector{Any}
+    attachments::Vector{Any}
+    calls::Dict{String, String}
     origin::String
 end
-Transcript(provider::Anthropic) = Transcript(String[], [], [], origin(provider))
+Transcript(provider::Anthropic) = Transcript(String[], [], [], [], Dict{String, String}(), origin(provider))
 
 function flush!(transcript::Transcript)
-    isempty(transcript.tools) || push!(transcript.messages, Dict("role" => "user", "content" => copy(transcript.tools)))
+    isempty(transcript.tools) || push!(transcript.messages, Dict("role" => "user", "content" => [transcript.tools; transcript.attachments]))
     empty!(transcript.tools)
+    empty!(transcript.attachments)
 end
 
 function add!(transcript::Transcript, message::System)
@@ -56,13 +59,17 @@ function add!(transcript::Transcript, message::User)
 end
 
 usercontent(data, ::Nothing) = data["content"]
+imageblock(image) = Dict("type" => "image", "source" => Dict("type" => "base64", "media_type" => image["mime"], "data" => image["data"]))
 function usercontent(data, attachments::AbstractVector)
-    [Dict("type" => "text", "text" => data["content"]), (Dict("type" => "image", "source" => Dict("type" => "base64", "media_type" => image["mime"], "data" => image["data"])) for image in attachments)...]
+    [Dict("type" => "text", "text" => data["content"]), imageblock.(attachments)...]
 end
 
 function add!(transcript::Transcript, message::Assistant)
     flush!(transcript)
     data = message.data
+    for call in get(data, "tool_calls", [])
+        transcript.calls[call["id"]] = call["function"]["name"]
+    end
     blocks = get(data, "anthropic_content", nothing)
     if get(data, "anthropic_origin", "") != transcript.origin
         blocks = nothing
@@ -76,7 +83,7 @@ function add!(transcript::Transcript, data, ::Nothing)
     appendtext!(blocks, text)
     for call in get(data, "tool_calls", [])
         fn = call["function"]
-        push!(blocks, Dict("type" => "tool_use", "id" => call["id"], "name" => fn["name"], "input" => JSON3.read(fn["arguments"], Dict{String, Any})))
+        push!(blocks, Dict("type" => "tool_use", "id" => call["id"], "name" => fn["name"], "input" => JSON3.read(codeunits(fn["arguments"]), Dict{String, Any})))
     end
     add!(transcript, data, blocks)
 end
@@ -89,13 +96,25 @@ end
 
 function add!(transcript::Transcript, message::Tool)
     data = message.data
-    push!(transcript.tools, Dict("type" => "tool_result", "tool_use_id" => data["tool_call_id"], "content" => data["content"], "is_error" => get(data, "is_error", false)))
+    content = toolcontent!(transcript, data, get(data, "image", nothing))
+    push!(transcript.tools, Dict("type" => "tool_result", "tool_use_id" => data["tool_call_id"], "content" => content, "is_error" => get(data, "is_error", false)))
 end
 
-payload(provider::Anthropic, input, tools, parameters; streaming=false) = payload(provider, input, tools, parameters, images(input); streaming)
-payload(provider::Anthropic, input, tools, parameters, failure::UnsupportedImage; streaming=false) = failure
+abstract type ToolImage end
+struct SuccessImage <: ToolImage end
+struct ErrorImage <: ToolImage end
+const toolimages = Dict(false => SuccessImage(), true => ErrorImage())
+toolcontent!(transcript, data, ::Nothing) = data["content"]
+toolcontent!(transcript, data, image) = toolcontent!(transcript, data, image, toolimages[get(data, "is_error", false)])
+toolcontent!(transcript, data, image, ::SuccessImage) = [Dict("type" => "text", "text" => data["content"]), imageblock(image)]
+function toolcontent!(transcript, data, image, ::ErrorImage)
+    id = data["tool_call_id"]
+    name = transcript.calls[id]
+    push!(transcript.attachments, Dict("type" => "text", "text" => "Images from the error result of tool call $id ($name):"), imageblock(image))
+    data["content"] * "\n(image attached after the tool results)"
+end
 
-function payload(provider::Anthropic, input, tools, parameters, ::Nothing; streaming=false)
+function payload(provider::Anthropic, input, tools, parameters; streaming=false)
     transcript = Transcript(provider)
     for message in input
         data = Dict{String, Any}(string(key) => value for (key, value) in pairs(message))
@@ -229,7 +248,6 @@ requestcontext(::Anthropic) = HTTP.RequestContext()
 function complete(provider::Anthropic, input, tools; parameters=Dict())
     complete(provider, payload(provider, input, tools, parameters))
 end
-complete(provider::Anthropic, failure::UnsupportedImage) = incomplete(failure)
 function complete(provider::Anthropic, body::AbstractString)
     response = HTTP.post(endpoint(provider), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
     200 <= response.status < 300 || return incomplete(ProviderStatus(response.status))
@@ -397,11 +415,6 @@ receive!(state::State, ::Phase, ::Event, callback) = (state.failure = "Anthropic
 
 function stream(provider::Anthropic, input, tools; parameters=Dict(), on_event=identity)
     stream(provider, payload(provider, input, tools, parameters; streaming=true), on_event)
-end
-function stream(provider::Anthropic, failure::UnsupportedImage, on_event)
-    answer = incomplete(failure)
-    on_event((; type=:incomplete, result=answer))
-    answer
 end
 function stream(provider::Anthropic, body::AbstractString, on_event)
     state = State()

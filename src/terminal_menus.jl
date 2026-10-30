@@ -27,25 +27,25 @@ mutable struct Menu
     labels::Vector{String}
     query::String
     matches::Vector{Int}
-    selected::Int
+    index::Int
 end
 Menu(title, labels) = Menu(title, labels, "", collect(eachindex(labels)), 1)
 
 function filtermenu!(menu::Menu)
     query = lowercase(menu.query)
     menu.matches = filter(index -> occursin(query, lowercase(menu.labels[index])), eachindex(menu.labels))
-    menu.selected = 1
+    menu.index = 1
     nothing
 end
 
-choose!(menu::Menu, ::MenuUp, page) = (menu.selected = max(1, menu.selected - 1); nothing)
-choose!(menu::Menu, ::MenuDown, page) = (menu.selected = min(max(1, length(menu.matches)), menu.selected + 1); nothing)
-choose!(menu::Menu, ::MenuPageUp, page) = (menu.selected = max(1, menu.selected - page); nothing)
-choose!(menu::Menu, ::MenuPageDown, page) = (menu.selected = min(max(1, length(menu.matches)), menu.selected + page); nothing)
-choose!(menu::Menu, ::MenuFirst, page) = (menu.selected = 1; nothing)
-choose!(menu::Menu, ::MenuLast, page) = (menu.selected = max(1, length(menu.matches)); nothing)
+choose!(menu::Menu, ::MenuUp, page) = (menu.index = max(1, menu.index - 1); nothing)
+choose!(menu::Menu, ::MenuDown, page) = (menu.index = min(max(1, length(menu.matches)), menu.index + 1); nothing)
+choose!(menu::Menu, ::MenuPageUp, page) = (menu.index = max(1, menu.index - page); nothing)
+choose!(menu::Menu, ::MenuPageDown, page) = (menu.index = min(max(1, length(menu.matches)), menu.index + page); nothing)
+choose!(menu::Menu, ::MenuFirst, page) = (menu.index = 1; nothing)
+choose!(menu::Menu, ::MenuLast, page) = (menu.index = max(1, length(menu.matches)); nothing)
 choose!(menu::Menu, ::MenuCancel, page) = 0
-choose!(menu::Menu, ::MenuAccept, page) = isempty(menu.matches) ? nothing : menu.matches[menu.selected]
+choose!(menu::Menu, ::MenuAccept, page) = isempty(menu.matches) ? nothing : menu.matches[menu.index]
 function choose!(menu::Menu, ::MenuBackspace, page)
     menu.query = chop(menu.query; tail=1)
     filtermenu!(menu)
@@ -60,12 +60,12 @@ function drawmenu!(session, menu::Menu)
     rows, cols = displaysize(session.physical)
     width = max(1, cols - 1)
     page = max(1, rows - 4)
-    firstitem = max(1, menu.selected - page + 1)
+    firstitem = max(1, menu.index - page + 1)
     lastitem = min(length(menu.matches), firstitem + page - 1)
     out = IOBuffer()
     print(out, "\e[?25l\e[H\e[2J", first(wrap(menu.title, width)), "\nSearch: ", first(wrap(menu.query, max(1, width - 8))), "\n")
     for index in firstitem:lastitem
-        marker = index == menu.selected ? "> " : "  "
+        marker = index == menu.index ? "> " : "  "
         print(out, marker, first(wrap(menu.labels[menu.matches[index]], max(1, width - 2))), "\n")
     end
     print(out, "\e[", rows, ";1H", first(wrap("↑/↓ select · Enter open · Esc cancel", width)), "\e[?25h")
@@ -96,8 +96,8 @@ uicommand!(session, ::Fullscreen, command, terminal, history, input, directory, 
 
 function uicommand!(session, ::Fullscreen, ::JuliaForever.SelectModel, terminal, history, input, directory, snapshot, draft)
     current = modelname(session.agent.provider)
-    selected = menu!(session, "Select model", ["Current: " * current, "Enter a model ID…"])
-    selected == 2 || return session.agent, history, 0
+    index = menu!(session, "Select model", ["Current: " * current, "Enter a model ID…"])
+    index == 2 || return session.agent, history, 0
     print(session.physical, "\e[H\e[2JModel ID (empty cancels): ")
     flush(session.physical)
     eof(input) && return session.agent, history, 0

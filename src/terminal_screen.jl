@@ -192,11 +192,13 @@ end
 function scroll!(session, direction)
     screen = session.view
     rows, cols = displaysize(session.physical)
-    all = transcript(screen, max(1, cols - 1))
-    height = max(1, rows - 3)
+    rows, cols = max(rows, 3), max(cols, 2)
+    width = cols - 1
+    _, _, _, _, height = viewport(session, width, rows)
+    all = transcript(screen, width)
     bottom = max(1, length(all) - height + 1)
     top = iszero(screen.top) ? bottom : screen.top
-    screen.top = clamp(top + direction * max(1, height - 1), 1, bottom)
+    screen.top = clamp(top + direction * max(1, height - 4), 1, bottom)
     screen.top == bottom && (screen.top = 0)
     paint!(session)
     :ok
@@ -289,6 +291,14 @@ function editorlines(session, width, height)
     lines[firstline:firstline + count - 1], cursor - firstline + 1, min(width + 1, textwidth(last(before)) + 1)
 end
 
+function viewport(session, width, rows)
+    editor, cursorrow, cursorcol = editorlines(session, width, rows)
+    queued = reduce(vcat, (wrap(line, width) for line in queuelines(session)); init=String[])
+    queued = last(queued, min(length(queued), max(0, rows - length(editor) - 2)))
+    height = max(1, rows - length(editor) - length(queued) - 1)
+    editor, cursorrow, cursorcol, queued, height
+end
+
 paint!(::Nothing) = nothing
 prime!(::Nothing) = nothing
 prime!(session) = prime!(session, session.view, session.view.frame)
@@ -309,10 +319,7 @@ function paint!(session, screen::Fullscreen)
     rows, cols = max(rows, 3), max(cols, 2)
     screen.size = (rows, cols)
     width = cols - 1
-    editor, cursorrow, cursorcol = editorlines(session, width, rows)
-    queued = reduce(vcat, (wrap(line, width) for line in queuelines(session)); init=String[])
-    queued = last(queued, min(length(queued), max(0, rows - length(editor) - 2)))
-    height = max(1, rows - length(editor) - length(queued) - 1)
+    editor, cursorrow, cursorcol, queued, height = viewport(session, width, rows)
     all = transcript(screen, width)
     bottom = max(1, length(all) - height + 1)
     top = iszero(screen.top) ? bottom : clamp(screen.top, 1, bottom)

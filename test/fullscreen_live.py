@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from tmux_exit import wait_for_exit
 
 root, julia = Path(sys.argv[1]).resolve(), sys.argv[2]
 socket = f"jf-screen-{os.getpid()}"
@@ -50,21 +51,23 @@ def prompt(name, text, expected):
 def stop(name):
     send(name, "/exit")
     key(name, "Enter")
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        if run("display-message", "-p", "-t", name, "#{pane_dead}").stdout.strip() == "1":
-            assert run("display-message", "-p", "-t", name, "#{pane_dead_status}").stdout.strip() == "0", screen(name)
-            return
-        time.sleep(.1)
-    raise AssertionError(f"{name} did not exit: {screen(name)!r}")
+    status, death_signal = wait_for_exit(run, name, seconds=30)
+    assert status == "0", (status, death_signal, screen(name))
 
 try:
     with tempfile.TemporaryDirectory(prefix="jf-screen-live-") as path:
         directory = Path(path)
         launch("screen", directory, "echo")
         prompt("screen", "wide α界", "reply:wide α界")
+        send("screen", "/reload")
+        key("screen", "Enter")
+        wait_for("screen", lambda s: "Reloaded skills." in s, "reload skills")
         for i in range(10):
             prompt("screen", f"marker-{i:02}", f"reply:marker-{i:02}")
+        key("screen", "PageUp")
+        wait_for("screen", lambda s: "marker-09" not in s and "fixture | ready" in s, "page up")
+        key("screen", "PageDown")
+        wait_for("screen", lambda s: "marker-09" in s and "fixture | ready" in s, "page down")
         key("screen", "C-Home")
         wait_for("screen", lambda s: "marker-00" in s and "fixture | ready" in s, "scroll to top")
         key("screen", "C-End")

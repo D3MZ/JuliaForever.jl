@@ -1,7 +1,7 @@
 module GoogleAPI
 
 using HTTP, JSON3, Random, SHA
-import ..JuliaForever: requestcontext, complete, stream, payload, headers, endpoint, definition, decode, incomplete, images, UnsupportedImage, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Usage
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, endpoint, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Usage
 
 struct Google
     base::String
@@ -40,6 +40,14 @@ callids(model) = callids(model, match(r"^gemini(?:-live)?-(\d+)"i, model))
 callids(model, ::Nothing) = idmodes[startswith(model, "claude-") || startswith(model, "gpt-oss-")]
 callids(model, version::RegexMatch) = idmodes[parse(Int, version.captures[1]) >= 3]
 
+abstract type ImageMode end
+struct InlineImage <: ImageMode end
+struct SeparateImage <: ImageMode end
+const imagemodes = Dict(false => SeparateImage(), true => InlineImage())
+imagemode(model) = imagemode(match(r"^gemini(?:-live)?-(\d+)"i, model))
+imagemode(::Nothing) = InlineImage()
+imagemode(version::RegexMatch) = imagemodes[parse(Int, version.captures[1]) >= 3]
+
 mutable struct Transcript
     system::Vector{String}
     contents::Vector{Any}
@@ -47,8 +55,9 @@ mutable struct Transcript
     calls::Dict{String, String}
     origin::String
     ids::CallIds
+    image::ImageMode
 end
-Transcript(provider::Google) = Transcript(String[], [], [], Dict{String, String}(), origin(provider), callids(provider.model))
+Transcript(provider::Google) = Transcript(String[], [], [], Dict{String, String}(), origin(provider), callids(provider.model), imagemode(provider.model))
 
 function flush!(transcript::Transcript)
     isempty(transcript.results) || push!(transcript.contents, Dict("role" => "user", "parts" => copy(transcript.results)))
@@ -63,8 +72,9 @@ function add!(transcript::Transcript, message::User)
     push!(transcript.contents, Dict("role" => "user", "parts" => userparts(message.data, get(message.data, "images", nothing))))
 end
 userparts(data, ::Nothing) = [Dict("text" => data["content"])]
+imagepart(image) = Dict("inlineData" => Dict("mimeType" => image["mime"], "data" => image["data"]))
 function userparts(data, attachments::AbstractVector)
-    [Dict("text" => data["content"]), (Dict("inlineData" => Dict("mimeType" => image["mime"], "data" => image["data"])) for image in attachments)...]
+    [Dict("text" => data["content"]), imagepart.(attachments)...]
 end
 
 function add!(transcript::Transcript, message::Assistant)
@@ -84,7 +94,7 @@ function add!(transcript::Transcript, data, ::Nothing)
     addtext!(parts, get(data, "content", nothing))
     for call in get(data, "tool_calls", [])
         fn = call["function"]
-        result = Dict("name" => fn["name"], "args" => JSON3.read(fn["arguments"], Dict{String, Any}))
+        result = Dict("name" => fn["name"], "args" => JSON3.read(codeunits(fn["arguments"]), Dict{String, Any}))
         callid!(result, call["id"], transcript.ids)
         push!(parts, Dict("functionCall" => result))
     end
@@ -101,16 +111,29 @@ function add!(transcript::Transcript, message::Tool)
     data = message.data
     id = data["tool_call_id"]
     name = transcript.calls[id]
-    output = Dict(outputkeys[get(data, "is_error", false)] => data["content"])
+    image = get(data, "image", nothing)
+    output = Dict(outputkeys[get(data, "is_error", false)] => outputtext(data["content"], image))
     result = Dict("name" => name, "response" => output)
     callid!(result, id, transcript.ids)
+    resultimage!(transcript, result, image)
+end
+outputtext(text, ::Nothing) = text
+outputtext(text, image) = isempty(strip(text)) ? "(see attached image)" : text
+function resultimage!(transcript, result, ::Nothing)
     push!(transcript.results, Dict("functionResponse" => result))
 end
+resultimage!(transcript, result, image) = resultimage!(transcript, result, image, transcript.image)
+function resultimage!(transcript, result, image, ::InlineImage)
+    result["parts"] = [imagepart(image)]
+    push!(transcript.results, Dict("functionResponse" => result))
+end
+function resultimage!(transcript, result, image, ::SeparateImage)
+    push!(transcript.results, Dict("functionResponse" => result))
+    flush!(transcript)
+    push!(transcript.contents, Dict("role" => "user", "parts" => [Dict("text" => "Tool result image:"), imagepart(image)]))
+end
 
-payload(provider::Google, input, tools, parameters; streaming=false) = payload(provider, input, tools, parameters, images(input); streaming)
-payload(provider::Google, input, tools, parameters, failure::UnsupportedImage; streaming=false) = failure
-
-function payload(provider::Google, input, tools, parameters, ::Nothing; streaming=false)
+function payload(provider::Google, input, tools, parameters; streaming=false)
     transcript = Transcript(provider)
     for message in input
         data = Dict{String, Any}(string(key) => value for (key, value) in pairs(message))
@@ -290,7 +313,6 @@ requestcontext(::Google) = HTTP.RequestContext()
 function complete(provider::Google, input, tools; parameters=Dict())
     complete(provider, payload(provider, input, tools, parameters))
 end
-complete(provider::Google, failure::UnsupportedImage) = incomplete(failure)
 function complete(provider::Google, body::AbstractString)
     response = HTTP.post(endpoint(provider), headers(provider), body; redirect=false, retry=false, cookies=false, status_exception=false, context=requestcontext())
     200 <= response.status < 300 || return httpfailure(response.status)
@@ -300,11 +322,6 @@ function complete(provider::Google, body::AbstractString)
 end
 function stream(provider::Google, input, tools; parameters=Dict(), on_event=identity)
     stream(provider, payload(provider, input, tools, parameters; streaming=true), on_event)
-end
-function stream(provider::Google, failure::UnsupportedImage, on_event)
-    answer = incomplete(failure)
-    on_event((; type=:incomplete, result=answer))
-    answer
 end
 function stream(provider::Google, body::AbstractString, on_event)
     state = State()

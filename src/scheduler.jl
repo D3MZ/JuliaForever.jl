@@ -232,7 +232,7 @@ taskkey(request::AbstractString) = String(request)
 function enqueue!(scheduler::Scheduler, conversation::Integer, handler::Handler, phase::Phase, input; request::Union{Nothing, AbstractString}=nothing, maxattempts::Integer=3, owner::Union{Nothing, Integer}=nothing)
     maxattempts > 0 || return Rejected(:invalid_attempt_limit)
     initial = checkpoint(encode(phase))
-    spec = JSON3.read(JSON3.write(Dict("kind" => name(handler), "input" => input, "initial" => initial, "maxattempts" => maxattempts)), Dict{String, Any})
+    spec = JSON3.read(codeunits(JSON3.write(Dict("kind" => name(handler), "input" => input, "initial" => initial, "maxattempts" => maxattempts))), Dict{String, Any})
     key = taskkey(request)
     lock(scheduler.lock) do
         commit!(scheduler.store) do tx
@@ -242,15 +242,23 @@ function enqueue!(scheduler::Scheduler, conversation::Integer, handler::Handler,
 end
 
 enqueue!(tx, scheduler, conversation, handler, spec, key, owner, rejected::Rejected) = rejected
-function enqueue!(tx, scheduler, conversation, handler, spec, key, owner, ::Nothing)
-    if key !== nothing
-        for record in scan(scheduler.store, Task; conversation)
-            view = taskview(record)
-            view === nothing && continue
-            view.request == key || continue
-            return same(record.state["spec"], spec) && get(record.state, "owner", nothing) == owner ? record.id : Rejected(:request_conflict)
-        end
-    end
+enqueue!(tx, scheduler, conversation, handler, spec, key, owner, ::Nothing) = enqueuerequest!(tx, conversation, spec, key, owner, findrequest(scheduler, conversation, key, spec, owner))
+
+findrequest(scheduler, conversation, ::Nothing, spec, owner) = nothing
+function findrequest(scheduler, conversation, key::String, spec, owner)
+    records = scan(scheduler.store, Task; conversation)
+    foldl((result, record) -> matchtask(result, record, key, spec, owner), records; init=nothing)
+end
+matchtask(result::Union{Integer, Rejected}, record, key, spec, owner) = result
+matchtask(::Nothing, record, key, spec, owner) = matchview(record, taskview(record), key, spec, owner)
+matchview(record, ::Nothing, key, spec, owner) = nothing
+function matchview(record, view::TaskView, key, spec, owner)
+    view.request == key || return nothing
+    same(record.state["spec"], spec) && get(record.state, "owner", nothing) == owner ? record.id : Rejected(:request_conflict)
+end
+
+enqueuerequest!(tx, conversation, spec, key, owner, result::Union{Integer, Rejected}) = result
+function enqueuerequest!(tx, conversation, spec, key, owner, ::Nothing)
     id = mint!(tx)
     state = Dict("scheduler" => "JuliaForever.Scheduler/1", "spec" => spec, "request" => key, "checkpoint" => spec["initial"], "phase" => 1, "attempts" => 0, "restarts" => 0, "message" => nothing, "status" => "pending", "cancelled" => false, "result" => nothing, "reason" => nothing)
     setowner!(state, owner)
@@ -317,21 +325,21 @@ function checkpoint!(state, next)
 end
 
 function advance!(state, result::Next)
-    next = JSON3.read(JSON3.write(checkpoint(encode(result.phase))), Dict{String, Any})
+    next = JSON3.read(codeunits(JSON3.write(checkpoint(encode(result.phase)))), Dict{String, Any})
     same(state["checkpoint"], next) && return advance!(state, Retry("no checkpoint progress"))
     checkpoint!(state, next)
     state["status"] = "pending"
 end
 
 function advance!(state, result::Sleep)
-    next = JSON3.read(JSON3.write(checkpoint(encode(result.phase))), Dict{String, Any})
+    next = JSON3.read(codeunits(JSON3.write(checkpoint(encode(result.phase)))), Dict{String, Any})
     checkpoint!(state, next)
     state["until"] = string(result.until) # JSON3 can round large JSON numbers while decoding.
     state["status"] = "sleeping"
 end
 
 function advance!(state, result::Join)
-    next = JSON3.read(JSON3.write(checkpoint(encode(result.phase))), Dict{String, Any})
+    next = JSON3.read(codeunits(JSON3.write(checkpoint(encode(result.phase)))), Dict{String, Any})
     checkpoint!(state, next)
     state["on"] = result.on
     state["status"] = "waiting"

@@ -295,6 +295,12 @@ function send!(session, state, mode, text, ::Busy, ::JuliaForever.ExitCommand)
     session.visibility = Hidden()
     :done
 end
+function send!(session, state, mode, text, ::Busy, ::JuliaForever.ReloadCommand)
+    remember!(session, state)
+    LineEdit.replace_line(state, "")
+    redraw!(session, "Wait for the current response to finish before reloading.\n")
+    :ok
+end
 send!(session, state, mode, text, ::Busy, command::JuliaForever.TerminalCommand) = command!(session, state)
 send!(session, state, mode, text, ::Available, command::Union{JuliaForever.ShowName, JuliaForever.SetName}) = (waittask(session.task); inline!(session, state, command))
 send!(session, state, mode, text, ::Busy, command::Union{JuliaForever.ShowName, JuliaForever.SetName}) = inline!(session, state, command)
