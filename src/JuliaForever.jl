@@ -323,20 +323,20 @@ function terminal!(terminal::Terminal, model, registry::Extensions.Registry, cod
         return terminal!(terminal, model, registered(terminal, registry, "codemode", result), false, session, sessiondir, args)
     end
     extensions = Extensions.snapshot(registry)
-    history = SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr)
+    history = SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr, text -> redact(terminal, text))
     runsession!(history, terminal, model, extensions, args)
 end
 
 runsession!(::SessionCatalog.Cancelled, terminal, model, extensions, args) = 0
 
 function runsession!(invalid::SessionCatalog.Invalid, terminal, model, extensions, args)
-    println(terminal.diagnostics, invalid.message)
+    println(terminal.diagnostics, redact(terminal, invalid.message))
     2
 end
 
 function sessionfault!(terminal, fault, history)
     status = result!(terminal, fault)
-    println(terminal.diagnostics, "History file: ", SessionCatalog.path(history))
+    println(terminal.diagnostics, "History file: ", redact(terminal, SessionCatalog.path(history)))
     flush(terminal.diagnostics)
     status
 end

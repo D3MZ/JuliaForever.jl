@@ -1,15 +1,66 @@
 using Test, JuliaForever, JSON3
 
-function session_process(requests, workspace, directory, args; input="", fail=false)
+function session_process(requests, workspace, directory, args; input="", fail=false, key="session-test-secret")
     project = dirname(@__DIR__)
     script = joinpath(@__DIR__, "session_cli_process.jl")
     cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project $script $args`; dir=workspace)
-    cmd = addenv(cmd, "JF_SESSION_REQUESTS" => requests, "JF_SESSION_FAIL" => (fail ? "1" : nothing), "JF_SESSION_DIR" => directory, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "session-test-secret", "JF_INSTRUCTIONS_DIR" => nothing)
+    cmd = addenv(cmd, "JF_SESSION_REQUESTS" => requests, "JF_SESSION_FAIL" => (fail ? "1" : nothing), "JF_SESSION_DIR" => directory, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => key, "JF_INSTRUCTIONS_DIR" => nothing)
     mktempdir() do dir
         stdinpath, output, diagnostics = joinpath.((dir,), ("stdin", "output", "diagnostics"))
         write(stdinpath, input)
         process = run(pipeline(ignorestatus(cmd); stdin=stdinpath, stdout=output, stderr=diagnostics))
         (; status=process.exitcode, output=read(output, String), diagnostics=read(diagnostics, String))
+    end
+end
+
+@testset "session diagnostics redact provider credentials" begin
+    for key in ("session-test-secret", join(("synthetic", "\"", "\\", "\$", "secret")))
+        mktempdir() do root
+            workspace = joinpath(root, "project")
+            sessions = joinpath(root, "sessions-" * key)
+            requests = joinpath(root, "requests.jsonl")
+            mkpath(workspace)
+            escaped = chop(repr(key); head=1, tail=1)
+            crashed = session_process(requests, workspace, sessions, ["interrupted"]; fail=true, key)
+            @test crashed.status == 17
+            blocked = session_process(requests, workspace, sessions, ["--continue", "not retried"]; key)
+            @test blocked.status == 1 && occursin("History file:", blocked.diagnostics)
+            @test occursin("[redacted]", blocked.diagnostics)
+            @test !occursin(key, blocked.diagnostics) && !occursin(escaped, blocked.diagnostics)
+            invalid = session_process(requests, workspace, sessions, ["--session", joinpath(root, "missing-" * key), "not sent"]; key)
+            @test invalid.status == 2
+            @test occursin("[redacted]", invalid.diagnostics)
+            @test !occursin(key, invalid.diagnostics) && !occursin(escaped, invalid.diagnostics)
+        end
+    end
+end
+
+@testset "session picker redacts provider credentials" begin
+    mktempdir() do root
+        workspace = joinpath(root, "project")
+        sessions = joinpath(root, "sessions")
+        requests = joinpath(root, "requests.jsonl")
+        key = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+        mkpath(workspace)
+        created = session_process(requests, workspace, sessions, ["before " * key * " after"]; key)
+        @test created.status == 0
+        file = only(readdir(sessions; join=true))
+        project = first(split(basename(file), "--"))
+        mv(file, joinpath(sessions, project * "--" * key * ".sqlite"))
+        longtitle = repeat("z", 96) * key * " tail"
+        @test session_process(requests, workspace, sessions, [longtitle]; key).status == 0
+        picked = session_process(requests, workspace, sessions, ["--resume"]; input="q\n", key)
+        @test picked.status == 0
+        @test occursin("before [redacted] after", picked.diagnostics)
+        @test occursin(repeat("z", 96), picked.diagnostics)
+        @test !occursin(key, picked.diagnostics)
+        titles = [last(split(line, "  "; limit=2)) for line in split(picked.diagnostics, '\n') if startswith(line, "[")]
+        @test all(title -> !occursin(first(key, 4), title), titles)
+        choice = only(match(r"\[(\d+)\].*before \[redacted\] after", picked.diagnostics).captures)
+        resumed = session_process(requests, workspace, sessions, ["--resume", "chosen"]; input=choice * "\n", key)
+        @test resumed.status == 0 && resumed.output == "reply:chosen\n"
+        messages = JSON3.read(last(readlines(requests)))
+        @test [m.content for m in messages if m.role in ("user", "assistant")] == ["before " * key * " after", "reply:before " * key * " after", "chosen"]
     end
 end
 

@@ -11,7 +11,9 @@ Terminal(output, diagnostics, secrets) = Terminal(output, diagnostics, secrets, 
 function redact(terminal::Terminal, text)
     result = string(text)
     for secret in terminal.secrets
-        isempty(secret) || (result = replace(result, secret => "[redacted]"))
+        isempty(secret) && continue
+        result = replace(result, secret => "[redacted]")
+        result = replace(result, chop(repr(secret); head=1, tail=1) => "[redacted]")
     end
     result
 end
