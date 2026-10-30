@@ -15,6 +15,16 @@ struct AnswerChoice <: Choice
     depth::Int
 end
 
+abstract type ForkChoice <: Choice end
+struct InputFork <: ForkChoice
+    node::Int
+    text::String
+end
+struct QueuedFork <: ForkChoice
+    node::Int
+    text::String
+end
+
 struct Cancelled end
 struct Move
     node::Int
@@ -81,6 +91,37 @@ function choose(branches::Vector, input, output, redact=identity)
     pick(items, input, output, redact)
 end
 
+fork(tree::H.Tree, input, output, redact=identity) = fork(H.branches(tree), input, output, redact)
+fork(rejected::H.Rejected, input, output, redact=identity) = rejected
+function fork(branches::Vector, input, output, redact=identity)
+    items = ForkChoice[]
+    for item in branches
+        forkitem!(items, item, H.treeevent(item.batch), branches)
+    end
+    if isempty(items)
+        println(output, "No messages to fork from.")
+        return Cancelled()
+    end
+    for (index, item) in enumerate(items)
+        println(output, "[", index, "] ", clean(redact(item.text)))
+    end
+    pick(items, input, output, redact)
+end
+forkitem!(items, item, event, branches) = nothing
+forkitem!(items, item, event::C.Input, branches) = forkitem!(items, InputFork(item.parent, event.text))
+forkitem!(items, item, event::C.Advance, branches) = forkadded!(items, item.parent, branches[item.parent].state, item.state)
+forkitem!(items, item::ForkChoice) = isempty(strip(item.text)) ? nothing : push!(items, item)
+forkadded!(items, node, before, after) = nothing
+function forkadded!(items, node, before::C.State, after::C.State)
+    previous = getfield(before, :messages)
+    messages = getfield(after, :messages)
+    for message in Iterators.drop(messages, length(previous))
+        forkmessage!(items, node, message)
+    end
+end
+forkmessage!(items, node, message) = nothing
+forkmessage!(items, node, message::C.User) = forkitem!(items, QueuedFork(node, message.content))
+
 function pick(items, input, output, redact)
     print(output, "Choose a message (number or q): ")
     flush(output)
@@ -102,6 +143,7 @@ function pick(items, input, output, index::Int, redact)
 end
 
 select(choice::AnswerChoice, input, output, redact) = Move(choice.node)
+select(choice::ForkChoice, input, output, redact) = choice
 
 function select(choice::UserChoice, input, output, redact)
     print(output, "Message [", clean(redact(choice.text)), "] (empty keeps it, /cancel aborts): ")

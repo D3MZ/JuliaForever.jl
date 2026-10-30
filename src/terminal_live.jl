@@ -406,11 +406,12 @@ function loop!(terminal, agent, extensions, history, input::Base.TTY, directory,
         for line in editor
             waittask(session.task)
             line == "/exit" && break
-            agent, selected, result = JuliaForever.command!(JuliaForever.terminalcommand(line), terminal, session.agent, history[], input, directory, extensions)
+            draft = Ref(session.draft)
+            agent, selected, result = JuliaForever.command!(JuliaForever.terminalcommand(line), terminal, session.agent, history[], input, directory, extensions, draft)
             history[] = selected
             session.agent = agent
             session.status = max(session.status, result)
-            LineEdit.replace_line(editor.state, session.draft)
+            LineEdit.replace_line(editor.state, draft[])
             session.draft = ""
             session.visibility = Visible()
         end
