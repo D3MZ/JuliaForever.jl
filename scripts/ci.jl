@@ -1,5 +1,8 @@
 using Pkg
 
+# Tests that isolate the user directory must still see the installed packages.
+ENV["JULIA_DEPOT_PATH"] = join(DEPOT_PATH, Sys.iswindows() ? ';' : ':')
+
 args = Set(ARGS)
 coverage = "--coverage" in args
 if !issubset(args, Set(["--coverage", "--native-only"])) || length(args) != length(ARGS)

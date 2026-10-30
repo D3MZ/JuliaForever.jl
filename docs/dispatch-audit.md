@@ -2,9 +2,9 @@
 
 The audit covers Julia source in `src/`. `test/branch_scan.jl` uses JuliaSyntax to list source locations for conditionals, short-circuit expressions, loops, exception handlers, comprehension filters, `ifelse`, and calls that may take predicates. The predicate list can include calls whose first argument is a search value rather than a function. The inventory is a static review aid; it cannot see branches produced by arbitrary macro expansion or dynamic code.
 
-At revision `b1a598e`, the inventory contained 1,268 points, including 73 `for` loops, 36 exception handlers, and 29 possible predicate calls. The integrated tree has 1,235 points. Counts include nested expressions, so they are not counts of independent decisions. `test/branch-baseline.txt` ratchets the normalized inventory, so added, removed, or changed entries require review and an explicit baseline update. It does not detect changes confined to branch bodies or moves of identical entries.
+At revision `b1a598e`, the inventory contained 1,268 points, including 73 `for` loops, 36 exception handlers, and 29 possible predicate calls. The integrated tree has 1,306 points. Counts include nested expressions, so they are not counts of independent decisions. `test/branch-baseline.txt` ratchets the normalized inventory, so added, removed, or changed entries require review and an explicit baseline update. It does not detect changes confined to branch bodies or moves of identical entries.
 
-The dispatch check is a separate heuristic. Applied to both versions with the expanded rules, it reports 732 candidates at `b1a598e` and 213 now: 580 previous occurrences were removed and 61 appeared under new expressions. The integrated tree includes modules and features added since the initial revision. The previous, narrower checks had recorded 542 and 715 candidates at the initial revision. The exact multiset is in `test/dispatch-baseline.txt`; tests fail if it grows or changes without updating the baseline. Compatibility properties for terminal state and MCP shutdown account for some matches.
+The dispatch check is a separate heuristic. Applied to both versions with the expanded rules, it reports 740 candidates at `b1a598e` and 200 now: 601 previous occurrences were removed and 61 appeared under new expressions. The integrated tree includes modules and features added since the initial revision. The previous, narrower checks had recorded 542 and 715 candidates at the initial revision. The exact multiset is in `test/dispatch-baseline.txt`; tests fail if it grows or changes without updating the baseline. Compatibility properties for terminal state and MCP shutdown account for some matches.
 
 The string-status rule found 12 previously unrecognized checks in the provider-merge checkout. Eleven were removed through typed decoding; the remaining OAuth query-key comparison is not a behavioral status. The check also finds status-field and selection comparisons when they return or assign a Boolean instead of controlling a branch directly. A later pass extended this to `isa`, `isnothing`, `ismissing`, and Boolean or missing-value comparisons outside branch conditions; it exposed two additional checks, both replaced with dispatch. It also catches comparisons of `typeof(...)` outside branch conditions; this revealed no additional current candidates. The dynamic `Val(...)` and `Val{...}()` rule found four value-based type tags in the terminal editor; those were replaced with domain outcomes or ordinary numeric checks.
 
@@ -68,4 +68,30 @@ A further constructor check recognizes common Boolean flag names and excludes co
 
 Anthropic and Google tool-image support adds two branch entries: recording tool names and selecting the empty-text fallback. It adds no dispatch candidates.
 
+Parallel local tool execution replaces two batch loops with two completion-processing loops. Deferred-tool replay adds two entries for source-ordered discovery; no dispatch candidates were added.
+
 Overflow recovery adds five branch entries and no dispatch candidates.
+
+Kernel observation handling now dispatches on missing and found records while retaining duplicate and conflict precedence.
+
+CodeMode cleanup now dispatches on absent resources and live tasks or processes.
+
+CLI CodeMode registration now dispatches on the selected tool type.
+
+The CLI-option pass recognizes comparisons against long and short option names, excluding the bare argument delimiter and negative numbers. It found 24 discriminator checks; the parser now maps option strings to handlers and dispatches on parsing state. Value validation remains at the input boundary.
+
+Search pattern construction maps literal and case options to concrete pattern behavior at the input boundary.
+
+SQLite history opening now dispatches on initialization outcomes and closes the database unless ownership transfers to an open history.
+
+The full-screen terminal adds 45 branch entries, mostly rendering, viewport, and menu iteration. It adds one dispatch candidate for the optional result of a menu key; role and event handling dispatch on typed values.
+
+Document fork policies add 17 branch entries for selection, validation, and replay, and no dispatch candidates.
+
+The model-catalog integration adds 54 net branch entries before the document-fork merge; the dispatch scanner also recognizes additional result-flag patterns.
+
+Model-listing parsing now handles its optional query as a parsing state and retains case-insensitive provider names.
+
+MCP progress uses channels and typed request lifecycle outcomes. It adds 12 branch entries and no dispatch candidates relative to main. Re-evaluating both parents with the expanded scanners, the merge adds no entries beyond their multiset union and retires two branch entries and 27 dispatch candidates.
+
+The parallel-tool and MCP progress merge adds no branch or dispatch entries beyond the union of its parents and retires two branch entries.

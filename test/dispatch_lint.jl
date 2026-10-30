@@ -81,6 +81,11 @@ include("dispatch_checks.jl")
     @test length(dispatchchecks(Meta.parse("f(value) = value == \"stop\""))) == 1
     @test length(dispatchchecks(Meta.parse("f(selected) = selected == \"future-provider\" ? 1 : 0"))) == 1
     @test length(dispatchchecks(Meta.parse("f(event) = event.status == \"custom\""))) == 1
+    @test length(dispatchchecks(Meta.parse("f(args) = first(args) == \"--codemode\" ? 1 : 0"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(option) = option in (\"--tools\", \"-t\") ? 1 : 0"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(option) = option == \"-h\" ? 1 : 0"))) == 1
+    @test isempty(dispatchchecks(Meta.parse("f(args) = first(args) == \"--\"")))
+    @test isempty(dispatchchecks(Meta.parse("f(value) = value == \"-1\"")))
     @test dispatchchecks(Meta.parseall("f() = if timedwait(() -> true, 1) == :ok; 1; end")) == dispatchchecks(Meta.parseall("\n\nf() = if timedwait(() -> true, 1) == :ok; 1; end"))
     @test isempty(dispatchchecks(Meta.parse("f(x::Int) = x > 0 ? 1 : 0")))
     @test isempty(dispatchchecks(Meta.parse("f(x) = x == \"hello\"")))

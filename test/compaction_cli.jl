@@ -17,7 +17,7 @@ using Test, JuliaForever, JSON3
         function runcli(args, text)
             write(input, text)
             cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --project=$project $script $args`; dir=workspace)
-            cmd = addenv(cmd, "JF_COMPACTION_REQUESTS" => requests, "JF_SESSION_DIR" => sessions, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "fixture", "JF_INSTRUCTIONS_DIR" => nothing, "HOME" => root, "PI_CODING_AGENT_DIR" => joinpath(root, "agent"))
+            cmd = addenv(cmd, "JF_COMPACTION_REQUESTS" => requests, "JF_SESSION_DIR" => sessions, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "fixture", "JF_INSTRUCTIONS_DIR" => nothing, "HOME" => root, "JULIA_DEPOT_PATH" => join(DEPOT_PATH, Sys.iswindows() ? ';' : ':'), "PI_CODING_AGENT_DIR" => joinpath(root, "agent"))
             process = run(pipeline(ignorestatus(cmd); stdin=input, stdout=output, stderr=diagnostics))
             (; status=process.exitcode, output=read(output, String), diagnostics=read(diagnostics, String))
         end

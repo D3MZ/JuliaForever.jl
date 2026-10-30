@@ -66,6 +66,8 @@ end
 end
 
 include("agent_core.jl")
+include("parallel_recorded.jl")
+include("parallel_cli.jl")
 include("continuation_slice.jl")
 include("extensions.jl")
 include("queue.jl")
@@ -132,6 +134,8 @@ include("system.jl")
 include("durable.jl")
 include("durable_replay_dispatch.jl")
 include("durable_forks.jl")
+include("durable_policy_forks.jl")
+include("durable_policy_replay.jl")
 include("durable_dispatch.jl")
 include("durable_documents.jl")
 if haskey(ENV, "PI_SOURCE")
@@ -161,11 +165,18 @@ include("logs.jl")
 include("search.jl")
 include("tool_search.jl")
 include("codemode.jl")
+include("codemode_cleanup.jl")
 include("codemode_store.jl")
 include("codemode_compat.jl")
 include("mcp.jl")
 include("mcp_image.jl")
 include("mcp_resources.jl")
+module MCPProgressTests
+include("mcp_progress_native.jl")
+end
+module MCPProgressHTTPTests
+include("mcp_progress_http.jl")
+end
 module MCPHTTPTests
 include("mcp_http.jl")
 end
@@ -175,8 +186,10 @@ end
 if haskey(ENV, "PI_SOURCE")
     include("tool_search_differential.jl")
     include("mcp_differential.jl")
+    include("mcp_progress.jl")
     include("mcp_resources_differential.jl")
     include("mcp_roots_differential.jl")
+    include("fullscreen_differential.jl")
 end
 include("scheduler.jl")
 include("json_content.jl")

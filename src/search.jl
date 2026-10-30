@@ -12,10 +12,12 @@ end
 
 Base.occursin(pattern::FoldedPattern, line::AbstractString) = occursin(pattern.text, lowercase(line))
 
-function searchpattern(pattern, literal::Bool, ignorecase::Bool)
-    literal && return ignorecase ? FoldedPattern(lowercase(pattern)) : pattern
-    Regex(pattern, ignorecase ? "i" : "")
-end
+literalpattern(pattern) = pattern
+foldedpattern(pattern) = FoldedPattern(lowercase(pattern))
+regexpattern(pattern) = Regex(pattern, "")
+caselesspattern(pattern) = Regex(pattern, "i")
+const searchpatterns = Dict((true, false) => literalpattern, (true, true) => foldedpattern, (false, false) => regexpattern, (false, true) => caselesspattern)
+searchpattern(pattern, literal::Bool, ignorecase::Bool) = searchpatterns[(literal, ignorecase)](pattern)
 
 name(::Find) = "find"
 name(::Grep) = "grep"

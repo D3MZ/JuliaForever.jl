@@ -1,6 +1,4 @@
-JuliaForever.jl	:(haslogin(auth))
 JuliaForever.jl	:(result.status == 0)
-JuliaForever.jl	:codemode
 agent.jl	:(Kernel.same(recorded, agent.messages))
 agent.jl	:(Kernel.same(value, convert(Dict{String, Any}, previous)))
 agent.jl	:(name === :cancelled)
@@ -14,16 +12,11 @@ codemode.jl	:(cancel.cancelled[])
 codemode.jl	:(cancel.cancelled[])
 codemode.jl	:(cancel.cancelled[])
 codemode.jl	:(context.done[])
-codemode.jl	:(isnothing(alarm))
 codemode.jl	:(isnothing(failure))
 codemode.jl	:(isnothing(failure))
 codemode.jl	:(isnothing(failure))
 codemode.jl	:(isnothing(failure))
-codemode.jl	:(isnothing(process))
-codemode.jl	:(isnothing(reader))
 codemode.jl	:(isnothing(result))
-codemode.jl	:(isnothing(timer))
-codemode.jl	:(isnothing(writer))
 codemode.jl	:(name === :ok)
 codemode.jl	:(timedout[])
 codemode_worker.jl	:(connected[])
@@ -63,12 +56,10 @@ history.jl	:(name === :batches)
 history.jl	:(name === :batches)
 history.jl	:(name === :status)
 instructions.jl	:(shadowed(shadow, dir, context))
-kernel.jl	:(index === nothing)
 kernel.jl	:(name === :closed)
 kernel.jl	:(name === :events)
 kernel.jl	:(name === :observations)
 kernel.jl	:(name === :pending)
-kernel.jl	:(previous !== nothing)
 kernel.jl	:(same(getfield(a, field), getfield(b, field), seen))
 kernel.jl	:(same(key, other))
 kernel.jl	:(same(value, result, seen))
@@ -152,11 +143,8 @@ search.jl	:directory
 search.jl	:directory
 search.jl	:exclude
 search.jl	:exclude
-search.jl	:ignorecase
-search.jl	:ignorecase
 search.jl	:isdirectory
 search.jl	:limited
-search.jl	:literal
 search.jl	:matched
 search.jl	:negate
 search.jl	:smartcase
@@ -186,12 +174,10 @@ sessions.jl	:(name === :terminated)
 sessions.jl	:(parent isa AbstractString)
 sqlite_history.jl	:(formaterror((last(exceptions)).exception))
 sqlite_history.jl	:(mode in ("delete", "truncate", "persist", "wal"))
-sqlite_history.jl	:(result isa H.Rejected)
 sqlite_history.jl	:complete
 sqlite_history.jl	:create
 sqlite_history.jl	:create
 sqlite_history.jl	:create
-sqlite_history.jl	:opened
 system.jl	:(isnothing(shellrun))
 system.jl	:(token.cancelled)
 system.jl	:bybytes
@@ -207,6 +193,7 @@ terminal.jl	:(name === :streamed)
 terminal.jl	:(result.status == 0)
 terminal_live.jl	:(continuation!(state, mode))
 terminal_live.jl	:(matches(item, mode))
+terminal_menus.jl	:(selected === nothing)
 tools.jl	:(isopen(signal))
 tools.jl	:(kind == codeunits("IDAT"))
 tools.jl	:(kind == codeunits("acTL"))

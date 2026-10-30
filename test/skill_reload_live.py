@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix="jf-skill-reload-live-") as directory:
     env = os.environ.copy()
     env.update(HOME=directory, JF_PROVIDER="openai", OPENAI_MODEL="fixture", OPENAI_API_KEY="synthetic", JF_SESSION_DIR=str(workspace / "sessions"), PI_CODING_AGENT_DIR=str(workspace / "agent"), JF_RELOAD_REQUESTS=str(requests), JF_RELOAD_GATE=str(gate), TERM="xterm")
     env.pop("JF_INSTRUCTIONS_DIR", None)
-    command = [julia, "--startup-file=no", "--compiled-modules=existing", f"--project={root}", str(root / "test/skill_reload_live_process.jl")]
+    command = [julia, "--startup-file=no", "--compiled-modules=existing", f"--project={root}", str(root / "test/skill_reload_live_process.jl"), "--tui-mode", "regular"]
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
     original = termios.tcgetattr(slave)
