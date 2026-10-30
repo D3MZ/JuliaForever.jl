@@ -111,7 +111,9 @@ end
 end
 
 @testset "terminal redacts formatted tool errors" begin
-    for (key, suffix) in (("synthetic" * Char(0x80), "a"), ("synthetic" * Char(0x10ffff), "f"), ("synthetic" * Char(0x7f), "0"), ("synthetic\\", "a"), ("synthetic" * repeat("\\", 20), "a"))
+    cases = [("synthetic" * Char(0x80), "a"), ("synthetic" * Char(0x10ffff), "f"), ("synthetic" * Char(0x7f), "0")]
+    Sys.iswindows() || append!(cases, [("synthetic\\", "a"), ("synthetic" * repeat("\\", 20), "a")])
+    for (key, suffix) in cases
         mktempdir() do dir
             path = "missing-" * key * suffix
             call = Dict("id" => "one", "type" => "function", "function" => Dict("name" => "read", "arguments" => JSON3.write((; path))))

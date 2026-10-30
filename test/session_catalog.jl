@@ -63,11 +63,13 @@ end
             raw = Catalog.choose(request, root, root, IOBuffer(), IOBuffer())
             @test occursin(repr(missing), raw.message)
 
-            path = joinpath(root, "exists-" * key * "a.sqlite")
-            close(open(H.SQLite, path))
-            selected = Catalog.choose(Catalog.Target(path), root, root, IOBuffer(), IOBuffer(), redact)
-            @test selected isa H.SQLite
-            close(selected)
+            if !Sys.iswindows() || !occursin('\\', key)
+                path = joinpath(root, "exists-" * key * "a.sqlite")
+                close(open(H.SQLite, path))
+                selected = Catalog.choose(Catalog.Target(path), root, root, IOBuffer(), IOBuffer(), redact)
+                @test selected isa H.SQLite
+                close(selected)
+            end
         end
     end
 end
