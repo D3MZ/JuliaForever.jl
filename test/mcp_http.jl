@@ -11,7 +11,7 @@ server = HTTP.serve!("127.0.0.1", 0) do req
     method == "bad/status" && return HTTP.Response(401)
     method == "bad/stream" && return HTTP.Response(200, ["Content-Type" => "text/event-stream"], "data: {}\n\n")
     method == "bad/type" && return HTTP.Response(200, ["Content-Type" => "text/plain"], "unexpected")
-    result = method == "initialize" ? Dict("protocolVersion" => "2025-06-18", "capabilities" => Dict("tools" => Dict(), "resources" => Dict()), "serverInfo" => Dict("name" => "test", "version" => "1")) : method == "tools/list" ? Dict("tools" => [Dict("name" => "echo", "inputSchema" => Dict("type" => "object"))]) : method == "tools/call" ? Dict("content" => [Dict("type" => "text", "text" => "ok"), Dict("type" => "resource", "resource" => Dict("uri" => "test://pixel", "mimeType" => "image/png", "blob" => base64encode(read(joinpath(@__DIR__, "fixtures", "pixel.png")))) )]) : method == "resources/list" ? Dict("resources" => [Dict("uri" => "test://one", "name" => "one")]) : Dict("contents" => [Dict("uri" => "test://one", "text" => "resource")])
+    result = method == "initialize" ? Dict("protocolVersion" => "2025-11-25", "capabilities" => Dict("tools" => Dict(), "resources" => Dict()), "serverInfo" => Dict("name" => "test", "version" => "1")) : method == "tools/list" ? Dict("tools" => [Dict("name" => "echo", "inputSchema" => Dict("type" => "object"))]) : method == "tools/call" ? Dict("content" => [Dict("type" => "text", "text" => "ok"), Dict("type" => "resource", "resource" => Dict("uri" => "test://pixel", "mimeType" => "image/png", "blob" => base64encode(read(joinpath(@__DIR__, "fixtures", "pixel.png")))) )]) : method == "resources/list" ? Dict("resources" => [Dict("uri" => "test://one", "name" => "one")]) : Dict("contents" => [Dict("uri" => "test://one", "text" => "resource")])
     HTTP.Response(200, ["Content-Type" => "application/json", "Mcp-Session-Id" => "session-1"], JSON3.write(Dict("jsonrpc" => "2.0", "id" => body["id"], "result" => result)))
     catch e
         showerror(stderr, e, catch_backtrace()); println(stderr)
@@ -40,7 +40,7 @@ try
     close(client)
     seen = [take!(requests) for _ in 1:12]
     @test seen[2][2]["mcp-session-id"] == "session-1"
-    @test seen[2][2]["mcp-protocol-version"] == "2025-06-18"
+    @test seen[2][2]["mcp-protocol-version"] == "2025-11-25"
     @test seen[end][1] == "DELETE"
 finally
     close(server)

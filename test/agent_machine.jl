@@ -26,16 +26,18 @@ import JuliaForever.Conversation as C
     end
 end
 
-@testset "legacy transcript changes are recorded as machine input" begin
+@testset "transcript changes are recorded and restored" begin
     provider = AgentFixture([completion("done")], [])
     messages = Dict{String, Any}[Dict("role" => "system", "content" => "original")]
-    agent = Agent(provider, Dict{String, JuliaForever.Tool}(), messages)
-    messages[1]["content"] = "edited"
-    push!(messages, Dict("role" => "user", "content" => "prior"))
+    history = JuliaForever.History.Memory()
+    agent = Agent(provider, Dict{String, JuliaForever.Tool}(), messages; history)
+    agent.messages[1]["content"] = "edited"
+    push!(agent.messages, Dict("role" => "user", "content" => "prior"))
     @test respond!(agent, "current") == "done"
     @test [message["content"] for message in only(provider.requests) if message["role"] in ("system", "user")] == ["edited", "prior", "current"]
     @test any(event -> event isa C.History, agent.events)
     @test last(collect(K.Replay(agent.initial, agent.events))).state.phase == C.Complete
+    @test Agent(provider, []; history).messages == agent.messages
 end
 
 mutable struct FailsOnce

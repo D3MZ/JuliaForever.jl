@@ -127,8 +127,8 @@ end
 end
 
 @testset "code execution outcomes" begin
-    success = CodeResult(true, 3, String[], NamedTuple[], Dict{String, Any}(), nothing, "", "", "", 1)
-    failure = CodeResult(false, nothing, String[], NamedTuple[], Dict{String, Any}(), :script, "bad", "", "", 1)
+    success = CodeResult(true, 3, String[], NamedTuple[], Dict{String, Any}(), String[], nothing, "", "", "", 1)
+    failure = CodeResult(false, nothing, String[], NamedTuple[], Dict{String, Any}(), String[], :script, "bad", "", "", 1)
     @test success isa JuliaForever.CodeSuccess && success.ok
     @test failure isa JuliaForever.CodeFailure && !failure.ok
     @test hasproperty(success, :ok) && hasproperty(failure, :ok)

@@ -101,5 +101,10 @@ end
         write(corrupt, text * "{broken\n")
         @test open(S.Session, corrupt) == S.Rejected(:invalid_session)
         @test read(corrupt, String) == text * "{broken\n"
+
+        malformed = text * "{\"type\":\"message\"}\n"
+        write(corrupt, malformed)
+        @test open(S.Session, corrupt) == S.Rejected(:invalid_session)
+        @test read(corrupt, String) == malformed
     end
 end

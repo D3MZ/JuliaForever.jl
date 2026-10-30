@@ -24,7 +24,8 @@ using Test, JuliaForever, Base64
         @test JuliaForever.History.encode(decoded) == record
     end
     for failed in (false, true)
-        record = Dict{String, Any}("format" => "JuliaForever.AgentEvent/1", "event" => Dict{String, Any}("kind" => "observe", "fields" => Any[2, "call", Dict{String, Any}("kind" => "tool_reply", "fields" => Any["old", failed])]))
+        record = Dict{String, Any}("format" => "JuliaForever.AgentEvent/1", "event" => Dict{String, Any}("kind" => "observe", "fields" => Any[2, "call", Dict{String, Any}("kind" => "tool_reply", "fields" => Any["text", failed])]))
+        @test JuliaForever.History.encode(JuliaForever.Kernel.Observe(2, "call", JuliaForever.Conversation.ToolReply("text", failed))) == record
         decoded = JuliaForever.History.decode_event(record)
         @test decoded.observation.result isa (failed ? ToolFailure : ToolSuccess)
         @test decoded.observation.image === nothing
