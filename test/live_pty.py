@@ -18,6 +18,7 @@ stop_finish = threading.Event()
 recover_finish = threading.Event()
 headers_finish = threading.Event()
 failure_finish = threading.Event()
+new_finish = threading.Event()
 requests = []
 requests_lock = threading.Lock()
 
@@ -59,7 +60,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
                 return
-            text = {1: "First", 2: "Steered", 3: "Followed", 4: "Stopping", 5: "Resumed", 6: "Hold", 7: "Retrieved", 8: "Reopened", 10: "Failing", 11: "Recovered", 13: "After shell"}.get(index, "Unexpected")
+            text = {1: "First", 2: "Steered", 3: "Followed", 4: "Stopping", 5: "Resumed", 6: "Hold", 7: "Retrieved", 8: "Reopened", 10: "Failing", 11: "Recovered", 13: "After shell", 14: "Before new", 15: "New session"}.get(index, "Unexpected")
             self.event({"choices": [{"index": 0, "delta": {"content": text}}]})
             if index == 1:
                 more.wait(30)
@@ -71,6 +72,8 @@ class Handler(BaseHTTPRequestHandler):
                 recover_finish.wait(30)
             elif index == 10:
                 failure_finish.wait(30)
+            elif index == 14:
+                new_finish.wait(30)
             reason = "content_filter" if index == 10 else "stop"
             self.event({"choices": [{"index": 0, "delta": {}, "finish_reason": reason}]})
             self.chunk(b"data: [DONE]\n\n")
@@ -133,6 +136,10 @@ with tempfile.TemporaryDirectory(prefix="jf-live-pty-") as directory:
         send("first")
         key("Enter")
         wait_for(lambda: len(requests) == 1 and "First" in screen(), "first response did not stream", 30)
+        send("/name Live Session")
+        key("Enter")
+        wait_for(lambda: "Session name set: Live Session" in screen(), "naming did not work during streaming", 8)
+        assert len(requests) == 1 and not finish.is_set()
         run("resize-window", "-t", "live", "-x", "30", "-y", "12")
         send("discard")
         key("C-c")
@@ -238,10 +245,24 @@ with tempfile.TemporaryDirectory(prefix="jf-live-pty-") as directory:
         key("Enter")
         wait_for(lambda: len(requests) >= 13 and "After shell" in screen(), "shell steering did not resume", 15)
         assert [m["content"] for m in requests[12] if m["role"] == "user"][-1] == "after shell", requests[12]
+        send("old work")
+        key("Enter")
+        wait_for(lambda: len(requests) >= 14 and "Before new" in screen(), "new-session request did not start", 15)
+        send("carry")
+        key("Enter")
+        wait_for(lambda: "Steering: carry" in screen(), "new-session steering was not queued", 8)
+        send("/new")
+        key("Enter")
+        wait_for(lambda: "New session started." in screen() and "> carry" in screen(), "new session did not restore queued input", 10)
+        assert not new_finish.is_set()
+        key("Enter")
+        wait_for(lambda: len(requests) >= 15 and "New session" in screen(), "new session did not send the restored input", 15)
+        assert [m["content"] for m in requests[14] if m["role"] == "user"] == ["carry"], requests[14]
+        assert len(list(pathlib.Path(directory).glob("*.sqlite"))) == 2
         send("/exit")
         key("Enter")
         wait_for(lambda: run("display-message", "-p", "-t", "live", "#{pane_dead}").stdout.strip() == "1", "resumed terminal failed to exit", 15)
-        print("live terminal streaming, queues, cancellation, and SQLite resume passed")
+        print("live terminal streaming, naming, new sessions, queues, cancellation, and SQLite resume passed")
     finally:
         if pidfile.exists() and not shell_reaped:
             try:
@@ -256,6 +277,7 @@ with tempfile.TemporaryDirectory(prefix="jf-live-pty-") as directory:
         recover_finish.set()
         headers_finish.set()
         failure_finish.set()
+        new_finish.set()
         run("kill-server", check=False)
         server.shutdown()
         server.server_close()
