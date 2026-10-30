@@ -68,7 +68,6 @@ mcp.jl	:validcontent
 model_config.jl	:(effort in values(levels))
 provider.jl	:((last(current_exceptions())).exception isa ArgumentError)
 provider.jl	:(key == "error")
-provider.jl	:(key isa AbstractString)
 provider.jl	:(name === :done)
 provider.jl	:complete
 scheduler.jl	:(name === :cancelled)

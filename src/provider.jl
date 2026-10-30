@@ -225,10 +225,9 @@ end
 
 apikey(failure::InvalidResponse) = failure
 
-function apikey(data::AbstractDict)
-    key = get(data, "key", nothing)
-    key isa AbstractString && !isempty(key) ? key : nothing
-end
+apikey(data::AbstractDict) = apikeyvalue(get(data, "key", nothing))
+apikeyvalue(value) = nothing
+apikeyvalue(value::AbstractString) = isempty(value) ? nothing : value
 
 struct Usage
     input::Int
