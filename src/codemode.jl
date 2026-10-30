@@ -9,7 +9,7 @@ end
 CodeMode(tools; timeout=300.0) = CodeMode(Dict{String, Tool}(name(tool) => tool for tool in tools if !(tool isa CodeMode)), Float64(timeout), Dict{String, Any}(), ReentrantLock())
 name(::CodeMode) = "codemode"
 schema(::CodeMode) = Dict("type" => "object", "properties" => Dict("code" => Dict("type" => "string")), "required" => ["code"])
-guidance(::CodeMode) = "Run Julia source in a separate process. Call tools.read((; path=\"...\")) or tools[\"name\"](args); each tool returns an object with text and iserror. ALL_TOOLS lists names, descriptions, and argument schemas. text(value) adds output; the last expression is the result. store(key, value) and load(key) keep JSON values across successful calls. The process inherits the host permissions and environment, including permitted filesystem, network, and subprocess access; it is not a security sandbox."
+guidance(::CodeMode) = "Run Julia source in a separate process. Call tools.read((; path=\"...\")) or tools[\"name\"](args); each tool returns an object with text and iserror. ALL_TOOLS lists names, descriptions, and argument schemas. text(value) adds output; the last expression is the result. store(key, value) and load(key) keep JSON values across successful calls; forget!(key) deletes a key. The process inherits the host permissions and environment, including permitted filesystem, network, and subprocess access; it is not a security sandbox."
 function description(mode::CodeMode)
     specs = ["- $(name(tool)): $(description(tool)) Arguments: $(JSON3.write(schema(tool)))" for tool in sort!(collect(values(mode.tools)); by=name)]
     join([guidance(mode); specs], "\n")
@@ -36,12 +36,15 @@ struct CodeResult
     output::Vector{String}
     calls::Vector{NamedTuple}
     writes::Dict{String, Any}
+    deletes::Vector{String}
     kind::Union{Nothing, Symbol}
     message::String
     stdout::String
     stderr::String
     pid::Int
 end
+
+CodeResult(ok, value, output, calls, writes, kind, message, stdout, stderr, pid) = CodeResult(ok, value, output, calls, writes, String[], kind, message, stdout, stderr, pid)
 
 function enqueue(events, event)
     try
@@ -218,7 +221,7 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
         elseif !result.ok
             return CodeResult(false, nothing, output, calls, Dict{String, Any}(), :script, String(result.message), stdout, stderr, pid)
         end
-        CodeResult(true, result.value, output, calls, Dict{String, Any}(String(key) => value for (key, value) in pairs(result.writes)), nothing, "", stdout, stderr, pid)
+        CodeResult(true, result.value, output, calls, Dict{String, Any}(String(key) => value for (key, value) in pairs(result.writes)), String.(result.deletes), nothing, "", stdout, stderr, pid)
     end
 end
 
@@ -229,6 +232,7 @@ function execute(mode::CodeMode, args)
     result = codeexecute(mode, args.code; store=state)
     if result.ok
         lock(mode.lock) do
+            foreach(key -> delete!(mode.store, key), result.deletes)
             merge!(mode.store, result.writes)
         end
     end
