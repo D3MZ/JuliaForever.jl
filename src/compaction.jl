@@ -26,6 +26,7 @@ systemmessage!(system, other, message) = push!(system, message)
 othermessage!(system, other, message) = push!(other, message)
 const systemroles = Dict("system" => systemmessage!)
 partitionmessage!(system, other, message::Conversation.Message) = othermessage!(system, other, message)
+partitionmessage!(system, other, message::Conversation.SkillContext) = systemmessage!(system, other, message)
 partitionmessage!(system, other, message::Conversation.RawMessage) = get(systemroles, get(message.value, "role", nothing), othermessage!)(system, other, message)
 
 summarycheck(::Nothing, message::Conversation.Message) = nothing

@@ -37,6 +37,12 @@ function Agent(provider, tools, messages; history=nothing)
     openagent(provider, fresh(tools), messages, initial, history)
 end
 
+function Agent(provider, tools, messages::Vector{Conversation.Message}; history=nothing)
+    initial = Conversation.State("agent-" * randstring(16); automatic=false, messages)
+    projected = Dict{String, Any}[convert(Dict{String, Any}, message) for message in messages]
+    openagent(provider, fresh(tools), projected, initial, history)
+end
+
 Agent(provider, tools; history=nothing) = Agent(provider, Dict{String, Tool}(name(tool) => tool for tool in tools), Dict{String, Any}[]; history)
 Agent(provider, tools::ToolSet; history=nothing) = Agent(provider, tools, Dict{String, Any}[]; history)
 
@@ -217,12 +223,34 @@ function attach!(value, image::Image)
 end
 
 Base.convert(::Type{Dict{String, Any}}, message::Conversation.RawMessage) = deepcopy(message.value)
+Base.convert(::Type{Dict{String, Any}}, message::Conversation.SkillContext) = Dict{String, Any}("role" => "system", "content" => message.content)
+
+synccontext(current, ::Conversation.Message) = current
+synccontext(current, message::Conversation.SkillContext) = message
+syncmessage!(messages, value, ::Nothing) = (push!(messages, Conversation.RawMessage(deepcopy(value))); nothing)
+function syncmessage!(messages, value, previous::Conversation.SkillContext)
+    if Kernel.same(value, convert(Dict{String, Any}, previous))
+        push!(messages, previous)
+        return nothing
+    end
+    push!(messages, Conversation.RawMessage(deepcopy(value)))
+    previous
+end
+function syncmessages(values, previous)
+    context = foldl(synccontext, previous; init=nothing)
+    messages = Conversation.Message[]
+    for value in values
+        context = syncmessage!(messages, value, context)
+    end
+    messages
+end
 
 function sync!(agent::Agent)
     result = lock(agent.lock) do
-        recorded = [convert(Dict{String, Any}, message) for message in agent.state.messages]
+        previous = agent.state.messages
+        recorded = Dict{String, Any}[convert(Dict{String, Any}, message) for message in previous]
         if !Kernel.same(recorded, agent.messages)
-            history = Conversation.Message[Conversation.RawMessage(deepcopy(message)) for message in agent.messages]
+            history = syncmessages(agent.messages, previous)
             result, _ = transition!(revision -> Conversation.History(revision, history), agent)
             return outcome(result, nothing)
         end

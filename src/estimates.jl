@@ -21,6 +21,7 @@ units(::Image) = 4800
 "Approximate tokens for text or a supported native conversation message."
 tokens(text::AbstractString) = cld(2 * units(text), 7)
 tokens(message::Conversation.User) = tokens(message.content)
+tokens(message::Conversation.SkillContext) = tokens(message.content)
 tokens(message::Conversation.ImageUser) = cld(2 * (units(message.content) + sum(units, message.images; init=0)), 7)
 
 attached(::Nothing) = 0

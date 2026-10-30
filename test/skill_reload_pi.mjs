@@ -1,0 +1,43 @@
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { register } from "node:module";
+register("./tool_options_loader.mjs", import.meta.url);
+
+const [source, input] = process.argv.slice(2);
+const { cwd, agentDir } = JSON.parse(readFileSync(input, "utf8"));
+const core = join(source, "packages/coding-agent/src/core");
+const load = file => import(pathToFileURL(join(core, file)));
+const { createAgentSession } = await load("sdk.ts");
+const { SettingsManager } = await load("settings-manager.ts");
+const { DefaultResourceLoader } = await load("resource-loader.ts");
+const { SessionManager } = await load("session-manager.ts");
+const { buildSystemPromptSections } = await load("system-prompt.ts");
+const settingsManager = SettingsManager.inMemory();
+const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
+await resourceLoader.reload();
+const model = { id: "fixture", name: "fixture", api: "openai-completions", provider: "fixture", baseUrl: "http://localhost", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1024 };
+const sessionManager = SessionManager.inMemory(cwd);
+const { session } = await createAgentSession({ cwd, agentDir, model, settingsManager, resourceLoader, sessionManager, tools: ["read"] });
+const user = { role: "user", content: [{ type: "text", text: "prior request" }], timestamp: 1 };
+const assistant = { role: "assistant", content: [{ type: "text", text: "prior answer" }], api: "openai-completions", provider: "fixture", model: "fixture", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 };
+sessionManager.appendMessage(user);
+sessionManager.appendMessage(assistant);
+session.agent.state.messages = [...session.agent.state.messages, user, assistant];
+function view() {
+    const section = buildSystemPromptSections({ cwd, skills: resourceLoader.getSkills().skills }).skills ?? null;
+    return { section, inPrompt: section === null ? !session.systemPrompt.includes("<available_skills>") : session.systemPrompt.includes(section), conversation: session.agent.state.messages.filter(m => m.role !== "system").map(m => m.content.map(x => x.text).join("")), history: sessionManager.getEntries().filter(x => x.type === "message").map(x => x.message.role) };
+}
+const results = [view()];
+const skills = join(cwd, ".pi", "skills");
+writeFileSync(join(skills, "changed", "SKILL.md"), "---\nname: changed\ndescription: updated metadata\n---\nnew private body\n");
+rmSync(join(skills, "removed"), { recursive: true });
+mkdirSync(join(skills, "added"));
+writeFileSync(join(skills, "added", "SKILL.md"), "---\nname: added\ndescription: added metadata\n---\nprivate body\n");
+await session.reload();
+results.push(view());
+rmSync(skills, { recursive: true });
+await session.reload();
+results.push(view());
+session.dispose();
+process.stdout.write(JSON.stringify(results));
