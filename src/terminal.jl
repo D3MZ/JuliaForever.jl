@@ -419,10 +419,10 @@ function runtext!(terminal, agent, prompt, snapshot, on_agent_event, failure::Un
 end
 
 function runtext!(terminal, agent, prompt, snapshot, on_agent_event, policy::Union{Nothing, AutoCompaction})
-    callback = observer(terminal, snapshot, on_agent_event)
+    on_event, callback = textcallbacks(terminal, agent, snapshot, on_agent_event, agent.history)
     result = try
         request!(terminal) do
-            respond!(agent, prompt; on_event=event -> streamrender!(terminal, event), on_agent_event=callback, auto_compaction=policy)
+            respond!(agent, prompt; on_event, on_agent_event=callback, auto_compaction=policy)
         end
     finally
         failures!(terminal, callback)
@@ -430,3 +430,6 @@ function runtext!(terminal, agent, prompt, snapshot, on_agent_event, policy::Uni
     result.status == 0 || return result.status
     result!(terminal, result.value)
 end
+
+textcallbacks(terminal, agent, snapshot, callback, ::Nothing) = (event -> streamrender!(terminal, event), observer(terminal, snapshot, callback))
+textcallbacks(terminal, agent, snapshot, callback, ::History.Store) = LiveJSON.textcallbacks(terminal, agent, snapshot, callback)

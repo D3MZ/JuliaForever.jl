@@ -62,7 +62,13 @@ function recordmessage!(session, value::AbstractDict)
     entrysaved!(session, recordentry!(session, J.Conversation.MessageEntry(message)))
 end
 
-backfill!(session, ::LiveJSON.RecordedMessages) = nothing
+function backfill!(session, ::LiveJSON.RecordedMessages)
+    LiveJSON.remembercalls!(session.stream, session.entries)
+    foreach(message -> backfillvalue!(session, LiveJSON.wiremessage(session.stream, message)), LiveJSON.unrecordedmessages(session.agent))
+    nothing
+end
+backfillvalue!(session, ::Nothing) = nothing
+backfillvalue!(session, message::AbstractDict) = recordmessage!(session, message)
 function backfill!(session, ::LiveJSON.NoRecordedMessages)
     foreach(message -> backfillmessage!(session, get(backfillroles, message["role"], nothing), message), session.messages)
     nothing

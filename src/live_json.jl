@@ -10,6 +10,7 @@ function write!(io, event)
     flush(io)
     nothing
 end
+write!(::Base.DevNull, event) = nothing
 
 nowms() = round(Int, 1000time())
 isotime() = Dates.format(now(UTC), dateformat"yyyy-mm-ddTHH:MM:SS.sss") * "Z"
@@ -27,6 +28,7 @@ function header!(terminal, history)
     write!(terminal.output, (; type="session", version=3, id=id(history), timestamp=isotime(), cwd=pwd()))
 end
 
+api(provider) = "unknown"
 api(::OpenAI) = "openai-completions"
 api(::OpenAIResponses) = "openai-responses"
 api(::Anthropic) = "anthropic-messages"
@@ -115,8 +117,11 @@ mutable struct Stream{I<:IO, T<:Terminal}
     activity::WireActivity
 end
 
-function Stream(terminal, agent, mode)
-    Stream(terminal.output, terminal, api(agent.provider), providername(mode, agent.provider), agent.provider.model, nothing, nothing, nowms(), Union{TextBlock, ThinkingBlock, CallBlock}[], nothing, Dict{Any, CallBlock}(), Dict{String, String}(), Dict{String, Any}(), Dict{String, Any}(), Dict{String, Any}[], Dict{String, Any}[], initialmessages(agent), Unannounced(), Unannounced(), Unannounced(), Unannounced(), WireIdle())
+modelname(provider) = ""
+modelname(provider::Union{OpenAI, OpenAIResponses, Anthropic, Google, ManagedChatGPT, ChatGPT.Plan, UnconfiguredProvider}) = provider.model
+Stream(terminal, agent, mode) = Stream(terminal, agent, mode, terminal.output)
+function Stream(terminal, agent, mode, output::IO)
+    Stream(output, terminal, api(agent.provider), providername(mode, agent.provider), modelname(agent.provider), nothing, nothing, nowms(), Union{TextBlock, ThinkingBlock, CallBlock}[], nothing, Dict{Any, CallBlock}(), Dict{String, String}(), Dict{String, Any}(), Dict{String, Any}(), Dict{String, Any}[], Dict{String, Any}[], initialmessages(agent), Unannounced(), Unannounced(), Unannounced(), Unannounced(), WireIdle())
 end
 
 struct ProviderObserver{S}
@@ -124,6 +129,14 @@ struct ProviderObserver{S}
 end
 (observer::ProviderObserver)(event) = provider!(observer.stream, event)
 providercomplete!(observer::ProviderObserver, result::Completion) = complete!(observer.stream, result)
+struct TextProviderObserver{S}
+    stream::S
+end
+function (observer::TextProviderObserver)(event)
+    J.streamrender!(observer.stream.terminal, event)
+    provider!(observer.stream, event)
+end
+providercomplete!(observer::TextProviderObserver, result::Completion) = complete!(observer.stream, result)
 provider!(stream, event) = provider!(stream, get(providerevents, event.type, nothing), event)
 provider!(stream, ::Nothing, event) = nothing
 struct ReportedUsage end

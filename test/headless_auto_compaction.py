@@ -371,6 +371,60 @@ def run_cross_mode(kind, root, fixture, env, json_first=False):
     finally:
         rpc.close()
 
+def run_mixed_history(kind, root, fixture, env, json_compact=False):
+    path = root / 'agent/settings.json'
+    settings = json.loads(path.read_text())
+    settings['compaction']['enabled'] = False
+    path.write_text(json.dumps(settings))
+    initial = subprocess.run(command(kind, 'json', root, ['first']), cwd=root, env=env, input='', text=True, capture_output=True, timeout=120)
+    assert initial.returncode == 0, (kind, initial.stderr)
+    for text in ('second', 'second'):
+        process = subprocess.run(command(kind, 'text', root, ['--continue', text]), cwd=root, env=env, input='', text=True, capture_output=True, timeout=120)
+        assert process.returncode == 0 and 'reply:' + text in process.stdout, (kind, process.stdout, process.stderr)
+    rpc = RPC(kind, root, fixture, env, ['--continue'])
+    try:
+        entries = rpc.ask('mixed-entries', 'get_entries')['data']['entries']
+        users = [entry for entry in entries if entry['type'] == 'message' and entry['message'].get('role') == 'user']
+        assert [message_text(entry['message']) for entry in users] == ['first', 'second', 'second'], (kind, users)
+        assert len({entry['id'] for entry in users}) == 3
+        messages = rpc.ask('mixed-messages', 'get_messages')['data']['messages']
+        assert [message_text(message) for message in messages if message['role'] == 'user'] == ['first', 'second', 'second'], (kind, messages)
+        assert rpc.ask('mixed-enable', 'set_auto_compaction', enabled=True)['success']
+        if json_compact:
+            rpc.close()
+            process = subprocess.run(command(kind, 'json', root, ['--continue', 'third']), cwd=root, env=env, input='', text=True, capture_output=True, timeout=120)
+            assert process.returncode == 0, (kind, process.stderr)
+            end = next(event for event in records(process.stdout) if event['type'] == 'compaction_end')
+            rpc = RPC(kind, root, fixture, env, ['--continue'])
+        else:
+            rpc.prompt('third')
+            end = next(event for event in rpc.events if event['type'] == 'compaction_end')
+        kept = end['result']['firstKeptEntryId']
+        entries = rpc.ask('mixed-compacted-entries', 'get_entries')['data']['entries']
+        assert any(entry['id'] == kept and entry['type'] == 'message' for entry in entries), (kind, kept, entries)
+        assert any(entry['type'] == 'compaction' and entry['firstKeptEntryId'] == kept for entry in entries)
+        messages = rpc.ask('mixed-compacted-messages', 'get_messages')['data']['messages']
+        assert any(message['role'] == 'compactionSummary' and 'checkpoint' in message['summary'] for message in messages)
+    finally:
+        if rpc.process.poll() is None:
+            rpc.close()
+
+def run_text_compaction_history(kind, root, fixture, env):
+    for text, options in (('first', []), ('second', ['--continue'])):
+        process = subprocess.run(command(kind, 'text', root, [*options, text]), cwd=root, env=env, input='', text=True, capture_output=True, timeout=120)
+        assert process.returncode == 0 and 'reply:' + text in process.stdout, (kind, process.stdout, process.stderr)
+    rpc = RPC(kind, root, fixture, env, ['--continue'])
+    try:
+        entries = rpc.ask('text-compaction-entries', 'get_entries')['data']['entries']
+        compacted = [entry for entry in entries if entry['type'] == 'compaction']
+        assert len(compacted) == 1 and 'checkpoint' in compacted[0]['summary'], (kind, entries)
+        kept = compacted[0]['firstKeptEntryId']
+        assert any(entry['type'] == 'message' and entry['id'] == kept for entry in entries), (kind, kept, entries)
+        messages = rpc.ask('text-compaction-messages', 'get_messages')['data']['messages']
+        assert any(message['role'] == 'compactionSummary' and 'checkpoint' in message['summary'] for message in messages), (kind, messages)
+    finally:
+        rpc.close()
+
 def run_model_switch(kind, root, fixture, env):
     models = root / 'agent/models.json'
     config = json.loads(models.read_text())
@@ -517,7 +571,7 @@ def run_tool_controls(kind, root, fixture, env):
 
 with tempfile.TemporaryDirectory(prefix='jf-headless-auto-') as tmp:
     base = Path(tmp)
-    for mode in ('json', 'overflow', 'rpc', 'cross', 'cross-json', 'switch', 'tool', 'tool-json', 'tool-controls'):
+    for mode in ('json', 'overflow', 'rpc', 'cross', 'cross-json', 'mixed-rpc', 'mixed-json', 'text-compact', 'switch', 'tool', 'tool-json', 'tool-controls'):
         if os.environ.get('JF_HEADLESS_CASE', mode) != mode:
             continue
         for kind in ('pi', 'julia'):
@@ -536,6 +590,12 @@ with tempfile.TemporaryDirectory(prefix='jf-headless-auto-') as tmp:
                     run_cross_mode(kind, root, fixture, env)
                 elif mode == 'cross-json':
                     run_cross_mode(kind, root, fixture, env, json_first=True)
+                elif mode == 'mixed-rpc':
+                    run_mixed_history(kind, root, fixture, env)
+                elif mode == 'mixed-json':
+                    run_mixed_history(kind, root, fixture, env, json_compact=True)
+                elif mode == 'text-compact':
+                    run_text_compaction_history(kind, root, fixture, env)
                 elif mode == 'switch':
                     run_model_switch(kind, root, fixture, env)
                 elif mode == 'tool':
