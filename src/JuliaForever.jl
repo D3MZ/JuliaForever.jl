@@ -14,6 +14,7 @@ include("file_arguments.jl")
 include("system.jl")
 include("models.jl")
 include("provider.jl")
+include("chatgpt.jl")
 include("kernel.jl")
 include("conversation.jl")
 include("durable.jl")
@@ -28,6 +29,7 @@ include("compaction.jl")
 include("responses.jl")
 include("anthropic.jl")
 include("google.jl")
+include("chatgpt_plan.jl")
 include("sessions.jl")
 include("session_catalog.jl")
 include("execution.jl")
@@ -82,6 +84,8 @@ end
 struct HistoryConflict end
 include("cli_models.jl")
 include("model_config.jl")
+include("chatgpt_cli.jl")
+include("history_export.jl")
 
 historyinspect(::Nothing) = HistoryInspection()
 historyinspect(action::HistoryInspection) = action
@@ -91,8 +95,6 @@ historyabandon(::Union{Nothing, HistoryAbandonment}, reason) = HistoryAbandonmen
 historyabandon(::Union{HistoryInspection, HistoryConflict}, reason) = HistoryConflict()
 historyabandon(action::ModelListing, reason) = action
 
-haslogin(::APIKeyAuth) = false
-haslogin(::OpenRouterAuth) = true
 const loginproviders = Dict("openrouter" => providerinfos["openrouter"])
 providername(::APIKeyAuth, ::Nothing) = get(ENV, "JF_PROVIDER", "openai")
 providername(::APIKeyAuth, selected::AbstractString) = selected
@@ -218,7 +220,7 @@ registered(terminal, registry, name, ::Bool) = registry
 registered(terminal, registry, name, result::Extensions.Rejected) = pluginfailure!(terminal, name, result)
 
 function help!()
-    println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
+    println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --export PATH [OUTPUT.html|OUTPUT.json] | jf --history PATH --abandon REASON | jf [options] --login-chatgpt [prompt] | jf --logout-chatgpt | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
     println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --fork PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
     println("Tools: --tools (-t) LIST, --exclude-tools (-xt) LIST, --no-builtin-tools (-nbt), --no-tools (-nt).")
     println("Terminal: --tui-mode fullscreen|regular (default: fullscreen).")
@@ -228,153 +230,10 @@ function help!()
     0
 end
 
+include("cli_options.jl")
+
 function (@main)(args)
-    codemode = false
-    packages = String[]
-    environments = String[]
-    action = nothing
-    selected = nothing
-    requested_model = nothing
-    auth = APIKeyAuth()
-    session = SessionCatalog.New()
-    sessiondir = SessionCatalog.directory(ENV)
-    sessionname = nothing
-    positional = String[]
-    baseline = ToolSelection.Defaults()
-    rules = ToolSelection.Inherit()
-    excluded = Regex[]
-    tui = LiveTerminal.FullscreenMode()
-    outputmode = TextMode()
-    while !isempty(args)
-        if first(args) == "--"
-            append!(positional, args)
-            break
-        elseif first(args) in ("--help", "-h")
-            return help!()
-        elseif first(args) == "--tui-mode"
-            if length(args) < 2 || !haskey(tuimodes, args[2])
-                println(stderr, "--tui-mode requires regular or fullscreen.")
-                return 2
-            end
-            tui = tuimodes[args[2]]
-            args = args[3:end]
-        elseif first(args) == "--codemode"
-            codemode = true
-            args = args[2:end]
-        elseif first(args) == "--mode"
-            if length(args) < 2 || startswith(args[2], "-")
-                println(stderr, "--mode requires text or json.")
-                return 2
-            end
-            outputmode = assignmode(outputmode, terminalmode(args[2]))
-            args = args[3:end]
-        elseif first(args) in ("--no-tools", "-nt")
-            baseline = ToolSelection.baseline(baseline, ToolSelection.NoTools())
-            args = args[2:end]
-        elseif first(args) in ("--no-builtin-tools", "-nbt")
-            baseline = ToolSelection.baseline(baseline, ToolSelection.NoBuiltin())
-            args = args[2:end]
-        elseif first(args) in ("--tools", "-t", "--exclude-tools", "-xt")
-            option = first(args)
-            if length(args) < 2
-                println(stderr, option, " requires a value.")
-                return 2
-            end
-            if option in ("--tools", "-t")
-                rules = ToolSelection.assign(rules, ToolSelection.entries(args[2]))
-            else
-                excluded = ToolSelection.patterns(args[2])
-            end
-            args = args[3:end]
-        elseif first(args) == "--list-models"
-            if length(args) > 1 && !startswith(args[2], "-") && !startswith(args[2], "@")
-                action = ModelListing(args[2])
-                args = args[3:end]
-            else
-                action = ModelListing("")
-                args = args[2:end]
-            end
-        elseif first(args) in ("--provider", "--model")
-            option = first(args)
-            if length(args) < 2 || isempty(strip(args[2])) || startswith(args[2], "--")
-                println(stderr, option, " requires a value.")
-                return 2
-            end
-            if option == "--provider"
-                selected = lowercase(args[2])
-            else
-                requested_model = args[2]
-            end
-            args = args[3:end]
-        elseif first(args) in ("--login-openrouter", "--login-openrouter-callback")
-            if haslogin(auth)
-                println(stderr, "Select only one OpenRouter login mode.")
-                return 2
-            end
-            auth = first(args) == "--login-openrouter" ? CodeAuth() : CallbackAuth()
-            args = args[2:end]
-        elseif first(args) in ("--plugin", "--plugin-env")
-            option = first(args)
-            if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
-                println(stderr, option, " requires a ", option == "--plugin" ? "package name" : "path", ".")
-                return 2
-            end
-            push!(option == "--plugin" ? packages : environments, args[2])
-            args = args[3:end]
-        elseif first(args) == "--history"
-            if length(args) < 2 || startswith(args[2], "--")
-                println(stderr, "--history requires a path.")
-                return 2
-            end
-            session = SessionCatalog.assign(session, SessionCatalog.Explicit(args[2]))
-            args = args[3:end]
-        elseif first(args) in ("--session", "--session-dir", "--fork")
-            if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
-                println(stderr, first(args), " requires a value.")
-                return 2
-            end
-            if first(args) == "--session"
-                session = SessionCatalog.assign(session, SessionCatalog.Target(args[2]))
-            elseif first(args) == "--fork"
-                session = SessionCatalog.assign(session, SessionCatalog.Fork(args[2]))
-            else
-                sessiondir = abspath(expanduser(args[2]))
-            end
-            args = args[3:end]
-        elseif first(args) in ("--continue", "-c")
-            session = SessionCatalog.assign(session, SessionCatalog.Recent())
-            args = args[2:end]
-        elseif first(args) in ("--resume", "-r")
-            session = SessionCatalog.assign(session, SessionCatalog.Picker())
-            args = args[2:end]
-        elseif first(args) == "--no-session"
-            session = SessionCatalog.assign(session, SessionCatalog.Ephemeral())
-            args = args[2:end]
-        elseif first(args) in ("--name", "-n")
-            if length(args) < 2 || isempty(Conversation.sessionname(args[2]))
-                println(stderr, "--name requires a non-empty value.")
-                return 2
-            end
-            sessionname = Conversation.sessionname(args[2])
-            args = args[3:end]
-        elseif first(args) == "--abandon"
-            if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
-                println(stderr, "--abandon requires a reason.")
-                return 2
-            end
-            action = historyabandon(action, args[2])
-            args = args[3:end]
-        elseif first(args) == "--inspect-history"
-            action = historyinspect(action)
-            args = args[2:end]
-        else
-            push!(positional, first(args))
-            args = args[2:end]
-        end
-    end
-    args = positional
-    options = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, tui, outputmode, output=stdout)
-    selectedmode(action, options, outputmode)
+    clifinal(foldl(cliargument, args; init=CLIReady(CLIOptions())))
 end
 
 selectedmode(action, options, ::TerminalMode) = selectedtools(action, options, options.rules)
@@ -412,6 +271,37 @@ end
 historyaction(::Nothing, options) = loginprovider(options.auth, options.selected, options)
 historyaction(action::ModelListing, options) = listmodels!(options.output, action.query, ENV)
 loginprovider(::APIKeyAuth, selected, options) = resolveprovider(options, options.requested_model)
+loginprovider(::APIKeyAuth, ::Nothing, options) = defaultchatgpt(options, stdin)
+defaultchatgpt(options, input::IO) = resolveprovider(options, options.requested_model)
+defaultchatgpt(options, input::Base.TTY) = defaultchatgpt(options, options.requested_model)
+defaultchatgpt(options, ::Nothing) = fallbackchatgpt(options)
+defaultchatgpt(options, text::AbstractString) = configuredchatgpt(options, text, modelconfig(ENV))
+configuredchatgpt(options, text, ::Models.InvalidConfig) = invalidmodelconfig()
+function configuredchatgpt(options, text, registry::Models.Registry)
+    result = Models.resolve(text, registry.models, usableproviders(ENV, registry))
+    configuredchatgpt(options, registry, result)
+end
+configuredchatgpt(options, registry, result::Models.Resolution) = fallbackchatgpt(options)
+configuredchatgpt(options, registry, result::Models.Resolved) = configuredchatgpt(options, registry, result, get(registry.providers, result.model.provider, nothing))
+configuredchatgpt(options, registry, result, ::Nothing) = fallbackchatgpt(options)
+function configuredchatgpt(options, registry, result, settings::AbstractDict)
+    builtin = providerinfo(result.model.provider)
+    key = configuredkey(result.model.provider, settings, builtin, ENV)
+    configuredchatgpt(options, registry, result, key, builtin)
+end
+configuredchatgpt(options, registry, result, ::Nothing, ::NamedTuple) = fallbackchatgpt(options)
+configuredchatgpt(options, registry, result, key, builtin) = resolveprovider(merge(options, (; modelconfig=registry)), result)
+function fallbackchatgpt(options)
+    if !haskey(ENV, "JF_PROVIDER") && isempty(something(keyvalue(ENV, providerinfos["openai"]), ""))
+        return launchchatgpt(options, ResumeChatGPT())
+    end
+    resolveprovider(options, options.requested_model)
+end
+loginprovider(::ChatGPTAuth, ::Nothing, options) = launchchatgpt(options, ChooseChatGPT())
+function loginprovider(::ChatGPTAuth, selected::AbstractString, options)
+    println(stderr, "--login-chatgpt cannot be combined with --provider.")
+    2
+end
 loginprovider(::OpenRouterAuth, ::Nothing, options) = resolveprovider(options, options.requested_model)
 loginprovider(::OpenRouterAuth, selected::AbstractString, options) = loginprovider(options, get(loginproviders, selected, nothing))
 loginprovider(options, ::NamedTuple) = resolveprovider(options, options.requested_model)
@@ -470,12 +360,12 @@ initial(extensions, snapshot::History.Snapshot) = iszero(snapshot.revision) ? in
 selection(result::ToolFailure) = SessionCatalog.Invalid(result.text)
 selection(result) = result
 
-function terminal!(terminal::Terminal, model, registry::Extensions.Registry, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
-    if codemode
-        mode = CodeMode(Extensions.tools(Extensions.snapshot(registry)))
-        result = Extensions.register!(registry, gensym(:codemode), Extensions.Plugin(; tools=(mode,)))
-        return terminal!(terminal, model, registered(terminal, registry, "codemode", result), false, session, sessiondir, args, sessionname, baseline, rules, excluded)
-    end
+function terminal!(terminal::Terminal, model, registry::Extensions.Registry, ::Type{CodeMode}, session, sessiondir, args, sessionname, baseline, rules, excluded)
+    mode = CodeMode(Extensions.tools(Extensions.snapshot(registry)))
+    result = Extensions.register!(registry, gensym(:codemode), Extensions.Plugin(; tools=(mode,)))
+    terminal!(terminal, model, registered(terminal, registry, "codemode", result), nothing, session, sessiondir, args, sessionname, baseline, rules, excluded)
+end
+function terminal!(terminal::Terminal, model, registry::Extensions.Registry, ::Nothing, session, sessiondir, args, sessionname, baseline, rules, excluded)
     extensions = ToolSelection.select(Extensions.snapshot(registry), baseline, rules, excluded)
     history = selection(attempt(() -> SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr, text -> redact(terminal, text))))
     runsession!(history, terminal, model, extensions, args, sessiondir, sessionname)

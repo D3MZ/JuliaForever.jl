@@ -7,6 +7,7 @@ const dispatchfields = (:type, :kind, :status, :phase, :reason, :role, :finish, 
 const dispatchresultflags = Dict(:Completion => 5, :ToolResult => 3, :ToolReply => 3, :CodeResult => 2)
 const dispatchresultproperties = Dict(:Completion => :done, :CodeResult => :ok)
 const dispatchresultvariables = Set([:iserror, :failed, :failure, :ok, :done, :success, :cancelled, :truncated, :flag])
+const dispatchflagvariables = union(dispatchresultvariables, Set([:exclude, :negate, :enabled]))
 
 function dispatchfield(expression)
     expression isa Symbol && expression in dispatchfields && return expression
@@ -31,7 +32,7 @@ end
 
 const dispatchstatuses = Set(["cancelled", "canceled", "complete", "completed", "done", "end", "error", "failed", "function_call", "idle", "in_progress", "incomplete", "length", "pending", "placed", "queued", "ready", "running", "stop", "success", "timed_out", "timeout", "tool_calls"])
 dispatchstatus(value) = false
-dispatchstatus(value::String) = value in dispatchstatuses
+dispatchstatus(value::String) = value in dispatchstatuses || (startswith(value, "--") && ncodeunits(value) > 2) || occursin(r"^-[A-Za-z]", value)
 dispatchstatus(value::Expr) = value.head in (:tuple, :vect) && any(dispatchstatus, value.args)
 
 function dispatchstatuscheck(expression)
@@ -59,7 +60,7 @@ function dispatchprobe(expression)
     callee in (:isa, :isnothing, :ismissing) && return true
     callee in (:(===), :(!==), :(==), :(!=)) || return false
     any(arg -> arg isa Expr && arg.head == :call && dispatchcallee(first(arg.args)) === :typeof, expression.args[2:end]) && return true
-    any(arg -> arg in (:nothing, :missing) || arg isa Bool, expression.args[2:end])
+    any(arg -> arg in (:nothing, :missing) || arg isa Bool || (arg isa Symbol && arg in dispatchflagvariables), expression.args[2:end])
 end
 
 function dispatchcheck(expression, direct)
@@ -74,6 +75,7 @@ function dispatchcheck(expression, direct)
     direct && callee === :get && last(expression.args) isa Bool && return true
     callee in (:(===), :(!==), :(==), :(!=)) && any(arg -> arg in (:nothing, :missing), expression.args) && return true
     callee in (:(===), :(!==), :(==), :(!=)) && any(arg -> arg isa Bool, expression.args[2:end]) && return true
+    callee in (:(===), :(!==), :(==), :(!=)) && any(arg -> arg isa Symbol && arg in dispatchflagvariables, expression.args[2:end]) && return true
     if callee in (:(===), :(!==), :(==), :(!=), :in, :∈)
         args = expression.args[2:end]
         any(dispatchstatus, args) && return true

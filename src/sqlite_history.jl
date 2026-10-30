@@ -40,6 +40,11 @@ function initialize(db; create=true)
     nothing
 end
 
+openhistory(db, rejected::H.Rejected) = rejected
+openhistory(db, ::Nothing) = H.SQLite(db, ReentrantLock(), H.Open())
+closefailed!(db, ::H.SQLite) = nothing
+closefailed!(db, result) = close(db)
+
 function Base.open(::Type{H.SQLite}, path::AbstractString; create=true)
     path = expanduser(path)
     if !create
@@ -50,7 +55,7 @@ function Base.open(::Type{H.SQLite}, path::AbstractString; create=true)
         header == codeunits("SQLite format 3\0") || return H.Rejected(:history_format)
     end
     db = SQLite.DB(path)
-    opened = false
+    opened = nothing
     try
         SQLite.busy_timeout(db, 5000)
         mode = DBI.execute(db, "PRAGMA journal_mode") do rows
@@ -58,12 +63,9 @@ function Base.open(::Type{H.SQLite}, path::AbstractString; create=true)
         end
         mode in ("delete", "truncate", "persist", "wal") || return H.Rejected(:history_format)
         SQLite.execute(db, "PRAGMA synchronous = EXTRA")
-        result = initialize(db; create)
-        result isa H.Rejected && return result
-        opened = true
-        H.SQLite(db, ReentrantLock(), H.Open())
+        opened = openhistory(db, initialize(db; create))
     finally
-        opened || close(db)
+        closefailed!(db, opened)
     end
 end
 

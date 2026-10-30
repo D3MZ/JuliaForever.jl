@@ -89,10 +89,12 @@ function modelbase(provider::ConfiguredProvider, env)
     definitionvalue(definition(provider.settings, provider.id), "baseUrl", base)
 end
 
-const defaultapis = Dict("openai" => "openai-completions", "openai-responses" => "openai-responses", "openrouter" => "openai-completions", "anthropic" => "anthropic-messages", "google" => "google-generative-ai")
+const builtinapis = IdDict(openai => "openai-completions", responses => "openai-responses", anthropic => "anthropic-messages", google => "google-generative-ai")
 modelapi(provider::ConfiguredProvider) = modelapi(provider.model, provider)
 modelapi(model::Models.Model, provider) = model.api
-modelapi(::Nothing, provider) = get(provider.settings, "api", get(defaultapis, provider.name, ""))
+modelapi(::Nothing, provider) = fallbackapi(provider.builtin, provider.settings)
+fallbackapi(::Nothing, settings) = get(settings, "api", "")
+fallbackapi(info::NamedTuple, settings) = get(builtinapis, info.factory, "")
 
 const modelapis = Dict("openai-completions" => OpenAI, "openai-responses" => OpenAIResponses, "anthropic-messages" => Anthropic, "google-generative-ai" => Google)
 const unsupportedmodelsettings = ("compat", "samplingParams", "samplingParamsByThinkingLevel", "thinkingLevelMap", "promptCache", "inputLimits")

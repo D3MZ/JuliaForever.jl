@@ -5,13 +5,23 @@ using Test, JuliaForever, HTTP, JSON3
 function runcli(workspace, args; input="")
     project = dirname(@__DIR__)
     cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever $args`; dir=workspace)
-    cmd = addenv(cmd, "HOME" => workspace, "JULIA_DEPOT_PATH" => join(DEPOT_PATH, Sys.iswindows() ? ';' : ':'), "PI_CODING_AGENT_DIR" => joinpath(workspace, "agent"), "JF_CUSTOM_KEY" => "fixture-key", "JF_CUSTOM_HEADER" => "fixture-header", "JF_MISSING_KEY" => nothing, "JF_PROVIDER" => nothing, "OPENAI_API_KEY" => nothing, "OPENROUTER_API_KEY" => nothing, "ANTHROPIC_API_KEY" => nothing, "GEMINI_API_KEY" => nothing, "JF_INSTRUCTIONS_DIR" => nothing)
+    cmd = fixtureenv(cmd, workspace)
     mktempdir() do dir
         stdinpath, output, diagnostics = joinpath.((dir,), ("stdin", "output", "diagnostics"))
         write(stdinpath, input)
         process = run(pipeline(ignorestatus(cmd); stdin=stdinpath, stdout=output, stderr=diagnostics))
         (; status=process.exitcode, output=read(output, String), diagnostics=read(diagnostics, String))
     end
+end
+
+function fixtureenv(cmd, workspace)
+    addenv(cmd, "HOME" => workspace, "JULIA_DEPOT_PATH" => join(DEPOT_PATH, Sys.iswindows() ? ';' : ':'), "PI_CODING_AGENT_DIR" => joinpath(workspace, "agent"), "JF_CHATGPT_DIR" => joinpath(workspace, "chatgpt"), "JF_CUSTOM_KEY" => "fixture-key", "JF_CUSTOM_HEADER" => "fixture-header", "JF_MISSING_KEY" => nothing, "JF_PROVIDER" => nothing, "OPENAI_API_KEY" => nothing, "OPENROUTER_API_KEY" => nothing, "ANTHROPIC_API_KEY" => nothing, "GEMINI_API_KEY" => nothing, "JF_INSTRUCTIONS_DIR" => nothing, "TERM" => "dumb")
+end
+
+function runtty(workspace, args)
+    script = joinpath(@__DIR__, "model_overlays_tty.py")
+    cmd = `python3 $script $(first(Base.julia_cmd().exec)) $(dirname(@__DIR__)) $workspace $args`
+    JSON3.read(read(fixtureenv(cmd, workspace)))
 end
 
 function reference(path, mode; provider="fixture", id="alpha")
@@ -107,18 +117,32 @@ end
             if length(requests) == 7
                 @test (requests[end].target, requests[end].google) == ("/google/models/gemini-fixture:streamGenerateContent?alt=sse", "stored-key")
             end
+            unknown = runcli(workspace, ["--provider", "openai-responses", "--model", "unknown-model", "--no-session", "hello"])
+            @test unknown.status == 0 && length(requests) == 8
+            if length(requests) == 8
+                @test (requests[end].target, requests[end].model) == ("/builtin/responses", "unknown-model")
+            end
+            if !Sys.iswindows()
+                before = length(requests)
+                tty = runtty(workspace, ["--model", "fixture/alpha", "--no-session"])
+                @test tty.status == 0 && length(requests) == before + 1
+                if length(requests) == before + 1
+                    @test (requests[end].target, requests[end].model) == ("/model/chat/completions", "alpha")
+                end
+            end
+            count = length(requests)
 
             rm(joinpath(agent, "auth.json"))
             missing = JSON3.read(read(joinpath(agent, "models.json")), Dict{String, Any})
             missing["providers"]["fixture"]["apiKey"] = "\$JF_MISSING_KEY"
             write(joinpath(agent, "models.json"), JSON3.write(missing))
             rejected = runcli(workspace, ["--provider", "fixture", "--model", "alpha", "--no-session", "hello"])
-            @test rejected.status == 2 && length(requests) == 7
+            @test rejected.status == 2 && length(requests) == count
 
             missing["providers"]["fixture"]["apiKey"] = "!touch " * joinpath(workspace, "command-ran")
             write(joinpath(agent, "models.json"), JSON3.write(missing))
             command = runcli(workspace, ["--provider", "fixture", "--model", "alpha", "--no-session", "hello"])
-            @test command.status == 2 && !isfile(joinpath(workspace, "command-ran")) && length(requests) == 7
+            @test command.status == 2 && !isfile(joinpath(workspace, "command-ran")) && length(requests) == count
 
             write(joinpath(agent, "models.json"), "{\"providers\":{\"fixture\":{\"apiKey\":\"sensitive-probe-secret\",broken}}")
             invalid = runcli(workspace, ["--list-models"])
