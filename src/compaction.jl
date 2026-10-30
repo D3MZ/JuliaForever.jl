@@ -121,3 +121,28 @@ function compactcommit!(agent, text, result::Kernel.Applied)
     agent.messages = [convert(Dict{String, Any}, message) for message in result.state.messages]
     text
 end
+
+"Usage-backed automatic compaction threshold for a model's context window."
+struct AutoCompaction
+    context_window::Int
+    reserve_tokens::Int
+    enabled::Val
+end
+
+const autocompactionstates = Dict(true => Val(true), false => Val(false))
+AutoCompaction(context_window, reserve_tokens=16384; enabled=true) = AutoCompaction(context_window, reserve_tokens, autocompactionstates[enabled])
+
+contexttokens(usage::Usage) = iszero(usage.total) ? usage.input + usage.output + usage.cache_read + usage.cache_write : usage.total
+
+"Compact at a caller's safe turn boundary when reported usage exceeds the threshold."
+autocompact!(agent::Agent, usage, settings::AutoCompaction) = autocompact!(agent, usage, settings, Summarizer(agent.provider))
+autocompact!(agent::Agent, ::Nothing, settings::AutoCompaction, summarize) = nothing
+function autocompact!(agent::Agent, usage::Usage, settings::AutoCompaction, summarize)
+    autocompact!(agent, usage, settings, summarize, settings.enabled)
+end
+autocompact!(agent, usage, settings, summarize, ::Val{false}) = nothing
+function autocompact!(agent, usage, settings, summarize, ::Val{true})
+    tokens = contexttokens(usage)
+    tokens > 0 && settings.context_window > 0 && tokens > settings.context_window - settings.reserve_tokens || return nothing
+    compact!(agent, summarize)
+end
