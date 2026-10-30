@@ -229,25 +229,38 @@ taskview(tx::Transaction, id::Integer, result::Integer) = taskview(get(tx, Task,
 taskkey(::Nothing) = nothing
 taskkey(request::AbstractString) = String(request)
 
-function enqueue!(scheduler::Scheduler, conversation::Integer, handler::Handler, phase::Phase, input; request::Union{Nothing, AbstractString}=nothing, maxattempts::Integer=3)
+function enqueue!(scheduler::Scheduler, conversation::Integer, handler::Handler, phase::Phase, input; request::Union{Nothing, AbstractString}=nothing, maxattempts::Integer=3, owner::Union{Nothing, Integer}=nothing)
     maxattempts > 0 || return Rejected(:invalid_attempt_limit)
     initial = checkpoint(encode(phase))
     spec = JSON3.read(JSON3.write(Dict("kind" => name(handler), "input" => input, "initial" => initial, "maxattempts" => maxattempts)), Dict{String, Any})
     key = taskkey(request)
+    lock(scheduler.lock) do
     commit!(scheduler.store) do tx
+        valid = check_owner(tx, conversation, owner)
+        valid === nothing || return valid
         if key !== nothing
             for record in scan(scheduler.store, Task; conversation)
                 view = taskview(record)
                 view === nothing && continue
                 view.request == key || continue
-                return same(record.state["spec"], spec) ? record.id : Rejected(:request_conflict)
+                return same(record.state["spec"], spec) && get(record.state, "owner", nothing) == owner ? record.id : Rejected(:request_conflict)
             end
         end
         id = mint!(tx)
         state = Dict("scheduler" => "JuliaForever.Scheduler/1", "spec" => spec, "request" => key, "checkpoint" => spec["initial"], "phase" => 1, "attempts" => 0, "restarts" => 0, "message" => nothing, "status" => "pending", "cancelled" => false, "result" => nothing, "reason" => nothing)
+        owner === nothing || (state["owner"] = owner)
         put!(tx, Task(id, conversation, state))
     end
+    end
 end
+
+check_owner(tx, conversation, ::Nothing) = nothing
+check_owner(tx, conversation, owner::Integer) = check_owner(conversation, taskview(get(tx, Task, owner)))
+check_owner(conversation, ::Nothing) = Rejected(:owner_missing)
+check_owner(conversation, rejected::Rejected) = rejected
+check_owner(conversation, view::TaskView) = check_owner(conversation, view, view.status)
+check_owner(conversation, view::TaskView, ::Union{Pending, Sleeping, Waiting, Active}) = view.conversation == conversation ? nothing : Rejected(:owner_conversation)
+check_owner(conversation, view::TaskView, ::TaskStatus) = Rejected(:owner_finished)
 
 function reserve!(scheduler::Scheduler, id::Integer, handler::Handler)
     commit!(scheduler.store) do tx
@@ -410,7 +423,9 @@ reaches(tx, status::Waiting, target, seen) = any(id -> reaches(tx, id, target, s
 function cancel!(scheduler::Scheduler, id::Integer)
     lock(scheduler.lock) do
         result = commit!(scheduler.store) do tx
-            cancel!(tx, id, get(tx, Task, id))
+            result = cancel!(tx, id, get(tx, Task, id))
+            cancel_owned!(tx, scan(scheduler.store, Task), id, result)
+            result
         end
         notify(scheduler.changed)
         result
@@ -436,3 +451,17 @@ function cancel!(tx::Transaction, id::Integer, record::Task, view::TaskView, ::A
     record.state["cancelled"] = true
     taskview(tx, id, put!(tx, record))
 end
+
+# Ownership is persisted on task records; old records without an owner are roots.
+cancel_owned!(tx, records, id, result) = nothing
+function cancel_owned!(tx, records, id, view::TaskView)
+    for record in records
+        owner(record.state) == id || continue
+        child = cancel!(tx, record.id, get(tx, Task, record.id))
+        cancel_owned!(tx, records, record.id, child)
+    end
+    nothing
+end
+
+owner(state) = nothing
+owner(state::AbstractDict) = get(state, "owner", nothing)
