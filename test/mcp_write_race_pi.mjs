@@ -1,10 +1,11 @@
 import { access, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const [source, julia, project, holdfile, readyfile, stopfile, timeout] = process.argv.slice(2);
 const { McpClient, StdioTransport } = await import(pathToFileURL(join(source, "packages/mcp/src/index.ts")));
-const transport = new StdioTransport({ command: julia, args: ["--startup-file=no", `--project=${project}`, join(project, "test/mcp_write_race_server.jl"), holdfile, readyfile, stopfile] });
+const server = fileURLToPath(new URL("./mcp_write_race_server.jl", import.meta.url));
+const transport = new StdioTransport({ command: julia, args: ["--startup-file=no", `--project=${project}`, server, holdfile, readyfile, stopfile], stderr: "inherit" });
 const client = new McpClient({ name: "race", version: "1" });
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function waitForFile(path) {
