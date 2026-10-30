@@ -49,6 +49,7 @@ end
             @test MCP.admission!(client, MCP.Closed(), MCP.Open()).kind == :closed
             @test MCP.activate!(client, MCP.Closed()) isa MCP.Failure
             @test client.connection isa MCP.Open
+            @test MCP.send(client, Dict(), MCP.Closed()) isa MCP.Failure
             @test client.shutdown isa MCP.ShutdownReady
             @test !client.shutting
             @test client.state === :open
