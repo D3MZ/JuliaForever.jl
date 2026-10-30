@@ -387,6 +387,42 @@ function exchangeentries(cmd, env)
     end
 end
 
+function exchangethinking(cmd, env)
+    mktempdir() do dir
+        process = open(pipeline(addenv(cmd, env...); stderr=joinpath(dir, "error")), "r+")
+        channel = Channel{Any}(Inf)
+        reader = @async for line in eachline(process)
+            put!(channel, JSON3.read(line, Dict{String, Any}))
+        end
+        observed = Any[]
+        try
+            send(value) = (println(process, JSON3.write(value)); flush(process))
+            send((; id="low", type="set_thinking_level", level="low"))
+            low = receive!(channel, observed, value -> get(value, "id", "") == "low")
+            send((; id="prompt", type="prompt", message="hello"))
+            receive!(channel, observed, value -> get(value, "type", "") == "agent_settled")
+            send((; id="state", type="get_state"))
+            state = receive!(channel, observed, value -> get(value, "id", "") == "state")
+            send((; id="entries", type="get_entries"))
+            entries = receive!(channel, observed, value -> get(value, "id", "") == "entries")
+            send((; id="new", type="new_session"))
+            new = receive!(channel, observed, value -> get(value, "id", "") == "new")
+            send((; id="new-state", type="get_state"))
+            newstate = receive!(channel, observed, value -> get(value, "id", "") == "new-state")
+            send((; id="switch", type="switch_session", sessionPath=state["data"]["sessionFile"]))
+            switched = receive!(channel, observed, value -> get(value, "id", "") == "switch")
+            send((; id="restored", type="get_state"))
+            restored = receive!(channel, observed, value -> get(value, "id", "") == "restored")
+            (; low, state, entries, new, newstate, switched, restored)
+        finally
+            close(process.in)
+            timedwait(() -> process_exited(process), 5) == :ok || kill(process)
+            wait(process)
+            wait(reader)
+        end
+    end
+end
+
 @testset "Pi RPC subprocess protocol" begin
     source = ENV["PI_SOURCE"]
     @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
@@ -400,7 +436,7 @@ end
         project = dirname(@__DIR__)
         oracle = joinpath(@__DIR__, "headless_reference.mjs")
         pi = Cmd(`node $oracle $source --mode rpc --no-session --provider openai --model gpt-4.1-mini --approve`; dir=workspace)
-        jf = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session`; dir=workspace)
+        jf = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session`; dir=workspace)
         env = ["PI_SOURCE" => source, "HOME" => workspace, "PI_CODING_AGENT_DIR" => joinpath(workspace, "agent"), "PI_OFFLINE" => "1", "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "gpt-4.1-mini", "OPENAI_API_KEY" => "fixture", "JF_FIXTURE" => "text", "JF_INSTRUCTIONS_DIR" => workspace]
         commands = [(; id="state", type="get_state"), (; id="messages", type="get_messages"), (; id="commands", type="get_commands"), (; id="clear", type="clear_queue"), (; id="bad", type="no_such_command"), (; id="export-empty", type="export_html", outputPath=joinpath(workspace, "report.html")), (; id="levels", type="get_available_thinking_levels"), (; id="cycle", type="cycle_thinking_level"), (; id="thinking", type="set_thinking_level", level="off"), (; id="steering-mode", type="set_steering_mode", mode="one-at-a-time"), (; id="follow-mode", type="set_follow_up_mode", mode="one-at-a-time"), (; id="compaction", type="set_auto_compaction", enabled=false), (; id="retry", type="set_auto_retry", enabled=false), (; id="abort-retry", type="abort_retry"), (; id="abort-bash", type="abort_bash")]
         input = join(JSON3.write.(commands), "\n") * "\n{\n"
@@ -434,8 +470,12 @@ end
         @test !isempty(pi_metadata.diagnostics) && !isempty(jf_metadata.diagnostics)
 
         cleanenv = Dict("PATH" => ENV["PATH"], "HOME" => workspace, "PI_SOURCE" => source, "PI_CODING_AGENT_DIR" => joinpath(workspace, "empty-agent"), "PI_OFFLINE" => "1", "JF_FIXTURE" => "text", "JF_INSTRUCTIONS_DIR" => workspace, "JULIA_DEPOT_PATH" => get(ENV, "JULIA_DEPOT_PATH", ""))
+        for key in ("SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "TMP", "TEMP")
+            haskey(ENV, key) && (cleanenv[key] = ENV[key])
+        end
+        cleanenv["USERPROFILE"] = workspace
         empty_pi = setenv(Cmd(`node $oracle $source --mode rpc --no-session`; dir=workspace), cleanenv)
-        empty_jf = setenv(Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session`; dir=workspace), cleanenv)
+        empty_jf = setenv(Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session`; dir=workspace), cleanenv)
         empty_input = join(JSON3.write.([(; id="state", type="get_state"), (; id="models", type="get_available_models"), (; id="prompt", type="prompt", message="hello")]), "\n") * "\n"
         pi_unconfigured = runprocess(empty_pi, empty_input, [])
         jf_unconfigured = runprocess(empty_jf, empty_input, [])
@@ -445,21 +485,24 @@ end
         @test get(actual_empty, "models", nothing) == expected_empty["models"]
         @test get(get(actual_empty, "prompt", Dict()), "success", nothing) == expected_empty["prompt"]["success"] == false
 
-        expected_bash = exchangebash(pi, env)
-        actual_bash = exchangebash(jf, env)
-        normalizepath(value) = Dict(key => key == "fullOutputPath" ? "<output>" : item for (key, item) in value)
-        normalreply(reply) = haskey(reply, "data") ? merge(reply, Dict("data" => normalizepath(reply["data"]))) : reply
-        @test normalreply.(actual_bash.replies) == normalreply.(expected_bash.replies)
-        updates(exchange, id) = join(get(event, "delta", "") for event in exchange.observed if get(event, "type", "") == "bash_execution_update" && get(event, "id", "") == id)
-        @test [updates(actual_bash, id) for id in ("bash-ok", "bash-fail", "bash-color", "bash-unicode", "bash-long", "bash-cancel")] == [updates(expected_bash, id) for id in ("bash-ok", "bash-fail", "bash-color", "bash-unicode", "bash-long", "bash-cancel")]
-        bashmessages(exchange) = [normalizepath(Dict(key => value for (key, value) in message if key != "timestamp")) for message in exchange.messages["data"]["messages"]]
-        @test bashmessages(actual_bash) == bashmessages(expected_bash)
-        entrymessages(exchange) = [normalizepath(Dict(key => value for (key, value) in entry["message"] if key != "timestamp")) for entry in get(get(exchange.entries, "data", Dict()), "entries", []) if entry["type"] == "message"]
-        @test entrymessages(actual_bash) == entrymessages(expected_bash)
-        outputpath(exchange) = only(reply["data"]["fullOutputPath"] for reply in exchange.replies if get(reply, "id", "") == "bash-long")
-        @test read(outputpath(actual_bash), String) == read(outputpath(expected_bash), String)
-        rm(outputpath(actual_bash))
-        rm(outputpath(expected_bash))
+        if Sys.isunix()
+            expected_bash = exchangebash(pi, env)
+            actual_bash = exchangebash(jf, env)
+            normalizepath(value) = Dict(key => key == "fullOutputPath" ? "<output>" : item for (key, item) in value)
+            normalreply(reply) = haskey(reply, "data") ? merge(reply, Dict("data" => normalizepath(reply["data"]))) : reply
+            @test normalreply.(actual_bash.replies) == normalreply.(expected_bash.replies)
+            updates(exchange, id) = join(get(event, "delta", "") for event in exchange.observed if get(event, "type", "") == "bash_execution_update" && get(event, "id", "") == id)
+            @test [updates(actual_bash, id) for id in ("bash-ok", "bash-fail", "bash-color", "bash-unicode", "bash-long", "bash-cancel")] == [updates(expected_bash, id) for id in ("bash-ok", "bash-fail", "bash-color", "bash-unicode", "bash-long", "bash-cancel")]
+            bashmessages(exchange) = [normalizepath(Dict(key => value for (key, value) in message if key != "timestamp")) for message in exchange.messages["data"]["messages"]]
+            @test bashmessages(actual_bash) == bashmessages(expected_bash)
+            entrymessages(exchange) = [normalizepath(Dict(key => value for (key, value) in entry["message"] if key != "timestamp")) for entry in get(get(exchange.entries, "data", Dict()), "entries", []) if entry["type"] == "message"]
+            @test entrymessages(actual_bash) == entrymessages(expected_bash)
+            outputpath(exchange) = only(reply["data"]["fullOutputPath"] for reply in exchange.replies if get(reply, "id", "") == "bash-long")
+            @test read(outputpath(actual_bash), String) == read(outputpath(expected_bash), String)
+            rm(outputpath(actual_bash))
+            rm(outputpath(expected_bash))
+
+        end
 
         expected_entries = exchangeentries(pi, env)
         actual_entries = exchangeentries(jf, env)
@@ -484,6 +527,54 @@ end
         @test [get(get(jf_modes, id, Dict()), "success", nothing) for id in ("steer-all", "follow-all", "steer-one", "follow-one")] == [pi_modes[id]["success"] for id in ("steer-all", "follow-all", "steer-one", "follow-one")]
         modeview(response) = (get(get(response, "data", Dict()), "steeringMode", nothing), get(get(response, "data", Dict()), "followUpMode", nothing))
         @test [modeview(get(jf_modes, id, Dict())) for id in ("all-state", "new-state", "one-state")] == [modeview(pi_modes[id]) for id in ("all-state", "new-state", "one-state")]
+
+        pi_thinking = Cmd(`node $oracle $source --mode rpc --no-session --model openai/gpt-5.2:high --approve`; dir=workspace)
+        jf_thinking = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session --model openai/gpt-5.2:high`; dir=workspace)
+        thinking = [(; id="state", type="get_state"), (; id="levels", type="get_available_thinking_levels"), (; id="low", type="set_thinking_level", level="low"), (; id="after", type="get_state"), (; id="cycle", type="cycle_thinking_level"), (; id="cycled", type="get_state")]
+        thinkinginput = join(JSON3.write.(thinking), "\n") * "\n"
+        pi_thought = runprocess(pi_thinking, thinkinginput, modeenv(joinpath(workspace, "pi-thinking")))
+        jf_thought = runprocess(jf_thinking, thinkinginput, modeenv(joinpath(workspace, "jf-thinking")))
+        pi_thoughts, jf_thoughts = responses(pi_thought.output), responses(jf_thought.output)
+        @test jf_thought.status == pi_thought.status == 0
+        @test [get(get(get(jf_thoughts, id, Dict()), "data", Dict()), "thinkingLevel", nothing) for id in ("state", "after", "cycled")] == [pi_thoughts[id]["data"]["thinkingLevel"] for id in ("state", "after", "cycled")]
+        @test [get(jf_thoughts, id, nothing) for id in ("levels", "low", "cycle")] == [pi_thoughts[id] for id in ("levels", "low", "cycle")]
+        thinkingevents(run) = [(item["type"], item["level"]) for item in records(run.output) if get(item, "type", "") == "thinking_level_changed"]
+        @test thinkingevents(jf_thought) == thinkingevents(pi_thought)
+    end
+end
+
+@testset "Pi RPC thinking requests and sessions" begin
+    source = ENV["PI_SOURCE"]
+    requests = Channel{Any}(2)
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        put!(requests, JSON3.read(String(request.body), Dict{String, Any}))
+        delta = JSON3.write((; type="response.output_text.delta", delta="fixture"))
+        done = JSON3.write((; type="response.completed", response=(; status="completed", output=[(; type="message", content=[(; type="output_text", text="fixture")])])))
+        HTTP.Response(200, ["Content-Type" => "text/event-stream"], "data: $delta\n\ndata: $done\n\n")
+    end
+    try
+        mktempdir() do workspace
+            base = "http://$(HTTP.server_addr(server))/v1"
+            piagent = joinpath(workspace, "pi-agent")
+            mkpath(piagent)
+            write(joinpath(piagent, "models.json"), JSON3.write((; providers=(; openai=(; baseUrl=base, apiKey="fixture")))))
+            project = dirname(@__DIR__)
+            oracle = joinpath(@__DIR__, "headless_reference.mjs")
+            pi = Cmd(`node $oracle $source --mode rpc --session-dir $(joinpath(workspace, "pi-sessions")) --model openai/gpt-5.2:high --approve`; dir=workspace)
+            jf = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $(joinpath(workspace, "jf-sessions")) --model openai/gpt-5.2:high`; dir=workspace)
+            env(agentdir) = ["PI_SOURCE" => source, "HOME" => workspace, "PI_CODING_AGENT_DIR" => agentdir, "PI_OFFLINE" => "1", "JF_PROVIDER" => "openai", "OPENAI_API_KEY" => "fixture", "OPENAI_BASE_URL" => base, "JF_INSTRUCTIONS_DIR" => workspace]
+            reference = exchangethinking(pi, env(piagent))
+            actual = exchangethinking(jf, env(joinpath(workspace, "jf-agent")))
+            pi_request, jf_request = take!(requests), take!(requests)
+            @test jf_request["reasoning"] == pi_request["reasoning"] == Dict("effort" => "low", "summary" => "auto")
+            @test [get(result["data"], "thinkingLevel", nothing) for result in (actual.state, actual.newstate, actual.restored)] == [result["data"]["thinkingLevel"] for result in (reference.state, reference.newstate, reference.restored)]
+            thinkingentries(result) = [entry["thinkingLevel"] for entry in result.entries["data"]["entries"] if entry["type"] == "thinking_level_change"]
+            @test thinkingentries(actual) == thinkingentries(reference)
+            @test actual.low == reference.low && actual.new == reference.new && actual.switched == reference.switched
+        end
+    finally
+        close(server)
+        wait(server)
     end
 end
 
@@ -588,36 +679,39 @@ toolview(value) = (; role=value["role"], id=value["toolCallId"], name=value["too
             while isready(requests)
                 take!(requests)
             end
-            pi_bash_dir = joinpath(workspace, "bash-pi")
-            jf_bash_dir = joinpath(workspace, "bash-jf")
-            pi_bash_cmd = Cmd(`node $oracle $source --mode rpc --session-dir $pi_bash_dir --provider openai --model fixture`; dir=workspace)
-            jf_bash_cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $jf_bash_dir`; dir=workspace)
-            providerrequest() = (timedwait(() -> isready(requests), 45) == :ok || error("Provider request did not arrive"); take!(requests))
-            pi_bash = exchangebash(pi_bash_cmd, env; promptafter=true, sessiondir=pi_bash_dir)
-            pi_context = providerrequest()
-            jf_bash = exchangebash(jf_bash_cmd, env; promptafter=true, sessiondir=jf_bash_dir)
-            jf_context = providerrequest()
-            contexttext(message) = get(message, "content", "") isa AbstractString ? message["content"] : join(get(block, "text", "") for block in message["content"])
-            bashcontext(request) = [replace(contexttext(message), r"Full output: [^\]\n]+" => "Full output: <output>") for message in request["messages"] if get(message, "role", "") == "user" && occursin("Ran `", contexttext(message))]
-            @test bashcontext(jf_context) == bashcontext(pi_context)
-            @test length(bashcontext(jf_context)) == 5
-            @test all(!occursin("printf 'bad", text) for text in bashcontext(jf_context))
-            @test !pi_bash.shellfile && !jf_bash.shellfile
-            entryroles(exchange) = [(entry["type"], get(get(entry, "message", Dict()), "role", "")) for entry in get(get(exchange.entries, "data", Dict()), "entries", [])]
-            @test entryroles(jf_bash) == entryroles(pi_bash)
-            pi_bash_resume = Cmd(`node $oracle $source --mode rpc --continue --session-dir $pi_bash_dir --provider openai --model fixture`; dir=workspace)
-            jf_bash_resume = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --continue --session-dir $jf_bash_dir`; dir=workspace)
-            resumeinput = join(JSON3.write.([(; id="messages", type="get_messages"), (; id="entries", type="get_entries")]), "\n") * "\n"
-            pi_restored = runprocess(pi_bash_resume, resumeinput, env)
-            jf_restored = runprocess(jf_bash_resume, resumeinput, env)
-            savedbash(messages) = [Dict(key => value for (key, value) in message if key != "timestamp") for message in messages if get(message, "role", "") == "bashExecution"]
-            @test savedbash(responses(pi_restored.output)["messages"]["data"]["messages"]) == savedbash(pi_bash.messages["data"]["messages"])
-            @test savedbash(responses(jf_restored.output)["messages"]["data"]["messages"]) == savedbash(jf_bash.messages["data"]["messages"])
-            @test responses(pi_restored.output)["entries"]["data"]["entries"] == pi_bash.entries["data"]["entries"]
-            @test responses(jf_restored.output)["entries"]["data"]["entries"] == jf_bash.entries["data"]["entries"]
-            for exchange in (pi_bash, jf_bash), reply in exchange.replies
-                haskey(get(reply, "data", Dict()), "fullOutputPath") && rm(reply["data"]["fullOutputPath"])
+            if Sys.isunix()
+                pi_bash_dir = joinpath(workspace, "bash-pi")
+                jf_bash_dir = joinpath(workspace, "bash-jf")
+                pi_bash_cmd = Cmd(`node $oracle $source --mode rpc --session-dir $pi_bash_dir --provider openai --model fixture`; dir=workspace)
+                jf_bash_cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $jf_bash_dir`; dir=workspace)
+                providerrequest() = (timedwait(() -> isready(requests), 45) == :ok || error("Provider request did not arrive"); take!(requests))
+                pi_bash = exchangebash(pi_bash_cmd, env; promptafter=true, sessiondir=pi_bash_dir)
+                pi_context = providerrequest()
+                jf_bash = exchangebash(jf_bash_cmd, env; promptafter=true, sessiondir=jf_bash_dir)
+                jf_context = providerrequest()
+                contexttext(message) = get(message, "content", "") isa AbstractString ? message["content"] : join(get(block, "text", "") for block in message["content"])
+                bashcontext(request) = [replace(contexttext(message), r"Full output: [^\]\n]+" => "Full output: <output>") for message in request["messages"] if get(message, "role", "") == "user" && occursin("Ran `", contexttext(message))]
+                @test bashcontext(jf_context) == bashcontext(pi_context)
+                @test length(bashcontext(jf_context)) == 5
+                @test all(!occursin("printf 'bad", text) for text in bashcontext(jf_context))
+                @test !pi_bash.shellfile && !jf_bash.shellfile
+                entryroles(exchange) = [(entry["type"], get(get(entry, "message", Dict()), "role", "")) for entry in get(get(exchange.entries, "data", Dict()), "entries", [])]
+                @test entryroles(jf_bash) == entryroles(pi_bash)
+                pi_bash_resume = Cmd(`node $oracle $source --mode rpc --continue --session-dir $pi_bash_dir --provider openai --model fixture`; dir=workspace)
+                jf_bash_resume = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --continue --session-dir $jf_bash_dir`; dir=workspace)
+                resumeinput = join(JSON3.write.([(; id="messages", type="get_messages"), (; id="entries", type="get_entries")]), "\n") * "\n"
+                pi_restored = runprocess(pi_bash_resume, resumeinput, env)
+                jf_restored = runprocess(jf_bash_resume, resumeinput, env)
+                savedbash(messages) = [Dict(key => value for (key, value) in message if key != "timestamp") for message in messages if get(message, "role", "") == "bashExecution"]
+                @test savedbash(responses(pi_restored.output)["messages"]["data"]["messages"]) == savedbash(pi_bash.messages["data"]["messages"])
+                @test savedbash(responses(jf_restored.output)["messages"]["data"]["messages"]) == savedbash(jf_bash.messages["data"]["messages"])
+                @test responses(pi_restored.output)["entries"]["data"]["entries"] == pi_bash.entries["data"]["entries"]
+                @test responses(jf_restored.output)["entries"]["data"]["entries"] == jf_bash.entries["data"]["entries"]
+                for exchange in (pi_bash, jf_bash), reply in exchange.replies
+                    haskey(get(reply, "data", Dict()), "fullOutputPath") && rm(reply["data"]["fullOutputPath"])
+                end
             end
+
             pi_run = exchange(pi_rpc, env)
             jf_run = exchange(jf_rpc, env)
             events(run) = [eventview(event) for event in run.observed if !(event["type"] in ("response", "queue_update", "session_info_changed"))]
@@ -709,13 +803,16 @@ toolview(value) = (; role=value["role"], id=value["toolCallId"], name=value["too
                 queuedids(run) = Set(entry["id"] for entry in run.entries["data"]["entries"] if entry["type"] == "message" && get(entry["message"], "role", "") == "user")
                 @test all(item["entryId"] in queuedids(jf_queue) for item in jf_queue.forks["data"]["messages"])
                 @test all(item["entryId"] in queuedids(pi_queue) for item in pi_queue.forks["data"]["messages"])
-                pi_pending = exchangebashduringturn(pi_rpc, gatedenv, arrivals)
-                jf_pending = exchangebashduringturn(jf_rpc, gatedenv, arrivals)
-                @test jf_pending.reply == pi_pending.reply
-                bashroles(reply) = [message["role"] for message in reply["data"]["messages"]]
-                @test bashroles(jf_pending.before) == bashroles(pi_pending.before)
-                @test bashroles(jf_pending.after) == bashroles(pi_pending.after)
-                @test last(bashroles(jf_pending.after)) == "bashExecution"
+                if Sys.isunix()
+                    pi_pending = exchangebashduringturn(pi_rpc, gatedenv, arrivals)
+                    jf_pending = exchangebashduringturn(jf_rpc, gatedenv, arrivals)
+                    @test jf_pending.reply == pi_pending.reply
+                    bashroles(reply) = [message["role"] for message in reply["data"]["messages"]]
+                    @test bashroles(jf_pending.before) == bashroles(pi_pending.before)
+                    @test bashroles(jf_pending.after) == bashroles(pi_pending.after)
+                    @test last(bashroles(jf_pending.after)) == "bashExecution"
+                end
+
                 pi_abort = exchangeaborted(pi_rpc, gatedenv, arrivals)
                 jf_abort = exchangeaborted(jf_rpc, gatedenv, arrivals)
                 @test jf_abort.reply == pi_abort.reply

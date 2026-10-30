@@ -168,6 +168,7 @@ mutable struct Session{A, T, E, S, P, L}
     id::String
     name::Union{Nothing, String}
     stream::L
+    thinking::String
     lastcontent::Union{Nothing, String}
     steering::Vector{String}
     followups::Vector{String}
@@ -184,7 +185,8 @@ end
 
 function Session(terminal, agent, extensions, store, templates, directory)
     stream = LiveJSON.Stream(terminal, agent, terminal.mode)
-    session = Session(agent, terminal, extensions, store, templates, directory, ReentrantLock(), Dict{String, Any}[], LiveJSON.id(store[]), sessionname(J.SessionCatalog.sessionname(store[])), stream, nothing, String[], String[], nothing, Base.Event(), OpenOutput(), AvailableStatistics(), J.ShellCancellation(), Set{Task}(), J.Conversation.BashMessage[], J.Conversation.SessionRecordValue[], nothing)
+    thinking = initialthinking!(agent, terminal.mode.thinking)
+    session = Session(agent, terminal, extensions, store, templates, directory, ReentrantLock(), Dict{String, Any}[], LiveJSON.id(store[]), sessionname(J.SessionCatalog.sessionname(store[])), stream, thinking, nothing, String[], String[], nothing, Base.Event(), OpenOutput(), AvailableStatistics(), J.ShellCancellation(), Set{Task}(), J.Conversation.BashMessage[], J.Conversation.SessionRecordValue[], nothing)
     restore!(session, agent)
     restoreentries!(session)
     session
@@ -199,6 +201,7 @@ include("headless_history.jl")
 include("headless_commands.jl")
 include("headless_bash.jl")
 include("headless_entries.jl")
+include("headless_thinking.jl")
 
 function write!(session, value)
     lock(session.lock) do
@@ -227,13 +230,13 @@ end
 
 function state(session)
     agent = session.agent
-    active, count, name = lock(session.lock) do
-        (streaming(session.task), length(session.messages), session.name)
+    active, count, name, thinking = lock(session.lock) do
+        (streaming(session.task), length(session.messages), session.name, session.thinking)
     end
     pending, steering, followup = lock(agent.lock) do
         (length(agent.state.steering) + length(agent.state.followups), J.Conversation.queuecode(agent.state.steeringmode), J.Conversation.queuecode(agent.state.followupmode))
     end
-    data = Dict{String, Any}("model" => modelinfo(session), "thinkingLevel" => "off", "isStreaming" => active, "isCompacting" => false, "steeringMode" => steering, "followUpMode" => followup, "sessionId" => session.id, "autoCompactionEnabled" => false, "messageCount" => count, "pendingMessageCount" => pending)
+    data = Dict{String, Any}("model" => modelinfo(session), "thinkingLevel" => thinking, "isStreaming" => active, "isCompacting" => false, "steeringMode" => steering, "followUpMode" => followup, "sessionId" => session.id, "autoCompactionEnabled" => false, "messageCount" => count, "pendingMessageCount" => pending)
     optional!(data, "sessionName", name)
     optional!(data, "sessionFile", sessionfile(session.store[]))
 end
@@ -259,15 +262,11 @@ availablemodels(::J.UnconfiguredProvider) = availablemodels(J.usableproviders(EN
 availablemodels(providers::Set{String}) = isempty(providers) ? Success((; data=(; models=NamedTuple[],))) : Failure("Model listing is not yet available over RPC")
 availablemodels(provider) = Failure("Model listing is not yet available over RPC")
 handle!(session, ::GetSessionStats) = lock(() -> statistics(session, session.statistics), session.lock)
-handle!(session, ::GetThinkingLevels) = Success((; data=(; levels=["off"])))
-handle!(session, ::CycleThinking) = Success((; data=nothing))
 handle!(session, ::AbortRetry) = Success()
-handle!(session, command::SetThinking) = get(thinkingoptions, command.level, Failure("Thinking levels are not available"))
 handle!(session, command::SetSteeringMode) = setqueuemode!(session, J.steeringmode!, get(deliverymodes, command.mode, nothing))
 handle!(session, command::SetFollowUpMode) = setqueuemode!(session, J.followupmode!, get(deliverymodes, command.mode, nothing))
 handle!(session, command::SetAutoCompaction) = get(compactionoptions, command.enabled, Failure("Automatic compaction is not available in headless mode"))
 handle!(session, command::SetAutoRetry) = get(retryoptions, command.enabled, Failure("Automatic retry is not available"))
-const thinkingoptions = Dict("off" => Success())
 const deliverymodes = Dict("one-at-a-time" => :one_at_a_time, "all" => :all)
 const compactionoptions = Dict(false => Success())
 const retryoptions = Dict(false => Success())
@@ -316,6 +315,7 @@ function rebind!(session, agent, history)
     lock(session.lock) do
         copyqueuemodes!(session.agent, agent)
         session.agent = agent
+        session.thinking = initialthinking!(agent, session.terminal.mode.thinking)
         session.store[] = history
         session.id = J.LiveJSON.id(history)
         session.name = sessionname(J.SessionCatalog.sessionname(history))

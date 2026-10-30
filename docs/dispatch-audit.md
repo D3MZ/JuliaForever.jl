@@ -197,3 +197,5 @@ SQLite open mode is selected at the keyword boundary; existing-only and create p
 Integrating queue modes with RPC session records yields 1,573 branch entries. The combined inventory adds two repeated revision checks beyond the parents' multiset union and retires 17 entries.
 
 RPC queue-mode commands dispatch to the shared queue policies and add no branch or dispatch entries.
+
+RPC thinking controls add nine branch entries, from 1,572 to 1,581, for mapped-level collection, clamping, cycling, and restoration. Provider and history alternatives dispatch on their concrete types.

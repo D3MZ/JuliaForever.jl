@@ -368,7 +368,8 @@ function launchprovider(options)
     model = acquire(auth, info, requested_model, outputmode)
     model = applythinking(model, get(options, :thinking, nothing))
     Base.ScopedValues.with(tuimode => LiveTerminal.withprovider(options.tui, name)) do
-        launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, provider(outputmode, name))
+        mode = thinkingmode(provider(outputmode, name), get(options, :requested_thinking, nothing))
+        launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode)
     end
 end
 applythinking(model, ::Nothing) = model

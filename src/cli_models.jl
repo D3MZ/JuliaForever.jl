@@ -71,7 +71,7 @@ selectthinking(options, model, thinking, ::Nothing) = unsupportedthinking()
 function selectthinking(options, model, thinking, levels::AbstractDict)
     effort = get(levels, thinking, nothing)
     selected = get(options.modelconfig.providers, model.provider, nothing)
-    configuredthinking(options, model, effort, selected, thinkingwire(levels))
+    configuredthinking(merge(options, (; requested_thinking=String(thinking))), model, effort, selected, thinkingwire(levels))
 end
 configuredthinking(options, model, effort, selected::AbstractDict, wire) = unsupportedthinking()
 configuredthinking(options, model, effort, ::Nothing, wire) = selectthinking(options, model, effort, Models.combine(Models.check(model.provider == "openai" && model.api == "openai-responses" && model.reasoning), supportedthinking(wire, effort)))

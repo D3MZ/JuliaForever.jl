@@ -2,9 +2,9 @@ function restoreentries!(session)
     empty!(session.entries)
     foreach(event -> collectentry!(session.entries, event), getfield(session.agent, :events))
     session.entryleaf = entryleaf(session.entries)
-    isempty(session.entries) || return nothing
+    isempty(session.entries) || return restorethinking!(session, session.terminal.mode.thinking)
     initialmodel!(session, session.agent.provider)
-    entrysaved!(session, recordentry!(session, J.Conversation.ThinkingEntry("off")))
+    entrysaved!(session, recordentry!(session, J.Conversation.ThinkingEntry(session.thinking)))
     nothing
 end
 
