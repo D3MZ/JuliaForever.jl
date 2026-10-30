@@ -282,9 +282,10 @@ function fuzzy(state::Tuple, dir, query, display, parts, active)
     items
 end
 
-function files(before, root; force=false, home=homedir(), active=() -> Searching())
+files(before, root; force=false, home=homedir(), active=() -> Searching()) = files(before, root, requests[force]; home, active)
+function files(before, root, request::FileRequest; home=homedir(), active=() -> Searching())
     prefix = atprefix(before)
-    files(prefix, before, root, requests[force], home, active)
+    files(prefix, before, root, request, home, active)
 end
 function files(prefix::AbstractString, before, root, request::FileRequest, home, active)
     items = fuzzy(prefix, root, home, active)
@@ -319,8 +320,6 @@ end
 remainingtext(after, item, ::Unquoted) = after
 remainingtext(after, item, ::Quoted) = endswith(item.value, '"') && startswith(after, '"') ? after[nextind(after, firstindex(after)):end] : after
 
-forced(::Automatic) = false
-forced(::Union{Forced, Explicit}) = true
 followup(::Automatic) = Automatic()
 followup(::Union{Forced, Explicit}) = Forced()
 delay(::Automatic) = sleep(0.02)

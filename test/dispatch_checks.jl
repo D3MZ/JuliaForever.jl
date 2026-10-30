@@ -160,6 +160,10 @@ function dispatchchecks!(checks, expression, condition=false, direct=true, predi
     elseif expression.head in (:&&, :||)
         dispatchchecks!(checks, first(expression.args), true, true, predicates)
         dispatchchecks!(checks, last(expression.args), condition, true, predicates)
+    elseif expression.head == :kw && length(expression.args) == 2
+        value = last(expression.args)
+        boolkeyword = value isa Expr && value.head == :call && dispatchcallee(first(value.args)) in predicates
+        dispatchchecks!(checks, value, boolkeyword, false, predicates)
     elseif expression.head == :call && first(expression.args) === :!
         dispatchchecks!(checks, expression.args[2], condition, direct, predicates)
     elseif expression.head == :call && haskey(dispatchresultflags, dispatchcallee(first(expression.args)))
