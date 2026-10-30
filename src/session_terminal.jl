@@ -43,6 +43,23 @@ function reload!(terminal, agent, history, load)
     reloadstart!(terminal, agent, history, load, startturn!(agent))
 end
 
+function reload!(terminal, agent, history, resources::Skills.Resources)
+    loaded = Ref{Union{Nothing, Vector{Skills.Skill}}}(nothing)
+    result = reload!(terminal, agent, history, () -> begin
+        skills = Skills.load(pwd())
+        loaded[] = skills
+        Skills.render(skills)
+    end)
+    updateskills!(resources, loaded[], result[3])
+    result
+end
+
+updateskills!(::Nothing, skills, status) = nothing
+updateskills!(resources::Skills.Resources, ::Nothing, status) = nothing
+updateskills!(resources::Skills.Resources, skills::Vector{Skills.Skill}, status) = get(skillupdates, status, skipupdate!)(resources, skills)
+skipupdate!(resources, skills) = nothing
+const skillupdates = Dict(0 => Skills.refresh!)
+
 function reloadstart!(terminal, agent, history, load, ::Nothing)
     println(terminal.diagnostics, "Wait for the current response to finish before reloading.")
     flush(terminal.diagnostics)
@@ -154,6 +171,9 @@ command!(::CloneCommand, terminal, agent, history, input, directory, snapshot) =
 command!(::ForkCommand, terminal, agent, history, input, directory, snapshot) = forkcommand!(terminal, agent, history, input, directory, snapshot, identity)
 command!(command::TerminalCommand, terminal, agent, history, input, directory, snapshot, draft::Ref{String}) = command!(command, terminal, agent, history, input, directory, snapshot)
 command!(::ForkCommand, terminal, agent, history, input, directory, snapshot, draft::Ref{String}) = fork!(terminal, agent, history, input, directory, draft)
+command!(command::TerminalCommand, terminal, agent, history, input, directory, snapshot, draft::Ref{String}, resources) = command!(command, terminal, agent, history, input, directory, snapshot, draft)
+command!(::ReloadCommand, terminal, agent, history, input, directory, snapshot, draft::Ref{String}, resources::Skills.Resources) = reload!(terminal, agent, history, resources)
+command!(::NewCommand, terminal, agent, history, input, directory, snapshot, draft::Ref{String}, resources::Skills.Resources) = new!(terminal, agent, history, directory, snapshot, resources)
 command!(::ShowName, terminal, agent, history, input, directory, snapshot) = showname!(terminal, agent, history, SessionCatalog.sessionname(history))
 command!(command::SetName, terminal, agent, history, input, directory, snapshot) = setname!(terminal, agent, history, command.name, name!(agent, command.name))
 
@@ -181,27 +201,36 @@ fresh(::History.Memory, directory) = History.Tree(History.Memory())
 fresh(::History.Tree{<:History.Memory}, directory) = History.Tree(History.Memory())
 fresh(history::History.Store, directory) = SessionCatalog.new(directory, pwd())
 
-new!(terminal::Terminal, agent::Agent, history, directory, snapshot) = newchecked!(terminal, agent, history, directory, snapshot, sourcecheck!(terminal, agent, history))
-newchecked!(terminal, agent, history, directory, snapshot, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
+new!(terminal::Terminal, agent::Agent, history, directory, snapshot) = new!(terminal, agent, history, directory, snapshot, nothing)
+new!(terminal::Terminal, agent::Agent, history, directory, snapshot, resources) = newchecked!(terminal, agent, history, directory, snapshot, resources, sourcecheck!(terminal, agent, history))
+newchecked!(terminal, agent, history, directory, snapshot, resources, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
 
-function newchecked!(terminal, agent, history, directory, snapshot, ::Nothing)
+function newchecked!(terminal, agent, history, directory, snapshot, resources, ::Nothing)
     selected = fresh(history, directory)
     pending = Ref{Union{Nothing, History.Tree}}(selected)
+    loaded = Ref{Union{Nothing, Vector{Skills.Skill}}}(nothing)
     try
-        replacement = attempt(() -> Agent(agent.provider, agent.tools, initial(agent, snapshot); history=selected))
-        newresult!(terminal, agent, history, selected, replacement, pending)
+        replacement = attempt(() -> begin
+            skills = Skills.load(pwd())
+            loaded[] = skills
+            Agent(agent.provider, agent.tools, initial(agent, snapshot, skills); history=selected)
+        end)
+        result = newresult!(terminal, agent, history, selected, replacement, pending)
+        updateskills!(resources, loaded[], result[3])
+        result
     finally
         release!(history, pending[])
     end
 end
 
-initial(agent::Agent, snapshot::Extensions.Snapshot) = initial(snapshot)
-function initial(agent::Agent, ::Nothing)
+initial(agent::Agent, snapshot::Extensions.Snapshot, skills::Vector{Skills.Skill}) = initial(snapshot, skills)
+initial(agent::Agent, ::Nothing) = initial(agent, nothing, Skills.load(pwd()))
+function initial(agent::Agent, ::Nothing, skills::Vector{Skills.Skill})
     cwd = pwd()
     files = Instructions.load(cwd; agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing))
     prompt = context(cwd, collect(values(agent.tools)), files)
     messages = Conversation.Message[Conversation.RawMessage(Dict("role" => "system", "content" => prompt))]
-    Skills.appendprompt!(messages, Skills.render(Skills.load(cwd)))
+    Skills.appendprompt!(messages, Skills.render(skills))
     messages
 end
 

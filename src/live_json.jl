@@ -1,7 +1,7 @@
 module LiveJSON
 
 using JSON3, Dates, Random, SHA
-import ..JuliaForever: Terminal, JSONMode, Agent, OpenAI, OpenAIResponses, Anthropic, Google, Usage, Completion, Finished, Unfinished, Truncated, History, SessionCatalog, Extensions, FileArguments, Prompts, Image, ToolResult, ToolFailure, ShellUpdate, PendingInputs, providercomplete!, run!, runmode!, starttemplates!, request!, respond!, failures!, result!, redact, attempt, fileinput, fileprompt, iserror
+import ..JuliaForever: Terminal, JSONMode, Agent, OpenAI, OpenAIResponses, Anthropic, Google, Usage, Completion, Finished, Unfinished, Truncated, History, SessionCatalog, Extensions, FileArguments, Prompts, Skills, Image, ToolResult, ToolFailure, ShellUpdate, PendingInputs, providercomplete!, run!, runmode!, starttemplates!, request!, respond!, failures!, result!, redact, attempt, fileinput, fileprompt, iserror
 
 function write!(io, event)
     JSON3.write(io, event)
@@ -417,7 +417,7 @@ settled!(stream, value) = (write!(stream.io, (; type="agent_settled", aborted=fa
 settled!(stream, value::Symbol) = (write!(stream.io, (; type="agent_settled", aborted=get(Dict(:cancelled => true), value, false))); 0)
 settled!(stream, rejected::History.Rejected) = result!(stream.terminal, rejected)
 
-function starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates::AbstractDict, ::JSONMode)
+function starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates::Union{AbstractDict, Skills.Resources}, ::JSONMode)
     parsed = FileArguments.parse(args)
     files = attempt(() -> FileArguments.load(parsed.files, pwd()))
     startjson!(terminal, agent, extensions, store, templates, parsed.messages, files)

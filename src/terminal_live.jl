@@ -77,12 +77,12 @@ function Base.empty!(queue::DeferredQueue)
     queue
 end
 
-mutable struct Session
+mutable struct Session{T}
     editor::TerminalEditor.Editor
     physical::IO
     agent::JuliaForever.Agent
     terminal::JuliaForever.Terminal
-    templates::Dict{String, String}
+    templates::T
     extensions::Union{Nothing, JuliaForever.Extensions.Snapshot}
     activity::Activity
     visibility::Visibility
@@ -413,7 +413,7 @@ function loop!(terminal, agent, extensions, history, input::Base.TTY, directory,
             waittask(session.task)
             line == "/exit" && break
             draft = Ref(session.draft)
-            agent, selected, result = JuliaForever.command!(JuliaForever.terminalcommand(line), terminal, session.agent, history[], input, directory, extensions, draft)
+            agent, selected, result = JuliaForever.command!(JuliaForever.terminalcommand(line), terminal, session.agent, history[], input, directory, extensions, draft, session.templates)
             history[] = selected
             session.agent = agent
             session.status = max(session.status, result)

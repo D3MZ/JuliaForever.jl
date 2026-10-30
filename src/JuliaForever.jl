@@ -434,17 +434,15 @@ function abandonrequest!(session::SessionCatalog.Explicit, ::APIKeyAuth, ::Nothi
 end
 terminal!(terminal::Terminal, model, registry::Integer, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded) = registry
 
-function initial(extensions)
+initial(extensions) = initial(extensions, Skills.load(pwd()))
+function initial(extensions, skills::Vector{Skills.Skill})
     cwd = pwd()
     files = Instructions.load(cwd; agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing))
     prompt = context(cwd, Extensions.tools(extensions), files)
     messages = Conversation.Message[Conversation.RawMessage(Dict("role" => "system", "content" => prompt))]
-    Skills.appendprompt!(messages, Skills.render(Skills.load(cwd)))
+    Skills.appendprompt!(messages, Skills.render(skills))
     messages
 end
-
-initial(extensions, ::Nothing) = initial(extensions)
-initial(extensions, snapshot::History.Snapshot) = iszero(snapshot.revision) ? initial(extensions) : Dict{String, Any}[]
 
 selection(result::ToolFailure) = SessionCatalog.Invalid(result.text)
 selection(result) = result
@@ -492,7 +490,13 @@ end
 sessionsnapshot(::Nothing) = nothing
 sessionsnapshot(history::History.Store) = History.snapshot(history)
 preparesession!(rejected::History.Rejected, terminal, model, extensions, store, args, sessiondir, sessionname) = result!(terminal, rejected)
-preparesession!(snapshot, terminal, model, extensions, store, args, sessiondir, sessionname) = startsession!(terminal, model, extensions, store, args, sessiondir, sessionname, attempt(() -> initial(extensions, snapshot)))
+preparesession!(snapshot, terminal, model, extensions, store, args, sessiondir, sessionname) = startsession!(terminal, model, extensions, store, args, sessiondir, sessionname, attempt(() -> startup(extensions, snapshot)))
+
+function startup(extensions, ::Nothing)
+    skills = Skills.load(pwd())
+    (; messages=initial(extensions, skills), skills)
+end
+startup(extensions, snapshot::History.Snapshot) = iszero(snapshot.revision) ? startup(extensions, nothing) : (; messages=Dict{String, Any}[], skills=nothing)
 
 closehistory!(::Nothing) = nothing
 closehistory!(history::History.Store) = close(history)
@@ -503,37 +507,39 @@ function startsession!(terminal, model, extensions, store, args, sessiondir, ses
     1
 end
 
-function startsession!(terminal, model, extensions, store, args, sessiondir, sessionname, messages)
-    agent = Agent(model, extensions, messages; history=store[])
-    startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname)
+function startsession!(terminal, model, extensions, store, args, sessiondir, sessionname, prepared::NamedTuple)
+    agent = Agent(model, extensions, prepared.messages; history=store[])
+    startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, prepared.skills)
 end
 
-startagent!(terminal, rejected::History.Rejected, extensions, store, args, sessiondir, sessionname) = result!(terminal, rejected)
-startagent!(terminal, agent::Agent, extensions, store, args, sessiondir, sessionname) = startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, agent.fault)
-startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, fault::History.Rejected) = sessionfault!(terminal, fault, store[])
-function startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, ::Nothing)
-    startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, checkqueues!(terminal, agent.state, store[]))
+startagent!(terminal, rejected::History.Rejected, extensions, store, args, sessiondir, sessionname, skills) = result!(terminal, rejected)
+startagent!(terminal, agent::Agent, extensions, store, args, sessiondir, sessionname, skills) = startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, agent.fault)
+startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, fault::History.Rejected) = sessionfault!(terminal, fault, store[])
+function startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, ::Nothing)
+    startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, checkqueues!(terminal, agent.state, store[]))
 end
 
-startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, ::PendingInputs) = 1
+startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, ::PendingInputs) = 1
 
-startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, ::Nothing) = startnamed!(terminal, agent, extensions, store, args, sessiondir, startname!(agent, sessionname))
+startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, skills, ::Nothing) = startnamed!(terminal, agent, extensions, store, args, sessiondir, skills, startname!(agent, sessionname))
 startname!(agent, ::Nothing) = nothing
 startname!(agent, name::String) = name!(agent, name)
-startnamed!(terminal, agent, extensions, store, args, sessiondir, rejected::History.Rejected) = result!(terminal, rejected)
-startnamed!(terminal, agent, extensions, store, args, sessiondir, ::Nothing) = starttemplates!(terminal, agent, extensions, store, args, sessiondir, attempt(() -> Prompts.load(pwd())))
+startnamed!(terminal, agent, extensions, store, args, sessiondir, skills, rejected::History.Rejected) = result!(terminal, rejected)
+startnamed!(terminal, agent, extensions, store, args, sessiondir, skills, ::Nothing) = starttemplates!(terminal, agent, extensions, store, args, sessiondir, attempt(() -> Skills.Resources(Prompts.load(pwd()), currentskills(skills))))
+currentskills(::Nothing) = Skills.load(pwd())
+currentskills(skills::Vector{Skills.Skill}) = skills
 
 function starttemplates!(terminal, agent, extensions, store, args, sessiondir, failure::ToolFailure)
-    println(terminal.diagnostics, "Failed to load prompt templates: ", redact(terminal, failure.text))
+    println(terminal.diagnostics, "Failed to load prompt templates or skills: ", redact(terminal, failure.text))
     flush(terminal.diagnostics)
     1
 end
 
-function starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates::AbstractDict)
+function starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates::Union{AbstractDict, Skills.Resources})
     starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates, terminal.mode)
 end
 
-function starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates::AbstractDict, ::TextMode)
+function starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates::Union{AbstractDict, Skills.Resources}, ::TextMode)
     parsed = FileArguments.parse(args)
     startfiles!(terminal, agent, extensions, store, sessiondir, templates, parsed.messages, parsed.files)
 end
@@ -607,6 +613,7 @@ end
 
 readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, ::Nothing) = (agent, history, run!(terminal, agent, Prompts.expand(line, templates), extensions))
 readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, ::ForkCommand) = forkcommand!(terminal, agent, history, input, sessiondir, extensions, text -> Prompts.expand(text, templates))
+readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, command::Union{ReloadCommand, NewCommand}) = command!(command, terminal, agent, history, input, sessiondir, extensions, Ref(""), templates)
 readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, command::TerminalCommand) = command!(command, terminal, agent, history, input, sessiondir, extensions)
 
 include("live_json.jl")
