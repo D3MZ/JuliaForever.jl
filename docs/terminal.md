@@ -1,5 +1,7 @@
 # Terminal
 
+For JSONL output and subprocess control, see [headless modes](headless.md).
+
 The `Terminal` compatibility properties `streamed` and `lineopen` remain Boolean and writable. Its internal presentation and line fields now use typed states, so direct field access and old Julia `Serialization` layouts are not compatible.
 
 The `jf` command accepts a prompt in its arguments. With no prompt, an interactive terminal uses Julia's line editor: Enter sends; Ctrl+J, Shift+Enter where supported, or a trailing backslash followed by Enter adds a line; and arrow keys edit or recall prompts. Bracketed paste preserves multiline text. Ctrl+C clears the editor; pressing it again exits. Ctrl+D deletes forward, or exits when the editor is empty. The banner and editor are written to stderr. Piped input reads one message per line without a banner; `/exit` ends either session. The same agent and conversation are retained between messages.

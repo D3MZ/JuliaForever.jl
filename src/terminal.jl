@@ -1,6 +1,12 @@
 abstract type TerminalPresentation end
 struct Unstreamed <: TerminalPresentation end
 struct Streamed <: TerminalPresentation end
+abstract type TerminalMode end
+struct TextMode <: TerminalMode end
+struct JSONMode <: TerminalMode end
+struct RPCMode <: TerminalMode end
+struct InvalidMode <: TerminalMode end
+const terminalmodes = Dict("text" => TextMode(), "json" => JSONMode(), "rpc" => RPCMode())
 abstract type TerminalLine end
 struct LineClosed <: TerminalLine end
 struct LineOpen <: TerminalLine end
@@ -12,16 +18,18 @@ streamed(::Streamed) = true
 lineopen(::LineClosed) = false
 lineopen(::LineOpen) = true
 
-mutable struct Terminal{O<:IO, E<:IO}
+mutable struct Terminal{O<:IO, E<:IO, M<:TerminalMode}
     output::O
     diagnostics::E
     secrets::Vector{String}
     presentation::TerminalPresentation
     line::TerminalLine
+    mode::M
+    provider::String
 end
 
-Terminal(output, diagnostics, secrets) = Terminal(output, diagnostics, secrets, Unstreamed(), LineClosed())
-Terminal(output, diagnostics, secrets, streamed::Bool, lineopen::Bool) = Terminal(output, diagnostics, secrets, streamstate(streamed), linestate(lineopen))
+Terminal(output, diagnostics, secrets; mode=TextMode(), provider="openai") = Terminal(output, diagnostics, secrets, Unstreamed(), LineClosed(), mode, provider)
+Terminal(output, diagnostics, secrets, streamed::Bool, lineopen::Bool) = Terminal(output, diagnostics, secrets, streamstate(streamed), linestate(lineopen), TextMode(), "openai")
 
 function Base.getproperty(terminal::Terminal, name::Symbol)
     name === :streamed && return streamed(getfield(terminal, :presentation))
@@ -34,7 +42,7 @@ function Base.setproperty!(terminal::Terminal, name::Symbol, value)
     name === :lineopen && return (setfield!(terminal, :line, linestate(convert(Bool, value))); value)
     setfield!(terminal, name, convert(fieldtype(typeof(terminal), name), value))
 end
-Base.propertynames(::Terminal, private::Bool=false) = (:output, :diagnostics, :secrets, :streamed, :lineopen, :presentation, :line)
+Base.propertynames(::Terminal, private::Bool=false) = (:output, :diagnostics, :secrets, :streamed, :lineopen, :presentation, :line, :mode, :provider)
 
 # A following hexadecimal or octal digit can change the last escape.
 forms(secret) = (chop(repr(secret * "0"); head=1, tail=2), chop(repr(secret); head=1, tail=1), secret)

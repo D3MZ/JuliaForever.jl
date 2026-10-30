@@ -113,6 +113,7 @@ include("provider_error_extra.jl")
 include("estimates.jl")
 
 if haskey(ENV, "PI_SOURCE")
+    include("headless_differential.jl")
     include("estimates_differential.jl")
     include("prompt_differential.jl")
     include("skills_differential.jl")

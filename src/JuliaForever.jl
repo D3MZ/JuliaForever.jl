@@ -44,6 +44,7 @@ include("tree_terminal.jl")
 include("session_terminal.jl")
 include("terminal_live.jl")
 include("mcp.jl")
+include("headless.jl")
 
 missingmodel(env, info, ::Nothing) = isempty(strip(get(env, info.model, ""))) ? [info.model] : String[]
 missingmodel(env, info, model::AbstractString) = isempty(strip(model)) ? [info.model] : String[]
@@ -149,13 +150,28 @@ function acquire(auth::OpenRouterAuth, info::NamedTuple, model)
     login!(login, code, info, model)
 end
 
-launch(status::Integer, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded) = status
+launch(status::Integer, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode, providername) = status
 
-function launch(model::Union{OpenAI, OpenAIResponses, Anthropic, Google}, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
-    tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), PowerShell(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
-    terminal = Terminal(stdout, stderr, [model.key])
-    registry = plugins(terminal, tools, packages, environments)
-    Base.invokelatest(terminal!, terminal, model, registry, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
+function launch(model::Union{OpenAI, OpenAIResponses, Anthropic, Google}, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode, providername)
+    withoutput(mode) do output
+        tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), PowerShell(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
+        terminal = Terminal(output, stderr, [model.key]; mode, provider=providername)
+        registry = plugins(terminal, tools, packages, environments)
+        Base.invokelatest(terminal!, terminal, model, registry, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
+    end
+end
+
+withoutput(f, ::TextMode) = f(stdout)
+function withoutput(f, ::Union{JSONMode, RPCMode})
+    descriptor = Base.dup(Base.RawFD(1))
+    output = Base.fdio(reinterpret(Int32, descriptor), true)
+    try
+        redirect_stdout(stderr) do
+            f(output)
+        end
+    finally
+        close(output)
+    end
 end
 
 pluginfailure!(terminal::Terminal, name, exception::InterruptException) = failure!(terminal, exception)
@@ -209,15 +225,27 @@ end
 registered(terminal, registry, name, ::Bool) = registry
 registered(terminal, registry, name, result::Extensions.Rejected) = pluginfailure!(terminal, name, result)
 
-function help!()
-    println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
-    println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --fork PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
-    println("Tools: --tools (-t) LIST, --exclude-tools (-xt) LIST, --no-builtin-tools (-nbt), --no-tools (-nt).")
-    println("Use @PATH to include a text file or image in the initial prompt.")
+function help!(io::IO=stdout)
+    println(io, "jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
+    println(io, "Sessions: --continue (-c), --resume (-r), --session PATH|ID, --fork PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
+    println(io, "Tools: --tools (-t) LIST, --exclude-tools (-xt) LIST, --no-builtin-tools (-nbt), --no-tools (-nt).")
+    println(io, "Modes: --mode text, --mode json, --mode rpc.")
+    println(io, "Use @PATH to include a text file or image in the initial prompt.")
     0
 end
 
+function helpmode(args)
+    stop = something(findfirst(==("--"), args), length(args) + 1)
+    index = findlast(==("--mode"), @view args[1:stop-1])
+    helpmode(args, index, stop)
+end
+helpmode(args, ::Nothing, stop) = TextMode()
+helpmode(args, index::Int, stop) = index + 1 < stop ? get(terminalmodes, args[index+1], InvalidMode()) : InvalidMode()
+helpstream(::TextMode) = stdout
+helpstream(::Union{JSONMode, RPCMode, InvalidMode}) = stderr
+
 function (@main)(args)
+    helpoutput = helpstream(helpmode(args))
     codemode = false
     packages = String[]
     environments = String[]
@@ -232,15 +260,23 @@ function (@main)(args)
     baseline = ToolSelection.Defaults()
     rules = ToolSelection.Inherit()
     excluded = Regex[]
+    mode = TextMode()
     while !isempty(args)
         if first(args) == "--"
             append!(positional, args)
             break
         elseif first(args) in ("--help", "-h")
-            return help!()
+            return help!(helpoutput)
         elseif first(args) == "--codemode"
             codemode = true
             args = args[2:end]
+        elseif first(args) == "--mode"
+            if length(args) < 2
+                println(stderr, "--mode requires text, json, or rpc.")
+                return 2
+            end
+            mode = get(terminalmodes, args[2], InvalidMode())
+            args = args[3:end]
         elseif first(args) in ("--no-tools", "-nt")
             baseline = ToolSelection.baseline(baseline, ToolSelection.NoTools())
             args = args[2:end]
@@ -338,8 +374,30 @@ function (@main)(args)
         end
     end
     args = positional
-    options = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
-    selectedtools(action, options, rules)
+    options = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode)
+    selectedmode(action, options, mode)
+end
+
+selectedmode(action, options, ::TextMode) = selectedtools(action, options, options.rules)
+selectedmode(action, options, ::Union{JSONMode, RPCMode}) = headlessaction(action, options)
+headlessaction(::Nothing, options) = headlessauth(nothing, options, options.auth)
+function headlessaction(action, options)
+    println(stderr, "History inspection and abandonment are unavailable in headless modes.")
+    2
+end
+headlessauth(action, options, ::APIKeyAuth) = headlesssession(action, options, options.session)
+function headlessauth(action, options, ::OpenRouterAuth)
+    println(stderr, "Interactive login is unavailable in headless modes.")
+    2
+end
+headlesssession(action, options, request::SessionCatalog.Request) = selectedtools(action, options, options.rules)
+function headlesssession(action, options, ::SessionCatalog.Picker)
+    println(stderr, "Interactive session selection is unavailable in headless modes.")
+    2
+end
+function selectedmode(action, options, ::InvalidMode)
+    println(stderr, "--mode requires text, json, or rpc.")
+    2
 end
 
 selectedtools(action, options, ::ToolSelection.Rule) = selectedprovider(action, options, options.selected)
@@ -365,10 +423,11 @@ function loginprovider(options, ::Nothing)
     2
 end
 function launchprovider(options)
-    (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded) = options
-    info = providerinfo(providername(auth, selected))
+    (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode) = options
+    name = providername(auth, selected)
+    info = providerinfo(name)
     model = acquire(auth, info, requested_model)
-    launch(model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
+    launch(model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode, name)
 end
 historyaction(::HistoryInspection, options) = inspectrequest!(options.session, options.auth, options.sessionname, options.args)
 historyaction(::HistoryConflict, options) = invalidinspection()
@@ -490,9 +549,16 @@ function starttemplates!(terminal, agent, extensions, store, args, sessiondir, f
 end
 
 function starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates::AbstractDict)
+    starttemplates!(terminal.mode, terminal, agent, extensions, store, args, sessiondir, templates)
+end
+
+function starttemplates!(::TextMode, terminal, agent, extensions, store, args, sessiondir, templates)
     parsed = FileArguments.parse(args)
     startfiles!(terminal, agent, extensions, store, sessiondir, templates, parsed.messages, parsed.files)
 end
+
+starttemplates!(::RPCMode, terminal, agent, extensions, store, args, sessiondir, templates) = Headless.rpc!(terminal, agent, extensions, store, args, sessiondir, templates)
+starttemplates!(::JSONMode, terminal, agent, extensions, store, args, sessiondir, templates) = Headless.json!(terminal, agent, extensions, store, args, sessiondir, templates)
 
 function startfiles!(terminal, agent, extensions, store, sessiondir, templates, messages, files)
     isempty(files) && return startplain!(terminal, agent, extensions, store, sessiondir, templates, messages)

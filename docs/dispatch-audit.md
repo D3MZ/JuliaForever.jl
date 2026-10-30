@@ -39,3 +39,5 @@ Durable replay dispatches on decoded records and rejection outcomes. The `Val` c
 The subsequent merge with tool selection, MCP roots, and the dispatch changes adds no entries beyond its parents' multiset union; 18 branch entries and 13 dispatch candidates were retired.
 
 Compaction planning now partitions messages and finds the last user turn through dispatch. Constructor arguments for completion and tool results are checked for typed Boolean predicates and status-field reads; provider completion helpers now return typed outcomes. This merge adds no entries beyond its parents' multiset union and retires six branch entries and seven dispatch candidates.
+
+The headless JSON and RPC implementation adds 26 branch entries, bringing the inventory from 1,238 to 1,264, and adds no dispatch candidates. The additions include iteration over protocol records and message blocks, input boundary checks, and queue comparisons.
