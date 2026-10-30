@@ -316,4 +316,28 @@ end
     end
 end
 
+@testset "tool image survives automatic compaction between requests" begin
+    mktempdir() do root
+        for file in ("static.gif", "static.webp")
+            bytes = read(joinpath(fixtures, file))
+            write(joinpath(root, file), bytes)
+            history = H.Memory()
+            provider = ImageCompactionProvider(file, Any[])
+            agent = Agent(provider, [Read(root)]; history)
+            @test respond!(agent, "older context") == "done"
+            events = Any[]
+            summaries = Any[]
+            policy = JuliaForever.AutoCompaction(100, 0)
+            @test respond!(agent, "read image"; auto_compaction=policy, summarize=messages -> (push!(summaries, messages); "checkpoint"), on_agent_event=event -> push!(events, event)) == "done"
+            @test length(summaries) == 1 && occursin("checkpoint", repr(last(provider.requests)))
+            image = only(message["image"] for message in last(provider.requests) if message["role"] == "tool")
+            @test base64decode(image["data"]) == bytes
+            types = getproperty.(events, :type)
+            @test findfirst(==(:tool_execution_end), types) < findfirst(==(:auto_compaction_start), types) < findlast(==(:turn_start), types)
+            restored = Agent(provider, [Read(root)]; history)
+            @test base64decode(only(message for message in restored.state.messages if message isa C.ToolMessage).image.data) == bytes
+        end
+    end
+end
+
 end
