@@ -223,3 +223,11 @@ After reconciling upstream changes, authorization filtering adds one loop, bring
 Merging upstream shell, history, and extension refactors adds 14 inventory entries and retires 15, for 1,577 total.
 
 RPC custom-model listing and selection add nine branch entries and retire one, bringing the inventory to 1,585. Model metadata uses a concrete wire type; unsupported catalog entries are handled by dispatch.
+
+The built-in model snapshot and indexed lookup add six branch entries, for 1,591 total. The snapshot is loaded once per process when needed.
+
+The model-switch API compatibility check adds one entry, for 1,592 total.
+
+Grouping built-in and custom models by provider adds seven entries and retires three, for 1,596 total.
+
+API compatibility now dispatches on provider types, retiring one entry and bringing the inventory to 1,595.

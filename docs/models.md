@@ -32,3 +32,5 @@ The library exposes `JuliaForever.Models.catalog()`, `JuliaForever.Models.catalo
 To refresh the snapshot, run the pinned Pi checkout's `packages/ai/catalog/generate.ts --strict --json-only --json-output CATALOG_DIRECTORY`, then run `julia --project=. scripts/model_catalog.jl CATALOG_DIRECTORY data/models.json`. The Pi generator fetches external catalogs, so regeneration on a different date may produce different values. Review the generated diff and repeat the differential tests before committing it.
 
 To refresh the OpenAI thinking mappings from the matching pinned `@earendil-works/pi-ai` package, run `julia --project=. scripts/openai_thinking.jl PATH_TO_DIST/providers/data/openai.json data/openai-thinking.json` and review them alongside the catalog.
+
+RPC model metadata is generated separately from the pinned Pi package by `scripts/rpc_model_catalog.jl`. It includes prices and capabilities for the four supported API families; like the CLI catalog, it is a snapshot and can become stale. Its third-party license is in `data/pi-rpc-models-LICENSE.txt`.

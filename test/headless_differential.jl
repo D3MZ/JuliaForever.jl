@@ -423,7 +423,7 @@ function exchangethinking(cmd, env)
     end
 end
 
-function exchangemodels(cmd, env; prompt=false)
+function exchangemodels(cmd, env; provider="fixture", target="beta", prompt=false)
     mktempdir() do dir
         process = open(pipeline(addenv(cmd, env...); stderr=joinpath(dir, "error")), "r+")
         channel = Channel{Any}(Inf)
@@ -438,17 +438,80 @@ function exchangemodels(cmd, env; prompt=false)
                 receive!(channel, observed, item -> get(item, "id", "") == value.id)
             end
             listed = request((; id="models", type="get_available_models"))
-            changed = request((; id="set", type="set_model", provider="fixture", modelId="beta"))
+            changed = request((; id="set", type="set_model", provider, modelId=target))
             state = request((; id="state", type="get_state"))
             if prompt
                 send((; id="prompt", type="prompt", message="hello"))
                 receive!(channel, observed, item -> get(item, "type", "") == "agent_settled")
             end
-            missing = request((; id="missing", type="set_model", provider="fixture", modelId="missing"))
+            missing = request((; id="missing", type="set_model", provider, modelId="missing"))
             cycled = request((; id="cycle", type="cycle_model"))
             again = request((; id="again", type="get_state"))
             entries = request((; id="entries", type="get_entries"))
             (; listed, changed, state, missing, cycled, again, entries, observed)
+        finally
+            close(process.in)
+            timedwait(() -> process_exited(process), 5) == :ok || kill(process)
+            wait(process)
+            wait(reader)
+        end
+    end
+end
+
+function exchangebusymodel(cmd, env, arrivals)
+    mktempdir() do dir
+        process = open(pipeline(addenv(cmd, env...); stderr=joinpath(dir, "error")), "r+")
+        channel = Channel{Any}(Inf)
+        reader = @async for line in eachline(process)
+            put!(channel, JSON3.read(line, Dict{String, Any}))
+        end
+        observed = Any[]
+        gate = nothing
+        try
+            send(value) = (println(process, JSON3.write(value)); flush(process))
+            send((; id="prompt", type="prompt", message="hello"))
+            receive!(channel, observed, item -> get(item, "id", "") == "prompt")
+            timedwait(() -> isready(arrivals), 45) == :ok || error("Provider request did not start")
+            body, gate = take!(arrivals)
+            send((; id="set", type="set_model", provider="fixture", modelId="beta"))
+            changed = receive!(channel, observed, item -> get(item, "id", "") == "set")
+            send((; id="during", type="get_state"))
+            during = receive!(channel, observed, item -> get(item, "id", "") == "during")
+            put!(gate, nothing)
+            gate = nothing
+            receive!(channel, observed, item -> get(item, "type", "") == "agent_settled")
+            send((; id="after", type="get_state"))
+            after = receive!(channel, observed, item -> get(item, "id", "") == "after")
+            (; body, changed, during, after)
+        finally
+            isnothing(gate) || put!(gate, nothing)
+            close(process.in)
+            timedwait(() -> process_exited(process), 5) == :ok || kill(process)
+            wait(process)
+            wait(reader)
+        end
+    end
+end
+
+function exchangecatalogsnapshot(cmd, path)
+    mktempdir() do dir
+        process = open(pipeline(cmd; stderr=joinpath(dir, "error")), "r+")
+        channel = Channel{Any}(Inf)
+        reader = @async for line in eachline(process)
+            put!(channel, JSON3.read(line, Dict{String, Any}))
+        end
+        observed = Any[]
+        try
+            function request(id)
+                println(process, JSON3.write((; id, type="get_available_models")))
+                flush(process)
+                receive!(channel, observed, item -> get(item, "id", "") == id)
+            end
+            before = request("before")
+            mkpath(dirname(path))
+            write(path, JSON3.write((; providers=(; fixture=(; baseUrl="https://example.invalid/v1", api="openai-responses", apiKey="fixture", models=[(; id="alpha")])))))
+            after = request("after")
+            (; before, after)
         finally
             close(process.in)
             timedwait(() -> process_exited(process), 5) == :ok || kill(process)
@@ -550,6 +613,64 @@ end
         modelchanges(run) = [(entry["provider"], entry["modelId"]) for entry in run.entries["data"]["entries"] if entry["type"] == "model_change"]
         @test modelchanges(actual_models) == modelchanges(expected_models)
 
+        crossdir = joinpath(workspace, "cross-api")
+        mkpath(crossdir)
+        crossmodels = [(; id="alpha", api="openai-responses"), (; id="beta", api="openai-completions")]
+        write(joinpath(crossdir, "models.json"), JSON3.write((; providers=(; fixture=(; baseUrl="https://example.invalid/v1", api="openai-responses", apiKey="fixture-key", models=crossmodels)))))
+        crossenv = merge(modelenv, Dict("PI_CODING_AGENT_DIR" => crossdir))
+        crosspi = setenv(Cmd(`node $oracle $source --mode rpc --no-session --provider fixture --model alpha --approve`; dir=workspace), crossenv)
+        crossjf = setenv(Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session --provider fixture --model alpha`; dir=workspace), crossenv)
+        reference_cross = exchangemodels(crosspi, [])
+        actual_cross = exchangemodels(crossjf, [])
+        @test reference_cross.changed["success"] && !actual_cross.changed["success"]
+        @test actual_cross.state["data"]["model"]["id"] == "alpha" && modelchanges(actual_cross) == [("fixture", "alpha")]
+
+        builtindir = joinpath(workspace, "rpc-builtin")
+        builtinenvironment = merge(cleanenv, Dict("PI_CODING_AGENT_DIR" => builtindir, "JF_PROVIDER" => "openai", "OPENAI_API_KEY" => "sk-fixture"))
+        builtinpi = setenv(Cmd(`node $oracle $source --mode rpc --no-session --model openai/gpt-5.2:high --approve`; dir=workspace), builtinenvironment)
+        builtinjf = setenv(Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session --model openai/gpt-5.2:high`; dir=workspace), builtinenvironment)
+        expected_builtin = exchangemodels(builtinpi, []; provider="openai", target="gpt-4.1-mini")
+        actual_builtin = exchangemodels(builtinjf, []; provider="openai", target="gpt-4.1-mini")
+        @test actual_builtin.listed == expected_builtin.listed
+        @test actual_builtin.changed == expected_builtin.changed && actual_builtin.missing == expected_builtin.missing && actual_builtin.cycled == expected_builtin.cycled
+        @test [run["data"]["model"] for run in (actual_builtin.state, actual_builtin.again)] == [run["data"]["model"] for run in (expected_builtin.state, expected_builtin.again)]
+        @test modelchanges(actual_builtin) == modelchanges(expected_builtin)
+        pi_snapshot_dir, jf_snapshot_dir = joinpath(workspace, "pi-snapshot"), joinpath(workspace, "jf-snapshot")
+        pi_snapshot_env = merge(builtinenvironment, Dict("PI_CODING_AGENT_DIR" => pi_snapshot_dir))
+        jf_snapshot_env = merge(builtinenvironment, Dict("PI_CODING_AGENT_DIR" => jf_snapshot_dir))
+        pi_snapshot = setenv(Cmd(`node $oracle $source --mode rpc --no-session --model openai/gpt-5.2 --approve`; dir=workspace), pi_snapshot_env)
+        jf_snapshot = setenv(Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session --model openai/gpt-5.2`; dir=workspace), jf_snapshot_env)
+        expected_snapshot = exchangecatalogsnapshot(pi_snapshot, joinpath(pi_snapshot_dir, "models.json"))
+        actual_snapshot = exchangecatalogsnapshot(jf_snapshot, joinpath(jf_snapshot_dir, "models.json"))
+        @test expected_snapshot.before["data"]["models"] == expected_snapshot.after["data"]["models"] == actual_snapshot.before["data"]["models"] == actual_snapshot.after["data"]["models"]
+        mixeddir = joinpath(workspace, "rpc-mixed-models")
+        mkpath(mixeddir)
+        write(joinpath(mixeddir, "models.json"), JSON3.write((; providers=(; google=(; models=[(; id="custom-extra", name="Custom")])))))
+        mixedenv = merge(builtinenvironment, Dict("PI_CODING_AGENT_DIR" => mixeddir, "GEMINI_API_KEY" => "fixture"))
+        mixedpi = setenv(Cmd(`node $oracle $source --mode rpc --no-session --model openai/gpt-5.2 --approve`; dir=workspace), mixedenv)
+        mixedjf = setenv(Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session --model openai/gpt-5.2`; dir=workspace), mixedenv)
+        mixedinput = JSON3.write((; id="models", type="get_available_models")) * "\n"
+        expected_mixed = runprocess(mixedpi, mixedinput, [])
+        actual_mixed = runprocess(mixedjf, mixedinput, [])
+        @test expected_mixed.status == actual_mixed.status == 0
+        @test responses(actual_mixed.output)["models"] == responses(expected_mixed.output)["models"]
+        for (provider, model, key, api) in (("anthropic", "claude-haiku-4-5", "ANTHROPIC_API_KEY", "anthropic-messages"), ("google", "gemini-2.5-flash", "GEMINI_API_KEY", "google-generative-ai"), ("openrouter", "openrouter/free", "OPENROUTER_API_KEY", "openai-completions"))
+            provider_env = merge(cleanenv, Dict("PI_CODING_AGENT_DIR" => joinpath(workspace, "rpc-" * provider), "JF_PROVIDER" => provider, key => "fixture"))
+            reference_cmd = setenv(Cmd(`node $oracle $source --mode rpc --no-session --provider $provider --model $model --approve`; dir=workspace), provider_env)
+            actual_cmd = setenv(Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session --provider $provider --model $model`; dir=workspace), provider_env)
+            input = JSON3.write((; id="models", type="get_available_models")) * "\n"
+            reference = runprocess(reference_cmd, input, [])
+            observed = runprocess(actual_cmd, input, [])
+            @test reference.status == observed.status == 0
+            expected = responses(reference.output)["models"]["data"]["models"]
+            actual = responses(observed.output)["models"]["data"]["models"]
+            @test actual == [item for item in expected if item["api"] == api]
+        end
+        generated = joinpath(workspace, "rpc-models.json")
+        package_data = joinpath(source, "node_modules", "@earendil-works", "pi-ai", "dist", "providers", "data")
+        run(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project $(joinpath(project, "scripts", "rpc_model_catalog.jl")) $package_data $generated`)
+        @test read(generated) == read(joinpath(project, "data", "pi-rpc-models.json"))
+
         if Sys.isunix()
             expected_bash = exchangebash(pi, env)
             actual_bash = exchangebash(jf, env)
@@ -637,9 +758,15 @@ end
             oracle = joinpath(@__DIR__, "headless_reference.mjs")
             pi = Cmd(`node $oracle $source --mode rpc --session-dir $(joinpath(workspace, "pi-sessions")) --model openai/gpt-5.2:high --approve`; dir=workspace)
             jf = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $(joinpath(workspace, "jf-sessions")) --model openai/gpt-5.2:high`; dir=workspace)
-            env(agentdir) = ["PI_SOURCE" => source, "HOME" => workspace, "USERPROFILE" => workspace, "PI_CODING_AGENT_DIR" => agentdir, "PI_OFFLINE" => "1", "JF_PROVIDER" => "openai", "OPENAI_API_KEY" => "fixture", "OPENAI_BASE_URL" => base, "JF_INSTRUCTIONS_DIR" => workspace]
-            reference = exchangethinking(pi, env(piagent))
-            actual = exchangethinking(jf, env(joinpath(workspace, "jf-agent")))
+            function env(agentdir)
+                values = Dict("PATH" => ENV["PATH"], "HOME" => workspace, "USERPROFILE" => workspace, "PI_SOURCE" => source, "PI_CODING_AGENT_DIR" => agentdir, "PI_OFFLINE" => "1", "JF_PROVIDER" => "openai", "OPENAI_API_KEY" => "fixture", "OPENAI_BASE_URL" => base, "JF_INSTRUCTIONS_DIR" => workspace, "JULIA_DEPOT_PATH" => get(ENV, "JULIA_DEPOT_PATH", ""))
+                for key in ("SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "TMP", "TEMP")
+                    haskey(ENV, key) && (values[key] = ENV[key])
+                end
+                values
+            end
+            reference = exchangethinking(setenv(pi, env(piagent)), [])
+            actual = exchangethinking(setenv(jf, env(joinpath(workspace, "jf-agent"))), [])
             pi_request, jf_request = take!(requests), take!(requests)
             @test jf_request["reasoning"] == pi_request["reasoning"] == Dict("effort" => "low", "summary" => "auto")
             @test [get(result["data"], "thinkingLevel", nothing) for result in (actual.state, actual.newstate, actual.restored)] == [result["data"]["thinkingLevel"] for result in (reference.state, reference.newstate, reference.restored)]
@@ -649,8 +776,8 @@ end
 
             pi6 = Cmd(`node $oracle $source --mode rpc --session-dir $(joinpath(workspace, "pi6-sessions")) --model openai/gpt-6-luna:high --approve`; dir=workspace)
             jf6 = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $(joinpath(workspace, "jf6-sessions")) --model openai/gpt-6-luna:high`; dir=workspace)
-            reference6 = exchangethinking(pi6, env(piagent))
-            actual6 = exchangethinking(jf6, env(joinpath(workspace, "jf-agent")))
+            reference6 = exchangethinking(setenv(pi6, env(piagent)), [])
+            actual6 = exchangethinking(setenv(jf6, env(joinpath(workspace, "jf-agent"))), [])
             pi_request6, jf_request6 = take!(requests), take!(requests)
             updates(request) = [item for item in request["input"] if get(item, "type", "") == "configuration_update"]
             @test jf_request6["reasoning"] == pi_request6["reasoning"]
@@ -674,6 +801,37 @@ end
             @test jf_custom_request["model"] == pi_custom_request["model"] == "beta"
             assistantmodels(run) = [event["message"]["model"] for event in run.observed if get(event, "type", "") == "message_end" && get(event["message"], "role", "") == "assistant"]
             @test assistantmodels(jf_models) == assistantmodels(pi_models) == ["beta"]
+
+            arrivals = Channel{Tuple{Dict{String, Any}, Channel{Nothing}}}(2)
+            gated = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+                gate = Channel{Nothing}(1)
+                put!(arrivals, (JSON3.read(String(request.body), Dict{String, Any}), gate))
+                take!(gate)
+                delta = JSON3.write((; type="response.output_text.delta", delta="fixture"))
+                done = JSON3.write((; type="response.completed", response=(; status="completed", output=[(; type="message", content=[(; type="output_text", text="fixture")])])))
+                HTTP.Response(200, ["Content-Type" => "text/event-stream"], "data: $delta\n\ndata: $done\n\n")
+            end
+            try
+                gatedbase = "http://$(HTTP.server_addr(gated))/v1"
+                write(joinpath(customdir, "models.json"), JSON3.write((; providers=(; fixture=(; baseUrl=gatedbase, api="openai-responses", apiKey="fixture", models=definitions)))))
+                pi_busy = exchangebusymodel(pi_custom, [], arrivals)
+                jf_busy = exchangebusymodel(jf_custom, [], arrivals)
+                @test pi_busy.changed["success"] && !jf_busy.changed["success"]
+                @test pi_busy.body["model"] == jf_busy.body["model"] == "alpha"
+                @test jf_busy.during["data"]["model"]["id"] == jf_busy.after["data"]["model"]["id"] == "alpha"
+            finally
+                close(gated)
+                wait(gated)
+            end
+
+            pi_builtin = Cmd(`node $oracle $source --mode rpc --no-session --model openai/gpt-5.2 --approve`; dir=workspace)
+            jf_builtin = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --no-session --model openai/gpt-5.2`; dir=workspace)
+            pi_selected = exchangemodels(setenv(pi_builtin, env(piagent)), []; provider="openai", target="gpt-4.1-mini", prompt=true)
+            jf_selected = exchangemodels(setenv(jf_builtin, env(joinpath(workspace, "jf-agent"))), []; provider="openai", target="gpt-4.1-mini", prompt=true)
+            pi_selected_request, jf_selected_request = take!(requests), take!(requests)
+            @test jf_selected.listed == pi_selected.listed && jf_selected.changed == pi_selected.changed
+            @test jf_selected_request["model"] == pi_selected_request["model"] == "gpt-4.1-mini"
+            @test assistantmodels(jf_selected) == assistantmodels(pi_selected) == ["gpt-4.1-mini"]
         end
     finally
         close(server)

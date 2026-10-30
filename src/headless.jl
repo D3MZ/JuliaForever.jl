@@ -162,12 +162,13 @@ struct Failure <: Reply
 end
 Success() = Success(NamedTuple())
 
-mutable struct Session{A, T, E, S, P, L}
+mutable struct Session{A, T, E, S, P, L, R}
     agent::A
     terminal::T
     extensions::E
     store::S
     templates::P
+    registry::R
     directory::String
     lock::ReentrantLock
     messages::Vector{Dict{String, Any}}
@@ -192,7 +193,8 @@ end
 function Session(terminal, agent, extensions, store, templates, directory)
     stream = LiveJSON.Stream(terminal, agent, terminal.mode)
     thinking = initialthinking!(agent, terminal.mode.thinking)
-    session = Session(agent, terminal, extensions, store, templates, directory, ReentrantLock(), Dict{String, Any}[], LiveJSON.id(store[]), sessionname(J.SessionCatalog.sessionname(store[])), stream, thinking, nothing, String[], String[], nothing, Base.Event(), OpenOutput(), AvailableStatistics(), J.ShellCancellation(), Set{Task}(), J.Conversation.BashMessage[], J.Conversation.SessionRecordValue[], nothing)
+    registry = modelregistry(agent.provider)
+    session = Session(agent, terminal, extensions, store, templates, registry, directory, ReentrantLock(), Dict{String, Any}[], LiveJSON.id(store[]), sessionname(J.SessionCatalog.sessionname(store[])), stream, thinking, nothing, String[], String[], nothing, Base.Event(), OpenOutput(), AvailableStatistics(), J.ShellCancellation(), Set{Task}(), J.Conversation.BashMessage[], J.Conversation.SessionRecordValue[], nothing)
     restore!(session, agent)
     restoreentries!(session)
     session
@@ -251,6 +253,7 @@ modelinfo(session) = modelinfo(session.agent.provider, session.terminal.mode)
 modelinfo(provider, mode) = basicmodel(provider, mode)
 basicmodel(provider, mode) = (; id=provider.model, api=LiveJSON.api(provider), provider=LiveJSON.providername(mode, provider), baseUrl=provider.base)
 modelinfo(::J.UnconfiguredProvider, mode) = (; id="unknown", name="unknown", api="unknown", provider="unknown", baseUrl="", reasoning=false, input=String[], cost=(; input=0, output=0, cacheRead=0, cacheWrite=0), contextWindow=0, maxTokens=0)
+modelinfo(provider::Union{J.ManagedChatGPT, J.ChatGPT.Plan}, mode) = (; id=provider.model, api=LiveJSON.api(provider), provider=LiveJSON.providername(mode, provider), baseUrl="https://api.openai.com/v1")
 sessionfile(::Nothing) = nothing
 sessionfile(::J.History.Memory) = nothing
 sessionfile(history::J.History.Tree) = sessionfile(history.store)
