@@ -37,3 +37,5 @@ The `Val` check also catches Boolean constants and Boolean `Val` type annotation
 Compaction planning now partitions messages and finds the last user turn through dispatch, rather than filtering typed predicates.
 
 Skill prompt visibility now dispatches on invocation type while retaining explicit-only skills in discovery metadata.
+
+Constructor arguments for `Completion`, `ToolResult`, `ToolReply`, and `CodeResult` are checked for typed Boolean predicates and status-field reads. This exposed two provider completion helpers, which now return typed outcomes; plain Boolean constructor parameters remain supported at compatibility boundaries.

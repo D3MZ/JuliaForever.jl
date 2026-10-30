@@ -49,6 +49,7 @@ sse(data) = "data: $(JSON3.write(data))\n\n"
         @test request.body.stream_options.include_usage == true
         @test request.body.temperature == 0.2
         @test !haskey(request.body, :tools)
+        @test result.status isa JuliaForever.Finished
         @test result.done
         @test result.error === nothing
         @test result.finish == "tool_calls"

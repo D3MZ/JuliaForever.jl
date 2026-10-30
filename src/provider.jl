@@ -266,9 +266,9 @@ chatcompletion(message, used, status::ChatRejected) = Completion(message, used, 
 finishfailure!(failure, ::Union{ChatMissing, ChatAccepted}, previous) = nothing
 finishfailure!(failure, status::ChatRejected, ::Nothing) = (failure[] = providererror(:openai_compatible, status.reason))
 finishfailure!(failure, ::ChatRejected, previous) = nothing
-finishdone(::ChatMissing, marker, failure) = false
-finishdone(::Union{ChatAccepted, ChatRejected}, marker, ::Nothing) = marker
-finishdone(::Union{ChatAccepted, ChatRejected}, marker, failure) = false
+finishstatus(::ChatMissing, marker, failure) = Unfinished()
+finishstatus(::Union{ChatAccepted, ChatRejected}, marker::CompletionStatus, ::Nothing) = marker
+finishstatus(::Union{ChatAccepted, ChatRejected}, marker, failure) = Unfinished()
 
 usage(::Nothing) = nothing
 details(::Nothing) = Dict()
@@ -395,7 +395,7 @@ end
 
 receivechat!(process, failure, marker, text, ::InvalidResponse) = nothing
 function receivechat!(process, failure, marker, text, previous)
-    text == "[DONE]" && return (marker[] = true; nothing)
+    text == "[DONE]" && return (marker[] = Finished(); nothing)
     receivechat!(process, failure, decode(text))
 end
 receivechat!(process, failure, data::InvalidResponse) = (failure[] = data; nothing)
@@ -408,7 +408,7 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
     reported_usage = Ref{Union{Nothing, Usage}}(nothing)
     finish = Ref{Union{Nothing, String}}(nothing)
     failure = Ref{Union{Nothing, String, InvalidResponse, ProviderError}}(nothing)
-    marker = Ref(false)
+    marker = Ref{CompletionStatus}(Unfinished())
     reasoningfield = Ref{Union{Nothing, String}}(nothing)
     process = data -> begin
         on_event((; type=:provider, data))
@@ -464,7 +464,7 @@ function stream(provider::OpenAI, messages, tools; parameters=Dict(), on_event=i
     isempty(order) || (message["tool_calls"] = [calls[index] for index in order])
     status = chatfinish(finish[])
     finishfailure!(failure, status, failure[])
-    result = Completion(message, reported_usage[], safefinish(finish[]), finishdone(status, marker[], failure[]), failure[])
+    result = Completion(message, reported_usage[], safefinish(finish[]), finishstatus(status, marker[], failure[]), failure[])
     on_event((; type=completionevent(result), result))
     result
 end

@@ -38,6 +38,7 @@ end
     call = response_call("fc_1", "call_1", "one.txt", "one")
     completed = JuliaForever.completion(model, response_done([call]))
     @test completed.done && completed.finish == "tool_calls" && completed.error === nothing
+    @test completed.status isa JuliaForever.Finished
     text = JuliaForever.completion(model, response_done([response_text("answer")]))
     @test text.done && text.finish == "stop"
     for (status, kind) in (("failed", :failed), ("incomplete", :incomplete), (nothing, :unknown))
@@ -48,6 +49,7 @@ end
     unfinished = merge(call, Dict("status" => "in_progress"))
     result = JuliaForever.completion(model, response_done([unfinished]))
     @test !result.done && result.error == "Responses contained an unfinished function call"
+    @test result.status isa JuliaForever.Unfinished
     duplicate = merge(call, Dict("id" => "fc_2"))
     result = JuliaForever.completion(model, response_done([call, duplicate]))
     @test !result.done && result.error == "Responses contained duplicate function call identifiers"
