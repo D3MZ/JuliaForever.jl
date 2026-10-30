@@ -144,11 +144,8 @@ search.jl	:directory
 search.jl	:directory
 search.jl	:exclude
 search.jl	:exclude
-search.jl	:ignorecase
-search.jl	:ignorecase
 search.jl	:isdirectory
 search.jl	:limited
-search.jl	:literal
 search.jl	:matched
 search.jl	:negate
 search.jl	:smartcase
