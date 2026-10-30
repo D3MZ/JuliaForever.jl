@@ -24,6 +24,8 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      JULIA_DEPOT_PATH: ${{ runner.temp }}/julia-depot
     timeout-minutes: 120
     defaults:
       run:
