@@ -47,6 +47,25 @@ end
             @test JuliaForever.continue!(restored) == :assistant_tail
         end
     end
+
+    for history in (nothing, JuliaForever.History.Memory())
+        p = ContinuationProvider(["first", "second", "third"], [])
+        agent = Agent(p, []; history)
+        @test respond!(agent, "initial") == "first"
+        steeringmode!(agent, :all)
+        followupmode!(agent, :all)
+        steer!(agent, "s1"); steer!(agent, "s2")
+        followup!(agent, "f1"); followup!(agent, "f2")
+        @test continue!(agent) == "third"
+        users(request) = [m["content"] for m in request if m["role"] == "user"]
+        @test users.(p.requests) == [["initial"], ["initial", "s1", "s2"], ["initial", "s1", "s2", "f1", "f2"]]
+        if history !== nothing
+            restored = Agent(p, []; history)
+            @test restored.messages == agent.messages
+            @test restored.state.steeringmode isa JuliaForever.Conversation.AllAtOnce
+            @test restored.state.followupmode isa JuliaForever.Conversation.AllAtOnce
+        end
+    end
 end
 
 @testset "tool tail and history fault" begin
