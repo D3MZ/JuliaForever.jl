@@ -87,9 +87,24 @@ end
 function casecandidate(path, id, prefix, paths, forms)
     readonly(path) do db
         initial = historyrows(db, historyquery * " LIMIT 1")
-        casecandidate(db, path, id, prefix, paths, forms, casecwd(initial))
+        casecandidate(db, path, id, prefix, paths, forms, catalogcwd(db, casecwd(initial)))
     end
 end
+catalogcwd(db, ::Nothing) = nothing
+function catalogcwd(db, fallback::String)
+    statement = Ref{SQLite.StmtHandle}(C_NULL)
+    code = SQLite.C.sqlite3_prepare_v2(db, "SELECT 0, cwd FROM jf_meta", -1, statement, C_NULL)
+    try
+        catalogcwd(statement[], sqlstatus(code), fallback)
+    finally
+        SQLite.C.sqlite3_finalize(statement[])
+    end
+end
+catalogcwd(statement, ::SQLStatus, fallback) = fallback
+catalogcwd(statement, ::SQLOk, fallback) = catalogcwd(statement, sqlstatus(SQLite.C.sqlite3_step(statement)), fallback)
+catalogcwd(statement, ::SQLRow, fallback) = recordedcwd(sqltext(statement), fallback)
+recordedcwd(::Nothing, fallback) = fallback
+recordedcwd(cwd::String, fallback) = cwd
 casecandidate(db, path, id, prefix, paths, forms, recorded) = nothing
 function casecandidate(db, path, id, prefix, paths, forms, recorded::String)
     directory = abspath(recorded)

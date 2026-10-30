@@ -103,9 +103,29 @@ end
         end
         casefork = forkto(altered)
         crossfork = forkto(other)
+        source = Catalog.wrap(open(H.SQLite, sourcefile; create=false))
+        branchfork = Catalog.duplicate(Catalog.new(forkdir, altered), Catalog.branchpath(source, source.leaf), Catalog.Path())
+        branchfile = Catalog.path(branchfork)
+        close(branchfork)
+        close(source)
+        forkbytes = Dict(file => read(file) for file in (sourcefile, casefork, crossfork, branchfile))
         @test casefork in Set(item.path for item in Catalog.listcase(forkdir, (altered,)))
-        @test_broken casefork in Set(item.path for item in Catalog.listcase(forkdir, (original,)))
+        @test casefork in Set(item.path for item in Catalog.listcase(forkdir, (original,)))
+        @test branchfile in Set(item.path for item in Catalog.listcase(forkdir, (original,)))
         @test crossfork ∉ Set(item.path for item in Catalog.listcase(forkdir, (original,)))
+        @test Dict(file => read(file) for file in keys(forkbytes)) == forkbytes
+        forkactive = open(H.SQLite, casefork; create=false)
+        try
+            SQLite.execute(forkactive.db, "PRAGMA journal_mode=WAL")
+            SQLite.execute(forkactive.db, "UPDATE jf_meta SET cwd=cwd")
+            wal = casefork * "-wal"
+            @test isfile(wal)
+            beforefork = (read(casefork), read(wal))
+            @test casefork in Set(item.path for item in Catalog.listcase(forkdir, (original,)))
+            @test (read(casefork), read(wal)) == beforefork
+        finally
+            close(forkactive)
+        end
         active = open(H.SQLite, second; create=false)
         try
             SQLite.execute(active.db, "PRAGMA journal_mode=WAL")
@@ -171,6 +191,14 @@ end
             @test !samefile(workspace, alternate)
             @test Set(item.path for item in Catalog.list(root, workspace)) == Set((current,))
             @test Dict(file => bytes2hex(sha256(read(file))) for file in files) == before
+            source = Catalog.new(root, workspace)
+            messages = Dict{String, Any}[Dict("role" => "system", "content" => JuliaForever.context(workspace, JuliaForever.Tool[], []))]
+            @test JuliaForever.respond!(JuliaForever.Agent(CaseProvider(), [], messages; history=source), "source") == "reply"
+            copied = Catalog.fork(source, root, alternate)
+            forkfile = Catalog.path(copied)
+            close(copied)
+            @test forkfile in Set(item.path for item in Catalog.list(root, alternate))
+            @test forkfile ∉ Set(item.path for item in Catalog.list(root, workspace))
         end
     end
 end

@@ -81,10 +81,11 @@ mutable struct Deferred <: H.Store
     path::String
     store::H.Store
     lock::ReentrantLock
+    cwd::Union{Nothing, String}
 end
 
-Deferred(path) = Deferred(path, H.Memory(), ReentrantLock())
-new(dir, cwd) = H.Tree(Deferred(joinpath(dir, filename(cwd, bytes2hex(rand(UInt8, 16))))))
+Deferred(path, cwd=nothing) = Deferred(path, H.Memory(), ReentrantLock(), cwd)
+new(dir, cwd) = H.Tree(Deferred(joinpath(dir, filename(cwd, bytes2hex(rand(UInt8, 16)))), abspath(cwd)))
 
 function H.snapshot(history::Deferred)
     lock(history.lock) do
@@ -123,9 +124,17 @@ materialize!(history, rejected::H.Rejected, snapshot) = rejected
 
 function materialize!(history, store::H.SQLite, snapshot::H.Snapshot)
     history.store = store
+    savecwd!(store, history.cwd)
     foldl(snapshot.batches; init=0) do revision, batch
         appendbatch!(store, revision, batch)
     end
+end
+
+savecwd!(store, ::Nothing) = nothing
+function savecwd!(store, cwd::String)
+    SQLite.execute(store.db, "ALTER TABLE jf_meta ADD COLUMN cwd TEXT")
+    SQLite.execute(store.db, "UPDATE jf_meta SET cwd = ?", (cwd,))
+    nothing
 end
 
 appendbatch!(store, rejected::H.Rejected, batch) = rejected
