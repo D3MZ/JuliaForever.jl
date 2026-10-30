@@ -118,7 +118,6 @@ scheduler.jl	:(typeof(b))
 scheduler.jl	:(view.kind == name(handler))
 scheduler.jl	:cancelled
 scheduler.jl	:success
-search.jl	:(isnothing(stop))
 search.jl	:(rule.directory)
 search.jl	:(selectglob(filter, target))
 search.jl	:anchored
@@ -138,7 +137,6 @@ search.jl	:negate
 search.jl	:smartcase
 search.jl	:truncated
 search.jl	:truncated
-search.jl	:truncatedlines
 search.jl	:truncatedlines
 search.jl	:windows
 search.jl	:windows

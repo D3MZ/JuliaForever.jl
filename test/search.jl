@@ -88,6 +88,10 @@ end
         write(joinpath(dir, "long.txt"), repeat("x", 501) * "needle\n")
         long = execute(grepper, (; pattern="needle", path="long.txt"))
         @test long.text == "long.txt:1: " * repeat("x", 500) * "... [truncated]\n\n[Some lines truncated to 500 chars. Use read tool to see full lines]"
+        write(joinpath(dir, "bracket[.txt"), "text")
+        write(joinpath(dir, "bracketa.txt"), "text")
+        @test execute(finder, (; pattern="bracket[.txt")).text == "bracket[.txt"
+        @test execute(finder, (; pattern="bracket[a].txt")).text == "bracketa.txt"
         @test JuliaForever.name(finder) == "find"
         @test JuliaForever.name(grepper) == "grep"
         @test JuliaForever.schema(finder)["required"] == ["pattern"]
