@@ -142,7 +142,7 @@ modelapi(provider::ConfiguredProvider) = modelapi(provider.model, provider)
 modelapi(model::Models.Model, provider) = model.api
 modelapi(::Nothing, provider) = fallbackapi(provider.builtin, provider.settings)
 fallbackapi(::Nothing, settings) = get(settings, "api", "")
-fallbackapi(info::NamedTuple, settings) = get(builtinapis, info.factory, "")
+fallbackapi(info::NamedTuple, settings) = get(settings, "api", get(builtinapis, info.factory, ""))
 
 const modelapis = Dict("openai-completions" => OpenAI, "openai-responses" => OpenAIResponses, "anthropic-messages" => Anthropic, "google-generative-ai" => Google)
 const unsupportedmodelsettings = ("compat", "samplingParams", "samplingParamsByThinkingLevel", "thinkingLevelMap", "promptCache", "inputLimits")
