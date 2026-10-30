@@ -241,8 +241,17 @@ end
 module MCPHTTPTests
 include("mcp_http.jl")
 end
+module MCPFractionalTests
+include("mcp_fractional.jl")
+end
 module MCPHTTPSSETests
 include("mcp_http_sse.jl")
+end
+module MCPPOSTSSETests
+include("mcp_post_sse.jl")
+end
+module MCPSSEBoundaryTests
+include("mcp_sse_boundaries.jl")
 end
 module MCPHTTPGETTests
 include("mcp_http_get.jl")
