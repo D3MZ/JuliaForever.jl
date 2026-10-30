@@ -683,10 +683,20 @@ end
 
 initialize!(client::Client, result) = invalid!(client)
 
-function initialize!(client::Client, result::AbstractDict)
-    get(result, "protocolVersion", nothing) in versions && get(result, "capabilities", nothing) isa AbstractDict && get(result["capabilities"], "tools", Dict()) isa AbstractDict && get(result, "serverInfo", nothing) isa AbstractDict && get(result["serverInfo"], "name", nothing) isa AbstractString && get(result["serverInfo"], "version", nothing) isa AbstractString || return invalid!(client)
+const supportedversions = Dict(version => version for version in versions)
+initialize!(client::Client, result::AbstractDict) = initversion!(client, result, get(supportedversions, get(result, "protocolVersion", nothing), nothing))
+initversion!(client, result, ::Nothing) = invalid!(client)
+initversion!(client, result, version::String) = initcapabilities!(client, result, version, get(result, "capabilities", nothing))
+initcapabilities!(client, result, version, capabilities) = invalid!(client)
+initcapabilities!(client, result, version, capabilities::AbstractDict) = inittools!(client, result, version, get(capabilities, "tools", Dict()))
+inittools!(client, result, version, tools) = invalid!(client)
+inittools!(client, result, version, ::AbstractDict) = initserver!(client, result, version, get(result, "serverInfo", nothing))
+initserver!(client, result, version, server) = invalid!(client)
+initserver!(client, result, version, server::AbstractDict) = initidentity!(client, result, version, get(server, "name", nothing), get(server, "version", nothing))
+initidentity!(client, result, version, name, serverversion) = invalid!(client)
+function initidentity!(client, result, version, name::AbstractString, serverversion::AbstractString)
     client.server = result
-    protocol!(client.process, result["protocolVersion"])
+    protocol!(client.process, version)
     initialized!(client, send(client, Dict("jsonrpc" => "2.0", "method" => "notifications/initialized")))
 end
 

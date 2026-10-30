@@ -119,6 +119,10 @@ end
         end
         @test MCP.connect(mcpserver("badversion", marker); timeout=10, grace=0.2) isa MCP.Failure
         @test MCP.connect(mcpserver("badcap", marker); timeout=10, grace=0.2) isa MCP.Failure
+        for mode in ("badcaps", "badinfo", "badname", "badserverversion")
+            failure = MCP.connect(mcpserver(mode, marker); timeout=10, grace=0.2)
+            @test failure isa MCP.Failure && failure.kind == :protocol
+        end
         for (mode, version) in (("oldversion", "2025-06-18"), ("oldversion2", "2025-03-26"), ("oldversion3", "2024-11-05"))
             older = MCP.connect(mcpserver(mode, marker); timeout=10, grace=0.2)
             @test older isa MCP.Client && older.server["protocolVersion"] == version
