@@ -183,9 +183,7 @@ recorded_mode!(agent, prompt, ::Sequential; on_event, on_agent_event, parameters
 recorded_start!(agent, prompt, ::Nothing; kwargs...) = :busy
 function recorded_start!(agent, prompt, ::Running; on_event, on_agent_event, parameters)
     messages = Dict{String, Any}[]
-    event_lock = ReentrantLock()
-    callback = on_agent_event
-    on_agent_event = event -> lock(() -> emit(callback, event), event_lock)
+    on_agent_event = EventSink(ReentrantLock(), on_agent_event)
     run = (; agent, on_event, callback=on_agent_event, parameters, messages)
     try
         emit(on_agent_event, (; type=:agent_start))
