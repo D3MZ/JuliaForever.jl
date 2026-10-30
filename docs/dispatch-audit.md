@@ -2,7 +2,7 @@
 
 The audit covers Julia source in `src/`. `test/branch_scan.jl` uses JuliaSyntax to list source locations for conditionals, short-circuit expressions, loops, exception handlers, comprehension filters, `ifelse`, and calls that may take predicates. The predicate list can include calls whose first argument is a search value rather than a function. The inventory is a static review aid; it cannot see branches produced by arbitrary macro expansion or dynamic code.
 
-At revision `b1a598e`, the inventory contained 1,268 points, including 73 `for` loops, 36 exception handlers, and 29 possible predicate calls. The integrated tree has 1,441 points. Counts include nested expressions, so they are not counts of independent decisions. `test/branch-baseline.txt` ratchets the normalized inventory, so added, removed, or changed entries require review and an explicit baseline update. It does not detect changes confined to branch bodies or moves of identical entries.
+At revision `b1a598e`, the inventory contained 1,268 points, including 73 `for` loops, 36 exception handlers, and 29 possible predicate calls. The integrated tree has 1,469 points. Counts include nested expressions, so they are not counts of independent decisions. `test/branch-baseline.txt` ratchets the normalized inventory, so added, removed, or changed entries require review and an explicit baseline update. It does not detect changes confined to branch bodies or moves of identical entries.
 
 The dispatch check is a separate heuristic. Applied to both versions with the expanded rules, it reports 750 candidates at `b1a598e` and 165 now: 649 previous occurrences were removed and 64 appeared under new expressions. The integrated tree includes modules and features added since the initial revision. The previous, narrower checks had recorded 542 and 715 candidates at the initial revision. The exact multiset is in `test/dispatch-baseline.txt`; tests fail if it grows or changes without updating the baseline. Compatibility properties for terminal state and MCP shutdown account for some matches.
 
@@ -55,6 +55,10 @@ Scheduler request deduplication now dispatches on absent requests and decoded ta
 Skill reload adds nine branch entries and five dispatch candidates relative to its base. The candidates are content and revision consistency checks used to retain managed metadata and reject stale updates; the scanner recognizes `Kernel.same` as a Boolean predicate.
 
 Explicit skill commands add two branch entries for matching a discovered name and omitting empty arguments; they add no dispatch candidates.
+
+Interactive command completion adds 22 branch entries for fuzzy matching, menu selection, and layout, and no dispatch candidates.
+
+Markdown rendering in conversation exports adds six branch entries and no dispatch candidates.
 
 The ChatGPT adapter and conversation export add 142 branch entries and no dispatch candidates relative to their integrated base.
 
