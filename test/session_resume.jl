@@ -44,6 +44,8 @@ Base.close(store::ResumeHistory.SQLite{ResumeDatabase}) = (store.db.closes += 1;
     cancelled = JuliaForever.resume!(terminal, agent, first, ResumeCatalog.Cancelled())
     @test cancelled == (agent, first, 0)
     @test first.store.closes == 0
+    @test JuliaForever.resume!(terminal, agent, first, first) == (agent, first, 0)
+    @test first.store.closes == 0
 
     restored, history, status = JuliaForever.resume!(terminal, agent, first, second)
     @test status == 0 && restored.history === second && history === second
@@ -199,4 +201,115 @@ end
         end
     end
 end
+end
+
+mutable struct ResumeCountingProvider
+    calls::Int
+end
+function JuliaForever.complete(provider::ResumeCountingProvider, messages, tools; kwargs...)
+    provider.calls += 1
+    Dict{String, Any}("role" => "assistant", "content" => "ok")
+end
+
+struct ResumeQueueInput <: IO
+    input::IOBuffer
+    agent::Agent
+end
+Base.eof(input::ResumeQueueInput) = eof(input.input)
+function Base.readline(input::ResumeQueueInput; keep=false)
+    steer!(input.agent, "late synthetic-key")
+    readline(input.input; keep)
+end
+
+mutable struct ResumeRaceStore <: ResumeHistory.Store
+    memory::ResumeHistory.Memory
+    hook::Function
+    closes::Int
+end
+ResumeHistory.snapshot(store::ResumeRaceStore) = (store.hook(); ResumeHistory.snapshot(store.memory))
+Base.append!(store::ResumeRaceStore, revision::Integer, batch::Vector) = append!(store.memory, revision, batch)
+Base.close(store::ResumeRaceStore) = (store.closes += 1; nothing)
+
+@testset "resume preserves active pending input and faults" begin
+    mktempdir() do root
+        target_dir = joinpath(root, "target")
+        target = ResumeCatalog.new(target_dir, pwd())
+        @test respond!(Agent(ResumeProvider(), []; history=target), "saved") == "ok"
+        close(target)
+        for kind in (:ephemeral, :durable)
+            source = kind == :ephemeral ? nothing : ResumeCatalog.new(joinpath(root, "source"), pwd())
+            provider = ResumeCountingProvider(0)
+            agent = Agent(provider, []; history=source)
+            steer!(agent, "steer synthetic-key")
+            followup!(agent, "follow synthetic-key")
+            input = IOBuffer("1\n")
+            terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), ["synthetic-key"])
+            previous, owner, status = JuliaForever.resume!(terminal, agent, source, input, target_dir)
+            @test status == 1 && previous === agent && owner === source
+            @test position(input) == 0 && provider.calls == 0
+            @test agent.state.steering == ["steer synthetic-key"] && agent.state.followups == ["follow synthetic-key"]
+            diagnostic = String(take!(terminal.diagnostics))
+            @test occursin("steer [redacted]", diagnostic) && occursin("follow [redacted]", diagnostic) && !occursin("synthetic-key", diagnostic)
+
+            selected = resumetree()
+            Agent(ResumeProvider(), []; history=selected)
+            selected.store.snapshot_failure = ArgumentError("should not inspect target")
+            previous, owner, status = JuliaForever.resume!(terminal, agent, source, selected)
+            @test status == 1 && previous === agent && owner === source
+            @test selected.store.closes == 1 && provider.calls == 0
+            if source !== nothing
+                previous, owner, status = JuliaForever.resume!(terminal, agent, source, source)
+                @test status == 1 && previous === agent && owner === source
+                @test isfile(ResumeCatalog.path(source))
+                @test ResumeHistory.snapshot(source) isa ResumeHistory.Snapshot
+                close(source)
+            end
+        end
+
+        provider = ResumeCountingProvider(0)
+        active = Agent(provider, [])
+        terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), ["synthetic-key"])
+        input = ResumeQueueInput(IOBuffer("1\n"), active)
+        previous, owner, status = JuliaForever.resume!(terminal, active, nothing, input, target_dir)
+        @test status == 1 && previous === active && owner === nothing
+        @test active.state.steering == ["late synthetic-key"] && provider.calls == 0
+        @test occursin("late [redacted]", String(take!(terminal.diagnostics)))
+
+        history = ResumeHistory.Tree(ResumeHistory.Memory())
+        active = Agent(ResumeCountingProvider(0), []; history)
+        steer!(active, "steer synthetic-key")
+        followup!(active, "follow synthetic-key")
+        owner = Ref{Union{Nothing, ResumeHistory.Store}}(history)
+        extensions = JuliaForever.Extensions.snapshot(JuliaForever.Extensions.Registry())
+        status = JuliaForever.interact!(terminal, active, extensions, IOBuffer("/resume\n1\n/exit\n"), IOBuffer(), owner, target_dir)
+        @test status == 1 && owner[] === history && active.provider.calls == 0
+        @test active.state.steering == ["steer synthetic-key"] && active.state.followups == ["follow synthetic-key"]
+        @test occursin("steer [redacted]", String(take!(terminal.diagnostics)))
+        close(history)
+
+        active = Agent(ResumeCountingProvider(0), [])
+        raced = ResumeRaceStore(ResumeHistory.Memory(), () -> nothing, 0)
+        selected = ResumeHistory.Tree(raced)
+        Agent(ResumeProvider(), []; history=selected)
+        sent = Ref(false)
+        raced.hook = () -> sent[] || (sent[] = true; steer!(active, "raced synthetic-key"))
+        previous, owner, status = JuliaForever.resume!(terminal, active, nothing, selected)
+        @test status == 1 && previous === active && owner === nothing
+        @test active.state.steering == ["raced synthetic-key"] && active.provider.calls == 0
+        @test raced.closes == 1 && occursin("raced [redacted]", String(take!(terminal.diagnostics)))
+
+        faulty = Agent(ResumeCountingProvider(0), [])
+        faulty.fault = ResumeHistory.Rejected(:incomplete_turn)
+        input = IOBuffer("1\n")
+        previous, owner, status = JuliaForever.resume!(terminal, faulty, nothing, input, target_dir)
+        @test status == 1 && previous === faulty && owner === nothing && position(input) == 0
+        @test occursin("incomplete turn", String(take!(terminal.diagnostics)))
+    end
+end
+
+@testset "explicit history releases the store on unexpected snapshot failure" begin
+    database = ResumeDatabase(0)
+    store = ResumeHistory.SQLite(database, ReentrantLock(), ResumeHistory.Open())
+    @test_throws ArgumentError ResumeCatalog.adapt(store)
+    @test database.closes == 1
 end

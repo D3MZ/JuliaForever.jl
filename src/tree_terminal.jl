@@ -140,6 +140,14 @@ tree!(terminal::Terminal, agent::Agent, history::History.Tree, choice::Union{Tre
 tree!(terminal::Terminal, agent::Agent, history::History.Tree, choice::Union{TreeTerminal.Move, TreeTerminal.Edit}, ::PendingInputs, snapshot) = (agent, history, 1)
 
 function selectbranch!(terminal, agent, history, choice)
+    lock(agent.lock) do
+        selectbranch!(terminal, agent, history, choice, agent.fault)
+    end
+end
+
+selectbranch!(terminal, agent, history, choice, rejected::History.Rejected) = rejected
+
+function selectbranch!(terminal, agent, history, choice, ::Nothing)
     lock(history.lock) do
         selectbranch!(terminal, history, choice, checkqueues!(terminal, agent.state, history))
     end

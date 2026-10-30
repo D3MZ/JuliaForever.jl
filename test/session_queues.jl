@@ -106,3 +106,36 @@ end
     end
     close(tree)
 end
+
+@testset "tree moves preserve active queues and faults" begin
+    mktempdir() do root
+        for history in (QueueHistory.Tree(QueueHistory.Memory()), JuliaForever.SessionCatalog.new(root, pwd()))
+            provider = QueueResumeProvider(Ref(0))
+            agent = Agent(provider, []; history)
+            target = history.leaf
+            steer!(agent, "steer synthetic-key")
+            followup!(agent, "follow synthetic-key")
+            leaf = history.leaf
+            terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), ["synthetic-key"])
+            for choice in (JuliaForever.TreeTerminal.Move(target), JuliaForever.TreeTerminal.Edit(target, "do not send"))
+                previous, owner, status = JuliaForever.tree!(terminal, agent, history, choice, nothing)
+                @test status == 1 && previous === agent && owner === history
+                @test history.leaf == leaf && provider.calls[] == 0
+                diagnostic = String(take!(terminal.diagnostics))
+                @test occursin("steer [redacted]", diagnostic) && occursin("follow [redacted]", diagnostic)
+            end
+            close(history)
+        end
+        history = QueueHistory.Tree(QueueHistory.Memory())
+        provider = QueueResumeProvider(Ref(0))
+        agent = Agent(provider, []; history)
+        agent.fault = QueueHistory.Rejected(:incomplete_turn)
+        terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), String[])
+        for choice in (JuliaForever.TreeTerminal.Move(history.leaf), JuliaForever.TreeTerminal.Edit(history.leaf, "do not send"))
+            previous, owner, status = JuliaForever.tree!(terminal, agent, history, choice, nothing)
+            @test status == 1 && previous === agent && owner === history && provider.calls[] == 0
+            @test occursin("incomplete turn", String(take!(terminal.diagnostics)))
+        end
+        close(history)
+    end
+end

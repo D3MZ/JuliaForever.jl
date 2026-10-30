@@ -133,7 +133,7 @@ function modified(path)
 end
 
 info(path, id, title::String) = Info(path, id, title, modified(path))
-info(path, id, ::H.Rejected) = nothing
+info(path, id, ::H.Rejected) = Info(path, id, "Unavailable session", modified(path))
 info(path, id, snapshot::H.Snapshot) = info(path, id, firstprompt(snapshot))
 info(path, id, tree::H.Tree) = info(path, id, firstprompt(H.entries(tree)))
 
@@ -178,6 +178,7 @@ function wrap(store::H.SQLite)
 end
 
 release!(store::H.SQLite, ::H.Tree) = nothing
+release!(store::H.SQLite, ::H.SQLite) = nothing
 release!(store::H.SQLite, result) = close(store)
 
 istree(record) = false
@@ -185,9 +186,18 @@ istree(record::Dict) = get(record, "format", "") == H.treeformat
 istree(batch::Vector) = any(istree, batch)
 
 adapt(rejected::H.Rejected) = rejected
-adapt(store::H.SQLite) = adapt(store, H.snapshot(store))
-adapt(store::H.SQLite, rejected::H.Rejected) = (close(store); rejected)
-adapt(store::H.SQLite, snapshot::H.Snapshot) = any(istree, snapshot.batches) ? wrap(store) : store
+function adapt(store::H.SQLite)
+    result = nothing
+    try
+        result = adapt(store, H.snapshot(store))
+    finally
+        release!(store, result)
+    end
+    result
+end
+
+adapt(store::H.SQLite, rejected::H.Rejected) = rejected
+adapt(store::H.SQLite, snapshot::H.Snapshot) = any(istree, snapshot.batches) ? H.Tree(store) : store
 
 openinfo(info::Info) = wrap(open(H.SQLite, info.path; create=false))
 choose(request::Request, dir, cwd, input, output, redact) = choose(request, dir, cwd, input, output)

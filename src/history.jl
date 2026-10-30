@@ -122,14 +122,40 @@ encode(x::Float64) = Any[2, string(reinterpret(UInt64, x); base=16, pad=16)]
 encode(xs::Vector) = Any[0, Any[encode(x) for x in xs]]
 encode(xs::Dict) = Any[1, Dict(key => encode(item) for (key, item) in xs)]
 
+decode(x) = Rejected(:history_format)
 decode(x::Union{Nothing, Bool, Int, String}) = x
+decode(x::Vector) = length(x) == 2 ? decodetag(x[1], x[2]) : Rejected(:history_format)
+decodetag(tag, value) = Rejected(:history_format)
+decodetag(tag::Int, value) = get(decoders, tag, invalidencoded)(value)
+invalidencoded(value) = Rejected(:history_format)
+decodearray(value) = Rejected(:history_format)
+decodearray(value::Vector) = decodeitems(value)
+decodeobject(value) = Rejected(:history_format)
+decodeobject(value::AbstractDict) = foldl(decodepair!, pairs(value); init=Dict{String, Any}())
+decodefloat(value) = Rejected(:history_format)
+decodefloat(value::String) = decodedfloat(tryparse(UInt64, value; base=16))
+decodedfloat(::Nothing) = Rejected(:history_format)
+decodedfloat(value::UInt64) = finitevalue(reinterpret(Float64, value))
+finitevalue(value::Float64) = isfinite(value) ? value : Rejected(:history_format)
+decodeinteger(value) = Rejected(:history_format)
+decodeinteger(value::String) = decodedinteger(tryparse(Int, value))
+decodedinteger(::Nothing) = Rejected(:history_format)
+decodedinteger(value::Int) = value
+const decoders = Dict(0 => decodearray, 1 => decodeobject, 2 => decodefloat, 3 => decodeinteger)
 
-function decode(x::Vector)
-    x[1] == 0 && return Any[decode(item) for item in x[2]]
-    x[1] == 1 && return Dict{String, Any}(key => decode(item) for (key, item) in x[2])
-    x[1] == 2 && return reinterpret(Float64, parse(UInt64, x[2]; base=16))
-    parse(Int, x[2])
-end
+decodebatch(items::Vector) = isempty(items) ? Rejected(:history_format) : decodeitems(items)
+decodeitems(items::Vector) = foldl(decodeitem!, items; init=Any[])
+decodeitem!(rejected::Rejected, item) = rejected
+decodeitem!(items::Vector, item) = pushdecoded!(items, decode(item))
+pushdecoded!(items::Vector, rejected::Rejected) = rejected
+pushdecoded!(items::Vector, item) = (push!(items, item); items)
+
+decodepair!(rejected::Rejected, pair) = rejected
+decodepair!(items::Dict{String, Any}, pair::Pair) = decodekey!(items, first(pair), last(pair))
+decodekey!(items::Dict{String, Any}, key, value) = Rejected(:history_format)
+decodekey!(items::Dict{String, Any}, key::String, value) = setdecoded!(items, key, decode(value))
+setdecoded!(items::Dict{String, Any}, key::String, rejected::Rejected) = rejected
+setdecoded!(items::Dict{String, Any}, key::String, value) = (items[key] = value; items)
 
 function snapshot(history::Memory)
     lock(history.lock) do
@@ -182,9 +208,16 @@ end
 snapshot(history::Journal) = snapshot(content(get(history.store, D.Document, history.id)))
 snapshot(rejected::Rejected) = rejected
 
-function snapshot(data::Dict)
-    Snapshot(data["revision"], Vector{Any}[Any[decode(item) for item in batch] for batch in data["batches"]])
-end
+snapshot(data::Dict) = snapshot(get(data, "revision", nothing), get(data, "batches", nothing))
+snapshot(revision, batches) = Rejected(:history_format)
+snapshot(revision::Int, batches::Vector) = snapshotdecoded(revision, foldl(readbatch!, batches; init=Vector{Any}[]))
+snapshotdecoded(revision::Int, rejected::Rejected) = rejected
+snapshotdecoded(revision::Int, batches::Vector{Vector{Any}}) = revision == length(batches) ? Snapshot(revision, batches) : Rejected(:history_format)
+readbatch!(rejected::Rejected, batch) = rejected
+readbatch!(batches::Vector{Vector{Any}}, batch) = Rejected(:history_format)
+readbatch!(batches::Vector{Vector{Any}}, batch::Vector) = addbatch!(batches, decodebatch(batch))
+addbatch!(batches::Vector{Vector{Any}}, rejected::Rejected) = rejected
+addbatch!(batches::Vector{Vector{Any}}, batch::Vector) = (push!(batches, batch); batches)
 
 outcome(result::D.Rejected) = Rejected(result.reason)
 outcome(result) = result

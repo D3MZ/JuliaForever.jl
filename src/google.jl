@@ -1,7 +1,7 @@
 module GoogleAPI
 
 using HTTP, JSON3, Random, SHA
-import ..JuliaForever: complete, stream, payload, headers, endpoint, definition, decode, incomplete, images, UnsupportedImage, InvalidResponse, Completion, Usage
+import ..JuliaForever: complete, stream, payload, headers, endpoint, definition, decode, incomplete, images, UnsupportedImage, InvalidResponse, ProviderError, providererror, Completion, Usage
 
 struct Google
     base::String
@@ -175,7 +175,7 @@ mutable struct State
     text::Union{Nothing, String}
     used::Union{Nothing, Usage}
     reason::Union{Nothing, String}
-    failure::Union{Nothing, String, InvalidResponse}
+    failure::Union{Nothing, String, InvalidResponse, ProviderError}
 end
 State() = State([], [], nothing, nothing, nothing, nothing)
 
@@ -219,7 +219,7 @@ function receive!(state::State, ::Nothing, data::AbstractDict, callback)
     receiveusage!(state, get(data, "usageMetadata", nothing), callback)
     candidates = get(data, "candidates", [])
     isempty(candidates) || receivecandidate!(state, first(candidates), callback)
-    haskey(data, "error") && (state.failure = JSON3.write(data["error"]))
+    haskey(data, "error") && (state.failure = providererror(:google, data["error"]))
 end
 receive!(state::State, failure, data::AbstractDict, callback) = nothing
 receive!(state::State, failure::InvalidResponse, callback) = fail!(state, state.failure, failure)
@@ -239,8 +239,10 @@ function receivecandidate!(state, candidate, callback)
     reportfinish!(callback, state.reason, state.calls)
 end
 reportfinish!(callback, ::Nothing, calls) = nothing
-function reportfinish!(callback, reason, calls)
-    mapped = get(Dict("STOP" => "stop", "MAX_TOKENS" => "length"), reason, reason)
+const finishreasons = merge(Dict("STOP" => "stop", "MAX_TOKENS" => "length"), Dict(reason => reason for reason in ("FINISH_REASON_UNSPECIFIED", "SAFETY", "RECITATION", "LANGUAGE", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL", "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_OTHER", "NO_IMAGE", "IMAGE_RECITATION", "UNEXPECTED_TOOL_CALL", "TOO_MANY_TOOL_CALLS", "MISSING_THOUGHT_SIGNATURE", "MALFORMED_RESPONSE", "ESCALATION", "PUP_LIMITED_DISABLED", "CONTINUATION")))
+reportfinish!(callback, reason, calls) = reportknownfinish!(callback, get(finishreasons, reason, nothing), calls)
+reportknownfinish!(callback, ::Nothing, calls) = nothing
+function reportknownfinish!(callback, mapped::String, calls)
     name = mapped == "stop" && !isempty(calls) ? "tool_calls" : mapped
     callback((; type=:finish, reason=name))
 end
@@ -258,7 +260,7 @@ function result(message, state, reason::AbstractString)
     result(message, state, reason, mapped)
 end
 function result(message, state, reason, ::Nothing)
-    Completion(message, state.used, nothing, false, something(state.failure, "Google finish reason: $reason"))
+    Completion(message, state.used, nothing, false, something(state.failure, providererror(:google, reason)))
 end
 function result(message, state, reason, mapped::AbstractString)
     finish = mapped == "stop" && !isempty(state.calls) ? "tool_calls" : mapped

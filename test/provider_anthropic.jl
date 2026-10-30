@@ -72,7 +72,7 @@ end
 
 @testset "Anthropic streaming" begin
     events = anthropic_events()
-    replies = [events, events[1:end-1], [events[1], Dict("type" => "error", "error" => Dict("message" => "overloaded"))], [events[1:end-3]..., Dict("type" => "message_delta", "delta" => Dict("stop_reason" => "refusal"), "usage" => Dict("output_tokens" => 4)), events[end]]]
+    replies = [events, events[1:end-1], [events[1], Dict("type" => "error", "error" => Dict("type" => "overloaded_error", "message" => "overloaded"))], [events[1:end-3]..., Dict("type" => "message_delta", "delta" => Dict("stop_reason" => "refusal"), "usage" => Dict("output_tokens" => 4)), events[end]]]
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
         HTTP.Response(200, ["Content-Type" => "text/event-stream"], join(anthropicsse.(popfirst!(replies))))
     end
@@ -92,7 +92,7 @@ end
         @test join(event.arguments for event in seen if event.type == :tool_call) == "{\"path\":\"a.txt\",\"content\":\"ok\"}"
         @test !JuliaForever.stream(model, [], Dict()).done
         failed = JuliaForever.stream(model, [], Dict())
-        @test !failed.done && occursin("overloaded", failed.error)
+        @test !failed.done && failed.error isa ProviderError && failed.error.kind == :overloaded
         refused = JuliaForever.stream(model, [], Dict())
         @test !refused.done
     finally

@@ -21,8 +21,8 @@ end
     @test ToolResult("ok", false) == success
     @test ToolResult("failed", true) == failure
     @test !success.iserror && failure.iserror
-    @test JuliaForever.toolmessage(call, success) == Dict("role" => "tool", "tool_call_id" => "call", "content" => "ok")
-    @test JuliaForever.toolmessage(call, failure) == Dict("role" => "tool", "tool_call_id" => "call", "content" => "Error: failed")
+    @test JuliaForever.toolmessage(call, success) == Dict("role" => "tool", "tool_call_id" => "call", "content" => "ok", "is_error" => false)
+    @test JuliaForever.toolmessage(call, failure) == Dict("role" => "tool", "tool_call_id" => "call", "content" => "Error: failed", "is_error" => true)
 
     for result in (success, failure)
         reply = JuliaForever.Conversation.ToolReply(result)

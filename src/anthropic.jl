@@ -1,7 +1,7 @@
 module AnthropicAPI
 
 using HTTP, JSON3, SHA
-import ..JuliaForever: complete, stream, payload, headers, endpoint, provider, definition, decode, incomplete, images, UnsupportedImage, InvalidResponse, Completion, Usage
+import ..JuliaForever: complete, stream, payload, headers, endpoint, provider, definition, decode, incomplete, images, UnsupportedImage, InvalidResponse, ProviderError, providererror, Completion, Usage
 
 struct Anthropic
     base::String
@@ -188,7 +188,7 @@ function result(blocks, reason, used, failure)
 end
 
 function result(blocks, reason, used, failure, ::Nothing)
-    detail = "Anthropic stop reason: $(reason)"
+    detail = providererror(:anthropic, reason)
     failure = something(failure, detail)
     Completion(content(blocks), used, nothing, false, failure)
 end
@@ -256,7 +256,7 @@ mutable struct State
     seen::Set{Int}
     used::Dict{String, Any}
     reason::Union{Nothing, String}
-    failure::Union{Nothing, String, InvalidResponse}
+    failure::Union{Nothing, String, InvalidResponse, ProviderError}
     phase::Phase
 end
 State() = State(Block[], Dict{Int, Block}(), Set{Int}(), Dict{String, Any}(), nothing, nothing, Waiting())
@@ -366,7 +366,7 @@ end
 report!(callback, ::Nothing) = nothing
 report!(callback, reason) = callback((; type=:finish, reason))
 receive!(state::State, ::Running, ::Stop, callback) = (state.phase = Stopped())
-receive!(state::State, ::Phase, event::Failure, callback) = (state.failure = JSON3.write(event.data["error"]))
+receive!(state::State, ::Phase, event::Failure, callback) = (state.failure = providererror(:anthropic, event.data["error"]))
 receive!(state::State, ::Phase, ::Ignore, callback) = nothing
 receive!(state::State, ::Phase, ::Event, callback) = (state.failure = "Anthropic stream contained an unexpected event")
 
