@@ -170,8 +170,8 @@ end
 responsefinish(raw, ::Unfinished, calls) = saferesponsestatus(raw)
 responsefinish(raw, ::Finished, ::Nothing) = "stop"
 responsefinish(raw, ::Finished, calls) = "tool_calls"
-responsecomplete(status, failure) = false
-responsecomplete(::Finished, ::Nothing) = true
+responsecomplete(status, failure) = Unfinished()
+responsecomplete(::Finished, ::Nothing) = Finished()
 
 function completion(provider::OpenAIResponses, data; failure=nothing)
     output = get(data, "output", [])

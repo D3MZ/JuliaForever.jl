@@ -7,16 +7,30 @@ function Base.convert(::Type{Dict{String, Any}}, message::Conversation.Summary)
     Dict{String, Any}("role" => "user", "content" => summaryprefix * message.content * summarysuffix)
 end
 
-const userroles = Dict("user" => true)
-const systemroles = Dict("system" => true)
-isuser(::Conversation.Message) = false
-isuser(::Conversation.User) = true
-isuser(::Conversation.ImageUser) = true
-isuser(message::Conversation.RawMessage) = get(userroles, get(message.value, "role", nothing), false)
-issystem(::Conversation.Message) = false
-issystem(message::Conversation.RawMessage) = get(systemroles, get(message.value, "role", nothing), false)
-summarizable(::Conversation.Message) = true
-summarizable(::Conversation.Summary) = false
+previoususer(index, current) = index
+currentuser(index, current) = current
+const userroles = Dict("user" => currentuser)
+lastuser(index, current, ::Conversation.Message) = index
+lastuser(index, current, ::Union{Conversation.User, Conversation.ImageUser}) = current
+lastuser(index, current, message::Conversation.RawMessage) = get(userroles, get(message.value, "role", nothing), previoususer)(index, current)
+
+function lastuser(messages)
+    index = nothing
+    for (current, message) in enumerate(messages)
+        index = lastuser(index, current, message)
+    end
+    index
+end
+
+systemmessage!(system, other, message) = push!(system, message)
+othermessage!(system, other, message) = push!(other, message)
+const systemroles = Dict("system" => systemmessage!)
+partitionmessage!(system, other, message::Conversation.Message) = othermessage!(system, other, message)
+partitionmessage!(system, other, message::Conversation.RawMessage) = get(systemroles, get(message.value, "role", nothing), othermessage!)(system, other, message)
+
+summarycheck(::Nothing, message::Conversation.Message) = nothing
+summarycheck(rejected::History.Rejected, ::Conversation.Summary) = rejected
+summarycheck(::History.Rejected, ::Conversation.Message) = nothing
 
 struct CompactionPlan
     revision::Int
@@ -31,19 +45,22 @@ compactionplan(agent, ::Nothing) = compactionplan(agent, nothing, fault(agent.st
 
 function compactionplan(agent, ::Nothing, ::Nothing)
     messages = agent.state.messages
-    compactionplan(agent, messages, findlast(isuser, messages))
+    compactionplan(agent, messages, lastuser(messages))
 end
 
 compactionplan(agent, ::Nothing, rejected::History.Rejected) = rejected
 compactionplan(agent, messages, ::Nothing) = History.Rejected(:nothing_to_compact)
 
 function compactionplan(agent, messages, cut::Int)
-    summarized = filter(!issystem, messages[1:cut-1])
-    any(summarizable, summarized) || return History.Rejected(:nothing_to_compact)
-    retained = filter(!issystem, messages[cut:end])
-    system = filter(issystem, messages)
-    CompactionPlan(agent.state.revision, deepcopy(agent.messages), system, summarized, retained)
+    system, summarized, retained = Conversation.Message[], Conversation.Message[], Conversation.Message[]
+    for (index, message) in enumerate(messages)
+        partitionmessage!(system, index < cut ? summarized : retained, message)
+    end
+    checked = foldl(summarycheck, summarized; init=History.Rejected(:nothing_to_compact))
+    compactionplan(agent, system, summarized, retained, checked)
 end
+compactionplan(agent, system, summarized, retained, rejected::History.Rejected) = rejected
+compactionplan(agent, system, summarized, retained, ::Nothing) = CompactionPlan(agent.state.revision, deepcopy(agent.messages), system, summarized, retained)
 
 struct Summarizer{P}
     provider::P

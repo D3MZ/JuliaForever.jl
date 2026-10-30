@@ -51,6 +51,9 @@ include("dispatch_checks.jl")
     @test length(dispatchchecks(Meta.parseall("selected(x::String) = if isempty(x); true; else; return false; end\nf(x) = selected(x) ? 1 : 0"))) == 1
     @test length(dispatchchecks(Meta.parseall("selected(x::String) = if isempty(x); true; else; return false; end\nf(xs) = filter(selected, xs)"))) == 1
     @test isempty(dispatchchecks(Meta.parseall("selected(x) = x > 0\nf(x) = selected(x) ? 1 : 0")))
+    @test length(dispatchchecks(Meta.parseall("flag(::Nothing) = false\nflag(::String) = true\nf(x) = Completion(Dict(), nothing, nothing, flag(x), nothing)"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(x) = ToolReply(x.text, x.iserror)"))) == 1
+    @test isempty(dispatchchecks(Meta.parse("f(iserror::Bool) = ToolResult(\"text\", iserror)")))
     @test length(dispatchchecks(Meta.parse("f(flag) = handle(Val(flag))"))) == 1
     @test length(dispatchchecks(Meta.parse("f() = handle(Val(true))"))) == 1
     @test length(dispatchchecks(Meta.parse("f() = handle(Val(false))"))) == 1

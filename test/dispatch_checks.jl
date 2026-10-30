@@ -60,7 +60,7 @@ function dispatchprobe(expression)
 end
 
 function dispatchcheck(expression, direct)
-    expression === :iserror && return true
+    expression === :iserror && return direct
     direct && expression isa Symbol && expression ∉ (:true, :false, :nothing) && return true
     expression isa Expr || return false
     direct && expression.head in (:., :ref) && return true
@@ -140,6 +140,8 @@ function dispatchchecks!(checks, expression, condition=false, direct=true, predi
         dispatchchecks!(checks, last(expression.args), condition, true, predicates)
     elseif expression.head == :call && first(expression.args) === :!
         dispatchchecks!(checks, expression.args[2], condition, direct, predicates)
+    elseif expression.head == :call && dispatchcallee(first(expression.args)) in (:Completion, :ToolResult, :ToolReply, :CodeResult)
+        foreach(arg -> dispatchchecks!(checks, arg, true, false, predicates), expression.args[2:end])
     elseif expression.head == :call && dispatchcallee(first(expression.args)) === :ifelse
         dispatchchecks!(checks, expression.args[2], true, true, predicates)
         foreach(arg -> dispatchchecks!(checks, arg, false, true, predicates), expression.args[3:end])
