@@ -438,7 +438,7 @@ function initial(extensions)
     cwd = pwd()
     files = Instructions.load(cwd; agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing))
     prompt = context(cwd, Extensions.tools(extensions), files)
-    messages = Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+    messages = Conversation.Message[Conversation.RawMessage(Dict("role" => "system", "content" => prompt))]
     Skills.appendprompt!(messages, Skills.render(Skills.load(cwd)))
     messages
 end
