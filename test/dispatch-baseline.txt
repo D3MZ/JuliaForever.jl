@@ -192,8 +192,6 @@ scheduler.jl	:(view === nothing)
 scheduler.jl	:(view.kind == name(handler))
 scheduler.jl	:cancelled
 scheduler.jl	:success
-search.jl	:(gitignore(tool, inrepo(repo, i)))
-search.jl	:(gitignore(tool, inside))
 search.jl	:(isnothing(filterregex))
 search.jl	:(isnothing(filterregex))
 search.jl	:(isnothing(stop))

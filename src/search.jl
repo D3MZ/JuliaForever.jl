@@ -158,26 +158,26 @@ function ancestors(root)
     dirs
 end
 
-gitignore(::Find, inside) = true
-gitignore(::Grep, inside) = inside
-inrepo(::Nothing, i) = false
-inrepo(repo::Integer, i) = i >= repo
-hasrepo(::Nothing) = false
-hasrepo(repo::Integer) = true
+gitignore!(result, dir, ::Find, repo) = append!(result, rules(joinpath(dir, ".gitignore"), GitRule))
+gitignore!(result, dir, ::Grep, ::Nothing) = nothing
+gitignore!(result, dir, ::Grep, repo::AbstractString) = append!(result, rules(joinpath(dir, ".gitignore"), GitRule))
+reposcope(::Nothing, dirs, i) = nothing
+reposcope(repo::Integer, dirs, i) = i >= repo ? dirs[repo] : nothing
 
 function initialrules(root, tool::Union{Find, Grep})
     dirs = ancestors(root)
-    repo = findlast(dir -> ispath(joinpath(dir, ".git")), [dirs; root])
+    locations = [dirs; root]
+    repo = findlast(dir -> ispath(joinpath(dir, ".git")), locations)
     result = IgnoreRule[]
     for (i, dir) in enumerate(dirs)
         if ispath(joinpath(dir, ".git"))
             filter!(keep, result)
             append!(result, rules(joinpath(dir, ".git", "info", "exclude"), GitRule; base=dir))
         end
-        gitignore(tool, inrepo(repo, i)) && append!(result, rules(joinpath(dir, ".gitignore"), GitRule))
+        gitignore!(result, dir, tool, reposcope(repo, locations, i))
         append!(result, rules(joinpath(dir, ".ignore"), FileRule))
     end
-    result, gitignore(tool, hasrepo(repo))
+    result, reposcope(repo, locations, length(locations))
 end
 
 function walksearch(visit, root, tool::Union{Find, Grep}; whitelist=(target -> false))
@@ -187,9 +187,9 @@ function walksearch(visit, root, tool::Union{Find, Grep}; whitelist=(target -> f
         if ispath(joinpath(dir, ".git"))
             filter!(keep, ruleset)
             append!(ruleset, rules(joinpath(dir, ".git", "info", "exclude"), GitRule; base=dir))
-            inside = true
+            inside = dir
         end
-        gitignore(tool, inside) && append!(ruleset, rules(joinpath(dir, ".gitignore"), GitRule))
+        gitignore!(ruleset, dir, tool, inside)
         append!(ruleset, rules(joinpath(dir, ".ignore"), FileRule))
         for entry in readdir(dir)
             entry == ".git" && continue

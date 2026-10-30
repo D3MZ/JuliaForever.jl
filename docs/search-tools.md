@@ -1,5 +1,7 @@
 # Search tools
 
+The internal `initialrules` helper now returns a repository path or `nothing` as its second value instead of a Boolean.
+
 `Find` and `Grep` traverse and search files in Julia; they do not invoke Pi, Node, fd, or ripgrep. Both are registered in the `jf` agent. The optional differential tests compare their output with Pi at the pinned revision using Pi's own search tools and their fd and ripgrep executables.
 
 The comparison gives Pi a temporary agent directory. If `fd` or `rg` is unavailable on `PATH`, Pi may download it into that temporary directory; it does not install tools into the user's Pi configuration.
