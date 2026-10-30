@@ -37,6 +37,7 @@ include("search.jl")
 include("context.jl")
 include("skills.jl")
 include("codemode.jl")
+include("tool_selection.jl")
 include("terminal.jl")
 include("terminal_editor.jl")
 include("tree_terminal.jl")
@@ -148,14 +149,13 @@ function acquire(auth::OpenRouterAuth, info::NamedTuple, model)
     login!(login, code, info, model)
 end
 
-launch(status::Integer, packages, environments, codemode, session, sessiondir, args, sessionname) = status
+launch(status::Integer, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded) = status
 
-function launch(model::Union{OpenAI, OpenAIResponses, Anthropic, Google}, packages, environments, codemode, session, sessiondir, args, sessionname)
-    tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
-    Sys.iswindows() && push!(tools, PowerShell(pwd()))
+function launch(model::Union{OpenAI, OpenAIResponses, Anthropic, Google}, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
+    tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), PowerShell(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
     terminal = Terminal(stdout, stderr, [model.key])
     registry = plugins(terminal, tools, packages, environments)
-    Base.invokelatest(terminal!, terminal, model, registry, codemode, session, sessiondir, args, sessionname)
+    Base.invokelatest(terminal!, terminal, model, registry, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
 end
 
 pluginfailure!(terminal::Terminal, name, exception::InterruptException) = failure!(terminal, exception)
@@ -212,6 +212,7 @@ registered(terminal, registry, name, result::Extensions.Rejected) = pluginfailur
 function help!()
     println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
     println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --fork PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
+    println("Tools: --tools (-t) LIST, --exclude-tools (-xt) LIST, --no-builtin-tools (-nbt), --no-tools (-nt).")
     println("Use @PATH to include a text file or image in the initial prompt.")
     0
 end
@@ -228,6 +229,9 @@ function (@main)(args)
     sessiondir = SessionCatalog.directory(ENV)
     sessionname = nothing
     positional = String[]
+    baseline = ToolSelection.Defaults()
+    rules = ToolSelection.Inherit()
+    excluded = Regex[]
     while !isempty(args)
         if first(args) == "--"
             append!(positional, args)
@@ -237,6 +241,24 @@ function (@main)(args)
         elseif first(args) == "--codemode"
             codemode = true
             args = args[2:end]
+        elseif first(args) in ("--no-tools", "-nt")
+            baseline = ToolSelection.baseline(baseline, ToolSelection.NoTools())
+            args = args[2:end]
+        elseif first(args) in ("--no-builtin-tools", "-nbt")
+            baseline = ToolSelection.baseline(baseline, ToolSelection.NoBuiltin())
+            args = args[2:end]
+        elseif first(args) in ("--tools", "-t", "--exclude-tools", "-xt")
+            option = first(args)
+            if length(args) < 2
+                println(stderr, option, " requires a value.")
+                return 2
+            end
+            if option in ("--tools", "-t")
+                rules = ToolSelection.assign(rules, ToolSelection.entries(args[2]))
+            else
+                excluded = ToolSelection.patterns(args[2])
+            end
+            args = args[3:end]
         elseif first(args) in ("--provider", "--model")
             option = first(args)
             if length(args) < 2 || isempty(strip(args[2])) || startswith(args[2], "--")
@@ -316,10 +338,15 @@ function (@main)(args)
         end
     end
     args = positional
-    options = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname)
-    selectedprovider(action, options, selected)
+    options = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
+    selectedtools(action, options, rules)
 end
 
+selectedtools(action, options, ::ToolSelection.Rule) = selectedprovider(action, options, options.selected)
+function selectedtools(action, options, invalid::ToolSelection.Invalid)
+    println(stderr, "--tools: ", invalid.message)
+    2
+end
 selectedprovider(action, options, ::Nothing) = historyaction(action, options)
 selectedprovider(action, options, selected::AbstractString) = providerselection(action, options, providerinfo(selected))
 providerselection(action, options, ::NamedTuple) = historyaction(action, options)
@@ -338,10 +365,10 @@ function loginprovider(options, ::Nothing)
     2
 end
 function launchprovider(options)
-    (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname) = options
+    (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded) = options
     info = providerinfo(providername(auth, selected))
     model = acquire(auth, info, requested_model)
-    launch(model, packages, environments, codemode, session, sessiondir, args, sessionname)
+    launch(model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
 end
 historyaction(::HistoryInspection, options) = inspectrequest!(options.session, options.auth, options.sessionname, options.args)
 historyaction(::HistoryConflict, options) = invalidinspection()
@@ -365,7 +392,7 @@ function abandonrequest!(session::SessionCatalog.Explicit, ::APIKeyAuth, ::Nothi
     isempty(args) || return invalidabandon()
     abandonhistory!(Terminal(stdout, stderr, String[]), session.path, reason)
 end
-terminal!(terminal::Terminal, model, registry::Integer, codemode, session, sessiondir, args, sessionname) = registry
+terminal!(terminal::Terminal, model, registry::Integer, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded) = registry
 
 function initial(extensions)
     cwd = pwd()
@@ -382,13 +409,13 @@ initial(extensions, snapshot::History.Snapshot) = iszero(snapshot.revision) ? in
 selection(result::ToolFailure) = SessionCatalog.Invalid(result.text)
 selection(result) = result
 
-function terminal!(terminal::Terminal, model, registry::Extensions.Registry, codemode, session, sessiondir, args, sessionname)
+function terminal!(terminal::Terminal, model, registry::Extensions.Registry, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
     if codemode
         mode = CodeMode(Extensions.tools(Extensions.snapshot(registry)))
         result = Extensions.register!(registry, gensym(:codemode), Extensions.Plugin(; tools=(mode,)))
-        return terminal!(terminal, model, registered(terminal, registry, "codemode", result), false, session, sessiondir, args, sessionname)
+        return terminal!(terminal, model, registered(terminal, registry, "codemode", result), false, session, sessiondir, args, sessionname, baseline, rules, excluded)
     end
-    extensions = Extensions.snapshot(registry)
+    extensions = ToolSelection.select(Extensions.snapshot(registry), baseline, rules, excluded)
     history = selection(attempt(() -> SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr, text -> redact(terminal, text))))
     runsession!(history, terminal, model, extensions, args, sessiondir, sessionname)
 end
