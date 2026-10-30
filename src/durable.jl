@@ -348,23 +348,27 @@ function Base.open(::Type{Store}, path::AbstractString)
     end
     created = !isfile(path)
     io = open(path, "a+")
-    success = false
+    result = nothing
     try
-        result = claim(io)
-        result === nothing || return result
-        if created
-            sync(io)
-            syncdir(path)
-        end
-        state = recover(io)
-        state isa Rejected && return state
-        store = Store(io, state, state.nextid, ReentrantLock(), false, false, false)
-        success = true
-        store
+        result = opened(io, path, created, claim(io))
     finally
-        success || close(io)
+        release(io, result)
     end
+    result
 end
+
+opened(io, path, created, result) = result
+function opened(io, path, created, ::Nothing)
+    if created
+        sync(io)
+        syncdir(path)
+    end
+    recovered(io, recover(io))
+end
+recovered(io, rejected::Rejected) = rejected
+recovered(io, state::State) = Store(io, state, state.nextid, ReentrantLock(), false, false, false)
+release(io, ::Store) = nothing
+release(io, result) = close(io)
 
 function Base.close(store::Store)
     lock(store.lock) do

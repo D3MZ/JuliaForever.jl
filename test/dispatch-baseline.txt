@@ -52,9 +52,7 @@ durable.jl	:(name === :failed)
 durable.jl	:(nextid isa Int)
 durable.jl	:(previous.kind == kind)
 durable.jl	:(record isa Record)
-durable.jl	:(result === nothing)
 durable.jl	:(seq isa Int)
-durable.jl	:(state isa Rejected)
 durable.jl	:(valid(apply!(state, record)))
 durable.jl	:(valid(forkcheck(state, record)))
 durable.jl	:(valid(forkcheck(state, records)))
@@ -62,7 +60,6 @@ durable.jl	:(visible(state, conversation, at))
 durable.jl	:(writes isa AbstractVector)
 durable.jl	:adopted
 durable.jl	:created
-durable.jl	:success
 execution.jl	:(cancelled(cancellation))
 execution.jl	:(cancelled(handle.cancellation))
 execution_conversation.jl	:(name === :detailed)
