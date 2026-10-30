@@ -428,7 +428,7 @@ function toolresult(agent, call, request, on_agent_event)
     turn = lock(() -> agent.turn, agent.lock)
     update = partial_result -> emit(on_agent_event, (; type=:tool_execution_update, tool_call_id=id, tool_name=info.name, args=info.args, partial_result))
     result = invoke(agent, call, request, turn, update, on_agent_event)
-    emit(on_agent_event, (; type=:tool_execution_end, tool_call_id=id, tool_name=info.name, result, iserror=result.iserror))
+    emit(on_agent_event, (; type=:tool_execution_end, tool_call_id=id, tool_name=info.name, result=visible(result), iserror=result.iserror))
     result
 end
 

@@ -144,9 +144,13 @@ function interceptresult(listener::Extensions.Listener, call, args, result::Tool
                 push!(listener.errors, Extensions.Failure(hook.plugin, :tool_result, exception))
             end
         end
-        current
+        discovery(result, current)
     end
 end
+
+discovery(original::ToolResult, result::ToolResult) = result
+discovery(original::ToolLoaded, result::ToolLoaded) = result
+discovery(original::ToolLoaded, result::ToolResult) = ToolDiscovery(result, loaded(original))
 
 resultvalue(current::ToolResult, ::Nothing) = current
 resultvalue(current::ToolResult, result::ToolResult) = result
