@@ -9,6 +9,12 @@ const dispatchresultproperties = Dict(:Completion => :done, :CodeResult => :ok)
 const dispatchresultvariables = Set([:iserror, :failed, :failure, :ok, :done, :success, :cancelled, :truncated, :flag])
 const dispatchflagvariables = union(dispatchresultvariables, Set([:exclude, :negate, :enabled]))
 
+struct DispatchPredicates
+    booleans::Set{Symbol}
+    labels::Set{Symbol}
+end
+DispatchPredicates() = DispatchPredicates(Set{Symbol}(), Set{Symbol}())
+
 function dispatchfield(expression)
     expression isa Symbol && expression in dispatchfields && return expression
     expression isa Expr || return nothing
@@ -24,10 +30,16 @@ function dispatchfield(expression)
     nothing
 end
 
-function dispatchpredicate(expression, predicates=Set{Symbol}())
-    (dispatchcallee(expression) in (:isnothing, :ismissing, :cancelled) || dispatchcallee(expression) in predicates) && return true
+function dispatchpredicate(expression, predicates=DispatchPredicates())
+    (dispatchcallee(expression) in (:isnothing, :ismissing, :cancelled) || dispatchcallee(expression) in predicates.booleans) && return true
     expression isa Expr && expression.head == :call && first(expression.args) === :! && length(expression.args) == 2 && return dispatchpredicate(last(expression.args), predicates)
     false
+end
+
+function dispatchlabelcheck(expression, predicates)
+    expression isa Expr && expression.head == :call || return false
+    dispatchcallee(first(expression.args)) in (:(===), :(!==), :(==), :(!=), :in, :∈) || return false
+    any(arg -> arg isa Expr && arg.head == :call && dispatchcallee(first(arg.args)) in predicates.labels, expression.args[2:end])
 end
 
 const dispatchstatuses = Set(["cancelled", "canceled", "complete", "completed", "done", "end", "error", "failed", "function_call", "idle", "in_progress", "incomplete", "length", "pending", "placed", "queued", "ready", "running", "stop", "success", "timed_out", "timeout", "tool_calls"])
@@ -125,6 +137,38 @@ function dispatchbools!(names, expression)
     names
 end
 
+function dispatchlabelreturn(expression)
+    expression isa String && return true
+    expression isa QuoteNode && return expression.value isa Symbol
+    expression isa Expr || return false
+    if expression.head == :block
+        values = filter(value -> !(value isa LineNumberNode), expression.args)
+        return !isempty(values) && dispatchlabelreturn(last(values))
+    elseif expression.head == :return && length(expression.args) == 1
+        return dispatchlabelreturn(only(expression.args))
+    elseif expression.head in (:if, :elseif) && length(expression.args) == 3
+        return dispatchlabelreturn(expression.args[2]) && dispatchlabelreturn(expression.args[3])
+    end
+    false
+end
+
+function dispatchlabels!(names, expression)
+    expression isa Expr || return names
+    expression.head in (:quote, :inert) && return names
+    if expression.head in (:(=), :function) && length(expression.args) == 2
+        signature, body = expression.args
+        while signature isa Expr && signature.head in (:where, :(::))
+            signature = first(signature.args)
+        end
+        if signature isa Expr && signature.head == :call && dispatchlabelreturn(body) && any(arg -> arg isa Expr && arg.head == :(::), signature.args[2:end])
+            name = dispatchcallee(first(signature.args))
+            name isa Symbol && push!(names, name)
+        end
+    end
+    foreach(arg -> dispatchlabels!(names, arg), expression.args)
+    names
+end
+
 function dispatchconstructor(signature)
     signature isa Expr || return false
     signature.head in (:where, :(::)) && return dispatchconstructor(first(signature.args))
@@ -139,9 +183,9 @@ function dispatchsignature!(checks, signature, predicates)
     checks
 end
 
-function dispatchchecks!(checks, expression, condition=false, direct=true, predicates=Set{Symbol}())
-    boolcall = condition && expression isa Expr && expression.head == :call && dispatchcallee(first(expression.args)) in predicates
-    if boolcall || (condition && dispatchcheck(expression, direct)) || (!condition && (dispatchstatuscheck(expression) || dispatchprobe(expression)))
+function dispatchchecks!(checks, expression, condition=false, direct=true, predicates=DispatchPredicates())
+    boolcall = condition && expression isa Expr && expression.head == :call && dispatchcallee(first(expression.args)) in predicates.booleans
+    if boolcall || dispatchlabelcheck(expression, predicates) || (condition && dispatchcheck(expression, direct)) || (!condition && (dispatchstatuscheck(expression) || dispatchprobe(expression)))
         value = expression isa Expr ? Base.remove_linenums!(deepcopy(expression)) : expression
         push!(checks, replace(sprint(show, value), '\n' => ' '))
         return checks
@@ -162,7 +206,7 @@ function dispatchchecks!(checks, expression, condition=false, direct=true, predi
         dispatchchecks!(checks, last(expression.args), condition, true, predicates)
     elseif expression.head == :kw && length(expression.args) == 2
         value = last(expression.args)
-        boolkeyword = value isa Expr && value.head == :call && dispatchcallee(first(value.args)) in predicates
+        boolkeyword = value isa Expr && value.head == :call && dispatchcallee(first(value.args)) in predicates.booleans
         dispatchchecks!(checks, value, boolkeyword, false, predicates)
     elseif expression.head == :call && first(expression.args) === :!
         dispatchchecks!(checks, expression.args[2], condition, direct, predicates)
@@ -194,7 +238,12 @@ function dispatchchecks!(checks, expression, condition=false, direct=true, predi
     checks
 end
 
-dispatchchecks(expression) = dispatchchecks!(String[], expression, false, true, dispatchbools!(Set{Symbol}(), expression))
+function dispatchchecks(expression)
+    predicates = DispatchPredicates()
+    dispatchbools!(predicates.booleans, expression)
+    dispatchlabels!(predicates.labels, expression)
+    dispatchchecks!(String[], expression, false, true, predicates)
+end
 
 function dispatchdifference(actual, expected)
     remaining = Dict{String, Int}()
@@ -222,8 +271,9 @@ function dispatchbaseline(root)
             push!(sources, relpath(file, root) => Meta.parseall(read(file, String)))
         end
     end
-    predicates = Set{Symbol}()
-    foreach(source -> dispatchbools!(predicates, source.second), sources)
+    predicates = DispatchPredicates()
+    foreach(source -> dispatchbools!(predicates.booleans, source.second), sources)
+    foreach(source -> dispatchlabels!(predicates.labels, source.second), sources)
     entries = String[]
     for (file, expression) in sources
         for check in dispatchchecks!(String[], expression, false, true, predicates)

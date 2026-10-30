@@ -87,6 +87,8 @@ include("dispatch_checks.jl")
     @test length(dispatchchecks(Meta.parse("f(label) = label == \"results\" ? 1 : 0"))) == 1
     @test length(dispatchchecks(Meta.parse("f(effort) = effort == \"none\" ? 1 : 0"))) == 1
     @test length(dispatchchecks(Meta.parse("f(effort) = effort == \"none\""))) == 1
+    @test length(dispatchchecks(Meta.parseall("route(::Nothing) = \"none\"\nroute(::String) = \"other\"\nf(x) = route(x) == \"none\" ? 1 : 0"))) == 1
+    @test isempty(dispatchchecks(Meta.parse("f(x) = route(x) == \"none\"")))
     @test length(dispatchchecks(Meta.parse("f(event) = event.status == \"custom\""))) == 1
     @test length(dispatchchecks(Meta.parse("f(failure) = failure.code in (\"invalid_grant\", \"token_expired\")"))) == 1
     @test length(dispatchchecks(Meta.parse("f(data) = get(data, \"code\", nothing) == -32601"))) == 1
@@ -112,6 +114,9 @@ include("dispatch_checks.jl")
         @test only(dispatchbaseline(root)) == "consumer.jl\t:(selected(x))"
         write(joinpath(root, "consumer.jl"), "f(xs) = filter(selected, xs)")
         @test only(dispatchbaseline(root)) == "consumer.jl\t:selected"
+        write(joinpath(root, "predicate.jl"), "route(::Nothing) = \"none\"")
+        write(joinpath(root, "consumer.jl"), "f(x) = route(x) == \"none\"")
+        @test only(dispatchbaseline(root)) == "consumer.jl\t:(route(x) == \"none\")"
     end
 
     # Julia's REPL.prompt! returns `ok` and `suspend` booleans at the terminal boundary.

@@ -59,14 +59,8 @@ resolveprovider(options, model::Models.Model, ::Nothing) = launchprovider(merge(
 const responsepath = joinpath(@__DIR__, "..", "data", "openai-thinking.json")
 Base.include_dependency(responsepath)
 const responselevels = JSON3.read(read(responsepath), Dict{String, Any})
-abstract type ThinkingWire end
-struct DirectThinking <: ThinkingWire end
-struct UpdateThinking <: ThinkingWire end
-const thinkingwires = Dict(false => DirectThinking(), true => UpdateThinking())
-thinkingwire(levels) = get(thinkingwires, get(levels, "configurationUpdate", false), UpdateThinking())
 supportedthinking(::DirectThinking, effort) = Models.ValidConfig()
-const updateefforts = Dict("none" => Models.ValidConfig())
-supportedthinking(::UpdateThinking, effort) = get(updateefforts, effort, Models.InvalidConfig())
+supportedthinking(::UpdateThinking, effort) = Models.ValidConfig()
 resolveprovider(options, model::Models.Model, thinking::AbstractString) = selectthinking(options, model, thinking, get(responselevels, model.id, nothing))
 selectthinking(options, model, thinking, ::Nothing) = unsupportedthinking()
 function selectthinking(options, model, thinking, levels::AbstractDict)

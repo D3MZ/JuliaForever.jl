@@ -3,6 +3,12 @@ struct CatalogRoute
     name::String
     registry::Models.Registry
 end
+
+abstract type ThinkingWire end
+struct DirectThinking <: ThinkingWire end
+struct UpdateThinking <: ThinkingWire end
+const thinkingwires = Dict(false => DirectThinking(), true => UpdateThinking())
+thinkingwire(levels) = get(thinkingwires, get(levels, "configurationUpdate", false), UpdateThinking())
 Base.show(io::IO, ::CatalogRoute) = print(io, "Catalog route ([redacted])")
 StructTypes.StructType(::Type{CatalogRoute}) = StructTypes.CustomStruct()
 StructTypes.lower(::CatalogRoute) = "[redacted]"
