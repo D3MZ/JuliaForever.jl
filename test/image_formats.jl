@@ -351,4 +351,28 @@ end
     end
 end
 
+@testset "animated decoding work is bounded" begin
+    gif = read(joinpath(fixtures, "maxpixels.gif"))
+    webp = read(joinpath(fixtures, "animated.webp"))
+    for count in (16, 17)
+        manygif = [gif[1:19]; repeat(gif[20:end-1], count); gif[end:end]]
+        manywebp = [webp[1:44]; repeat(webp[45:124], count)]
+        size = length(manywebp) - 8
+        manywebp[5:8] .= UInt8[(size >> shift) & 0xff for shift in (0, 8, 16, 24)]
+        manywebp[25:30] .= UInt8[0xcf, 0x07, 0x00, 0xcf, 0x07, 0x00]
+        for (file, bytes, mime) in (("many.gif", manygif, "image/gif"), ("many.webp", manywebp, "image/webp"))
+            mktempdir() do root
+                write(joinpath(root, file), bytes)
+                for value in (execute(Read(root), (; path=file)), result(file, bytes))
+                    if count == 16
+                        @test !value.iserror && isequal(value.image, Image(mime, base64encode(bytes)))
+                    else
+                        @test value.iserror && isnothing(value.image)
+                    end
+                end
+            end
+        end
+    end
+end
+
 end
