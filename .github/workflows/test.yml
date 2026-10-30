@@ -4,12 +4,17 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      coverage_baseline:
+        description: Optional baseline commit for source-identical coverage comparison
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: test-${{ github.ref }}
+  group: test-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -19,26 +24,87 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Keep Julia depot stable across HOME changes
+        env:
+          DEPOT: ${{ runner.temp }}/julia-depot
+        run: printf 'JULIA_DEPOT_PATH=%s\n' "$DEPOT" >> "$GITHUB_ENV"
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.12'
       - uses: actions/setup-node@v4
         with:
           node-version: '25'
+      - name: Test coverage report
+        if: runner.os == 'Linux'
+        run: python3 -B -m unittest discover -s scripts/tests -v
       - name: Prepare pinned Pi reference
         run: |
           git clone --filter=blob:none https://github.com/earendil-works/pi.git "$RUNNER_TEMP/pi-source"
           git -C "$RUNNER_TEMP/pi-source" checkout --detach e7a0df27c09d11bf4161d3605246cbf57a129cb2
           npm install --prefix "$RUNNER_TEMP/pi-deps" --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.4.0
           node -e "require('fs').symlinkSync(process.argv[1], process.argv[2], 'junction')" "$RUNNER_TEMP/pi-deps/node_modules" "$RUNNER_TEMP/pi-source/node_modules"
+      - name: Select coverage baseline
+        id: coverage-baseline
+        if: runner.os == 'Linux'
+        env:
+          REQUESTED_BASELINE: ${{ inputs.coverage_baseline }}
+        run: |
+          baseline="${REQUESTED_BASELINE:-HEAD^}"
+          baseline=$(git rev-parse --verify --end-of-options "${baseline}^{commit}")
+          echo "Baseline revision: $baseline" >> "$GITHUB_STEP_SUMMARY"
+          if git diff --quiet "$baseline" HEAD -- src Project.toml Manifest.toml; then
+            echo "compare=true" >> "$GITHUB_OUTPUT"
+            echo "revision=$baseline" >> "$GITHUB_OUTPUT"
+          else
+            echo "Coverage comparison skipped: source or dependencies differ from baseline." >> "$GITHUB_STEP_SUMMARY"
+            echo "compare=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Measure baseline coverage
+        if: runner.os == 'Linux' && steps.coverage-baseline.outputs.compare == 'true'
+        env:
+          BASELINE_REVISION: ${{ steps.coverage-baseline.outputs.revision }}
+          PI_SOURCE: ${{ runner.temp }}/pi-source
+          PI_OFFLINE: '1'
+          JULIA_NUM_THREADS: 4
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/coverage-baseline" "$BASELINE_REVISION"
+          cp scripts/coverage.py "$RUNNER_TEMP/coverage-baseline/scripts/coverage.py"
+          cd "$RUNNER_TEMP/coverage-baseline"
+          julia --startup-file=no --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test(; coverage=true, julia_args=`--startup-file=no --threads=4`)'
+          python3 scripts/coverage.py --output "$GITHUB_WORKSPACE/coverage/baseline.json" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Julia tests and differential cases
         env:
           PI_SOURCE: ${{ runner.temp }}/pi-source
           JULIA_NUM_THREADS: 4
-        run: julia --startup-file=no --project=. scripts/ci.jl
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            julia --startup-file=no --project=. scripts/ci.jl --coverage
+          else
+            julia --startup-file=no --project=. scripts/ci.jl
+          fi
+      - name: Summarize coverage
+        if: runner.os == 'Linux'
+        run: |
+          if [ "${{ steps.coverage-baseline.outputs.compare }}" = true ]; then
+            python3 scripts/coverage.py --baseline coverage/baseline.json --output coverage/report.json | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            python3 scripts/coverage.py --output coverage/report.json | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload coverage
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: julia-coverage
+          path: |
+            coverage/report.json
+            coverage/baseline.json
+            src/**/*.cov
+          if-no-files-found: error

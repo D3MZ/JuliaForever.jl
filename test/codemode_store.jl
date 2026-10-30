@@ -39,8 +39,6 @@ end
     @test hasproperty(result, :deletes) && Set(result.deletes) == Set(["remove", "π😀", "absent", "temporary"])
     @test hasproperty(result, :deletes) && length(result.deletes) == 4
     @test snapshot == Dict("keep" => 42, "remove" => "old", "π😀" => 9)
-    legacy = CodeResult(true, 1, String[], NamedTuple[], Dict{String, Any}(), nothing, "", "", "", 0)
-    @test hasproperty(legacy, :deletes) && isempty(legacy.deletes)
 
     many = Dict("key-$i" => i for i in 1:12)
     parallel = codeexecute(mode, """

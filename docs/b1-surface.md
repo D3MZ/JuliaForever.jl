@@ -78,13 +78,13 @@ The following tests are present; their existence is not a passing run at the obs
 | Selected cases | Test files | Remaining gaps |
 |---|---|---|
 | Agent lifecycle, event order and scripted messages | `test/agent_core_differential.jl` | Queue modes, hooks, continuation, failures, cancellation and concurrency across all driver paths |
-| File reads, writes, selected exact/fuzzy edits and same-path mutation order | `test/differential.jl`, `test/file_mutations_differential.jl` | Full edit preparation and diagnostics, additional image formats and resizing, custom operations, cross-process coordination, aliases and platform cases |
+| File reads, writes, selected exact/fuzzy edits and same-path mutation order | `test/differential.jl`, `test/file_mutations.jl` | Full edit preparation and diagnostics, additional image formats and resizing, custom operations, cross-process coordination, aliases and platform cases |
 | Streamed Chat Completions, Anthropic, Google and synthetic OpenRouter PKCE | `test/provider_differential.jl`, `test/provider_reasoning.jl`, `test/provider_anthropic_differential.jl`, `test/provider_google_differential.jl`, `test/openrouter_differential.jl` | Other providers and API paths, structured reasoning details, complete event/usage semantics, real authentication and model flows |
 | Approximate context estimates | `test/estimates.jl`, `test/estimates_differential.jl` | Automatic usage-anchor selection, Responses reasoning, compaction estimates, exact model tokenization and documented JSON representation differences |
 | Shell, listing, cancellation and search fixtures | `test/system_differential.jl`, `test/system_cancel_differential.jl`, `test/search_differential.jl` | Shell streaming/hooks, escaped descendants, Windows behavior, search and platform edge cases |
 | Session append, branch, reopen and selected CLI selection | `test/session_differential.jl`, `test/session_cli.jl` | Migrated/corrupt files, concurrency, full entry semantics and recovery |
 | Durable transcript forks with nested and inherited cutoffs | `test/durable_forks_differential.jl` | Document policies, ownership, tasks, submissions, views, pagination and agent integration |
-| Instruction discovery and context formatting | `test/instructions_differential.jl` | Full resource configuration, read failures, invalid UTF-8, URL and Windows path behavior |
+| Instruction discovery and context formatting | `test/instructions.jl` | Full resource configuration, read failures, invalid UTF-8, URL and Windows path behavior |
 
 Native tests exist for file mutation coordination (`test/file_mutations.jl`), recorded agent histories, SQLite, typed transitions, executor, logs, durable store, scheduler, Julia code mode, terminal and other behaviors. These are independent contracts, not Pi parity proofs. Module documents report their own earlier test environments and limitations; those reports do not by themselves verify the current observed revision or other platforms.
 

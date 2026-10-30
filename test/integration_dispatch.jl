@@ -19,7 +19,6 @@ using Test, JuliaForever, Base64
         event = JuliaForever.Kernel.Observe(2, "call", reply)
         record = JuliaForever.History.encode(event)
         decoded = JuliaForever.History.decode_event(record)
-        @test typeof(decoded.observation.result) === typeof(result)
         @test isequal(decoded.observation.image, image)
         @test JuliaForever.History.encode(decoded) == record
     end

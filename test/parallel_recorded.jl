@@ -15,6 +15,15 @@ function JuliaForever.complete(provider::Provider, messages, tools; parameters=D
     popfirst!(provider.responses)
 end
 
+function JuliaForever.stream(provider::Provider, messages, tools; parameters=Dict(), on_event=identity)
+    message = JuliaForever.complete(provider, messages, tools; parameters)
+    content = message["content"]
+    isnothing(content) || on_event((; type=:text, text=content))
+    result = Completion(message, nothing, haskey(message, "tool_calls") ? "tool_calls" : "stop", true, nothing)
+    on_event((; type=:done, result))
+    result
+end
+
 struct Ordered <: JuliaForever.Tool
     release::Channel{Nothing}
     started::Channel{String}
@@ -44,7 +53,7 @@ end
         @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
         reference = JSON3.read(read(`node $(joinpath(@__DIR__, "parallel_recorded_reference.mjs")) $source`, String), Vector{String})
     end
-    for mode in (:direct, :sqlite, :continue)
+    for mode in (:direct, :explicit, :sqlite, :continue)
         @testset "$mode" begin
             mktempdir() do dir
                 release = Channel{Nothing}(1)
@@ -54,7 +63,7 @@ end
                 mutex = ReentrantLock()
                 tool = Ordered(release, started)
                 historypath = joinpath(dir, "history.sqlite")
-                history = mode == :direct ? nothing : open(H.SQLite, historypath)
+                history = mode in (:direct, :explicit) ? nothing : open(H.SQLite, historypath)
                 p = provider()
                 registry = E.Registry()
                 E.register!(registry, :parallel, E.Plugin(; hooks=(:tool_call => (event -> (addtrace!(trace, mutex, "before:" * event.tool_call_id); nothing)),)))
@@ -68,7 +77,13 @@ end
                 end)
                 initial = mode == :continue ? [Dict{String, Any}("role" => "user", "content" => "start")] : Dict{String, Any}[]
                 agent = Agent(p, Dict{String, JuliaForever.Tool}("ordered" => tool), initial; history)
-                task = @async mode == :continue ? continue!(agent; on_agent_event=listener) : respond!(agent, "start"; on_agent_event=listener)
+                task = @async if mode == :continue
+                    continue!(agent; on_agent_event=listener)
+                elseif mode == :explicit
+                    respond!(agent, "start"; on_event=identity, tool_execution=:parallel, on_agent_event=listener)
+                else
+                    respond!(agent, "start"; on_agent_event=listener)
+                end
                 try
                     timedwait(() -> isready(second) || istaskdone(task), 15)
                     overlapping = isready(second)

@@ -3,7 +3,7 @@ using Test, JuliaForever, HTTP, JSON3
 function session_estimate_process(base, workspace, sessions, args)
     project = dirname(@__DIR__)
     cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever $args`; dir=workspace)
-    cmd = addenv(cmd, "JF_SESSION_DIR" => sessions, "JF_INSTRUCTIONS_DIR" => nothing, "JF_PROVIDER" => "openai", "OPENAI_BASE_URL" => base, "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic-session-key", "PI_SOURCE" => nothing)
+    cmd = addenv(cmd, "HOME" => workspace, "JF_SESSION_DIR" => sessions, "JF_INSTRUCTIONS_DIR" => nothing, "JF_PROVIDER" => "openai", "OPENAI_BASE_URL" => base, "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic-session-key", "PI_SOURCE" => nothing)
     output = joinpath(workspace, "stdout")
     diagnostics = joinpath(workspace, "stderr")
     process = run(pipeline(ignorestatus(cmd); stdin=devnull, stdout=output, stderr=diagnostics))
@@ -55,9 +55,8 @@ end
                         restored = Agent(nothing, []; history)
                         messages = restored.state.messages
                         assistant = messages[3]
-                        @test assistant isa JuliaForever.Conversation.Assistant
-                        @test get(assistant.metadata, field, nothing) == thinking
-                        @test JuliaForever.ContextEstimates.tokens(assistant) == JuliaForever.ContextEstimates.tokens("answer" * thinking)
+                        # "answer" plus reasoning contains 39 UTF-16 units; at 3.5 units/token, this rounds up to 12.
+                        @test JuliaForever.ContextEstimates.tokens(assistant) == 12
                         metadata = copy(assistant.metadata)
                         delete!(metadata, field)
                         stripped = copy(messages)
@@ -65,7 +64,8 @@ end
                         estimated = JuliaForever.ContextEstimates.estimate(messages)
                         without_reasoning = JuliaForever.ContextEstimates.estimate(stripped)
                         @test estimated.total > without_reasoning.total
-                        @test estimated.total - without_reasoning.total == JuliaForever.ContextEstimates.tokens(assistant) - JuliaForever.ContextEstimates.tokens(stripped[3])
+                        # The answer alone is 6 units, or 2 tokens, so reasoning adds 10.
+                        @test estimated.total - without_reasoning.total == 10
                         @test estimated.reported == 0 && estimated.index === nothing
                     finally
                         close(history)

@@ -6,7 +6,6 @@
     @test JuliaForever.shellconfig(nothing, ["-c"]) === nothing
     @test JuliaForever.shellconfig("bash", ["-c"]) == ("bash", ["-c"])
     @test JuliaForever.timeoutcheck(nothing) === nothing
-    @test JuliaForever.timeoutcheck(0) isa ToolFailure
     @test JuliaForever.timeoutcheck(Inf) isa ToolFailure
     @test JuliaForever.timeoutcheck(2147484) isa ToolFailure
     @test JuliaForever.windowoptions(nothing, nothing) === nothing

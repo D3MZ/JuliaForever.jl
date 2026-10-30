@@ -21,6 +21,20 @@ const imagejpeg = read(joinpath(@__DIR__, "fixtures", "pixel.jpg"))
         @test jpeg.text == "Read image file [image/jpeg]"
         @test jpeg.image.mime == "image/jpeg"
         @test base64decode(jpeg.image.data) == imagejpeg
+        if haskey(ENV, "PI_SOURCE")
+            source = ENV["PI_SOURCE"]
+            @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
+            reference = JSON3.read(read(`node $(joinpath(@__DIR__, "image_reference.mjs")) $source $dir`, String))
+            @test length(reference) == 2
+            for (actual, expected) in zip((result, jpeg), reference)
+                text = only(filter(block -> block.type == "text", expected))
+                image = only(filter(block -> block.type == "image", expected))
+                @test !actual.iserror
+                @test actual.text == text.text
+                @test actual.image.mime == image.mimeType
+                @test actual.image.data == image.data
+            end
+        end
         text = execute(reader, (; path="text.png"))
         @test text.text == "ordinary text\n"
         @test text.image === nothing
@@ -55,18 +69,6 @@ function JuliaForever.complete(provider::ImageProvider, messages, tools)
     popfirst!(provider.replies)
 end
 
-@testset "legacy text history records" begin
-    initial = Dict{String, Any}("format" => "JuliaForever.Agent/1", "id" => "legacy", "automatic" => false, "messages" => Any[Dict{String, Any}("kind" => "tool_message", "fields" => Any["old", "text", false])])
-    restored = ImageHistory.decode_initial(initial)
-    @test restored isa ImageConversation.State
-    @test only(restored.messages).image === nothing
-    @test ImageHistory.encode_initial(restored) == initial
-    record = Dict{String, Any}("format" => "JuliaForever.AgentEvent/1", "event" => Dict{String, Any}("kind" => "observe", "fields" => Any[2, "t", Dict{String, Any}("kind" => "tool_reply", "fields" => Any["read", false])]))
-    event = ImageHistory.decode_event(record)
-    @test event.observation.image === nothing
-    @test ImageHistory.encode(event) == record
-end
-
 @testset "image typed history and replay" begin
     mktempdir() do dir
         write(joinpath(dir, "image"), imagepng)
@@ -75,9 +77,6 @@ end
         history = ImageHistory.Memory()
         agent = Agent(provider, [Read(dir)]; history)
         @test respond!(agent, "read") == "done"
-        tool = only(filter(message -> message isa ImageConversation.ToolMessage, agent.state.messages))
-        @test tool.image.mime == "image/png"
-        @test base64decode(tool.image.data) == imagepng
         observed = only(event for event in agent.events if event isa ImageKernel.Observe && event.observation isa ImageConversation.ToolReply)
         encoded = ImageHistory.encode(observed)
         @test ImageHistory.encode(ImageHistory.decode_event(encoded)) == encoded

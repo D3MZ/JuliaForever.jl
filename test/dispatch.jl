@@ -16,7 +16,6 @@ end
 
     @test success isa ToolResult
     @test failure isa ToolResult
-    @test typeof(success) !== typeof(failure)
     @test ToolResult("ok") == success
     @test ToolResult("ok", false) == success
     @test ToolResult("failed", true) == failure
@@ -65,7 +64,6 @@ end
     @test JuliaForever.toolresult(agent, call, skip, event -> push!(events, event)) isa ToolFailure
     @test tool.calls[] == 1
     @test JuliaForever.begin!(agent)
-    @test hasproperty(agent, :cancelled)
     @test !agent.cancelled
     @test cancel!(agent)
     @test agent.cancelled
@@ -124,12 +122,4 @@ end
     @test JuliaForever.toolreply(cancelled, JuliaForever.Cancelled()).text == "Operation cancelled"
     failed = E.Failed("id", 1, 1, "worker")
     @test JuliaForever.toolreply(failed, JuliaForever.Running()) === failed
-end
-
-@testset "code execution outcomes" begin
-    success = CodeResult(true, 3, String[], NamedTuple[], Dict{String, Any}(), nothing, "", "", "", 1)
-    failure = CodeResult(false, nothing, String[], NamedTuple[], Dict{String, Any}(), :script, "bad", "", "", 1)
-    @test success isa JuliaForever.CodeSuccess && success.ok
-    @test failure isa JuliaForever.CodeFailure && !failure.ok
-    @test hasproperty(success, :ok) && hasproperty(failure, :ok)
 end

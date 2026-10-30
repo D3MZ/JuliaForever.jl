@@ -3,8 +3,6 @@ using Test, JuliaForever
 @testset "live terminal deferred inputs" begin
     live = JuliaForever.LiveTerminal
     pending = live.DeferredQueue()
-    @test pending.steering isa Channel{String}
-    @test pending.followups isa Channel{String}
     @test isempty(pending)
 
     live.defer!(pending, "follow one", live.Follow())

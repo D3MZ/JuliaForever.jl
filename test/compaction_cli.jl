@@ -31,6 +31,7 @@ using Test, JuliaForever, JSON3
         @test second.output == "reply:third\n"
         calls = [JSON3.read(line, Dict{String, Any}) for line in eachline(requests)]
         @test [call["operation"] for call in calls] == ["respond", "respond", "summarize", "respond"]
+        @test calls[3]["tool_count"] == 0
         @test occursin("reply:first", calls[3]["messages"][1]["content"])
         @test !occursin("reply:second", calls[3]["messages"][1]["content"])
         final = calls[4]["messages"]

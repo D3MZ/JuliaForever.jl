@@ -147,18 +147,7 @@ end
 
 @testset "fork log validation" begin
     mktempdir() do dir
-        path = joinpath(dir, "legacy.jsonl")
-        legacy = JSON3.write((; seq=1, nextid=2, writes=[(; type="conversation", id=1, value=nothing), (; type="entry", id=2, conversation=1, kind="note", value="legacy")])) * "\n"
-        write(path, legacy)
-        store = open(D.Store, path)
-        @test get(store, D.Conversation, 1).parent === nothing
-        fork = D.commit!(tx -> D.fork!(tx, 1, 2), store)
-        @test ids(D.entries(store, fork)) == [2]
-        close(store)
-        store = open(D.Store, path)
-        @test ids(D.entries(store, fork)) == [2]
-        close(store)
-
+        initial = JSON3.write((; seq=1, nextid=2, writes=[(; type="conversation", id=1, value=nothing, parent=nothing), (; type="entry", id=2, conversation=1, kind="note", value="initial")])) * "\n"
         invalids = [
             [(; type="conversation", id=3, value=nothing, parent=(; conversation=1, at=999))],
             [(; type="conversation", id=3, value=nothing, parent=(; conversation=999, at=2))],
@@ -172,7 +161,7 @@ end
         ]
         for (i, writes) in enumerate(invalids)
             file = joinpath(dir, "invalid-$i.jsonl")
-            bytes = legacy * JSON3.write((; seq=2, nextid=4, writes)) * "\n"
+            bytes = initial * JSON3.write((; seq=2, nextid=4, writes)) * "\n"
             write(file, bytes)
             @test reason(open(D.Store, file)) == :corrupt_log
             @test read(file, String) == bytes
@@ -180,7 +169,7 @@ end
 
         file = joinpath(dir, "retroactive.jsonl")
         batches = [
-            (; seq=1, nextid=4, writes=[(; type="conversation", id=1, value=nothing), (; type="entry", id=4, conversation=1, kind="note", value="cutoff")]),
+            (; seq=1, nextid=4, writes=[(; type="conversation", id=1, value=nothing, parent=nothing), (; type="entry", id=4, conversation=1, kind="note", value="cutoff")]),
             (; seq=2, nextid=5, writes=[(; type="conversation", id=5, value=nothing, parent=(; conversation=1, at=4))]),
             (; seq=3, nextid=5, writes=[(; type="entry", id=3, conversation=1, kind="note", value="retroactive")]),
         ]

@@ -1,30 +1,3 @@
-@testset "repository boundary retains file ignores" begin
-    file1 = JuliaForever.FileRule("first", r"first", false, false)
-    file2 = JuliaForever.FileRule("second", r"second", true, true)
-    git1 = JuliaForever.GitRule("git", r"git", false, false)
-    rules = JuliaForever.IgnoreRule[git1, file1, git1, file2, git1]
-    @test JuliaForever.cleargit!(rules) === rules
-    @test rules == JuliaForever.IgnoreRule[file1, file2]
-    @test JuliaForever.cleargit!(rules) === rules
-    @test rules == JuliaForever.IgnoreRule[file1, file2]
-    onlygit = JuliaForever.IgnoreRule[git1, git1]
-    @test isempty(JuliaForever.cleargit!(onlygit))
-end
-
-@testset "repository ignore scope dispatch" begin
-    mktempdir() do dir
-        write(joinpath(dir, ".gitignore"), "ignored.txt\n")
-        rules = JuliaForever.IgnoreRule[]
-        JuliaForever.gitignore!(rules, dir, Find(dir), nothing)
-        @test length(rules) == 1
-        empty!(rules)
-        JuliaForever.gitignore!(rules, dir, Grep(dir), nothing)
-        @test isempty(rules)
-        JuliaForever.gitignore!(rules, dir, Grep(dir), dir)
-        @test length(rules) == 1
-    end
-end
-
 function searchfixture(dir)
     mkpath(joinpath(dir, ".git"))
     mkpath(joinpath(dir, "src", "deep"))
@@ -137,6 +110,7 @@ function nestedfixture(dir)
     write(joinpath(dir, ".ignore"), "local-only.txt\n")
     write(joinpath(dir, ".git", "info", "exclude"), "private.txt\n")
     write(joinpath(dir, "blocked.txt"), "needle\n")
+    write(joinpath(dir, "local-only.txt"), "needle\n")
     write(joinpath(dir, "private.txt"), "needle\n")
     write(joinpath(dir, "nested", "blocked.txt"), "needle\n")
     write(joinpath(dir, "nested", "private.txt"), "needle\n")
@@ -148,7 +122,6 @@ end
 @testset "nested repository ignore boundaries" begin
     mktempdir() do dir
         nestedfixture(dir)
-        @test length(unique(typeof.(first(JuliaForever.initialrules(joinpath(dir, "nested"), Find(dir)))))) == 2
         @test execute(Find(dir), (; pattern="blocked.txt")).text == "nested/blocked.txt"
         @test execute(Find(dir), (; pattern="private.txt")).text == "nested/private.txt"
         @test execute(Find(dir), (; pattern="local-only.txt")).text == "No files found matching pattern"

@@ -324,30 +324,34 @@ end
     @test result["response_output"] === output
 end
 
-@testset "Responses event conversion" begin
-    @test JuliaForever.responseevent(Dict("type" => "response.output_text.delta", "delta" => "text")) isa JuliaForever.TextDelta
-    @test JuliaForever.responseevent(Dict("type" => "response.refusal.delta", "delta" => "text")) isa JuliaForever.TextDelta
-    @test JuliaForever.responseevent(Dict("type" => "response.reasoning_text.delta", "delta" => "text")) isa JuliaForever.ThinkingDelta
-    @test JuliaForever.responseevent(Dict("type" => "response.output_item.added", "item" => Dict())) isa JuliaForever.OutputAdded
-    @test JuliaForever.responseevent(Dict("type" => "response.function_call_arguments.delta", "delta" => "{}")) isa JuliaForever.ArgumentDelta
-    @test JuliaForever.responseevent(Dict("type" => "response.output_item.done", "item" => Dict())) isa JuliaForever.OutputDone
-    @test JuliaForever.responseevent(Dict("type" => "response.completed", "response" => Dict())) isa JuliaForever.ResponseEnded
-    @test JuliaForever.responseevent(Dict("type" => "error", "message" => "bad")) isa JuliaForever.ResponseError
-    @test isnothing(JuliaForever.responseevent(Dict("type" => "unknown")))
-end
-
-@testset "Responses event handling" begin
-    events = Any[]
-    state = JuliaForever.ResponseStream(event -> push!(events, event))
-    receive(data) = JuliaForever.receive!(state, JSON3.write(data))
-    receive(Dict("type" => "response.output_text.delta", "delta" => "hello"))
-    receive(Dict("type" => "response.refusal.delta", "delta" => " there"))
-    @test state.partial["content"] == "hello there"
-    @test [event.type for event in events] == [:provider, :text, :provider, :text]
-    receive(Dict("type" => "response.output_item.added", "item" => Dict("type" => "message")))
-    @test isempty(state.active)
-    receive(Dict("type" => "response.function_call_arguments.delta", "output_index" => 3))
-    @test state.failure == "Responses stream contained an ambiguous function call delta"
-    receive(Dict("type" => "response.output_item.done", "item" => Dict("type" => "message")))
-    @test state.failure == "Responses stream omitted an output index"
+@testset "Responses stream event boundaries" begin
+    replies = [
+        response_sse((; type="response.output_text.delta", delta="hello")) *
+        response_sse((; type="response.refusal.delta", delta=" there")) *
+        response_sse((; type="response.reasoning_text.delta", delta="thinking")) *
+        response_sse((; type="response.output_item.added", item=Dict("type" => "message"))) *
+        response_sse((; type="unknown")),
+        response_sse((; type="response.function_call_arguments.delta", output_index=3)),
+        response_sse((; type="response.output_item.done", item=Dict("type" => "message"))),
+        response_sse((; type="error", message="bad")),
+    ]
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        HTTP.Response(200, ["Content-Type" => "text/event-stream"], popfirst!(replies))
+    end
+    try
+        model = OpenAIResponses("http://$(HTTP.server_addr(server))/v1", "test", "synthetic")
+        events = []
+        partial = stream(model, [], Dict(); on_event=event -> push!(events, event))
+        @test !partial.done && partial.message["content"] == "hello there"
+        @test [event.text for event in events if event.type == :text] == ["hello", " there"]
+        @test [event.text for event in events if event.type == :thinking] == ["thinking"]
+        @test any(event -> event.type == :provider && event.data["type"] == "unknown", events)
+        @test stream(model, [], Dict()).error == "Responses stream contained an ambiguous function call delta"
+        @test stream(model, [], Dict()).error == "Responses stream omitted an output index"
+        failed = stream(model, [], Dict())
+        @test !failed.done && failed.error isa ProviderError && failed.error.provider == :openai_responses
+    finally
+        close(server)
+        wait(server)
+    end
 end

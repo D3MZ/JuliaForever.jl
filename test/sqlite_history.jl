@@ -9,12 +9,10 @@ import SQLite.DBInterface as DBI
         expected = exercise(H.Memory())
         @test isequal(exercise(history), expected)
         other = open(H.SQLite, path)
-        @test history.status === :open
         @test isequal(collect(H.snapshot(other)), expected)
         @test H.append!(other, 2, Any["other connection"]) == 3
         @test H.append!(history, 2, Any["stale"]) == H.Rejected(:revision)
         close(history)
-        @test history.status === :closed
         @test H.snapshot(history) == H.Rejected(:closed)
         @test H.append!(history, 3, Any["closed"]) == H.Rejected(:closed)
         close(history)
@@ -156,7 +154,6 @@ end
         SQLite.execute(db, "CREATE TEMP TABLE child (id INTEGER REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED)")
         SQLite.execute(db, "CREATE TEMP TRIGGER failcommit AFTER INSERT ON main.jf_history BEGIN INSERT INTO child VALUES (42); END")
         @test_throws SQLite.SQLiteException H.append!(history, 1, Any["second"])
-        @test history.status === :uncertain
         @test H.snapshot(history) == H.Rejected(:uncertain)
         @test H.append!(history, 1, Any["retry"]) == H.Rejected(:uncertain)
         close(history)

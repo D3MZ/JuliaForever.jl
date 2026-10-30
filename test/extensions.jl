@@ -108,12 +108,6 @@ end
         listener = E.listen(snapshot)
         backend = provider()
         agent = Agent(backend, snapshot; history)
-        if isnothing(history)
-            messages = Dict{String, Any}[Dict("role" => "system", "content" => "context")]
-            with_context = Agent(provider(), snapshot, messages)
-            @test with_context.messages === messages
-            @test haskey(with_context.tools, "greet")
-        end
         @test respond!(agent, "greet Ada"; on_agent_event=listener) == "done"
         @test events == [:agent_start, :tool_execution_end, :after_failure, :agent_end]
         @test length(E.failures(listener)) == 1
@@ -123,8 +117,7 @@ end
         @test backend.requests[2].messages[end]["content"] == "Hello, Ada!"
         if !isnothing(history)
             before = copy(events)
-            restored = Agent(provider(), snapshot; history)
-            @test restored isa Agent
+            Agent(provider(), snapshot; history)
             @test events == before
         end
         @test E.remove!(registry, :greeting)

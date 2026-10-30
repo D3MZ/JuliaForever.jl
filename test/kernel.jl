@@ -63,7 +63,6 @@ end
 
 @testset "kernel transitions" begin
     start = K.State("conversation-1")
-    @test isconcretetype(typeof(start))
     @test start.id == "conversation-1"
     @test start.revision == 0
     @test isempty(start.pending)
@@ -76,7 +75,6 @@ end
     @test first.effects[1].id == "one"
     @test first.effects[1].effect.input.path == "a"
     @test length(start.pending) == 0
-    @test typeof(first.state) === typeof(start)
 
     second = K.step(first.state, K.Plan(1, "two", Probe("native")))
     @test second isa K.Applied

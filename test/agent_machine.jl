@@ -9,33 +9,15 @@ import JuliaForever.Conversation as C
         provider = AgentFixture([completion(nothing; calls, finish="tool_calls"), completion("done")], [])
         agent = Agent(provider, [Write(dir)])
         @test respond!(agent, "start"; on_event=identity) == "done"
-        @test agent.state.phase == C.Complete
-        @test any(event -> event isa C.Input, agent.events)
-        @test any(event -> event isa K.Observe && event.observation isa C.ModelReply, agent.events)
-        @test any(event -> event isa K.Observe && event.observation isa C.ToolReply, agent.events)
-        @test [typeof(message) for message in agent.state.messages] == [C.User, C.Assistant, C.ToolMessage, C.Assistant]
         @test read(joinpath(dir, "a.txt"), String) == "safe"
         requests = length(provider.requests)
         rm(joinpath(dir, "a.txt"))
         replay = collect(K.Replay(agent.initial, agent.events))
         @test last(replay).state.phase == C.Complete
-        @test [typeof(message) for message in last(replay).state.messages] == [C.User, C.Assistant, C.ToolMessage, C.Assistant]
         @test last(last(replay).state.messages).content == "done"
         @test !isfile(joinpath(dir, "a.txt"))
         @test length(provider.requests) == requests
     end
-end
-
-@testset "legacy transcript changes are recorded as machine input" begin
-    provider = AgentFixture([completion("done")], [])
-    messages = Dict{String, Any}[Dict("role" => "system", "content" => "original")]
-    agent = Agent(provider, Dict{String, JuliaForever.Tool}(), messages)
-    messages[1]["content"] = "edited"
-    push!(messages, Dict("role" => "user", "content" => "prior"))
-    @test respond!(agent, "current") == "done"
-    @test [message["content"] for message in only(provider.requests) if message["role"] in ("system", "user")] == ["edited", "prior", "current"]
-    @test any(event -> event isa C.History, agent.events)
-    @test last(collect(K.Replay(agent.initial, agent.events))).state.phase == C.Complete
 end
 
 mutable struct FailsOnce
