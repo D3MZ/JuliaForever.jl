@@ -203,29 +203,46 @@ interactive!(terminal, agent, history, input::Base.TTY, sessiondir, templates) =
 finishhistory(::Nothing) = nothing
 finishhistory(history::History.Store) = close(history)
 
+runsession!(rejected::History.Rejected, terminal, model, tools, args, sessiondir) = result!(terminal, rejected)
+
 function runsession!(history, terminal, model, tools, args, sessiondir)
-    history isa History.Rejected && return result!(terminal, history)
     selected = Ref{Union{Nothing, History.Store}}(history)
     try
-        snapshot = isnothing(history) ? nothing : History.snapshot(history)
-        snapshot isa History.Rejected && return result!(terminal, snapshot)
-        messages = Dict{String, Any}[]
-        if isnothing(snapshot) || snapshot.revision == 0
-            context = Instructions.render(Instructions.load(pwd(); agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing)))
-            isnothing(context) || push!(messages, Dict("role" => "system", "content" => context))
-        end
-        agent = Agent(model, Dict{String, Tool}(name(tool) => tool for tool in tools), messages; history)
-        agent isa History.Rejected && return result!(terminal, agent)
-        isnothing(agent.fault) || return sessionfault!(terminal, agent.fault, history)
-        templates = Prompts.load(pwd())
-        if isempty(args)
-            return interactive!(terminal, agent, selected, stdin, sessiondir, templates)
-        else
-            return run!(terminal, agent, Prompts.expand(join(args, " "), templates))
-        end
+        runsession!(sessionsnapshot(history), history, terminal, model, tools, args, sessiondir, selected)
     finally
         finishhistory(selected[])
     end
+end
+
+sessionsnapshot(::Nothing) = nothing
+sessionsnapshot(history::History.Store) = History.snapshot(history)
+
+runsession!(rejected::History.Rejected, history, terminal, model, tools, args, sessiondir, selected) = result!(terminal, rejected)
+function runsession!(snapshot, history, terminal, model, tools, args, sessiondir, selected)
+    messages = sessionmessages(snapshot)
+    agent = Agent(model, Dict{String, Tool}(name(tool) => tool for tool in tools), messages; history)
+    sessionagent!(agent, history, terminal, args, sessiondir, selected)
+end
+
+sessionmessages(::Nothing) = sessionmessages(0)
+sessionmessages(snapshot::History.Snapshot) = sessionmessages(snapshot.revision)
+function sessionmessages(revision::Int)
+    messages = Dict{String, Any}[]
+    revision == 0 || return messages
+    context = Instructions.render(Instructions.load(pwd(); agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing)))
+    sessioncontext!(messages, context)
+    messages
+end
+sessioncontext!(messages, ::Nothing) = nothing
+sessioncontext!(messages, context::AbstractString) = push!(messages, Dict("role" => "system", "content" => context))
+
+sessionagent!(rejected::History.Rejected, history, terminal, args, sessiondir, selected) = result!(terminal, rejected)
+sessionagent!(agent::Agent, history, terminal, args, sessiondir, selected) = sessionagent!(agent.fault, agent, history, terminal, args, sessiondir, selected)
+sessionagent!(fault::History.Rejected, agent, history, terminal, args, sessiondir, selected) = sessionfault!(terminal, fault, history)
+function sessionagent!(::Nothing, agent, history, terminal, args, sessiondir, selected)
+    templates = Prompts.load(pwd())
+    isempty(args) && return interactive!(terminal, agent, selected, stdin, sessiondir, templates)
+    run!(terminal, agent, Prompts.expand(join(args, " "), templates))
 end
 
 end
