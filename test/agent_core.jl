@@ -234,6 +234,7 @@ end
     events = []
     @test_throws ArgumentError respond!(agent, "start"; on_event=identity, on_agent_event=event -> push!(events, event.type))
     @test events == [:agent_start, :turn_start, :message_start, :message_end, :agent_end]
+    @test count(event -> event isa JuliaForever.Kernel.Observe && event.observation isa JuliaForever.Conversation.ModelFailure, agent.events) == 1
     @test !agent.running
     @test !JuliaForever.cancel!(agent)
 end

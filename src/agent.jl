@@ -633,19 +633,19 @@ finish(message, result::Completion, ::Nothing) = message["content"]
 finish(message, result::Completion, ::Type{Truncated}) = Truncated(result)
 
 function modelresponse(agent, effect, parameters, on_event, on_agent_event)
-    returned = false
+    answer = nothing
     try
         messages = [convert(Dict{String, Any}, message) for message in effect.effect.messages]
-        answer = response(agent, messages, parameters, on_event, on_agent_event)
-        rememberusage!(answer.result)
-        returned = true
-        answer
+        received = response(agent, messages, parameters, on_event, on_agent_event)
+        rememberusage!(received.result)
+        answer = received
     finally
-        if !returned
-            transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("provider did not return")), agent)
-        end
+        modelreturned!(agent, effect, answer)
     end
 end
+
+modelreturned!(agent, effect, ::NamedTuple) = nothing
+modelreturned!(agent, effect, ::Nothing) = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("provider did not return")), agent)
 
 interrupt!(agent::Agent, ::Conversation.Phase) = nothing
 interrupt!(agent::Agent, ::Union{Conversation.ReadyModelPhase, Conversation.ReadyDecisionPhase, Conversation.WaitingModelPhase, Conversation.WaitingToolsPhase}) = transition!(revision -> Conversation.Interrupt(revision, "turn interrupted"), agent)
