@@ -1,5 +1,9 @@
 @testset "usage-backed automatic compaction" begin
     settings = JuliaForever.AutoCompaction(100, 20)
+    disabled = JuliaForever.AutoCompaction(100, 20; enabled=false)
+    @test settings isa JuliaForever.AutoCompaction && disabled isa JuliaForever.AutoCompaction
+    @test typeof(settings) !== typeof(disabled)
+    @test (settings.context_window, settings.reserve_tokens) == (disabled.context_window, disabled.reserve_tokens)
     provider = CompactProvider(nothing, Any[])
     agent = compactagent(provider; history=CompactHistory.Memory())
     calls = Ref(0)
