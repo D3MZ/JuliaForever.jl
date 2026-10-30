@@ -104,7 +104,7 @@ const credentialproviders = Dict("OPENAI_API_KEY" => "openai", "OPENROUTER_API_K
 function storedcredentials(env)
     path = joinpath(get(env, "PI_CODING_AGENT_DIR", joinpath(homedir(), ".pi", "agent")), "auth.json")
     try
-        JSON3.read(replace(read(path, String), r"^\ufeff" => ""), Dict{String, Any})
+        JSON3.read(codeunits(replace(read(path, String), r"^\ufeff" => "")), Dict{String, Any})
     catch
         Dict{String, Any}()
     end

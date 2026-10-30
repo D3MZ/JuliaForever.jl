@@ -6,7 +6,7 @@ redirect_stdin(devnull)
 redirect_stdout(open(ARGS[1], "w"))
 redirect_stderr(open(ARGS[2], "a"))
 
-const request = JSON3.read(readline(input))
+const request = JSON3.read(codeunits(readline(input)))
 const writelock = ReentrantLock()
 const pendinglock = ReentrantLock()
 const storelock = ReentrantLock()
@@ -49,11 +49,11 @@ Base.getindex(::Tools, name::AbstractString) = ToolCall(String(name))
 text(value) = send((; type="text", text=value isa AbstractString ? String(value) : JSON3.write(value)))
 function load(key::AbstractString)
     lock(storelock) do
-        JSON3.read(JSON3.write(get(data, key, nothing)))
+        JSON3.read(codeunits(JSON3.write(get(data, key, nothing))))
     end
 end
 function store(key::AbstractString, value)
-    copy = JSON3.read(JSON3.write(value))
+    copy = JSON3.read(codeunits(JSON3.write(value)))
     lock(storelock) do
         data[key] = copy
         writes[key] = copy
@@ -73,7 +73,7 @@ end
 Threads.@spawn begin
     try
         for line in eachline(input)
-            message = JSON3.read(line)
+            message = JSON3.read(codeunits(line))
             channel = lock(pendinglock) do
                 pop!(pending, Int(message.id), nothing)
             end
