@@ -4,6 +4,7 @@ using JSON3
     S = JuliaForever.Sessions
     session = S.Session(; cwd=pwd())
     @test S.header(session)["version"] == 3
+    @test S.Session(; path=SubString("relative.jsonl", 1)).file == abspath("relative.jsonl")
     @test S.leaf(session) === nothing
     @test isempty(S.branch(session))
 
@@ -13,7 +14,7 @@ using JSON3
     question["content"] = "mutated"
     answer = S.record!(session, Dict("role" => "assistant", "content" => [Dict("type" => "text", "text" => "answer")], "timestamp" => 2))
     other = S.record!(session, Dict("role" => "user", "content" => "abandoned", "timestamp" => 3))
-    @test S.branch!(session, first)
+    @test S.branch!(session, SubString(first, 1))
     branch = S.record!(session, Dict("role" => "user", "content" => "new direction", "timestamp" => 4))
     @test [entry["id"] for entry in S.branch(session)] == [setup, first, branch]
     @test [entry["id"] for entry in S.branch(session, other)] == [setup, first, answer, other]
