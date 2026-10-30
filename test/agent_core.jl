@@ -236,3 +236,23 @@ end
     @test [message["tool_call_id"] for message in results] == ["missing", "null", "args"]
     @test all(message -> startswith(message["content"], "Error:"), results)
 end
+
+struct CustomCompletion
+    message::Dict{String, Any}
+    finish::String
+    done::Bool
+end
+struct CustomStreaming
+    answer::CustomCompletion
+end
+JuliaForever.stream(provider::CustomStreaming, messages, tools; parameters=Dict(), on_event=identity) = provider.answer
+
+@testset "custom streamed completion states" begin
+    message = Dict{String, Any}("role" => "assistant", "content" => "answer")
+    complete = CustomCompletion(message, "stop", true)
+    @test respond!(Agent(CustomStreaming(complete), []), "start"; on_event=identity) == "answer"
+    partial = CustomCompletion(message, "incomplete", false)
+    agent = Agent(CustomStreaming(partial), [])
+    @test respond!(agent, "start"; on_event=identity) === partial
+    @test agent.state.phase == JuliaForever.Conversation.Incomplete
+end
