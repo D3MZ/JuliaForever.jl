@@ -20,7 +20,6 @@ function readonly(f, path)
 end
 readonly(f, handle, ::SQLStatus) = nothing
 function readonly(f, handle, ::SQLOk)
-    SQLite.C.sqlite3_busy_timeout(handle, 5000)
     code = SQLite.C.sqlite3_exec(handle, "BEGIN", C_NULL, C_NULL, C_NULL)
     readtransaction(f, handle, sqlstatus(code))
 end

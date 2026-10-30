@@ -175,4 +175,41 @@ end
     end
 end
 
+
+@testset "Locked unrelated catalogs are skipped promptly" begin
+    mktempdir() do root
+        original = joinpath(root, "Case Project")
+        alternate = joinpath(root, "cASE pROJECT")
+        other = joinpath(root, "Other Project")
+        mkpath.((original, other))
+        isdir(alternate) || symlink(original, alternate; dir_target=true)
+        id = repeat("a", 32)
+        direct = session(root, original, id, "direct")
+        alias = session(root, alternate, id, "alias")
+        locked = [session(root, other, repeat(string(i), 32), "unrelated") for i in 1:3]
+        databases = SQLite.DB[]
+        try
+            for path in locked
+                db = SQLite.DB(path)
+                push!(databases, db)
+                SQLite.execute(db, "BEGIN EXCLUSIVE")
+            end
+            files = [direct, alias, locked...]
+            before = Dict(path => read(path) for path in files)
+            elapsed = @elapsed choices = Catalog.listcase(root, (original,))
+            @info "locked catalog scan" elapsed
+            @test elapsed < 3
+            @test Set(item.path for item in choices) == Set((direct, alias))
+            result = Catalog.choose(Catalog.Target(id), root, FixtureCaseProject(original), IOBuffer(), IOBuffer())
+            @test result isa Catalog.Invalid
+            @test Dict(path => read(path) for path in files) == before
+        finally
+            for db in databases
+                SQLite.execute(db, "ROLLBACK")
+                SQLite.close(db)
+            end
+        end
+    end
+end
+
 end
