@@ -107,7 +107,11 @@ end
         result = JuliaForever.FileArguments.load(names, root)
         @test isempty(result.images)
         @test occursin("screenshot", result.text) && occursin("curly", result.text)
-        @test JuliaForever.FileArguments.resolve("file://" * replace(joinpath(root, "photo 4\u202fPM.png"), " " => "%20", "\u202f" => "%E2%80%AF"), root) == joinpath(root, "photo 4\u202fPM.png")
+        filepath = joinpath(root, "photo 4\u202fPM.png")
+        urlpath = replace(filepath, '\\' => '/')
+        urlpath = startswith(urlpath, "/") ? urlpath : "/" * urlpath
+        url = "file://" * replace(urlpath, " " => "%20", "\u202f" => "%E2%80%AF")
+        @test JuliaForever.FileArguments.resolve(url, root) == filepath
         @test JuliaForever.FileArguments.resolve("@@literal.txt", root) == joinpath(root, "@literal.txt")
         if haskey(ENV, "PI_SOURCE")
             pi = ENV["PI_SOURCE"]
