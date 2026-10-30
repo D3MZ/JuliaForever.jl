@@ -207,3 +207,30 @@ server() = `$(Base.julia_cmd()) --startup-file=no --project=$(dirname(Base.activ
         end
     end
 end
+
+@testset "MCP stdio retains a slow progress backlog" begin
+    client = MCP.connect(server(); timeout=10, grace=0.2)
+    entered = Channel{Nothing}(1)
+    release = Channel{Nothing}(1)
+    events = Int[]
+    job = @async MCP.request(client, "flood", Dict(); timeout=0, on_progress=event -> begin
+        push!(events, event["progress"])
+        if event["progress"] == 1
+            put!(entered, nothing)
+            take!(release)
+        end
+    end)
+    try
+        @test timedwait(() -> isready(entered), 10) == :ok
+        @test MCP.request(client, "flood-barrier", Dict()) == Dict("done" => true)
+        @test !istaskdone(job)
+        put!(release, nothing)
+        @test fetchbefore(job) == Dict("done" => true)
+        @test events == collect(1:300)
+        @test MCP.request(client, "nested", Dict()) == Dict("nested" => true)
+        @test MCP.request(client, "server-pings", Dict()) == Dict("count" => 300)
+    finally
+        isready(release) || put!(release, nothing)
+        close(client)
+    end
+end

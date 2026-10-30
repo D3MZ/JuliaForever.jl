@@ -62,6 +62,19 @@ end
                 restored = Agent(provider, [tool]; history)
                 @test isequal(only(filter(message -> message isa JuliaForever.Conversation.ToolMessage, restored.state.messages)).image, direct.image)
 
+                stopping = MCPImageProvider([])
+                stoppedhistory = JuliaForever.History.Memory()
+                registry = JuliaForever.Extensions.Registry()
+                JuliaForever.Extensions.register!(registry, :stop, JuliaForever.Extensions.Plugin(; hooks=(:tool_result => (event -> JuliaForever.Extensions.Terminate(event.result)),)))
+                listener = JuliaForever.Extensions.listen(JuliaForever.Extensions.snapshot(registry))
+                stopped = Agent(stopping, [tool]; history=stoppedhistory)
+                @test respond!(stopped, "fetch image"; on_agent_event=listener) === nothing
+                @test length(stopping.requests) == 1
+                stoppedimage = only(filter(message -> message isa JuliaForever.Conversation.ToolMessage, stopped.state.messages)).image
+                @test isequal(stoppedimage, direct.image)
+                replayed = Agent(stopping, [tool]; history=stoppedhistory)
+                @test isequal(only(filter(message -> message isa JuliaForever.Conversation.ToolMessage, replayed.state.messages)).image, direct.image)
+
                 for api in (:chat, :responses)
                     model = api == :chat ? OpenAI("http://unused", "synthetic", "key") : OpenAIResponses("http://unused", "synthetic", "key")
                     payload = JSON3.read(JuliaForever.payload(model, provider.requests[2], Dict(), Dict()))

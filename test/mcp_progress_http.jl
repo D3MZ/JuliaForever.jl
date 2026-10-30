@@ -10,6 +10,11 @@ end
 
 server = HTTP.listen!("127.0.0.1", 0; listenany=true) do io
     request = HTTP.startread(io)
+    if request.method == "GET"
+        HTTP.setstatus(io, 405)
+        HTTP.startwrite(io)
+        return
+    end
     if request.method == "DELETE"
         HTTP.setstatus(io, 204)
         HTTP.startwrite(io)

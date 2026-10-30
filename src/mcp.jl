@@ -34,6 +34,9 @@ mutable struct HttpTransport
     session::String
     version::String
     requests::Dict{Int, HTTP.RequestContext}
+    getcontext::HTTP.RequestContext
+    replies::Dict{HTTP.RequestContext, Task}
+    roots::Set{Task}
 end
 
 struct NoRoots end
@@ -134,8 +137,6 @@ function send(client::Client, message, process::Base.Process)
     end
 end
 
-sent(::Nothing) = true
-sent(::Failure) = false
 transmitted!(client::Client, ::Nothing) = nothing
 transmitted!(client::Client, failure::Failure) = transmitted!(client, failure, client.process)
 # A failed stdin write does not imply stdout is drained. The reader owns EOF.
@@ -167,28 +168,76 @@ function ssemessage!(client::Client, data, event, id)
     get(value, "id", nothing) == id && !haskey(value, "method")
 end
 
-function sseread!(client::Client, stream, id)
+struct ServerStream end
+function servermessage!(client::Client, data, event)
+    (isempty(data) || !(event in ("", "message"))) && return nothing
+    try
+        value = JSON3.read(codeunits(join(data, "\n")), Dict{String, Any})
+        received(client, value)
+    catch
+    end
+    nothing
+end
+
+const sselimit = 16 * 1024 * 1024
+
+sseevent!(client, data, event, id) = ssemessage!(client, data, event, id) ? id : nothing
+sseevent!(client, data, event, ::ServerStream) = servermessage!(client, data, event)
+
+sseend(::Nothing, chunk) = length(chunk) + 1
+sseend(index::Int, chunk) = index
+
+function sseread!(client, stream, id)
     data = String[]
+    bytes = UInt8[]
+    size = 0
     event = ""
-    for line in eachline(stream)
-        line = rstrip(line, '\r')
+    function line!()
+        line = String(copy(bytes))
+        empty!(bytes)
+        endswith(line, '\r') && (line = chop(line; tail=1))
         if isempty(line)
-            ssemessage!(client, data, event, id) && return true
+            sseevent!(client, data, event, id) == id && return 1
             empty!(data)
+            size = 0
             event = ""
         elseif !startswith(line, ':')
             parts = split(line, ':'; limit=2)
             field = parts[1]
             value = length(parts) == 2 ? parts[2] : ""
             startswith(value, ' ') && (value = value[2:end])
-            field == "data" && push!(data, value)
-            field == "event" && (event = value)
+            if field == "data"
+                size += ncodeunits(value) + !isempty(data)
+                size > sselimit && return -1
+                push!(data, value)
+            elseif field == "event"
+                event = value
+            end
+        end
+        0
+    end
+    while !eof(stream)
+        chunk = readavailable(stream)
+        start = 1
+        while start <= length(chunk)
+            newline = sseend(findnext(==(0x0a), chunk, start), chunk)
+            stop = newline - 1
+            length(bytes) + stop - start + 1 > sselimit && return false
+            append!(bytes, @view chunk[start:stop])
+            newline > length(chunk) && break
+            result = line!()
+            result != 0 && return result > 0
+            start = newline + 1
         end
     end
-    ssemessage!(client, data, event, id)
+    if !isempty(bytes)
+        result = line!()
+        result != 0 && return result > 0
+    end
+    sseevent!(client, data, event, id) == id
 end
 
-httptimeout(::Nothing, client::Client) = client.timeout
+httptimeout(::Nothing, client::Client) = isfinite(client.timeout) && client.timeout > 0 ? client.timeout : 0
 httptimeout(id, client::Client) = 0
 
 function httprequest(client::Client, transport::HttpTransport, message)
@@ -196,6 +245,32 @@ function httprequest(client::Client, transport::HttpTransport, message)
     context = HTTP.RequestContext()
     httprequest(client, transport, message, id, admit!(client, transport, id, context))
 end
+
+function getstream!(client::Client, transport::HttpTransport)
+    headers = filter(pair -> lowercase(first(pair)) ∉ ("accept", "content-type"), httpheaders(transport))
+    push!(headers, "Accept" => "text/event-stream")
+    try
+        HTTP.open("GET", transport.url, headers; status_exception=false, request_timeout=0, retry=false, redirect=false, cookies=false, context=transport.getcontext) do stream
+            response = HTTP.startread(stream)
+            get(getstatuses, response.status, ignoreget!)(client, transport, stream, response)
+        end
+    catch
+    end
+    nothing
+end
+
+ignoreget!(client, transport, stream, response) = nothing
+function gettype!(client, transport, stream, response)
+    type = lowercase(strip(first(split(HTTP.header(response, "Content-Type", ""), ';'))))
+    get(gettypes, type, ignoreget!)(client, transport, stream, response)
+end
+function readget!(client, transport, stream, response)
+    session = HTTP.header(response, "Mcp-Session-Id", "")
+    isempty(session) || (transport.session = session)
+    sseread!(client, stream, ServerStream())
+end
+const getstatuses = Dict(200 => gettype!)
+const gettypes = Dict("text/event-stream" => readget!)
 
 admit!(client, transport, ::Nothing, context) = context
 function admit!(client, transport, id, context)
@@ -212,14 +287,14 @@ function httprequest(client, transport, message, id, context::HTTP.RequestContex
         HTTP.open("POST", transport.url, httpheaders(transport); status_exception=false, request_timeout=httptimeout(id, client), retry=false, redirect=false, cookies=false, context) do stream
             write(stream, JSON3.write(message))
             response = HTTP.startread(stream)
-            200 <= response.status < 300 || return httpfailure!(client, message, Failure(:http, "MCP HTTP status $(response.status)", response.status))
+            200 <= response.status < 300 || return requestfailure!(client, message, id, Failure(:http, "MCP HTTP status $(response.status)", response.status))
             session = HTTP.header(response, "Mcp-Session-Id", "")
             isempty(session) || (transport.session = session)
             httpresponse!(client, stream, message, id, response)
         end
         nothing
     catch exception
-        httpfailure!(client, message, Failure(:transport, sprint(showerror, exception)))
+        requestfailure!(client, message, id, Failure(:transport, sprint(showerror, exception)))
         haskey(message, "id") ? nothing : Failure(:transport, "Could not write to MCP server")
     finally
         forgethttp!(transport, client, id)
@@ -245,10 +320,12 @@ forgethttp!(transport, client, id) = lock(() -> pop!(transport.requests, id, not
 
 function httpfailure!(client::Client, message, failure::Failure)
     haskey(message, "id") || return false
-    pending = lock(() -> retire!(client, message["id"]), client.lock)
+    pending = lock(() -> writefailed!(client, message["id"], get(client.pending, message["id"], nothing)), client.lock)
     deliver!(pending, failure)
     true
 end
+requestfailure!(client, message, ::Nothing, failure) = false
+requestfailure!(client, message, id::Int, failure) = httpfailure!(client, message, failure)
 
 function send(client::Client, message, transport::HttpTransport)
     haskey(message, "id") && haskey(message, "method") && (@async httprequest(client, transport, message); return nothing)
@@ -281,11 +358,20 @@ end
 takefailed!(pending, client, id, ::Finishing) = nothing
 takefailed!(pending, client, id, progress) = push!(pending, retire!(client, id))
 
-function takepending!(client::Client, ::Connection, ::ClientClosing)
+takepending!(client::Client, connection::Connection, cause::ClientClosing) = takepending!(client, connection, cause, client.process)
+function takepending!(client::Client, ::Connection, ::ClientClosing, ::Base.Process)
     client.connection = Closed()
     pending = collect(values(client.pending))
     empty!(client.pending)
     foreach(retire!, pending)
+    pending
+end
+function takepending!(client::Client, ::Connection, ::ClientClosing, ::HttpTransport)
+    client.connection = Closed()
+    pending = Pending[]
+    for (id, request) in collect(client.pending)
+        takefailed!(pending, client, id, request.progress)
+    end
     pending
 end
 
@@ -323,9 +409,14 @@ finishshutdown!(client::Client, ::Nothing) = finishshutdown!(client, client.proc
 
 function finishshutdown!(client::Client, transport::HttpTransport)
     try
-        contexts = lock(() -> collect(values(transport.requests)), client.lock)
+        contexts, replies = lock(client.lock) do
+            collect(values(transport.requests)), collect(transport.replies)
+        end
         foreach(HTTP.cancel!, contexts)
-        isempty(transport.session) || HTTP.request("DELETE", transport.url, httpheaders(transport); status_exception=false, request_timeout=1, retry=false)
+        foreach(pair -> HTTP.cancel!(first(pair)), replies)
+        HTTP.cancel!(transport.getcontext)
+        timedwait(() -> all(pair -> istaskdone(last(pair)), replies) && readerdone(client.reader), 1; pollint=0.01)
+        isempty(transport.session) || HTTP.request("DELETE", transport.url, httpheaders(transport); status_exception=false, request_timeout=1, retry=false, redirect=false, cookies=false)
     catch
     finally
         notify(client.done)
@@ -363,6 +454,8 @@ function finishshutdown!(client::Client, process::Base.Process)
     nothing
 end
 
+readerdone(::Nothing) = true
+readerdone(reader::Task) = istaskdone(reader)
 joinreader(::Nothing) = nothing
 joinreader(reader::Task) = wait(reader)
 
@@ -371,17 +464,60 @@ function Base.close(client::Client)
     shutdown(client)
 end
 
-serverresponse(client, message) = serverresponse(client.process, send(client, message))
-serverresponse(::Base.Process, result) = true
-serverresponse(::HttpTransport, result) = sent(result)
+serverresponse(client, message) = serverresponse(client, message, client.process)
+serverresponse(client, message, ::Base.Process) = (send(client, message); true)
+function serverresponse(client, message, transport::HttpTransport)
+    admitted = lock(client.lock) do
+        serverresponse!(client, message, transport, client.connection)
+    end
+    overloaded!(client, admitted)
+    true
+end
+overloaded!(client, ::Nothing) = nothing
+function overloaded!(client, failure::Failure)
+    @warn failure.message
+    fail!(client, failure)
+end
+serverresponse!(client, message, transport, ::Closed) = nothing
+function serverresponse!(client, message, transport, ::Connection)
+    length(transport.replies) >= 256 && return Failure(:overload, "MCP server response backlog exceeded 256")
+    context = HTTP.RequestContext()
+    task = @async begin
+        try
+            httprequest(client, transport, message, nothing, context)
+        finally
+            lock(() -> pop!(transport.replies, context, nothing), client.lock)
+        end
+    end
+    transport.replies[context] = task
+    nothing
+end
+
 pingrequest(client, id) = serverresponse(client, Dict("jsonrpc" => "2.0", "id" => id, "result" => Dict()))
 missingrequest(client, id) = serverresponse(client, Dict("jsonrpc" => "2.0", "id" => id, "error" => Dict("code" => -32601, "message" => "Method not found")))
 rootrequest(client, id) = rootrequest(client, id, client.roots)
 rootrequest(client, id, ::NoRoots) = missingrequest(client, id)
 
-function rootrequest(client, id, roots::Roots)
+rootrequest(client, id, roots::Roots) = rootrequest(client, id, roots, client.process)
+function rootrequest(client, id, roots::Roots, ::Base.Process)
     @async rootresponse!(client, id, roots)
     true
+end
+function rootrequest(client, id, roots::Roots, transport::HttpTransport)
+    admitted = lock(() -> startroots!(client, id, roots, transport, client.connection), client.lock)
+    overloaded!(client, admitted)
+    true
+end
+startroots!(client, id, roots, transport, ::Closed) = nothing
+function startroots!(client, id, roots, transport, ::Connection)
+    length(transport.roots) >= 256 && return Failure(:overload, "MCP roots callback backlog exceeded 256")
+    task = @async try
+        rootresponse!(client, id, roots)
+    finally
+        lock(() -> delete!(transport.roots, current_task()), client.lock)
+    end
+    push!(transport.roots, task)
+    nothing
 end
 
 function rootresponse!(client, id, roots::Roots)
@@ -392,7 +528,7 @@ function rootresponse!(client, id, roots::Roots)
     end
     message = Dict{String, Any}("jsonrpc" => "2.0", "id" => id)
     merge!(message, response)
-    transmitted!(client, send(client, message))
+    serverresponse(client, message)
 end
 
 const serverrequests = Dict{String, Function}("ping" => pingrequest, "roots/list" => rootrequest)
@@ -662,13 +798,17 @@ activate!(client::Client, ::Connection) = Failure(:closed, "MCP connection close
 
 function activate!(client::Client, ::Connecting)
     client.connection = Open()
+    startstream!(client, client.process)
     client
 end
+
+startstream!(client, ::Base.Process) = nothing
+startstream!(client, transport::HttpTransport) = (client.reader = @async getstream!(client, transport); nothing)
 
 initparams(client::Client) = Dict("protocolVersion" => first(versions), "capabilities" => rootcapabilities(client.roots), "clientInfo" => Dict("name" => "JuliaForever", "version" => "0.1.0"))
 
 function connect(url::AbstractString; timeout=30.0, headers=Pair{String, String}[], roots=nothing)
-    transport = HttpTransport(String(url), Pair{String, String}[String(k) => String(v) for (k, v) in headers], "", "", Dict{Int, HTTP.RequestContext}())
+    transport = HttpTransport(String(url), Pair{String, String}[String(k) => String(v) for (k, v) in headers], "", "", Dict{Int, HTTP.RequestContext}(), HTTP.RequestContext(), Dict{HTTP.RequestContext, Task}(), Set{Task}())
     client = Client(transport, ReentrantLock(), ReentrantLock(), Dict{Int, Pending}(), 0, Connecting(), nothing, Float64(timeout), 0.0, false, Base.Event(), nothing, rootsource(roots))
     initialize!(client, request(client, "initialize", initparams(client), Connecting()))
 end

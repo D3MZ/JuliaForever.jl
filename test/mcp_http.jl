@@ -2,6 +2,7 @@ using Test, HTTP, JSON3, Base64, JuliaForever
 const MCP = JuliaForever.MCP
 requests = Channel{Any}(32)
 server = HTTP.serve!("127.0.0.1", 0) do req
+    req.method == "GET" && return HTTP.Response(405)
     req.method == "DELETE" && (put!(requests, (req.method, Dict(lowercase(k) => v for (k, v) in req.headers), Dict())); return HTTP.Response(204))
     try
     body = isempty(req.body) ? Dict() : JSON3.read(String(req.body), Dict{String, Any})

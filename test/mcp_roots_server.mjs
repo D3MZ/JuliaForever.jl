@@ -6,6 +6,7 @@ if (process.argv.includes("--http")) {
   let next = 0;
   const pending = new Map();
   const server = createServer(async (request, response) => {
+    if (request.method === "GET") return response.writeHead(405).end();
     if (request.method === "DELETE") return response.writeHead(204).end();
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);

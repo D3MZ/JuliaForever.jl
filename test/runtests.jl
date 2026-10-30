@@ -239,6 +239,12 @@ end
 module MCPHTTPSSETests
 include("mcp_http_sse.jl")
 end
+module MCPHTTPGETTests
+include("mcp_http_get.jl")
+end
+module MCPHTTPLifecycleTests
+include("mcp_http_lifecycle.jl")
+end
 if haskey(ENV, "PI_SOURCE")
     include("tool_search_differential.jl")
     include("mcp_differential.jl")
