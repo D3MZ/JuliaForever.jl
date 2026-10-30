@@ -23,6 +23,20 @@ struct ToolLoaded <: ToolResult
     loaded::Vector{String}
     image::Nothing
 end
+struct ToolDiscovery{T<:ToolResult} <: ToolResult
+    result::T
+    loaded::Vector{String}
+    text::String
+    image::Union{Nothing, Image}
+end
+ToolDiscovery(result::ToolResult, loaded::Vector{String}) = ToolDiscovery(result, loaded, result.text, result.image)
+visible(result::ToolResult) = result
+visible(result::ToolDiscovery) = result.result
+iserror(result::ToolDiscovery) = iserror(result.result)
+content(result::ToolDiscovery) = content(result.result)
+status(result::ToolDiscovery) = status(result.result)
+loaded(result::ToolDiscovery) = copy(result.loaded)
+
 ToolLoaded(text, loaded) = ToolLoaded(text, loaded, nothing)
 iserror(::ToolLoaded) = false
 content(result::ToolLoaded) = result.text

@@ -89,7 +89,7 @@ after_tool!(callback, ended, ::History.Store) = emit(callback, ended)
 
 function observe_tool!(agent, effect, messages, callback, results, call, reply::Conversation.ToolReply)
     result = reply.result
-    ended = (; type=:tool_execution_end, tool_call_id=call["id"], tool_name=callinfo(call).name, result, iserror=result.iserror)
+    ended = (; type=:tool_execution_end, tool_call_id=call["id"], tool_name=callinfo(call).name, result=visible(result), iserror=result.iserror)
     before_tool!(callback, ended, agent.history)
     transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, reply), agent)
     finish_tool!(agent, messages, callback, results, call, result, ended, transition, added)

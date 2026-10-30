@@ -82,4 +82,29 @@ end
     end
 end
 
+@testset "replacement preserves search discovery" begin
+    for history in (nothing, JuliaForever.History.Memory()), replacement in (ToolSuccess("changed"), ToolFailure("changed"), ToolSuccess("changed", Image("image/png", "YWJj")))
+        seen = Any[]
+        reg = E.Registry()
+        E.register!(reg, :hooks, E.Plugin(; hooks=(:tool_result => (event -> event.tool_name == "tool_search" ? replacement : nothing), :tool_result => (event -> (push!(seen, event.result.text); nothing)))))
+        listener = E.listen(E.snapshot(reg); on_event=event -> event.type == :tool_execution_end && push!(seen, typeof(event.result)))
+        calls = [Dict("id" => id, "type" => "function", "function" => Dict("name" => name, "arguments" => JSON3.write(args))) for (id, name, args) in [("search", "tool_search", (; query="intercept")), ("run", "intercept", (;))]]
+        replies = Any[Dict("role" => "assistant", "content" => nothing, "tool_calls" => [call]) for call in calls]
+        push!(replies, Dict("role" => "assistant", "content" => "done"))
+        p = InterceptProvider(replies, [])
+        agent = Agent(p, ToolSet([], [InterceptTool()]); history)
+        @test respond!(agent, "go"; on_agent_event=listener) == "done"
+        @test seen == ["changed", typeof(replacement), "original", ToolSuccess]
+        @test p.requests[2][end]["content"] == JuliaForever.content(replacement)
+        @test p.requests[2][end]["is_error"] == replacement.iserror
+        @test p.requests[3][end]["content"] == "original"
+        @test "intercept" in agent.tools.loaded
+        if history !== nothing
+            restored = Agent(InterceptProvider([], []), ToolSet([], [InterceptTool()]); history)
+            @test "intercept" in restored.tools.loaded
+            @test restored.messages == agent.messages
+        end
+    end
+end
+
 end
