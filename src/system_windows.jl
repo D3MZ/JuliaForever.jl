@@ -180,6 +180,7 @@ end
 
 shellgate(::Bash, env, ::Nothing, ::Nothing, command) = nothing
 function shellgate(::Bash, env, cancel, timeout, command)
+    any(name -> startswith(uppercase(name), "BASH_FUNC_") && endswith(name, "%%"), keys(env)) && return ToolFailure("Could not isolate Bash with exported functions; command was not started")
     file, io = mktemp()
     pidfile, pidio = mktemp()
     close(pidio)

@@ -285,6 +285,11 @@ end
                     @test after == before * before
                 end
 
+                withenv("BASH_FUNC_read%%" => "() { printf injected > imported-function-ran; builtin read \"\$@\"; }") do
+                    @test execute(bash, (; command="printf user-ran", timeout=30)) == ToolFailure("Could not isolate Bash with exported functions; command was not started")
+                    @test !isfile(joinpath(dir, "imported-function-ran"))
+                end
+
                 protected = replace(joinpath(dir, "protected startup.sh"), '\\' => '/')
                 write(protected, "printf started > startup-ran\n")
                 env = copy(ENV)
