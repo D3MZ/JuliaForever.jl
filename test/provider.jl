@@ -71,11 +71,12 @@ end
         end
         try
             agent = Agent(OpenAI("http://127.0.0.1:$(HTTP.port(server))/v1", "test-model", "test-key"), [Write(dir), Read(dir), Edit(dir)])
-            @test respond!(agent, "create a file") == "done"
+            @test respond!(agent, "create a file"; parameters=Dict("stream" => true, "stream_options" => Dict("include_usage" => true))) == "done"
             @test length(requests) == 2
             @test requests[1].authorization == "Bearer test-key"
             @test requests[1].target == "/v1/chat/completions"
             @test requests[1].body.model == "test-model"
+            @test requests[1].body.stream == false && !haskey(requests[1].body, :stream_options)
             @test requests[2].body.messages[end].role == "tool"
             @test requests[2].body.messages[end].tool_call_id == "call-1"
             @test read(joinpath(dir, "a.txt"), String) == "hello"

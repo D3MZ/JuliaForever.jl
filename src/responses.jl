@@ -30,7 +30,12 @@ end
 responseprovider(::DirectRoute) = "openai"
 responseprovider(route::CatalogRoute) = route.name
 officialresponses(provider::OpenAIResponses) = lowercase(HTTP.URI(provider.base).host) == "api.openai.com"
-responsesignin(provider::OpenAIResponses) = responseprovider(provider.route) == "openai" && officialresponses(provider) && !startswith(provider.key, "sk-")
+responsesignin(provider::OpenAIResponses) = responsesignin(provider, provider.route)
+responsesignin(provider, ::DirectRoute) = officialsignedin(provider)
+responsesignin(provider, route::CatalogRoute) = get(signinroutes, route.name, othersignin)(provider)
+officialsignedin(provider) = officialresponses(provider) && !startswith(provider.key, "sk-")
+othersignin(provider) = false
+const signinroutes = Dict("openai" => officialsignedin)
 responseauthoverride(provider::OpenAIResponses) = officialresponses(provider) && any(pair -> lowercase(first(pair)) == "authorization", provider.extra)
 thinkingupdate(::ChatGPT.Plan) = nothing
 thinkingupdate(provider::OpenAIResponses) = thinkingupdate(provider, provider.thinking)
@@ -41,10 +46,13 @@ thinkingupdate(provider, effort, levels::AbstractDict) = thinkingupdate(provider
 thinkingupdate(provider, effort, ::DirectThinking) = nothing
 thinkingupdate(provider, effort, ::UpdateThinking) = thinkingupdate(provider, effort, provider.route)
 thinkingupdate(provider, effort, ::CatalogRoute) = nothing
-function thinkingupdate(provider, effort, ::DirectRoute)
-    (effort == "none" || responsesignin(provider) || responseauthoverride(provider)) && return nothing
+disabledthinking(provider, effort) = nothing
+function requestedthinking(provider, effort)
+    (responsesignin(provider) || responseauthoverride(provider)) && return nothing
     ResponseThinking(responseprovider(provider.route), provider.model, String(effort))
 end
+const thinkingupdates = Dict("none" => disabledthinking)
+thinkingupdate(provider, effort, ::DirectRoute) = get(thinkingupdates, effort, requestedthinking)(provider, effort)
 
 function input(messages)
     items = Any[]
@@ -97,7 +105,10 @@ inputcontent!(items, role, ::Nothing) = nothing
 inputcontent!(items, role, content) = push!(items, Dict("role" => role, "content" => content))
 
 applythinking!(data, ::Nothing) = nothing
-applythinking!(data, effort::AbstractString) = (data["reasoning"] = effort == "none" ? Dict("effort" => effort) : Dict("effort" => effort, "summary" => "auto"))
+plainreasoning!(data, effort) = (data["reasoning"] = Dict("effort" => effort))
+summarizedreasoning!(data, effort) = (data["reasoning"] = Dict("effort" => effort, "summary" => "auto"))
+const reasoningwriters = Dict("none" => plainreasoning!)
+applythinking!(data, effort::AbstractString) = get(reasoningwriters, effort, summarizedreasoning!)(data, effort)
 applythinking!(data, effort, ::Nothing) = applythinking!(data, effort)
 applythinking!(data, effort, ::ResponseThinking) = (data["reasoning"] = Dict("effort" => "medium", "summary" => "auto"))
 
