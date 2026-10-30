@@ -1,7 +1,7 @@
 module AnthropicAPI
 
 using HTTP, JSON3, SHA
-import ..JuliaForever: requestcontext, complete, stream, payload, headers, endpoint, provider, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Usage
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, endpoint, provider, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Finished, Unfinished, Usage
 
 struct Anthropic
     base::String
@@ -230,7 +230,7 @@ end
 function result(blocks, reason, used, failure, ::Nothing)
     detail = providererror(:anthropic, reason)
     failure = something(failure, detail)
-    Completion(content(blocks), used, nothing, false, failure)
+    Completion(content(blocks), used, nothing, Unfinished(), failure)
 end
 
 result(blocks, reason, used, failure, mapped::Finish) = checkedresult(blocks, used, failure, mapped, blockfailures(blocks))
@@ -240,8 +240,8 @@ function checkedresult(blocks, used, failure, mapped, ::Nothing)
     outcome(blocks, used, finishname(mapped), failure)
 end
 
-outcome(blocks, used, mapped, ::Nothing) = Completion(content(blocks), used, mapped, true, nothing)
-outcome(blocks, used, mapped, failure) = Completion(content(blocks), used, mapped, false, failure)
+outcome(blocks, used, mapped, ::Nothing) = Completion(content(blocks), used, mapped, Finished(), nothing)
+outcome(blocks, used, mapped, failure) = Completion(content(blocks), used, mapped, Unfinished(), failure)
 
 requestcontext(::Anthropic) = HTTP.RequestContext()
 
@@ -253,7 +253,7 @@ function complete(provider::Anthropic, body::AbstractString)
     200 <= response.status < 300 || return incomplete(ProviderStatus(response.status))
     tagged(completion(decode(String(response.body))), provider)
 end
-incomplete(failure::String) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, false, failure)
+incomplete(failure::String) = Completion(Dict{String, Any}("role" => "assistant", "content" => nothing), nothing, nothing, Unfinished(), failure)
 tagged(answer::Completion, provider::Anthropic) = (answer.message["anthropic_origin"] = origin(provider); answer)
 completion(failure::InvalidResponse) = incomplete(failure)
 function completion(data::AbstractDict)

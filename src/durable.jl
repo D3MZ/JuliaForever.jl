@@ -35,6 +35,32 @@ struct Document <: Record
     value::Any
 end
 
+abstract type DocumentPolicy end
+struct AsOf <: DocumentPolicy end
+struct Current <: DocumentPolicy end
+struct Initial <: DocumentPolicy end
+
+struct PolicyDocument <: Record
+    id::Int
+    conversation::Int
+    kind::String
+    key::Union{Nothing, String}
+    policy::DocumentPolicy
+    value::Any
+end
+
+struct ForkCopy
+    id::Int
+    source::Int
+end
+
+struct DocumentFork <: Record
+    id::Int
+    value::Any
+    parent::Tuple{Int, Int}
+    copies::Vector{ForkCopy}
+end
+
 struct Submission <: Record
     id::Int
     conversation::Int
@@ -51,9 +77,11 @@ mutable struct State
     requests::Dict{Tuple{Int, String}, Int}
     entries::Dict{Int, Int}
     documents::Dict{Int, Vector{Pair{Int, Document}}}
+    policies::Dict{Int, Vector{Pair{Int, PolicyDocument}}}
+    addresses::Dict{Tuple{Int, String, Union{Nothing, String}}, Int}
 end
 
-State() = State(0, 0, Dict{Int, Record}(), Dict{Tuple{Int, String}, Int}(), Dict{Int, Int}(), Dict{Int, Vector{Pair{Int, Document}}}())
+State() = State(0, 0, Dict{Int, Record}(), Dict{Tuple{Int, String}, Int}(), Dict{Int, Int}(), Dict{Int, Vector{Pair{Int, Document}}}(), Dict{Int, Vector{Pair{Int, PolicyDocument}}}(), Dict{Tuple{Int, String, Union{Nothing, String}}, Int}())
 
 abstract type Health end
 struct Healthy <: Health end
@@ -147,19 +175,27 @@ encode(r::Conversation) = (; type="conversation", r.id, r.value, parent=encode(r
 encode(r::Entry) = (; type="entry", r.id, r.conversation, r.kind, r.value)
 encode(r::Task) = (; type="task", r.id, r.conversation, r.state)
 encode(r::Document) = (; type="document", r.id, r.conversation, r.value)
+encode(::AsOf) = "asOf"
+encode(::Current) = "current"
+encode(::Initial) = "initial"
+encode(r::PolicyDocument) = (; type="policy_document", r.id, r.conversation, r.kind, r.key, policy=encode(r.policy), r.value)
+encode(copy::ForkCopy) = (; copy.id, copy.source)
+encode(r::DocumentFork) = (; type="document_fork", r.id, r.value, parent=encode(r.parent), copies=encode.(r.copies))
 encode(r::Submission) = (; type="submission", r.id, r.conversation, r.request, r.kind, r.status, r.value)
 
-const recordtypes = Dict("conversation" => Conversation, "entry" => Entry, "task" => Task, "document" => Document, "submission" => Submission)
+const recordtypes = Dict("conversation" => Conversation, "entry" => Entry, "task" => Task, "document" => Document, "policy_document" => PolicyDocument, "document_fork" => DocumentFork, "submission" => Submission)
 
 decode(record::AbstractDict) = decode(get(recordtypes, record["type"], nothing), record, record["id"])
 decode(::Nothing, record, id) = nothing
 decode(::Type{<:Record}, record, id) = nothing
 decode(::Type{Conversation}, record, id::Int) = decodeparent(id, record["value"], get(record, "parent", nothing))
+decode(::Type{DocumentFork}, record, id::Int) = decodefork(id, record["value"], record["parent"], record["copies"])
 decode(type::Type{<:Record}, record, id::Int) = decode(type, record, id, record["conversation"])
 decode(::Type{<:Record}, record, id::Int, conversation) = nothing
 decode(::Type{Entry}, record, id::Int, conversation::Int) = Entry(id, conversation, record["kind"], record["value"])
 decode(::Type{Task}, record, id::Int, conversation::Int) = Task(id, conversation, record["state"])
 decode(::Type{Document}, record, id::Int, conversation::Int) = Document(id, conversation, record["value"])
+decode(::Type{PolicyDocument}, record, id::Int, conversation::Int) = decodepolicy(id, conversation, record["kind"], record["key"], get(documentpolicies, record["policy"], nothing), record["value"])
 decode(::Type{Submission}, record, id::Int, conversation::Int) = Submission(id, conversation, record["request"], record["kind"], record["status"], record["value"])
 
 decodeparent(id, value, ::Nothing) = Conversation(id, value)
@@ -188,6 +224,7 @@ end
 
 document(::Record, conversation) = false
 document(record::Document, conversation) = record.conversation == conversation
+document(record::PolicyDocument, conversation) = record.conversation == conversation
 
 function hasdocuments(state::State, conversation::Int)
     pending = Tuple{Int, Int}[(conversation, typemax(Int))]
@@ -288,12 +325,16 @@ replaydecoded!(state, nextid, records, record) = Rejected(:corrupt_log)
 function replaydecoded!(state, nextid, records, record::Record)
     record.id <= nextid || return Rejected(:corrupt_log)
     haskey(state.records, record.id) || record.id > state.nextid || return Rejected(:corrupt_log)
-    replayaccepted!(records, record, forkcheck(state, record))
+    replayids!(state, nextid, records, record, replayids(state, nextid, record))
 end
+replayids!(state, nextid, records, record, rejected::Rejected) = rejected
+replayids!(state, nextid, records, record, ::Nothing) = replayaccepted!(records, record, forkcheck(state, record))
 replayaccepted!(records, record, rejected::Rejected) = rejected
 replayaccepted!(records, record, ::Nothing) = push!(records, record)
 replayrecords!(state, nextid, rejected::Rejected) = Rejected(:corrupt_log)
-replayrecords!(state, nextid, records::Vector{Record}) = replayapplied!(state, nextid, records, foldl((result, record) -> replayapply!(state, result, record), records; init=nothing))
+replayrecords!(state, nextid, records::Vector{Record}) = replaychecked!(state, nextid, records, batchforkcheck(state, records))
+replaychecked!(state, nextid, records, rejected::Rejected) = Rejected(:corrupt_log)
+replaychecked!(state, nextid, records, ::Nothing) = replayapplied!(state, nextid, records, foldl((result, record) -> replayapply!(state, result, record), records; init=nothing))
 replayapply!(state, rejected::Rejected, record) = rejected
 replayapply!(state, ::Nothing, record) = apply!(state, record)
 replayapplied!(state, nextid, records, rejected::Rejected) = Rejected(:corrupt_log)
@@ -511,9 +552,10 @@ function snapshotentry(state, conversation, document, entry::Entry)
     snapshotdocument(state, conversation, state.entries[entry.id], get(state.records, document, nothing))
 end
 snapshotdocument(state, conversation, seq, ::Union{Nothing, Record}) = nothing
-function snapshotdocument(state, conversation, seq, document::Document)
+snapshotdocument(state, conversation, seq, document::Document) = snapshotdocument(state, conversation, seq, document, state.documents)
+function snapshotdocument(state, conversation, seq, document::Union{Document, PolicyDocument}, history)
     document.conversation == conversation || return nothing
-    versions = state.documents[document.id]
+    versions = history[document.id]
     snapshotversion(versions, findlast(version -> version.first <= seq, versions))
 end
 snapshotversion(versions, ::Nothing) = nothing
@@ -559,8 +601,7 @@ end
 fork!(tx::Transaction, conversation::Integer, at::Integer; value=nothing) = fork!(tx, conversation, at, status(tx); value)
 fork!(::Transaction, ::Integer, ::Integer, result::Rejected; value=nothing) = result
 function fork!(tx::Transaction, conversation::Integer, at::Integer, ::Nothing; value=nothing)
-    id = mint!(tx)
-    put!(tx, Conversation(id, value, (conversation, at)))
+    forkpolicy!(tx, (Int(conversation), Int(at)), value, forkplan(tx.store.state, Int(conversation), Int(at)))
 end
 
 const submissionstates = Dict("input" => "queued", "write" => "queued", "continue" => "placed")
@@ -609,7 +650,9 @@ function commit!(f, store::Store, ::Free)
 end
 
 committed!(store::Store, tx::Transaction, value, rejected::Rejected) = rejected
-committed!(store::Store, tx::Transaction, value, ::Nothing) = commit!(store, tx, value, forkcheck(tx.state, tx.writes))
+committed!(store::Store, tx::Transaction, value, ::Nothing) = committedchecked!(store, tx, value, batchforkcheck(store.state, tx.writes))
+committedchecked!(store::Store, tx::Transaction, value, rejected::Rejected) = rejected
+committedchecked!(store::Store, tx::Transaction, value, ::Nothing) = commit!(store, tx, value, forkcheck(tx.state, tx.writes))
 
 commit!(::Store, ::Transaction, value, result::Rejected) = result
 function commit!(store::Store, tx::Transaction, value, ::Nothing)
@@ -632,6 +675,7 @@ function commit!(store::Store, tx::Transaction, value, ::Nothing)
     value
 end
 
+include("durable_policy.jl")
 include("scheduler.jl")
 
 end

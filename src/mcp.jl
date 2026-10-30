@@ -2,7 +2,7 @@ module MCP
 
 using JSON3, Base64
 import HTTP
-import ..JuliaForever: Tool, ToolResult, ToolFailure, Image, imagelimit, imageformat, imageproblem, name, description, schema, execute
+import ..JuliaForever: Tool, ToolResult, ToolFailure, tooltype, Image, imagelimit, imageformat, imageproblem, name, description, schema, execute
 
 struct Failure
     kind::Symbol
@@ -775,9 +775,8 @@ image(mime, data, problem::String) = Failure(:capability, problem)
 
 imagecount(::Nothing) = 0
 imagecount(::NamedTuple) = 1
-imagefailed(::Nothing) = false
-imagefailed(::Image) = false
-imagefailed(::Failure) = true
+imageoutcome(outcome, ::Union{Nothing, Image}) = outcome
+imageoutcome(outcome, ::Failure) = ToolFailure
 imageattachment(previous, ::Union{Nothing, Failure}) = previous
 imageattachment(previous, value::Image) = value
 imagemarker(::Image) = "[MCP image attached]"
@@ -815,14 +814,14 @@ function toolresult(result::AbstractDict)
     blocks = get(result, "content", [])
     countimages = sum(block -> imagecount(imagecontent(block)), blocks; init=0)
     attachment = nothing
-    failed = get(result, "isError", false)
+    outcome = tooltype(get(result, "isError", false))
     for block in blocks
         value = contentblock!(content, block, imagecontent(block), countimages)
-        failed |= imagefailed(value)
+        outcome = imageoutcome(outcome, value)
         attachment = imageattachment(attachment, value)
     end
     haskey(result, "structuredContent") && push!(content, JSON3.write(result["structuredContent"]))
-    ToolResult(join(content, "\n"), failed, attachment)
+    outcome(join(content, "\n"), attachment)
 end
 
 cursorparams(::Nothing) = Dict()
