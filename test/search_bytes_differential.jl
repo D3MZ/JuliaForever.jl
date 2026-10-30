@@ -48,6 +48,25 @@
                 push!(cases, (; tool="grep", args=(; pattern, path, ignoreCase=true, literal)))
             end
         end
+        prefix = repeat("ΣςK中", 20)
+        for (name, bytes) in (
+            ("cached-before", UInt8[0xff; codeunits(prefix * " NEEDLE Ǆ\n")...]),
+            ("cached-between", UInt8[codeunits(prefix * " NE")...; 0xff; codeunits("EDLE ǅ\n")...]),
+            ("cached-after", UInt8[codeunits(prefix * " NEEDLE ǆ")...; 0xff; 0x0a]),
+            ("cached-replacement", UInt8[codeunits(prefix * " � NEEDLE")...; 0xff; 0x0a]),
+            ("cached-invalid-only", UInt8[codeunits(prefix * " tail")...; 0xff; 0x0a]),
+            ("cached-controls", UInt8[codeunits(prefix * " \x01\x03 NEEDLE")...; 0xff; 0x0a]),
+        )
+            mkpath(joinpath(dir, name))
+            write(joinpath(dir, name, "data"), bytes)
+            for path in (name, "$name/data"), pattern in ("needle", "σ", "k", "�", "ǅ", "\x01\x03")
+                push!(cases, (; tool="grep", args=(; pattern, path, ignoreCase=true, literal=true)))
+            end
+        end
+        @test execute(Grep(dir), (; pattern="needle", path="cached-between/data", ignoreCase=true, literal=true)).text == "No matches found"
+        @test execute(Grep(dir), (; pattern="�", path="cached-invalid-only/data", ignoreCase=true, literal=true)).text == "No matches found"
+        @test execute(Grep(dir), (; pattern="\x01\x03", path="cached-invalid-only/data", ignoreCase=true, literal=true)).text == "No matches found"
+        @test occursin("ǆ�", execute(Grep(dir), (; pattern="ǅ", path="cached-after/data", ignoreCase=true, literal=true)).text)
         input = tempname()
         write(input, JSON3.write(cases))
         try
