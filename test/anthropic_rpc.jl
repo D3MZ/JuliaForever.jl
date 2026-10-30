@@ -3,7 +3,7 @@ using Test, JuliaForever, HTTP, JSON3
 @testset "Anthropic RPC thinking reaches the wire" begin
     requests = Channel{Any}(30)
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
-        put!(requests, JSON3.read(String(request.body), Dict{String, Any}))
+        put!(requests, (; body=JSON3.read(String(request.body), Dict{String, Any}), key=HTTP.header(request, "x-api-key", ""), beta=HTTP.header(request, "anthropic-beta", "")))
         events = [(; type="message_start", message=(; usage=(; input_tokens=20, output_tokens=1))), (; type="content_block_start", index=0, content_block=(; type="text", text="answer")), (; type="content_block_stop", index=0), (; type="message_delta", delta=(; stop_reason="end_turn")), (; type="message_stop")]
         HTTP.Response(200, ["Content-Type" => "text/event-stream"], join("data: $(JSON3.write(event))\n\n" for event in events))
     end
@@ -26,6 +26,7 @@ using Test, JuliaForever, HTTP, JSON3
                     put!(output, JSON3.read(line, Dict{String, Any}))
                 end
                 observed = Any[]
+                observations = Any[]
                 function send(command, predicate)
                     println(process, JSON3.write(command)); flush(process)
                     while true
@@ -38,7 +39,9 @@ using Test, JuliaForever, HTTP, JSON3
                 prompt(id) = send((; id, type="prompt", message="hello"), item -> get(item, "type", "") == "agent_settled")
                 function request()
                     timedwait(() -> isready(requests), 10) == :ok || error("No wire request; RPC output: $(JSON3.write(observed)); stderr: $(read(err, String))")
-                    take!(requests)
+                    entry = take!(requests)
+                    push!(observations, entry)
+                    entry.body
                 end
                 try
                     levels = command((; id="levels", type="get_available_thinking_levels"))
@@ -60,7 +63,7 @@ using Test, JuliaForever, HTTP, JSON3
                     restored = command((; id="restored", type="get_state"))
                     prompt("replay")
                     push!(bodies, request())
-                    (; levels, state, cycle, restored, bodies, observed)
+                    (; levels, state, cycle, restored, bodies, observed, wire=observations)
                 finally
                     close(process.in)
                     timedwait(() -> process_exited(process), 5) == :ok || kill(process)
@@ -76,6 +79,10 @@ using Test, JuliaForever, HTTP, JSON3
             expected = [16384, 0, 1024, 2048, 8192, 16384, 0, 16384]
             wire(body) = get(get(body, "thinking", Dict()), "budget_tokens", 0)
             @test wire.(result.bodies) == expected
+            @test all(request -> request.key == "synthetic-secret", result.wire)
+            @test [request.beta for request in result.wire] == [budget == 0 ? "" : "interleaved-thinking-2025-05-14" for budget in expected]
+            @test all(body -> !isempty(get(body, "tools", [])), result.bodies)
+            @test all(body -> all(tool -> !haskey(tool, "eager_input_streaming"), get(body, "tools", [])), result.bodies)
             if haskey(ENV, "PI_SOURCE")
                 @test readchomp(`git -C $(ENV["PI_SOURCE"]) rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
                 piagent = mktempdir(workspace)
