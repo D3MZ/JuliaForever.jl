@@ -32,3 +32,22 @@ using Test, JuliaForever
     @test isempty(pending)
     @test isempty(pending.display)
 end
+
+@testset "deferred inputs wait for image queue recovery" begin
+    live = JuliaForever.LiveTerminal
+    history = JuliaForever.History.Memory()
+    agent = Agent(nothing, []; history)
+    image = Image("image/png", "c3ludGhldGljLWltYWdl")
+    followup!(agent, JuliaForever.Conversation.ImagePrompt("image", [image]))
+    before = JuliaForever.History.snapshot(history).batches
+    diagnostics = IOBuffer()
+    session = (; agent, deferred=live.DeferredQueue(), terminal=JuliaForever.Terminal(IOBuffer(), diagnostics, String[]))
+    live.defer!(session.deferred, "deferred", live.Send())
+    live.continue!(session)
+    @test live.next!(session.deferred) == "deferred"
+    @test JuliaForever.History.snapshot(history).batches == before
+    @test isequal(agent.state.followups, [JuliaForever.Conversation.ImageUser("image", [image])])
+    @test occursin("Queued images cannot be restored", String(take!(diagnostics)))
+    live.reportimages!(session.terminal, agent, JuliaForever.Conversation.queuecontent(agent.state))
+    @test occursin("exiting discards them", String(take!(diagnostics)))
+end

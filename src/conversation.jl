@@ -479,6 +479,13 @@ queued(event::Union{ImageSteer, ImageFollowup}) = user(event)
 queuetext(text::String) = text
 queuetext(message::ImageUser) = message.content
 
+abstract type QueueContent end
+struct TextOnly <: QueueContent end
+struct ContainsImages <: QueueContent end
+queuecontent(content::QueueContent, ::String) = content
+queuecontent(::QueueContent, ::ImageUser) = ContainsImages()
+queuecontent(state::State) = foldl(queuecontent, Iterators.flatten((state.steering, state.followups)); init=TextOnly())
+
 function K.step(state::State, event::Union{Steer, ImageSteer})
     event.revision == state.revision || return K.Rejected(state, :revision)
     steering = copy(getfield(state, :steering))

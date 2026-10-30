@@ -9,6 +9,11 @@ struct UserChoice <: Choice
     text::String
     depth::Int
 end
+struct ImageChoice <: Choice
+    node::Int
+    text::String
+    depth::Int
+end
 struct AnswerChoice <: Choice
     node::Int
     text::String
@@ -21,6 +26,10 @@ struct InputFork <: ForkChoice
     text::String
 end
 struct QueuedFork <: ForkChoice
+    node::Int
+    text::String
+end
+struct ImageFork <: ForkChoice
     node::Int
     text::String
 end
@@ -38,9 +47,10 @@ depth(event) = 0
 depth(::Union{C.Input, C.ImageInput}) = 1
 add!(choices, item, level, event) = nothing
 
-function add!(choices, item, level, event::Union{C.Input, C.ImageInput})
+function add!(choices, item, level, event::C.Input)
     push!(choices, UserChoice(item.parent, event.text, level))
 end
+add!(choices, item, level, event::C.ImageInput) = push!(choices, ImageChoice(item.parent, event.text, level))
 
 add!(choices, item, level, event::C.Advance) = answer!(choices, item, level, item.state)
 answer!(choices, item, level, rejected::H.Rejected) = nothing
@@ -69,6 +79,7 @@ function choices(branches::Vector)
 end
 
 label(choice::UserChoice) = "user"
+label(choice::ImageChoice) = "user (image)"
 label(choice::AnswerChoice) = "assistant"
 
 function clean(text)
@@ -103,14 +114,18 @@ function fork(branches::Vector, input, output, redact=identity)
         return Cancelled()
     end
     for (index, item) in enumerate(items)
-        println(output, "[", index, "] ", clean(redact(item.text)))
+        println(output, "[", index, "] ", forklabel(item, redact))
     end
     pick(items, input, output, redact)
 end
 forkitem!(items, item, event, branches) = nothing
-forkitem!(items, item, event::Union{C.Input, C.ImageInput}, branches) = forkitem!(items, InputFork(item.parent, event.text))
+forkitem!(items, item, event::C.Input, branches) = forkitem!(items, InputFork(item.parent, event.text))
+forkitem!(items, item, event::C.ImageInput, branches) = forkitem!(items, ImageFork(item.parent, event.text))
 forkitem!(items, item, event::C.Advance, branches) = forkadded!(items, item.parent, branches[item.parent].state, item.state)
 forkitem!(items, item::ForkChoice) = isempty(strip(item.text)) ? nothing : push!(items, item)
+forkitem!(items, item::ImageFork) = push!(items, item)
+forklabel(choice::ForkChoice, redact) = clean(redact(choice.text))
+forklabel(choice::ImageFork, redact) = "[image] " * clean(redact(choice.text))
 forkadded!(items, node, before, after) = nothing
 function forkadded!(items, node, before::C.State, after::C.State)
     previous = getfield(before, :messages)
@@ -121,6 +136,7 @@ function forkadded!(items, node, before::C.State, after::C.State)
 end
 forkmessage!(items, node, message) = nothing
 forkmessage!(items, node, message::C.User) = forkitem!(items, QueuedFork(node, message.content))
+forkmessage!(items, node, message::C.ImageUser) = forkitem!(items, ImageFork(node, message.content))
 
 function pick(items, input, output, redact)
     print(output, "Choose a message (number or q): ")
@@ -144,6 +160,7 @@ end
 
 select(choice::AnswerChoice, input, output, redact) = Move(choice.node)
 select(choice::ForkChoice, input, output, redact) = choice
+select(choice::ImageChoice, input, output, redact) = H.Rejected(:image_edit)
 
 function select(choice::UserChoice, input, output, redact)
     print(output, "Message [", clean(redact(choice.text)), "] (empty keeps it, /cancel aborts): ")
