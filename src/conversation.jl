@@ -149,6 +149,35 @@ Base.show(io::IO, ::CompletePhase) = print(io, "Complete")
 Base.show(io::IO, ::IncompletePhase) = print(io, "Incomplete")
 Base.show(io::IO, ::CancelledPhase) = print(io, "Cancelled")
 
+abstract type Driving end
+struct Automatic <: Driving end
+struct Manual <: Driving end
+abstract type Cancellation end
+struct Active <: Cancellation end
+struct Requested <: Cancellation end
+
+const drivingmodes = Dict(true => Automatic(), false => Manual())
+const cancellationstates = Dict(true => Requested(), false => Active())
+driving(value::Bool) = drivingmodes[value]
+driving(value::Driving) = value
+driving(value) = driving(convert(Bool, value))
+cancellation(value::Bool) = cancellationstates[value]
+cancellation(value::Cancellation) = value
+cancellation(value) = cancellation(convert(Bool, value))
+automatic(::Automatic) = true
+automatic(::Manual) = false
+cancelled(::Requested) = true
+cancelled(::Active) = false
+
+JSON3.StructTypes.StructType(::Type{<:Driving}) = JSON3.StructTypes.CustomStruct()
+JSON3.StructTypes.lowertype(::Type{<:Driving}) = Bool
+JSON3.StructTypes.lower(mode::Driving) = automatic(mode)
+JSON3.StructTypes.construct(::Type{Driving}, value::Bool) = driving(value)
+JSON3.StructTypes.StructType(::Type{<:Cancellation}) = JSON3.StructTypes.CustomStruct()
+JSON3.StructTypes.lowertype(::Type{<:Cancellation}) = Bool
+JSON3.StructTypes.lower(status::Cancellation) = cancelled(status)
+JSON3.StructTypes.construct(::Type{Cancellation}, value::Bool) = cancellation(value)
+
 struct State
     kernel::K.State
     revision::Int
@@ -158,17 +187,27 @@ struct State
     calls::Vector{ToolCall}
     steering::Vector{String}
     followups::Vector{String}
-    automatic::Bool
-    cancelled::Bool
+    mode::Driving
+    cancellation::Cancellation
     flushed::Int
+
+    function State(kernel, revision, messages, phase, order, calls, steering, followups, mode::Driving, cancellation::Cancellation, flushed)
+        new(kernel, revision, messages, phase, order, calls, steering, followups, mode, cancellation, flushed)
+    end
 end
 
+State(kernel, revision, messages, phase, order, calls, steering, followups, automatic, cancelled, flushed) = State(kernel, revision, messages, phase, order, calls, steering, followups, driving(automatic), cancellation(cancelled), flushed)
 State(id::AbstractString; automatic=true, messages=Message[]) = State(K.State(id), 0, deepcopy(Message[messages...]), Ready, String[], ToolCall[], String[], String[], automatic, false, 0)
 
 function Base.getproperty(state::State, name::Symbol)
+    name === :automatic && return automatic(getfield(state, :mode))
+    name === :cancelled && return cancelled(getfield(state, :cancellation))
     value = getfield(state, name)
     name in (:messages, :order, :calls, :steering, :followups) ? deepcopy(value) : value
 end
+
+Base.propertynames(::State, private::Bool=false) = (:kernel, :revision, :messages, :phase, :order, :calls, :steering, :followups, :automatic, :cancelled, :flushed, :mode, :cancellation)
+JSON3.StructTypes.names(::Type{State}) = ((:mode, :automatic), (:cancellation, :cancelled))
 
 struct Input <: K.Event
     revision::Int
@@ -208,8 +247,8 @@ struct Abandon <: K.Event
     reason::String
 end
 
-function update(state::State; kernel=getfield(state, :kernel), messages=getfield(state, :messages), phase=state.phase, order=getfield(state, :order), calls=getfield(state, :calls), steering=getfield(state, :steering), followups=getfield(state, :followups), cancelled=state.cancelled, flushed=state.flushed)
-    State(kernel, state.revision + 1, messages, phase, order, calls, steering, followups, state.automatic, cancelled, flushed)
+function update(state::State; kernel=getfield(state, :kernel), messages=getfield(state, :messages), phase=state.phase, order=getfield(state, :order), calls=getfield(state, :calls), steering=getfield(state, :steering), followups=getfield(state, :followups), cancelled=getfield(state, :cancellation), flushed=state.flushed)
+    State(kernel, state.revision + 1, messages, phase, order, calls, steering, followups, getfield(state, :mode), cancelled, flushed)
 end
 
 function plan(kernel::K.State, effect::K.Effect)
@@ -237,7 +276,11 @@ K.step(state::State, event::Input, ::Phase) = K.Rejected(state, :phase)
 function K.step(state::State, event::Input, ::Union{ReadyPhase, CompletePhase, IncompletePhase, CancelledPhase})
     messages = copy(getfield(state, :messages))
     push!(messages, User(event.text))
-    state.automatic || return K.Applied(update(state; messages, phase=ReadyModel, cancelled=false), ())
+    input(state, messages, getfield(state, :mode))
+end
+
+input(state, messages, ::Manual) = K.Applied(update(state; messages, phase=ReadyModel, cancelled=false), ())
+function input(state, messages, ::Automatic)
     kernel, effect, steering = model(state.kernel, messages, getfield(state, :steering))
     updated = update(state; kernel, messages, steering, phase=WaitingModel, cancelled=false)
     K.Applied(updated, (effect,))
@@ -309,8 +352,9 @@ end
 
 advance(state::State, ::Phase) = K.Rejected(state, :phase)
 
-function advance(state::State, phase::Union{ReadyModelPhase, ReadyDecisionPhase})
-    state.cancelled && return K.Applied(update(state; phase=Cancelled), ())
+advance(state::State, phase::Union{ReadyModelPhase, ReadyDecisionPhase}) = advance(state, phase, getfield(state, :cancellation))
+advance(state::State, phase, ::Requested) = K.Applied(update(state; phase=Cancelled), ())
+function advance(state::State, phase, ::Active)
     steering = getfield(state, :steering)
     followups = getfield(state, :followups)
     advance(state, phase, steering, followups)
@@ -365,24 +409,29 @@ function observe(state::State, kernel::K.State, answer::Assistant, ::Finished)
     steering = getfield(state, :steering)
     followups = getfield(state, :followups)
     if isempty(answer.calls)
-        state.automatic || return K.Applied(update(state; kernel, messages, phase=ReadyDecision), ())
-        if isempty(steering) && isempty(followups)
-            return K.Applied(update(state; kernel, messages, phase=Complete), ())
-        end
-        if isempty(steering)
-            followups = copy(followups)
-            push!(messages, User(popfirst!(followups)))
-        end
-        kernel, effect, steering = model(kernel, messages, steering)
-        return K.Applied(update(state; kernel, messages, steering, followups, phase=WaitingModel), (effect,))
+        return observe_text(state, kernel, messages, steering, followups, getfield(state, :mode))
     end
     observe_calls(state, kernel, messages, steering, answer, get(requesttypes, answer.finish, ToolRequest))
 end
 
+observe_text(state, kernel, messages, steering, followups, ::Manual) = K.Applied(update(state; kernel, messages, phase=ReadyDecision), ())
+function observe_text(state, kernel, messages, steering, followups, ::Automatic)
+    if isempty(steering) && isempty(followups)
+        return K.Applied(update(state; kernel, messages, phase=Complete), ())
+    end
+    if isempty(steering)
+        followups = copy(followups)
+        push!(messages, User(popfirst!(followups)))
+    end
+    kernel, effect, steering = model(kernel, messages, steering)
+    K.Applied(update(state; kernel, messages, steering, followups, phase=WaitingModel), (effect,))
+end
+
 const requesttypes = Dict("length" => SkipRequest)
 
-function observe_calls(state, kernel, messages, steering, answer, ::Type{SkipRequest})
-    state.automatic || return plan_calls(state, kernel, messages, answer, SkipRequest)
+observe_calls(state, kernel, messages, steering, answer, ::Type{SkipRequest}) = observe_skipped(state, kernel, messages, steering, answer, getfield(state, :mode))
+observe_skipped(state, kernel, messages, steering, answer, ::Manual) = plan_calls(state, kernel, messages, answer, SkipRequest)
+function observe_skipped(state, kernel, messages, steering, answer, ::Automatic)
     for call in answer.calls
         text = "Error: Tool call \"$(call.name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments."
         push!(messages, ToolMessage(call.id, text, true))
@@ -426,7 +475,11 @@ function observe(state::State, event::K.Observe{ToolReply}, result::K.Applied)
     if !isempty(kernel.pending)
         return K.Applied(update(state; kernel, messages, flushed), ())
     end
-    state.automatic || return K.Applied(update(state; kernel, messages, order=String[], calls=ToolCall[], flushed=0, phase=ReadyModel), ())
+    observed_tools(state, kernel, messages, getfield(state, :mode))
+end
+
+observed_tools(state, kernel, messages, ::Manual) = K.Applied(update(state; kernel, messages, order=String[], calls=ToolCall[], flushed=0, phase=ReadyModel), ())
+function observed_tools(state, kernel, messages, ::Automatic)
     kernel, effect, steering = model(kernel, messages, getfield(state, :steering))
     updated = update(state; kernel, messages, steering, order=String[], calls=ToolCall[], flushed=0, phase=WaitingModel)
     K.Applied(updated, (effect,))
@@ -435,8 +488,10 @@ end
 K.step(state::State, event::K.Observe{ModelFailure}) = observe(state, event, observe(state, event, WaitingModel))
 
 function observe(state::State, event::K.Observe{ModelFailure}, result::K.Applied)
-    K.Applied(update(state; kernel=result.state, phase=state.cancelled ? Cancelled : Incomplete), ())
+    K.Applied(update(state; kernel=result.state, phase=failurephase(getfield(state, :cancellation))), ())
 end
+failurephase(::Requested) = Cancelled
+failurephase(::Active) = Incomplete
 
 K.step(state::State, event::K.Observe) = K.Rejected(state, :observation_type)
 

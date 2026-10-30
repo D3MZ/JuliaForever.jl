@@ -445,8 +445,9 @@ function direct_begin!(run, prompt)
 end
 
 cancel_transition!(agent, ::Union{Idle, Running}) = nothing
-function cancel_transition!(agent, ::Cancelled)
-    agent.state.cancelled && return nothing
+cancel_transition!(agent, ::Cancelled) = cancel_transition!(agent, getfield(agent.state, :cancellation))
+cancel_transition!(agent, ::Conversation.Requested) = nothing
+function cancel_transition!(agent, ::Conversation.Active)
     result, _ = transition!(revision -> Conversation.Cancel(revision), agent)
     result
 end

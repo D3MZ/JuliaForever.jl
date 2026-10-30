@@ -22,6 +22,8 @@ Messages are `User`, `Assistant`, and `ToolMessage` values. A completed assistan
 
 `Assistant.done` remains a Boolean property, and its JSON and history-codec representations retain `done`. Internally, the message has a typed status; code using `getfield(message, :done)` or reflecting on its fields must use the property instead. Previously saved Julia `Serialization` values using the old field layout are not covered by this compatibility guarantee.
 
+`State.automatic` and `State.cancelled` remain Boolean properties, and their JSON output and history codec retain those names. Their internal fields now hold typed driving and cancellation states; code using `getfield` or field reflection must use the properties instead. Previously saved Julia `Serialization` values using the old field layout are not covered by this compatibility guarantee.
+
 The named phase values such as `C.Ready` and `C.Complete` remain available and print as before. They are now distinct `Phase` subtypes rather than enum values. `instances(C.Phase)`, integer conversion, and construction from a valid integer remain available; `Phase` is no longer an `Enum`, and out-of-range construction reports an indexing error.
 
 `Assistant` accepts an optional `metadata` dictionary for provider-specific fields such as Responses `response_output`, including encrypted reasoning and tool items. The constructor copies that dictionary, and subsequent transcript and request snapshots preserve it. The driver must reconstruct provider messages with those fields when it handles a `ModelRequest`.

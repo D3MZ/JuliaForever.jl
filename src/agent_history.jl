@@ -21,8 +21,9 @@ end
 openagent(provider, tools, messages, initial, history::History.Store, revision::Integer) = Agent(provider, tools, messages, initial, initial, Kernel.Event[], ReentrantLock(), Idle(), ShellCancellation(), nothing, history, revision, nothing)
 replay(rejected::History.Rejected, batches) = rejected
 
-function replay(initial::Conversation.State, batches)
-    initial.automatic && return History.Rejected(:invalid_record)
+replay(initial::Conversation.State, batches) = replay(initial, batches, getfield(initial, :mode))
+replay(initial::Conversation.State, batches, ::Conversation.Automatic) = History.Rejected(:invalid_record)
+function replay(initial::Conversation.State, batches, ::Conversation.Manual)
     foldl(batches; init=(initial, Kernel.Event[])) do state, batch
         replay(state, batch)
     end

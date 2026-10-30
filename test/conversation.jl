@@ -20,6 +20,18 @@ end
     @test !C.Assistant(nothing, C.ToolCall[], nothing, 0).done
 end
 
+@testset "conversation state properties" begin
+    state = C.State("properties"; automatic=false)
+    @test !state.automatic && !state.cancelled
+    encoded = JSON3.read(JSON3.write(state))
+    @test Set(keys(encoded)) == Set([:kernel, :revision, :messages, :phase, :order, :calls, :steering, :followups, :automatic, :cancelled, :flushed])
+    @test !encoded.automatic && !encoded.cancelled
+    cancelled = K.step(state, C.Cancel(0)).state
+    @test !cancelled.automatic && cancelled.cancelled
+    encoded = JSON3.read(JSON3.write(cancelled))
+    @test !encoded.automatic && encoded.cancelled
+end
+
 @testset "conversation transitions" begin
     phases = (C.Ready, C.ReadyModel, C.ReadyDecision, C.WaitingModel, C.WaitingTools, C.Complete, C.Incomplete, C.Cancelled)
     @test length(unique(typeof.(phases))) == length(phases)
