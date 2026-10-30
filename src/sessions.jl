@@ -69,6 +69,78 @@ end
 
 Session(path::AbstractString; cwd=pwd()) = Session(; cwd, path)
 
+abstract type SessionVersion end
+struct LegacyLinear <: SessionVersion end
+struct LegacyTree <: SessionVersion end
+struct Current <: SessionVersion end
+const versions = Dict{Int, Union{LegacyLinear, LegacyTree, Current}}(1 => LegacyLinear(), 2 => LegacyTree(), 3 => Current())
+
+function migrate!(header, rows, ::LegacyLinear)
+    ids = Set{String}()
+    previous = nothing
+    for row in rows
+        entryid = id(4)
+        while entryid in ids
+            entryid = id(4)
+        end
+        push!(ids, entryid)
+        row["id"] = entryid
+        row["parentId"] = previous
+        previous = entryid
+        migratecompaction!(row, rows)
+    end
+    migrate!(header, rows, LegacyTree())
+end
+
+ignorecompaction!(row, rows) = nothing
+function compaction!(row, rows)
+    migrateindex!(row, rows, get(row, "firstKeptEntryIndex", nothing))
+end
+const compactiontypes = Dict("compaction" => compaction!)
+migratecompaction!(row, rows) = get(compactiontypes, get(row, "type", nothing), ignorecompaction!)(row, rows)
+migrateindex!(row, rows, index) = nothing
+migrateindex!(row, rows, index::Bool) = nothing
+function migrateindex!(row, rows, index::Real)
+    if isinteger(index) && 1 <= index < length(rows) + 1
+        target = rows[Int(index)]
+        haskey(target, "id") && (row["firstKeptEntryId"] = target["id"])
+    end
+    delete!(row, "firstKeptEntryIndex")
+end
+
+function migrate!(header, rows, ::LegacyTree)
+    for row in rows
+        migratemessage!(row, get(entrytypes, get(row, "type", nothing), nothing))
+    end
+    header["version"] = 3
+end
+migratemessage!(row, ::Nothing) = nothing
+migratemessage!(row, ::Type{C.Message}) = migraterole!(row, get(row, "message", nothing))
+migraterole!(row, message) = nothing
+function migraterole!(row, message::AbstractDict)
+    get(legacyroles, get(message, "role", nothing), ignorerole!)(row, message)
+end
+ignorerole!(row, message) = nothing
+function customrole!(row, message)
+    result = Dict{String, Any}(pairs(message))
+    result["role"] = "custom"
+    row["message"] = result
+end
+const legacyroles = Dict("hookMessage" => customrole!)
+migrate!(header, rows, ::Current) = nothing
+
+rewrite!(path, header, rows, ::Current) = nothing
+ending(text, ::Current) = endswith(text, '\n')
+ending(text, ::SessionVersion) = true
+function rewrite!(path, header, rows, ::SessionVersion)
+    open(path, "w") do io
+        println(io, JSON3.write(header))
+        for row in rows
+            println(io, JSON3.write(row))
+        end
+    end
+end
+
 function Base.open(::Type{Session}, path::AbstractString)
     text = read(path, String)
     rows = Dict{String, Any}[]
@@ -83,8 +155,18 @@ function Base.open(::Type{Session}, path::AbstractString)
     end
     isempty(rows) && return Rejected(:invalid_session)
     header = popfirst!(rows)
-    get(header, "type", nothing) == "session" && get(header, "version", nothing) == 3 || return Rejected(:invalid_session)
+    get(header, "type", nothing) == "session" || return Rejected(:invalid_session)
+    version = sessionversion(get(header, "version", nothing))
+    openversion(path, text, header, rows, version)
+end
+
+sessionversion(::Nothing) = LegacyLinear()
+sessionversion(::Bool) = nothing
+sessionversion(version) = get(versions, version, nothing)
+openversion(path, text, header, rows, ::Nothing) = Rejected(:invalid_session)
+function openversion(path, text, header, rows, version::SessionVersion)
     all(key -> get(header, key, nothing) isa AbstractString, ("id", "timestamp", "cwd")) || return Rejected(:invalid_session)
+    migrate!(header, rows, version)
     index = Dict{String, Dict{String, Any}}()
     leaf = nothing
     for row in rows
@@ -96,7 +178,8 @@ function Base.open(::Type{Session}, path::AbstractString)
         index[entryid] = row
         leaf = entryid
     end
-    Session(abspath(path), header, rows, index, leaf, true, endswith(text, '\n'))
+    rewrite!(path, header, rows, version)
+    Session(abspath(path), header, rows, index, leaf, true, ending(text, version))
 end
 
 header(session::Session) = deepcopy(session.header)

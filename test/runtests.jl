@@ -146,6 +146,7 @@ include("scheduler.jl")
 if haskey(ENV, "PI_SOURCE")
     include("durable_forks_differential.jl")
     include("session_differential.jl")
+    include("session_migration.jl")
     include("system_differential.jl")
     include("system_stream_differential.jl")
     mktempdir() do oracle
