@@ -142,7 +142,7 @@ modelapi(provider::ConfiguredProvider) = modelapi(provider.model, provider)
 modelapi(model::Models.Model, provider) = model.api
 modelapi(::Nothing, provider) = fallbackapi(provider.builtin, provider.settings)
 fallbackapi(::Nothing, settings) = get(settings, "api", "")
-fallbackapi(info::NamedTuple, settings) = get(builtinapis, info.factory, "")
+fallbackapi(info::NamedTuple, settings) = get(settings, "api", get(builtinapis, info.factory, ""))
 
 const modelapis = Dict("openai-completions" => OpenAI, "openai-responses" => OpenAIResponses, "anthropic-messages" => Anthropic, "google-generative-ai" => Google)
 const unsupportedmodelsettings = ("compat", "samplingParams", "samplingParamsByThinkingLevel", "thinkingLevelMap", "promptCache", "inputLimits")
@@ -187,8 +187,24 @@ function acquire(::APIKeyAuth, provider::ConfiguredProvider, model, ::Models.Val
     headers = configheaders(provider, ENV, key)
     base = modelbase(provider, ENV)
     factory = get(modelapis, modelapi(provider), nothing)
-    configuredmodel(factory, base, provider.id, key, headers, CatalogRoute(provider.name, provider.registry))
+    configuredmodel(factory, base, provider.id, key, headers, CatalogRoute(provider.name, provider.registry), provider, ENV)
 end
+configuredmodel(factory, base, id, key::AbstractString, headers, route, provider, env) = configuredmodel(factory, base, id, key, headers, route)
+function configuredmodel(factory, base, id, ::Nothing, headers, route, provider, env)
+    keylessmodel(factory, base, id, headers, route, provider.builtin, get(provider.settings, "apiKey", nothing), storedmodelkey(provider.name, provider.builtin, env))
+end
+keylessmodel(factory, base, id, headers, route, builtin, configured, stored) = invalidmodelconfig()
+function keylessmodel(factory::Type, base::AbstractString, id::AbstractString, headers::Vector{Pair{String, String}}, route::CatalogRoute, ::Nothing, ::Nothing, ::Nothing)
+    isempty(base) && return invalidmodelconfig()
+    isempty(id) && return invalidmodelconfig()
+    requestauth(factory, headers) || return invalidmodelconfig()
+    factory(String(base), String(id), "", headers, route)
+end
+requestauth(factory, headers) = false
+requestauth(::Type{OpenAI}, headers) = hasrequestheader(headers, ("authorization", "cf-aig-authorization"))
+requestauth(::Type{OpenAIResponses}, headers) = hasrequestheader(headers, ("authorization", "cf-aig-authorization"))
+requestauth(::Type{Anthropic}, headers) = hasrequestheader(headers, ("authorization", "x-api-key", "cf-aig-authorization"))
+hasrequestheader(headers, names) = any(pair -> lowercase(first(pair)) in names && !isempty(strip(last(pair))), mergeheaders(Pair{String, String}[], headers))
 configuredmodel(factory, base, id, key, headers, route) = invalidmodelconfig()
 function configuredmodel(factory::Type, base::AbstractString, id::AbstractString, key::AbstractString, headers::Vector{Pair{String, String}}, route::CatalogRoute)
     isempty(base) && return invalidmodelconfig()

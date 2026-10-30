@@ -12,7 +12,7 @@ Base.show(io::IO, provider::OpenAIResponses) = print(io, "OpenAIResponses(", rep
 StructTypes.StructType(::Type{OpenAIResponses}) = StructTypes.CustomStruct()
 StructTypes.lower(provider::OpenAIResponses) = (; model=provider.model, credentials="[redacted]")
 
-headers(provider::OpenAIResponses) = mergeheaders(["Authorization" => "Bearer $(provider.key)", "Content-Type" => "application/json"], provider.extra)
+headers(provider::OpenAIResponses) = mergeheaders(["Authorization" => "Bearer $(clientkey(provider.key))", "Content-Type" => "application/json"], provider.extra)
 endpoint(provider::OpenAIResponses) = "$(rstrip(provider.base, '/'))/responses"
 
 const inputtypes = Dict("tool" => Conversation.ToolMessage, "assistant" => Conversation.Assistant, "user" => Conversation.User)
