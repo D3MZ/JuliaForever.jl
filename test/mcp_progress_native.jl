@@ -71,6 +71,21 @@ server() = `$(Base.julia_cmd()) --startup-file=no --project=$(dirname(Base.activ
         @test fetchbefore(job) == Dict("done" => true)
         @test [event["progress"] for event in blocked] == [1, 2, 3]
 
+        entered = Channel{Int}(1)
+        release = Channel{Nothing}(1)
+        job = @async MCP.request(client, "blocked", Dict(); on_progress=event -> begin
+            if event["progress"] == 1
+                put!(entered, event["progressToken"])
+                take!(release)
+            end
+        end)
+        id = takebefore(entered)
+        @test MCP.request(client, "blocked-barrier", Dict()) == Dict("done" => true)
+        MCP.transmitted!(client, MCP.Failure(:transport, "synthetic failed write"), id)
+        @test !istaskdone(job)
+        put!(release, nothing)
+        @test fetchbefore(job) == Dict("done" => true)
+
         entered = Channel{Nothing}(1)
         release = Channel{Nothing}(1)
         overflowevents = Any[]

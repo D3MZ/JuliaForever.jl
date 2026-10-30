@@ -137,7 +137,20 @@ end
 sent(::Nothing) = true
 sent(::Failure) = false
 transmitted!(client::Client, ::Nothing) = nothing
-transmitted!(client::Client, ::Failure) = fail!(client, Failure(:transport, "Could not write to MCP server"))
+transmitted!(client::Client, failure::Failure) = transmitted!(client, failure, client.process)
+# A failed stdin write does not imply stdout is drained. The reader owns EOF.
+transmitted!(client::Client, ::Failure, ::Base.Process) = nothing
+transmitted!(client::Client, ::Failure, ::HttpTransport) = fail!(client, Failure(:transport, "Could not write to MCP server"))
+transmitted!(client::Client, ::Nothing, id::Int) = nothing
+function transmitted!(client::Client, failure::Failure, id::Int)
+    pending = lock(() -> writefailed!(client, id, get(client.pending, id, nothing)), client.lock)
+    deliver!(pending, failure)
+    nothing
+end
+writefailed!(client, id, ::Nothing) = nothing
+writefailed!(client, id, pending::Pending) = writefailed!(client, id, pending.progress)
+writefailed!(client, id, ::Finishing) = nothing
+writefailed!(client, id, progress::Union{NoProgress, Progress}) = retire!(client, id)
 
 function httpheaders(transport::HttpTransport)
     headers = copy(transport.headers)
@@ -358,8 +371,11 @@ function Base.close(client::Client)
     shutdown(client)
 end
 
-pingrequest(client, id) = sent(send(client, Dict("jsonrpc" => "2.0", "id" => id, "result" => Dict())))
-missingrequest(client, id) = sent(send(client, Dict("jsonrpc" => "2.0", "id" => id, "error" => Dict("code" => -32601, "message" => "Method not found"))))
+serverresponse(client, message) = serverresponse(client.process, send(client, message))
+serverresponse(::Base.Process, result) = true
+serverresponse(::HttpTransport, result) = sent(result)
+pingrequest(client, id) = serverresponse(client, Dict("jsonrpc" => "2.0", "id" => id, "result" => Dict()))
+missingrequest(client, id) = serverresponse(client, Dict("jsonrpc" => "2.0", "id" => id, "error" => Dict("code" => -32601, "message" => "Method not found")))
 rootrequest(client, id) = rootrequest(client, id, client.roots)
 rootrequest(client, id, ::NoRoots) = missingrequest(client, id)
 
@@ -518,7 +534,7 @@ function request(client::Client, method, params, reservation::Tuple{Int, Pending
     id, pending = reservation
     try
         message = Dict("jsonrpc" => "2.0", "id" => id, "method" => method, "params" => progressparams(params, id, pending.progress))
-        transmitted!(client, sendrequest(client, message, id))
+        transmitted!(client, sendrequest(client, message, id), id)
         take!(pending.result)
     finally
         abandoned, connection = lock(client.lock) do

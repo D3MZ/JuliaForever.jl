@@ -205,6 +205,9 @@ include("codemode_compat.jl")
 include("mcp.jl")
 include("mcp_image.jl")
 include("mcp_resources.jl")
+module MCPWriteRaceTests
+include("mcp_write_race.jl")
+end
 module MCPProgressTests
 include("mcp_progress_native.jl")
 end
