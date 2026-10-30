@@ -60,8 +60,13 @@ function add!(transcript::Transcript, message::System)
 end
 function add!(transcript::Transcript, message::User)
     flush!(transcript)
-    push!(transcript.contents, Dict("role" => "user", "parts" => [Dict("text" => message.data["content"])]))
+    push!(transcript.contents, Dict("role" => "user", "parts" => userparts(message.data, get(message.data, "images", nothing))))
 end
+userparts(data, ::Nothing) = [Dict("text" => data["content"])]
+function userparts(data, attachments::AbstractVector)
+    [Dict("text" => data["content"]), (Dict("inlineData" => Dict("mimeType" => image["mime"], "data" => image["data"])) for image in attachments)...]
+end
+
 function add!(transcript::Transcript, message::Assistant)
     flush!(transcript)
     data = message.data
