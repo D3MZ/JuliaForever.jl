@@ -80,7 +80,7 @@ end
             blank = joinpath(dir, "blank")
             mkpath(blank)
             @test isempty(JuliaForever.Instructions.load(blank))
-            tools = ("read", "write", "edit", "bash", "ls", "find", "grep")
+            tools = ("read", "write", "edit", "bash")
             for provider in ("openai", "openai-responses")
                 @test instructions_process(base, blank, piagent; provider) == (; status=0, output="ok\n", diagnostics="")
                 request = last(requests)
@@ -93,6 +93,7 @@ end
                 for name in tools
                     @test occursin("- $name:", context)
                 end
+                @test all(name -> !occursin("- $name:", context), ("ls", "find", "grep", "powershell"))
                 @test !occursin("- greet:", context)
                 @test !occursin("- codemode:", context)
                 definitions = provider == "openai" ? [tool.function for tool in request.body.tools] : request.body.tools
