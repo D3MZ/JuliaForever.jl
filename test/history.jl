@@ -9,6 +9,21 @@ struct NotJSON
     value::Int
 end
 
+@testset "history value copying and rejection" begin
+    shared = Any[1, 2]
+    original = Any[shared, shared]
+    copied = H.value(original, IdDict())
+    @test copied == original
+    copied[1][1] = 9
+    @test copied[2][1] == 1 && original[1][1] == 1
+    cycle = Any[]
+    push!(cycle, cycle)
+    seen = IdDict()
+    @test H.value(cycle, seen) == H.Rejected(:unsupported_value)
+    @test isempty(seen)
+    @test H.value(Dict(:invalid => 1), IdDict()) == H.Rejected(:unsupported_value)
+end
+
 function exercise(history)
     empty = H.snapshot(history)
     @test empty.revision == 0
