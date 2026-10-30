@@ -44,6 +44,25 @@ function H.append!(history::FailHistory{T}, revision::Integer, batch::Vector) wh
     H.append!(history.store, revision, batch)
 end
 
+struct UncertainHistory <: H.Store
+    store::H.Memory
+end
+H.snapshot(history::UncertainHistory) = H.snapshot(history.store)
+function H.append!(history::UncertainHistory, revision::Integer, batch::Vector)
+    result = H.append!(history.store, revision, batch)
+    revision == 0 && return result
+    error("connection lost after append")
+end
+
+@testset "uncertain append stops the agent" begin
+    history = UncertainHistory(H.Memory())
+    agent = Agent(Scripted([], []), []; history)
+    @test_throws ErrorException respond!(agent, "start")
+    @test agent.fault == H.Rejected(:uncertain)
+    @test respond!(agent, "again") == H.Rejected(:uncertain)
+    @test H.snapshot(history).revision == 2
+end
+
 @testset "recorded agent and passive replay" begin
     mktempdir() do dir
         call = Dict{String, Any}("id" => "one", "type" => "function", "function" => Dict("name" => "write", "arguments" => "{\"path\":\"a.txt\",\"content\":\"safe\"}"))

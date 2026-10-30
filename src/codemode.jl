@@ -104,6 +104,17 @@ end
 struct CodeCallDone <: CodeEvent
     message
 end
+struct PendingToolCall
+    name::String
+end
+struct CompletedToolCall
+    name::String
+    status
+    duration
+end
+
+callrecord(call::PendingToolCall) = (; call.name, status=:unresolved, duration=0.0)
+callrecord(call::CompletedToolCall) = (; call.name, call.status, call.duration)
 abstract type CodeReply <: CodeEvent end
 struct CodeReturned <: CodeReply
     value
@@ -143,14 +154,14 @@ handlecode!(context, ::CodeDisconnected) = (:worker, "Worker connection closed")
 function handlecode!(context, event::CodeCallDone)
     message = event.message
     call = context.calls[message.index]
-    context.calls[message.index] = (; call.name, status=message.status, duration=message.duration)
+    context.calls[message.index] = CompletedToolCall(call.name, message.status, message.duration)
     nothing
 end
 
 function handlecode!(context, event::CodeCall)
     message = event.message
     index = length(context.calls) + 1
-    push!(context.calls, (; name=String(message.name), status=:running, duration=0.0))
+    push!(context.calls, PendingToolCall(String(message.name)))
     Threads.@spawn let context=context, event=message, index=index
         callstart = time_ns()
         tool = get(context.mode.tools, String(event.name), nothing)
@@ -276,7 +287,7 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
         alarm = nothing
         pid = 0
         output = String[]
-        calls = NamedTuple[]
+        calls = Union{PendingToolCall, CompletedToolCall}[]
         outcome = nothing
         try
             if isfinite(mode.timeout)
@@ -328,12 +339,10 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
             waitcode!(writer)
             waitcode!(reader)
         end
-        for (index, call) in enumerate(calls)
-            call.status == :running && (calls[index] = (; call.name, status=:unresolved, call.duration))
-        end
+        completed = NamedTuple[callrecord(call) for call in calls]
         stdout = isfile(stdoutfile) ? read(stdoutfile, String) : ""
         stderr = isfile(stderrfile) ? read(stderrfile, String) : ""
-        codecomplete(outcome, output, calls, stdout, stderr, pid)
+        codecomplete(outcome, output, completed, stdout, stderr, pid)
     end
 end
 
