@@ -100,21 +100,19 @@ function down!(state, args...)
     LineEdit.edit_move_down(state) && return
     if history.cur_idx <= length(history.history)
         position = Base.position(history.last_buffer)
-        last = Val(history.cur_idx == length(history.history))
+        index, last = history.cur_idx, length(history.history)
         LineEdit.history_next(state, history)
-        restoredraft!(state, position, last)
+        index == last && restoredraft!(state, position)
     else
         LineEdit.move_line_end(state)
         LineEdit.refresh_line(state)
     end
 end
 
-function restoredraft!(state, position, ::Val{true})
+function restoredraft!(state, position)
     seek(LineEdit.buffer(state), position)
     LineEdit.refresh_line(state)
 end
-
-restoredraft!(state, position, ::Val{false}) = nothing
 
 struct PreviousClear end
 struct OtherAction end
@@ -122,9 +120,11 @@ const clearstates = Dict(:clear => PreviousClear())
 
 clear!(state, args...) = clear!(state, get(clearstates, state.last_action, OtherAction()))
 clear!(state, ::OtherAction) = clearinput!(state)
-clear!(state, ::PreviousClear) = clear!(state, Val(LineEdit.buffer(state).size == 0))
-clear!(state, ::Val{false}) = clearinput!(state)
-clear!(state, ::Val{true}) = (println(LineEdit.terminal(state)); :abort)
+function clear!(state, ::PreviousClear)
+    LineEdit.buffer(state).size == 0 || return clearinput!(state)
+    println(LineEdit.terminal(state))
+    :abort
+end
 
 function clearinput!(state)
     LineEdit.move_input_end(state)
@@ -157,20 +157,33 @@ function Editor(input::Base.TTY, output::IO)
     Editor(terminal, interface, LineEdit.init_state(terminal, interface), history)
 end
 
+abstract type PromptOutcome end
+struct Submitted{B} <: PromptOutcome
+    buffer::B
+end
+struct Suspended <: PromptOutcome end
+struct Cancelled <: PromptOutcome end
+
+const promptoutcomes = Dict((true, false) => Submitted, (false, false) => Cancelled, (true, true) => Suspended, (false, true) => Suspended)
+promptoutcome(buffer, accepted, suspended) = promptoutcome(promptoutcomes[(accepted, suspended)], buffer)
+promptoutcome(::Type{Submitted}, buffer) = Submitted(buffer)
+promptoutcome(::Type{Suspended}, buffer) = Suspended()
+promptoutcome(::Type{Cancelled}, buffer) = Cancelled()
+
 function next!(editor::Editor)
     buffer, accepted, suspended = LineEdit.prompt!(editor.terminal, editor.interface, editor.state)
-    next!(editor, buffer, Val(accepted), Val(suspended))
+    next!(editor, promptoutcome(buffer, accepted, suspended))
 end
 
-function next!(editor::Editor, buffer, accepted, ::Val{true})
+function next!(editor::Editor, ::Suspended)
     @static if Sys.isunix()
         ccall(:jl_repl_raise_sigtstp, Cint, ())
     end
     next!(editor)
 end
 
-function next!(editor::Editor, buffer, ::Val{true}, ::Val{false})
-    text = String(take!(copy(buffer)))
+function next!(editor::Editor, result::Submitted)
+    text = String(take!(copy(result.buffer)))
     LineEdit.reset_state(editor.state)
     excess = max(length(editor.history.history) - 100, 0)
     deleteat!(editor.history.history, 1:excess)
@@ -179,7 +192,8 @@ function next!(editor::Editor, buffer, ::Val{true}, ::Val{false})
     text, nothing
 end
 
-next!(editor::Editor, buffer, ::Val{false}, ::Val{false}) = nothing
+next!(editor::Editor, ::Cancelled) = nothing
+
 Base.iterate(editor::Editor) = next!(editor)
 Base.iterate(editor::Editor, ::Nothing) = next!(editor)
 

@@ -216,11 +216,7 @@ end
 recorded_cancel!(run, rejected::History.Rejected) = rejected
 function recorded_cancel!(run, ::Nothing)
     agent = run.agent
-    if cancelled(agent) && !agent.state.cancelled
-        result, _ = transition!(revision -> Conversation.Cancel(revision), agent)
-        return recorded_cancelled!(run, result)
-    end
-    recorded_cancelled!(run, nothing)
+    recorded_cancelled!(run, cancel_transition!(agent, turnstate(agent)))
 end
 
 recorded_cancelled!(run, result) = result

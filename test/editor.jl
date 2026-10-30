@@ -1,6 +1,12 @@
 using Test, JSON3
 
 @testset "terminal editor" begin
+    buffer = IOBuffer()
+    editor = JuliaForever.TerminalEditor
+    @test editor.promptoutcome(buffer, true, false).buffer === buffer
+    @test editor.promptoutcome(buffer, false, false) isa editor.Cancelled
+    @test editor.promptoutcome(buffer, true, true) isa editor.Suspended
+    @test editor.promptoutcome(buffer, false, true) isa editor.Suspended
     root = dirname(@__DIR__)
     cases = joinpath(@__DIR__, "editor_cases.json")
     if haskey(ENV, "PI_SOURCE")

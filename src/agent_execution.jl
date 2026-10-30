@@ -148,11 +148,7 @@ execution_input!(run, result, added) = Execution.Turn(result, run.models)
 function execution_input!(run, result::Kernel.Applied, added)
     present!(run.agent, added, run.messages, run.callback)
     agent = run.agent
-    if cancelled(agent) && !agent.state.cancelled
-        result, _ = transition!(revision -> Conversation.Cancel(revision), agent)
-        return execution_cancelled!(run, result)
-    end
-    execution_cancelled!(run, nothing)
+    execution_cancelled!(run, cancel_transition!(agent, turnstate(agent)))
 end
 
 execution_cancelled!(run, result) = Execution.Turn(result, run.models)

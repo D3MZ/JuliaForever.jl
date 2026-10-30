@@ -376,18 +376,27 @@ function observe(state::State, kernel::K.State, answer::Assistant, ::Finished)
         kernel, effect, steering = model(kernel, messages, steering)
         return K.Applied(update(state; kernel, messages, steering, followups, phase=WaitingModel), (effect,))
     end
-    if answer.finish == "length" && state.automatic
-        for call in answer.calls
-            text = "Error: Tool call \"$(call.name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments."
-            push!(messages, ToolMessage(call.id, text, true))
-        end
-        kernel, effect, steering = model(kernel, messages, steering)
-        return K.Applied(update(state; kernel, messages, steering, phase=WaitingModel), (effect,))
+    observe_calls(state, kernel, messages, steering, answer, get(requesttypes, answer.finish, ToolRequest))
+end
+
+const requesttypes = Dict("length" => SkipRequest)
+
+function observe_calls(state, kernel, messages, steering, answer, ::Type{SkipRequest})
+    state.automatic || return plan_calls(state, kernel, messages, answer, SkipRequest)
+    for call in answer.calls
+        text = "Error: Tool call \"$(call.name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments."
+        push!(messages, ToolMessage(call.id, text, true))
     end
+    kernel, effect, steering = model(kernel, messages, steering)
+    K.Applied(update(state; kernel, messages, steering, phase=WaitingModel), (effect,))
+end
+
+observe_calls(state, kernel, messages, steering, answer, ::Type{ToolRequest}) = plan_calls(state, kernel, messages, answer, ToolRequest)
+
+function plan_calls(state, kernel, messages, answer, requesttype)
     effects = K.Pending[]
     for call in answer.calls
-        request = answer.finish == "length" ? SkipRequest(call) : ToolRequest(call)
-        kernel, effect = plan(kernel, request)
+        kernel, effect = plan(kernel, requesttype(call))
         push!(effects, effect)
     end
     order = [effect.id for effect in effects]

@@ -111,34 +111,42 @@ function result!(terminal::Terminal, result::History.Rejected)
     1
 end
 
-function historyagent(f, terminal::Terminal, path)
+function historyagent(f, terminal::Terminal, path::AbstractString)
     path = expanduser(path)
     if !isfile(path)
         println(terminal.diagnostics, "Recovery requires an existing history file.")
         return 2
     end
-    history = SessionCatalog.adapt(open(History.SQLite, path; create=false))
-    history isa History.Rejected && return result!(terminal, history)
+    historyagent(f, terminal, SessionCatalog.adapt(open(History.SQLite, path; create=false)))
+end
+historyagent(f, terminal::Terminal, rejected::History.Rejected) = result!(terminal, rejected)
+
+function historyagent(f, terminal::Terminal, history::History.Store)
     try
-        snapshot = History.snapshot(history)
-        snapshot isa History.Rejected && return result!(terminal, snapshot)
-        snapshot.revision == 0 && return result!(terminal, History.Rejected(:not_interrupted))
-        agent = Agent(nothing, []; history)
-        agent isa History.Rejected && return result!(terminal, agent)
-        f(agent)
+        historysnapshot(f, terminal, history, History.snapshot(history))
     finally
         close(history)
     end
 end
 
+historysnapshot(f, terminal, history, rejected::History.Rejected) = result!(terminal, rejected)
+function historysnapshot(f, terminal, history, snapshot::History.Snapshot)
+    snapshot.revision == 0 && return result!(terminal, History.Rejected(:not_interrupted))
+    historyopened(f, terminal, Agent(nothing, []; history))
+end
+historyopened(f, terminal, rejected::History.Rejected) = result!(terminal, rejected)
+historyopened(f, terminal, agent::Agent) = f(agent)
+
 function abandonhistory!(terminal::Terminal, path, reason)
     historyagent(terminal, path) do agent
-        result = abandon!(agent, reason)
-        result isa History.Rejected && return result!(terminal, result)
-        println(terminal.output, "Interrupted turn abandoned. No effect was retried or undone.")
-        flush(terminal.output)
-        0
+        abandoned!(terminal, abandon!(agent, reason))
     end
+end
+abandoned!(terminal::Terminal, rejected::History.Rejected) = result!(terminal, rejected)
+function abandoned!(terminal::Terminal, result)
+    println(terminal.output, "Interrupted turn abandoned. No effect was retried or undone.")
+    flush(terminal.output)
+    0
 end
 
 function inspect!(terminal::Terminal, effect::Union{Conversation.ToolRequest, Conversation.SkipRequest})
@@ -148,9 +156,12 @@ end
 
 inspect!(terminal::Terminal, ::Conversation.ModelRequest) = println(terminal.output, "Pending model request")
 
+historystatus(::Nothing) = "ready"
+historystatus(fault::History.Rejected) = string(fault.reason)
+
 function inspecthistory!(terminal::Terminal, path)
     historyagent(terminal, path) do agent
-        println(terminal.output, "History status: ", isnothing(agent.fault) ? "ready" : string(agent.fault.reason))
+        println(terminal.output, "History status: ", historystatus(agent.fault))
         for pending in agent.state.kernel.pending
             println(terminal.output, "Effect ID: ", repr(pending.id))
             inspect!(terminal, pending.effect)

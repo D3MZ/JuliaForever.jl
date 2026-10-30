@@ -38,6 +38,18 @@ function dispatchstatuscheck(expression)
     any(dispatchstatus, args) || any(arg -> dispatchfield(arg) in dispatchfields, args)
 end
 
+function dispatchprobe(expression)
+    expression isa Expr && expression.head == :call || return false
+    callee = dispatchcallee(first(expression.args))
+    if callee === :Val && length(expression.args) == 2
+        value = last(expression.args)
+        return !(value isa Union{Number, AbstractString, Char, QuoteNode} || value in (:true, :false, :nothing))
+    end
+    callee in (:isa, :isnothing, :ismissing) && return true
+    callee in (:(===), :(!==), :(==), :(!=)) || return false
+    any(arg -> arg in (:nothing, :missing) || arg isa Bool, expression.args[2:end])
+end
+
 function dispatchcheck(expression, direct)
     expression === :iserror && return true
     direct && expression isa Symbol && expression ∉ (:true, :false, :nothing) && return true
@@ -61,7 +73,7 @@ function dispatchcheck(expression, direct)
 end
 
 function dispatchchecks!(checks, expression, condition=false, direct=true)
-    if (condition && dispatchcheck(expression, direct)) || (!condition && dispatchstatuscheck(expression))
+    if (condition && dispatchcheck(expression, direct)) || (!condition && (dispatchstatuscheck(expression) || dispatchprobe(expression)))
         value = expression isa Expr ? Base.remove_linenums!(deepcopy(expression)) : expression
         push!(checks, replace(sprint(show, value), '\n' => ' '))
         return checks
