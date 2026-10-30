@@ -110,7 +110,6 @@ end
         path = replace(joinpath(root, "photo 4\u202fPM.png"), '\\' => '/', " " => "%20", "\u202f" => "%E2%80%AF")
         url = (Sys.iswindows() ? "file:///" : "file://") * path
         @test JuliaForever.FileArguments.resolve(url, root) == joinpath(root, "photo 4\u202fPM.png")
-        @test JuliaForever.FileArguments.filepath("/C:/Users/a%20b.png", true) == "C:/Users/a b.png"
         @test JuliaForever.FileArguments.resolve("@@literal.txt", root) == joinpath(root, "@literal.txt")
         if haskey(ENV, "PI_SOURCE")
             pi = ENV["PI_SOURCE"]

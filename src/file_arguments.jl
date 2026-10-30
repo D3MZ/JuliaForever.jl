@@ -1,7 +1,7 @@
 module FileArguments
 
 using Base64, Unicode, HTTP
-import ..JuliaForever: Image, imageformat
+import ..JuliaForever: Image, imageformat, fileurlpath
 
 function parse(args)
     files = String[]
@@ -35,9 +35,7 @@ resolved(paths, ::Nothing) = first(paths)
 resolved(paths, index::Integer) = paths[index]
 fileurl(text) = startswith(text, "file://") ? fileurl(HTTP.URI(text), text) : text
 fileurl(uri::HTTP.URI, text) = fileurl(uri, text, uri.host)
-fileurl(uri, text, host) = host in ("", "localhost") ? filepath(uri.path, Sys.iswindows()) : text
-filepath(path, windows) = drivepath(HTTP.unescapeuri(path), windows)
-drivepath(path, windows) = windows && occursin(r"^/[A-Za-z]:/", path) ? path[2:end] : path
+fileurl(uri, text, host) = host in ("", "localhost") ? fileurlpath(text) : text
 
 function load(files, cwd)
     text = IOBuffer()
