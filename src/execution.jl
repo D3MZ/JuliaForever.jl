@@ -71,7 +71,7 @@ function dispatch(pid::Int, request::Request)
         value = pid == myid() ? run(request.work, handle.cancellation) : remotecall_fetch(run, pid, request.work, handle.cancellation)
         result(handle, pid, value)
     catch exception
-        Failed(handle.id, handle.attempt, pid, sprint(showerror, exception))
+        Failed(handle.id, handle.attempt, pid, sprint(showerror, exception, catch_backtrace()))
     end
 end
 

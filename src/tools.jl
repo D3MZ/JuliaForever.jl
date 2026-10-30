@@ -48,6 +48,22 @@ content(result::ToolFailure) = "Error: " * result.text
 status(::ToolSuccess) = :ok
 status(::ToolFailure) = :error
 
+# Return from the boundary only for an operating-system failure; other exceptions propagate.
+function attempt(f)
+    depth = length(current_exceptions())
+    try
+        f()
+    finally
+        for failure in toolfailures(current_exceptions(), depth)
+            return failure
+        end
+    end
+end
+
+toolfailures(exceptions, depth) = length(exceptions) > depth ? toolfailures(last(exceptions).exception) : ()
+toolfailures(exception::Union{SystemError, Base.IOError}) = (ToolFailure(sprint(showerror, exception)),)
+toolfailures(exception) = ()
+
 path(tool::Tool, name) = normpath(joinpath(tool.cwd, expanduser(name)))
 
 mutable struct Mutation

@@ -184,12 +184,13 @@ invoke(tool::Tool, args, ::ShellCancellation) = execute(tool, args)
 invoke(tool::Union{Bash, PowerShell}, args, cancel::ShellCancellation) = Sys.iswindows() ? execute(tool, args) : execute(tool, args; cancel)
 
 function invoke(agent, call)
-    try
+    tool, args = try
         tool = call["function"]
-        invoke(agent.tools[tool["name"]], JSON3.read(tool["arguments"]), agent.shell)
+        agent.tools[tool["name"]], JSON3.read(tool["arguments"])
     catch exception
-        ToolFailure(sprint(showerror, exception))
+        return ToolFailure(sprint(showerror, exception))
     end
+    attempt(() -> invoke(tool, args, agent.shell))
 end
 
 emit(::Nothing, event) = nothing

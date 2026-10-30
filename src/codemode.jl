@@ -52,13 +52,7 @@ end
 
 invoke(::Nothing, args, name::AbstractString) = ToolFailure("Unknown tool: $name")
 
-function invoke(tool::Tool, args, ::AbstractString)
-    try
-        execute(tool, args)
-    catch exception
-        ToolFailure(sprint(showerror, exception))
-    end
-end
+invoke(tool::Tool, args, ::AbstractString) = execute(tool, args)
 
 function codefailure(cancel, timedout, started, timeout)
     cancel.cancelled[] && return (:cancelled, "Execution cancelled")
@@ -152,8 +146,14 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
                         Threads.@spawn let event=event, index=index
                             callstart = time_ns()
                             tool = get(mode.tools, String(event.name), nothing)
-                            answer = invoke(tool, event.args, String(event.name))
-                            answer = codeimage(answer, answer.image)
+                            answer = try
+                                callresult = attempt(() -> invoke(tool, event.args, String(event.name)))
+                                codeimage(callresult, callresult.image)
+                            catch exception
+                                enqueue(events, (; type="call_done", index, status=:error, duration=(time_ns() - callstart) / 1e9))
+                                enqueue(events, (; type="transport_error", message=sprint(showerror, exception, catch_backtrace())))
+                                return
+                            end
                             duration = (time_ns() - callstart) / 1e9
                             enqueue(events, (; type="call_done", index, status=status(answer), duration))
                             lock(lockwrite) do
