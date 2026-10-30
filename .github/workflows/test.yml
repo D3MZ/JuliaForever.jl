@@ -57,7 +57,7 @@ jobs:
           JULIA_NUM_THREADS: 4
         run: |
           if [ "$RUNNER_OS" = Linux ]; then
-            julia --startup-file=no --project=. scripts/ci.jl --coverage
+            timeout --signal=TERM --kill-after=15s 600s julia --startup-file=no --project=. scripts/ci.jl --coverage
           else
             julia --startup-file=no --project=. scripts/ci.jl
           fi
