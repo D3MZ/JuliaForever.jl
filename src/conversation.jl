@@ -384,6 +384,11 @@ struct SessionRecord{E<:SessionEntry} <: K.Event
     timestamp::String
     entry::E
 end
+struct ModelSelection <: K.Event
+    revision::Int
+    model::SessionRecord{ModelEntry}
+    thinking::SessionRecord{ThinkingEntry}
+end
 const SessionRecordValue = Union{SessionRecord{ModelEntry}, SessionRecord{ThinkingEntry}, SessionRecord{MessageEntry}, SessionRecord{NameEntry}}
 
 sessionname(text::AbstractString) = String(strip(replace(text, r"[\r\n]+" => " ")))
@@ -552,7 +557,7 @@ function K.step(state::State, event::BashOutput)
     K.Applied(update(state; messages), ())
 end
 
-function K.step(state::State, event::SessionRecord)
+function K.step(state::State, event::Union{SessionRecord, ModelSelection})
     event.revision == state.revision || return K.Rejected(state, :revision)
     K.Applied(update(state), ())
 end

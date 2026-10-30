@@ -7,6 +7,19 @@ struct ReasoningChoices <: ThinkingChoices
 end
 
 const thinkinglevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+const thinkingnames = Dict(level => level for level in thinkinglevels)
+
+startupthinking(session, agent, requested::String) = requested
+startupthinking(session, agent, ::Nothing) = modelthinking(session.settings, LiveJSON.providername(session.terminal.mode, agent.provider), agent.provider.model, nothing)
+modelthinking(settings, provider, model, fallback) = fallback
+function modelthinking(settings::AbstractDict, provider, model, fallback)
+    default = thinkingsetting(get(settings, "defaultThinkingLevel", nothing), fallback)
+    modelthinking(get(settings, "modelThinkingLevels", nothing), provider * "/" * model, default)
+end
+modelthinking(settings, key, fallback) = fallback
+modelthinking(settings::AbstractDict, key, fallback) = thinkingsetting(get(settings, key, nothing), fallback)
+thinkingsetting(value, fallback) = fallback
+thinkingsetting(value::AbstractString, fallback) = get(thinkingnames, String(value), fallback)
 
 function reasoningchoices(levels::AbstractDict)
     entries = Pair{String, String}[]

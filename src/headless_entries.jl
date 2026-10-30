@@ -10,6 +10,7 @@ end
 
 collectentry!(entries, event) = nothing
 collectentry!(entries, event::J.Conversation.SessionRecord) = (push!(entries, event); nothing)
+collectentry!(entries, event::J.Conversation.ModelSelection) = (push!(entries, event.model, event.thinking); nothing)
 entryleaf(entries) = isempty(entries) ? nothing : last(entries).id
 initialmodel!(session, ::J.UnconfiguredProvider) = nothing
 function initialmodel!(session, provider)
@@ -26,11 +27,25 @@ function recordentry!(session, entry::J.Conversation.SessionEntry)
         recordedentry!(session, result)
     end
 end
+function recordselection!(session, model::J.Conversation.ModelEntry, thinking::J.Conversation.ThinkingEntry)
+    lock(session.lock) do
+        id, next = bytes2hex(rand(UInt8, 8)), bytes2hex(rand(UInt8, 8))
+        parent = session.entryleaf
+        timestamp = Dates.format(Dates.now(Dates.UTC), dateformat"yyyy-mm-ddTHH:MM:SS.sss") * "Z"
+        result, _ = J.transition!(revision -> J.Conversation.ModelSelection(revision, J.Conversation.SessionRecord(revision, id, parent, timestamp, model), J.Conversation.SessionRecord(revision, next, id, timestamp, thinking)), session.agent)
+        recordedentry!(session, result)
+    end
+end
 recordedentry!(session, rejected::J.History.Rejected) = rejected
 recordedentry!(session, result::J.Kernel.Applied) = recordedentry!(session, last(getfield(session.agent, :events)))
 function recordedentry!(session, entry::J.Conversation.SessionRecord)
     push!(session.entries, entry)
     session.entryleaf = entry.id
+    nothing
+end
+function recordedentry!(session, entry::J.Conversation.ModelSelection)
+    push!(session.entries, entry.model, entry.thinking)
+    session.entryleaf = entry.thinking.id
     nothing
 end
 entrysaved!(session, ::Nothing) = nothing

@@ -51,6 +51,7 @@ record(value::Conversation.ThinkingEntry) = (; type="thinking_level_change", thi
 record(value::Conversation.MessageEntry) = (; type="message", value.message)
 record(value::Conversation.NameEntry) = (; type="session_info", value.name)
 record(value::Conversation.SessionRecord) = (; type="session_record", value.revision, value.id, value.parent, value.timestamp, entry=record(value.entry))
+record(value::Conversation.ModelSelection) = (; type="model_selection", value.revision, model=record(value.model), thinking=record(value.thinking))
 record(value::Conversation.Advance) = (; type="advance", value.revision)
 record(value::Conversation.Cancel) = (; type="cancel", value.revision)
 record(value::Conversation.History) = record(value, value.compaction)

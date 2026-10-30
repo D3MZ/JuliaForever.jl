@@ -685,8 +685,8 @@ end
         crossjf = setenv(Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session --provider fixture --model alpha`; dir=workspace), crossenv)
         reference_cross = exchangemodels(crosspi, [])
         actual_cross = exchangemodels(crossjf, [])
-        @test reference_cross.changed["success"] && !actual_cross.changed["success"]
-        @test actual_cross.state["data"]["model"]["id"] == "alpha" && modelchanges(actual_cross) == [("fixture", "alpha")]
+        @test actual_cross.changed == reference_cross.changed
+        @test actual_cross.state["data"]["model"] == reference_cross.state["data"]["model"] && modelchanges(actual_cross) == modelchanges(reference_cross)
 
         builtindir = joinpath(workspace, "rpc-builtin")
         builtinenvironment = merge(cleanenv, Dict("PI_CODING_AGENT_DIR" => builtindir, "JF_PROVIDER" => "openai", "OPENAI_API_KEY" => "sk-fixture"))
