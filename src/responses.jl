@@ -331,10 +331,15 @@ function finish(provider::OpenAIResponses, state::ResponseStream, data)
     end
     failure = reconcile!(state, data, state.failure)
     result = completion(provider, data; failure)
-    isnothing(result.usage) || state.callback((; type=:usage, usage=result.usage))
-    isnothing(result.finish) || state.callback((; type=:finish, reason=result.finish))
+    emitusage(state.callback, result.usage)
+    emitfinish(state.callback, result.finish)
     result
 end
+
+emitusage(callback, ::Nothing) = nothing
+emitusage(callback, usage) = callback((; type=:usage, usage))
+emitfinish(callback, ::Nothing) = nothing
+emitfinish(callback, reason) = callback((; type=:finish, reason))
 
 reconcile!(state::ResponseStream, data, failure::InvalidResponse) = failure
 reconcile!(state::ResponseStream, data, failure) = reconcile!(state, data, failure, responsestatus(get(data, "status", nothing)))
@@ -355,8 +360,11 @@ end
 
 reconcile_item(state, index, item, failure, type) = failure
 function reconcile_item(state, index, item, failure, ::Type{Conversation.ToolCall})
-    done = get(state.finished, index - 1, nothing)
-    isnothing(done) && return "Responses stream contained an unfinished or mismatched function call"
+    reconcile_item(item, failure, get(state.finished, index - 1, nothing))
+end
+
+reconcile_item(item, failure, ::Nothing) = "Responses stream contained an unfinished or mismatched function call"
+function reconcile_item(item, failure, done)
     any(key -> get(item, key, nothing) != get(done, key, nothing), ("id", "call_id", "name", "arguments")) && return "Responses stream contained an unfinished or mismatched function call"
     failure
 end

@@ -1,28 +1,15 @@
-JuliaForever.jl	:(agent isa History.Rejected)
-JuliaForever.jl	:(history isa History.Rejected)
-JuliaForever.jl	:(isnothing(agent.fault))
-JuliaForever.jl	:(isnothing(code))
-JuliaForever.jl	:(isnothing(context))
-JuliaForever.jl	:(isnothing(history))
-JuliaForever.jl	:(isnothing(key))
-JuliaForever.jl	:(isnothing(model))
 JuliaForever.jl	:(isnothing(path))
 JuliaForever.jl	:(isnothing(path))
 JuliaForever.jl	:(isnothing(reason))
 JuliaForever.jl	:(isnothing(reason))
-JuliaForever.jl	:(isnothing(snapshot))
-JuliaForever.jl	:(key isa InvalidResponse)
 JuliaForever.jl	:(result.status == 0)
-JuliaForever.jl	:(snapshot isa History.Rejected)
-JuliaForever.jl	:callback_requested
-JuliaForever.jl	:callback_requested
+JuliaForever.jl	:(selected == "openrouter")
 JuliaForever.jl	:codemode
 JuliaForever.jl	:inspect
-JuliaForever.jl	:login
-JuliaForever.jl	:login_requested
 agent.jl	:(name === :cancelled)
 agent.jl	:(name === :events)
 agent.jl	:(name === :running)
+agent.jl	:(result.finish == "length")
 agent.jl	:returned
 agent_history.jl	:complete
 codemode.jl	:(call.status == :running)
@@ -35,14 +22,12 @@ codemode.jl	:(isnothing(failure))
 codemode.jl	:(isnothing(failure))
 codemode.jl	:(isnothing(failure))
 codemode.jl	:(isnothing(failure))
-codemode.jl	:(isnothing(failure))
 codemode.jl	:(isnothing(process))
 codemode.jl	:(isnothing(reader))
 codemode.jl	:(isnothing(result))
 codemode.jl	:(isnothing(timer))
 codemode.jl	:(isnothing(writer))
 codemode.jl	:(name === :ok)
-codemode.jl	:(result.ok)
 codemode.jl	:(timedout[])
 codemode.jl	:ok
 codemode_worker.jl	:(connected[])
@@ -54,7 +39,7 @@ conversation.jl	:(name === :automatic)
 conversation.jl	:(name === :cancelled)
 conversation.jl	:(name === :done)
 conversation.jl	:(name in (:messages, :order, :calls, :steering, :followups))
-conversation.jl	:(name in (:text, :iserror))
+conversation.jl	:(name in (:text, :iserror, :image))
 conversation_codec.jl	:(code isa Rejected)
 conversation_codec.jl	:(code isa Rejected)
 conversation_codec.jl	:(event isa K.Event)
@@ -72,7 +57,6 @@ conversation_codec.jl	:(record isa Dict)
 conversation_codec.jl	:(record["automatic"] isa Bool)
 conversation_codec.jl	:(state.phase == C.Ready)
 conversation_codec.jl	:(xs isa Vector)
-durable.jl	:(apply!(state, record) === nothing)
 durable.jl	:(name === :active)
 durable.jl	:(name === :active)
 durable.jl	:(name === :busy)
@@ -93,9 +77,8 @@ durable.jl	:created
 durable.jl	:success
 execution.jl	:(cancelled(cancellation))
 execution.jl	:(cancelled(handle.cancellation))
-execution_conversation.jl	:(work.detailed)
-execution_conversation.jl	:detailed
-execution_conversation.jl	:detailed
+execution_conversation.jl	:(name === :detailed)
+extensions.jl	:(hook.event == event.type)
 history.jl	:(key isa String)
 history.jl	:(name === :batches)
 history.jl	:(name === :batches)
@@ -167,11 +150,8 @@ responses.jl	:(get(call, key, nothing) isa AbstractString)
 responses.jl	:(get(done, "type", nothing) == "reasoning")
 responses.jl	:(get(item, "type", nothing) == "reasoning")
 responses.jl	:(isnothing(done))
-responses.jl	:(isnothing(done))
 responses.jl	:(isnothing(get(done, "encrypted_content", nothing)))
 responses.jl	:(isnothing(get(item, "encrypted_content", nothing)))
-responses.jl	:(isnothing(result.finish))
-responses.jl	:(isnothing(result.usage))
 scheduler.jl	:(key !== nothing)
 scheduler.jl	:(name === :cancelled)
 scheduler.jl	:(typeof(a))
@@ -210,6 +190,8 @@ search.jl	:truncatedlines
 search.jl	:truncatedlines
 search.jl	:windows
 search.jl	:windows
+session_terminal.jl	:(history === selected)
+session_terminal.jl	:(history === selected)
 sessions.jl	:(entryid isa AbstractString)
 sessions.jl	:(get(header, "type", nothing) == "session")
 sessions.jl	:(get(header, key, nothing) isa AbstractString)
@@ -248,22 +230,20 @@ system.jl	:partial
 system.jl	:partial
 system.jl	:reached
 system.jl	:truncated
+terminal.jl	:(name === :lineopen)
+terminal.jl	:(name === :lineopen)
+terminal.jl	:(name === :streamed)
+terminal.jl	:(name === :streamed)
 terminal.jl	:(result.status == 0)
-terminal.jl	:(terminal.lineopen)
-terminal.jl	:(terminal.streamed)
 tools.jl	:(isnothing(content))
-tools.jl	:(isnothing(entry.owner))
 tools.jl	:(isnothing(findfirst(edit.old, originalcontent)))
 tools.jl	:(isnothing(findfirst(edit.old, originalcontent)))
 tools.jl	:(isnothing(match))
 tools.jl	:(isnothing(match))
 tools.jl	:(isnothing(output))
+tools.jl	:(kind == codeunits("IDAT"))
+tools.jl	:(kind == codeunits("acTL"))
 tools.jl	:(name === :iserror)
-tools.jl	:acquired
 tools.jl	:iserror
-tools.jl	:queued
-tools.jl	:queued
-tools.jl	:queued
-tools.jl	:queued
 tools.jl	:usedfuzzy
 tools.jl	:usedfuzzy

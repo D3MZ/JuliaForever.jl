@@ -32,18 +32,6 @@ end
 
 context(id::String) = lock(() -> contexts[id], contexts_lock)
 
-struct Work{T <: Kernel.Effect}
-    context::String
-    effect::T
-    detailed::Bool
-end
-
-Work(context::AbstractString, effect::Kernel.Effect; detailed=false) = Work(String(context), effect, detailed)
-
-function submit!(executor::Executor, pending::Kernel.Pending, attempt::Integer, context::AbstractString; detailed=false, on_handle=nothing)
-    submit!(executor, pending.id, attempt, Work(context, pending.effect; detailed); on_handle)
-end
-
 struct Rejected
     reason::Symbol
 end
@@ -58,6 +46,28 @@ struct ModelResult{O <: Kernel.Observation}
     error::Union{Nothing, String, InvalidResponse, ProviderStatus, ProviderError, UnsupportedImage}
 end
 
+struct Work{T <: Kernel.Effect, R}
+    context::String
+    effect::T
+    result::Type{R}
+end
+
+resulttype(detailed::Bool) = (Kernel.Observation, ModelResult)[Int(detailed) + 1]
+Work(context::AbstractString, effect::Kernel.Effect, detailed::Bool) = Work(String(context), effect, resulttype(detailed))
+Work(context::AbstractString, effect::Kernel.Effect; detailed=false) = Work(String(context), effect, detailed)
+
+isdetailed(::Type{Kernel.Observation}) = false
+isdetailed(::Type{ModelResult}) = true
+function Base.getproperty(work::Work, name::Symbol)
+    name === :detailed && return isdetailed(getfield(work, :result))
+    getfield(work, name)
+end
+Base.propertynames(::Work, private::Bool=false) = (:context, :effect, :detailed, :result)
+
+function submit!(executor::Executor, pending::Kernel.Pending, attempt::Integer, context::AbstractString; detailed=false, on_handle=nothing)
+    submit!(executor, pending.id, attempt, Work(context, pending.effect; detailed); on_handle)
+end
+
 struct Turn{T}
     value::T
     models::Vector{ModelResult}
@@ -65,8 +75,11 @@ end
 
 reply(response::Completion) = conversation_reply((; message=response.message, result=response, started=false))
 reply(message::AbstractDict) = conversation_reply((; message, result=nothing, started=false))
-result(response::Completion, detailed::Bool) = detailed ? ModelResult(reply(response), response.usage, response.error) : reply(response)
-result(message::AbstractDict, detailed::Bool) = detailed ? ModelResult(reply(message), nothing, nothing) : reply(message)
+result(response::Union{Completion, AbstractDict}, ::Type{Kernel.Observation}) = reply(response)
+result(response::Completion, ::Type{ModelResult}) = ModelResult(reply(response), response.usage, response.error)
+result(message::AbstractDict, ::Type{ModelResult}) = ModelResult(reply(message), nothing, nothing)
+result(failure::Conversation.ModelFailure, ::Type{Kernel.Observation}) = failure
+result(failure::Conversation.ModelFailure, ::Type{ModelResult}) = ModelResult(failure, nothing, nothing)
 
 function perform(work::Work{Conversation.ModelRequest}, cancellation::Cancellation)
     capabilities = context(work.context)
@@ -75,10 +88,10 @@ function perform(work::Work{Conversation.ModelRequest}, cancellation::Cancellati
         tools = copy(capabilities.tools)
         parameters = deepcopy(capabilities.parameters)
         response = isempty(parameters) ? complete(capabilities.provider, messages, tools) : complete(capabilities.provider, messages, tools; parameters)
-        result(response, work.detailed)
+        result(response, work.result)
     catch
         failure = Conversation.ModelFailure("provider did not return")
-        work.detailed ? ModelResult(failure, nothing, nothing) : failure
+        result(failure, work.result)
     end
 end
 

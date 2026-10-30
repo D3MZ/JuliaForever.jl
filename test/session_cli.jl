@@ -1,5 +1,15 @@
 using Test, JuliaForever, JSON3
 
+@testset "session startup history selection" begin
+    @test JuliaForever.sessionsnapshot(nothing) === nothing
+    @test JuliaForever.sessionsnapshot(JuliaForever.History.Memory()) isa JuliaForever.History.Snapshot
+    rejected = JuliaForever.History.Rejected(:invalid_record)
+    diagnostics = IOBuffer()
+    terminal = JuliaForever.Terminal(IOBuffer(), diagnostics, String[])
+    @test JuliaForever.runsession!(rejected, terminal, nothing, [], ["prompt"], pwd()) == 1
+    @test occursin("invalid_record", String(take!(diagnostics)))
+end
+
 function session_process(requests, workspace, directory, args; input="", fail=false, key="session-test-secret")
     project = dirname(@__DIR__)
     script = joinpath(@__DIR__, "session_cli_process.jl")

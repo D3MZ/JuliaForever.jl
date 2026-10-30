@@ -354,17 +354,21 @@ end
 
 sessionfault!(terminal, fault, ::Nothing) = result!(terminal, fault)
 
+runsession!(rejected::History.Rejected, terminal, model, extensions, args, sessiondir) = result!(terminal, rejected)
+
 function runsession!(history, terminal, model, extensions, args, sessiondir)
-    history isa History.Rejected && return result!(terminal, history)
     store = Ref{Union{Nothing, History.Store}}(history)
     try
-        snapshot = isnothing(history) ? nothing : History.snapshot(history)
-        snapshot isa History.Rejected && return result!(terminal, snapshot)
-        startsession!(terminal, model, extensions, store, args, sessiondir, attempt(() -> initial(extensions, snapshot)))
+        preparesession!(sessionsnapshot(history), terminal, model, extensions, store, args, sessiondir)
     finally
         closehistory!(store[])
     end
 end
+
+sessionsnapshot(::Nothing) = nothing
+sessionsnapshot(history::History.Store) = History.snapshot(history)
+preparesession!(rejected::History.Rejected, terminal, model, extensions, store, args, sessiondir) = result!(terminal, rejected)
+preparesession!(snapshot, terminal, model, extensions, store, args, sessiondir) = startsession!(terminal, model, extensions, store, args, sessiondir, attempt(() -> initial(extensions, snapshot)))
 
 closehistory!(::Nothing) = nothing
 closehistory!(history::History.Store) = close(history)
@@ -377,8 +381,13 @@ end
 
 function startsession!(terminal, model, extensions, store, args, sessiondir, messages)
     agent = Agent(model, extensions, messages; history=store[])
-    agent isa History.Rejected && return result!(terminal, agent)
-    isnothing(agent.fault) || return sessionfault!(terminal, agent.fault, store[])
+    startagent!(terminal, agent, extensions, store, args, sessiondir)
+end
+
+startagent!(terminal, rejected::History.Rejected, extensions, store, args, sessiondir) = result!(terminal, rejected)
+startagent!(terminal, agent::Agent, extensions, store, args, sessiondir) = startagent!(terminal, agent, extensions, store, args, sessiondir, agent.fault)
+startagent!(terminal, agent, extensions, store, args, sessiondir, fault::History.Rejected) = sessionfault!(terminal, fault, store[])
+function startagent!(terminal, agent, extensions, store, args, sessiondir, ::Nothing)
     startsession!(terminal, agent, extensions, store, args, sessiondir, checkqueues!(terminal, agent.state, store[]))
 end
 
