@@ -389,7 +389,7 @@ switch!(session, invalid::J.SessionCatalog.Invalid) = Failure(invalid.message)
 switch!(session, failure::J.ToolFailure) = Failure(J.redact(session.terminal, failure.text))
 switch!(session, rejected::J.History.Rejected) = Failure(string(rejected.reason))
 function switch!(session, selected::J.History.Tree)
-    agent, history, status = J.resume!(session.terminal, session.agent, session.store[], selected)
+    agent, history, status = J.resume!(session.terminal, session.agent, session.store[], selected, session.templates)
     newresult!(session, agent, history, get(newstatuses, status, nothing), ResumeBinding())
 end
 

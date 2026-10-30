@@ -42,7 +42,7 @@ namecommand(::Nothing) = nothing
 namecommand(found::RegexMatch) = namecommand(Conversation.sessionname(something(found[1], "")))
 namecommand(name::String) = isempty(name) ? ShowName() : SetName(name)
 
-command!(::ReloadCommand, terminal, agent, history, input, directory, snapshot) = reload!(terminal, agent, history, () -> Skills.render(Skills.load(pwd())))
+command!(::ReloadCommand, terminal, agent, history, input, directory, snapshot) = reload!(terminal, agent, history, () -> Skills.render(Skills.load(pwd()), Skills.reader(values(agent.tools))))
 
 command!(::CompactCommand, terminal, agent, history, input, directory, snapshot) = (agent, history, compactresult!(terminal, compact!(agent)))
 
@@ -69,7 +69,7 @@ function reload!(terminal, agent, history, resources::Skills.Resources)
     result = reload!(terminal, agent, history, () -> begin
         skills = Skills.load(pwd())
         loaded[] = skills
-        Skills.render(skills)
+        Skills.render(skills, Skills.reader(values(agent.tools)))
     end)
     updateskills!(resources, loaded[], result[3])
     result
@@ -126,7 +126,7 @@ reloadcommit!(terminal, agent, history, plan, content, rejected::History.Rejecte
 function reloadcommit!(terminal, agent, history, plan, content, ::Nothing)
     agent.state.revision == plan.revision || return (agent, history, result!(terminal, History.Rejected(:revision)))
     Kernel.same(agent.messages, plan.original) || return (agent, history, result!(terminal, History.Rejected(:revision)))
-    messages = skillmessages(plan.messages, agent.initial.messages, content)
+    messages = skillmessages(plan.messages, content)
     projected = Dict{String, Any}[convert(Dict{String, Any}, message) for message in messages]
     Kernel.same(projected, plan.original) && return reloadsuccess!(terminal, agent, history)
     result = attempt(() -> transition!(revision -> Conversation.History(revision, messages), agent))
@@ -148,29 +148,6 @@ end
 keepmanaged!(messages, ::Conversation.SkillContext) = messages
 keepmanaged!(messages, message::Conversation.Message) = push!(messages, message)
 
-legacy(::Nothing) = nothing
-legacy(::Conversation.Message) = nothing
-legacy(message::Conversation.RawMessage) = legacy(message.value, get(message.value, "content", nothing))
-legacy(value, content) = nothing
-legacy(value, content::AbstractString) = get(skillroles, get(value, "role", nothing), legacynone)(value, content)
-legacynone(value, content) = nothing
-function legacysystem(value, content)
-    startswith(content, "<skills>\nThe following skills provide specialized instructions for specific tasks.\n") || return nothing
-    endswith(content, "\n</available_skills>\n</skills>") || return nothing
-    value
-end
-const skillroles = Dict("system" => legacysystem)
-
-function marklegacy!(messages, initial)
-    original = legacy(get(initial, 2, nothing))
-    marklegacy!(messages, original, get(messages, 2, nothing))
-end
-marklegacy!(messages, original, message) = messages
-function marklegacy!(messages, original::AbstractDict, message::Conversation.RawMessage)
-    Kernel.same(original, message.value) && (messages[2] = Conversation.SkillContext(message.value["content"]))
-    messages
-end
-
 placement(::Nothing) = 1
 placement(::Conversation.Message) = 1
 const skillplacements = Dict("system" => 2)
@@ -179,10 +156,27 @@ addskill!(messages, ::Nothing) = messages
 function addskill!(messages, content::AbstractString)
     insert!(messages, placement(get(messages, 1, nothing)), Conversation.SkillContext(String(content)))
 end
-function skillmessages(messages, initial, content)
-    current = marklegacy!(copy(messages), initial)
-    kept = foldl(keepmanaged!, current; init=Conversation.Message[])
+function skillmessages(messages, content)
+    kept = foldl(keepmanaged!, messages; init=Conversation.Message[])
     addskill!(kept, content)
+end
+
+function refreshskills!(agent, skills)
+    lock(agent.lock) do
+        content = Skills.render(skills, Skills.reader(values(agent.tools)))
+        messages = foldl(keepmanaged!, agent.state.messages; init=Conversation.Message[])
+        addskill!(messages, content)
+        projected = Dict{String, Any}[convert(Dict{String, Any}, message) for message in messages]
+        Kernel.same(projected, agent.messages) && return nothing
+        result, _ = transition!(revision -> Conversation.History(revision, messages), agent)
+        refreshresult!(agent, result)
+    end
+end
+refreshresult!(agent, rejected::History.Rejected) = rejected
+refreshresult!(agent, result) = result
+function refreshresult!(agent, result::Kernel.Applied)
+    agent.messages = Dict{String, Any}[convert(Dict{String, Any}, message) for message in result.state.messages]
+    nothing
 end
 
 command!(::TreeCommand, terminal, agent, history, input, directory, snapshot) = tree!(terminal, agent, history, input, snapshot)
@@ -195,6 +189,7 @@ command!(::ForkCommand, terminal, agent, history, input, directory, snapshot, dr
 command!(command::TerminalCommand, terminal, agent, history, input, directory, snapshot, draft::Ref{String}, resources) = command!(command, terminal, agent, history, input, directory, snapshot, draft)
 command!(::ReloadCommand, terminal, agent, history, input, directory, snapshot, draft::Ref{String}, resources::Skills.Resources) = reload!(terminal, agent, history, resources)
 command!(::NewCommand, terminal, agent, history, input, directory, snapshot, draft::Ref{String}, resources::Skills.Resources) = new!(terminal, agent, history, directory, snapshot, resources)
+command!(::ResumeCommand, terminal, agent, history, input, directory, snapshot, draft::Ref{String}, resources::Skills.Resources) = resume!(terminal, agent, history, input, directory, resources)
 command!(::ShowName, terminal, agent, history, input, directory, snapshot) = showname!(terminal, agent, history, SessionCatalog.sessionname(history))
 command!(command::SetName, terminal, agent, history, input, directory, snapshot) = setname!(terminal, agent, history, command.name, name!(agent, command.name))
 command!(command::SetModel, terminal, agent, history, input, directory, snapshot) = setmodel!(terminal, agent, history, command.model)
@@ -287,7 +282,7 @@ function initial(agent::Agent, ::Nothing, skills::Vector{Skills.Skill})
     files = Instructions.load(cwd; agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing))
     prompt = context(cwd, collect(values(agent.tools)), files)
     messages = Conversation.Message[Conversation.RawMessage(Dict("role" => "system", "content" => prompt))]
-    Skills.appendprompt!(messages, Skills.render(skills))
+    Skills.appendprompt!(messages, Skills.render(skills, Skills.reader(values(agent.tools))))
     messages
 end
 
@@ -425,8 +420,9 @@ function forkprompt!(terminal, agent, history, input, draft, status, snapshot, e
     agent, history, max(status, result)
 end
 
-function resume!(terminal::Terminal, agent::Agent, history, input::IO, directory::AbstractString)
-    resumepick!(terminal, agent, history, input, directory, sourcecheck!(terminal, agent, history))
+resume!(terminal::Terminal, agent::Agent, history, input::IO, directory::AbstractString) = resume!(terminal, agent, history, input, directory, nothing)
+function resume!(terminal::Terminal, agent::Agent, history, input::IO, directory::AbstractString, resources)
+    resumepick!(terminal, agent, history, input, directory, resources, sourcecheck!(terminal, agent, history))
 end
 
 function sourcecheck!(terminal::Terminal, agent::Agent, history)
@@ -439,11 +435,11 @@ sourcecheck!(terminal::Terminal, agent::Agent, history, rejected::History.Reject
 sourcecheck!(terminal::Terminal, agent::Agent, history, ::Nothing) = checkqueues!(terminal, agent.state, history)
 sourcestatus!(terminal::Terminal, ::PendingInputs) = 1
 sourcestatus!(terminal::Terminal, rejected::History.Rejected) = result!(terminal, rejected)
-resumepick!(terminal::Terminal, agent::Agent, history, input, directory, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
+resumepick!(terminal::Terminal, agent::Agent, history, input, directory, resources, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
 
-function resumepick!(terminal::Terminal, agent::Agent, history, input, directory, ::Nothing)
+function resumepick!(terminal::Terminal, agent::Agent, history, input, directory, resources, ::Nothing)
     selected = attempt(() -> SessionCatalog.choose(SessionCatalog.Picker(), directory, pwd(), input, terminal.diagnostics, text -> redact(terminal, text)))
-    resume!(terminal, agent, history, selected)
+    resume!(terminal, agent, history, selected, resources)
 end
 
 resume!(terminal::Terminal, agent::Agent, history, ::SessionCatalog.Cancelled) = (agent, history, 0)
@@ -454,10 +450,12 @@ function resume!(terminal::Terminal, agent::Agent, history, failure::ToolFailure
     agent, history, 1
 end
 
-function resume!(terminal::Terminal, agent::Agent, history, selected::History.Tree)
+resume!(terminal::Terminal, agent::Agent, history, selected::History.Tree) = resume!(terminal, agent, history, selected, nothing)
+resume!(terminal::Terminal, agent::Agent, history, selected, resources) = resume!(terminal, agent, history, selected)
+function resume!(terminal::Terminal, agent::Agent, history, selected::History.Tree, resources::Union{Nothing, Skills.Resources})
     pending = Ref{Union{Nothing, History.Tree}}(selected)
     try
-        resumeactive!(terminal, agent, history, selected, pending, sourcecheck!(terminal, agent, history))
+        resumeactive!(terminal, agent, history, selected, pending, resources, sourcecheck!(terminal, agent, history))
     finally
         release!(history, pending[])
     end
@@ -465,42 +463,56 @@ end
 
 release!(history, ::Nothing) = nothing
 release!(history, selected::History.Tree) = history === selected ? nothing : close(selected)
-resumeactive!(terminal::Terminal, agent::Agent, history, selected::History.Tree, pending, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
+resumeactive!(terminal::Terminal, agent::Agent, history, selected::History.Tree, pending, resources, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
 
-function resumeactive!(terminal::Terminal, agent::Agent, history, selected::History.Tree, pending, ::Nothing)
+function resumeactive!(terminal::Terminal, agent::Agent, history, selected::History.Tree, pending, resources, ::Nothing)
     history === selected && return (agent, history, 0)
     restored = attempt(() -> Agent(agent.provider, agent.tools, Dict{String, Any}[]; history=selected))
-    resume!(terminal, agent, history, selected, restored, pending)
+    resume!(terminal, agent, history, selected, restored, pending, resources)
 end
 
-function resume!(terminal::Terminal, agent::Agent, history, selected::History.Tree, rejected::History.Rejected, pending)
+function resume!(terminal::Terminal, agent::Agent, history, selected::History.Tree, rejected::History.Rejected, pending, resources)
     agent, history, result!(terminal, rejected)
 end
 
-resume!(terminal::Terminal, agent::Agent, history, selected::History.Tree, failure::ToolFailure, pending) = resume!(terminal, agent, history, failure)
-resume!(terminal::Terminal, agent::Agent, history, selected::History.Tree, restored::Agent, pending) = resume!(terminal, agent, history, selected, restored, restored.fault, pending)
+resume!(terminal::Terminal, agent::Agent, history, selected::History.Tree, failure::ToolFailure, pending, resources) = resume!(terminal, agent, history, failure)
+resume!(terminal::Terminal, agent::Agent, history, selected::History.Tree, restored::Agent, pending, resources) = resume!(terminal, agent, history, selected, restored, restored.fault, pending, resources)
 
-function resume!(terminal::Terminal, agent::Agent, history, selected::History.Tree, restored::Agent, fault::History.Rejected, pending)
+function resume!(terminal::Terminal, agent::Agent, history, selected::History.Tree, restored::Agent, fault::History.Rejected, pending, resources)
     status = sessionfault!(terminal, fault, selected)
     agent, history, status
 end
 
-resume!(terminal::Terminal, agent::Agent, history, selected::History.Tree, restored::Agent, ::Nothing, pending) = resumechecked!(terminal, agent, history, selected, restored, pending, checkqueues!(terminal, restored.state, selected))
-resumechecked!(terminal::Terminal, agent::Agent, history, selected::History.Tree, restored::Agent, pending, ::PendingInputs) = (agent, history, 1)
+resume!(terminal::Terminal, agent::Agent, history, selected::History.Tree, restored::Agent, ::Nothing, pending, resources) = resumechecked!(terminal, agent, history, selected, restored, pending, resources, checkqueues!(terminal, restored.state, selected))
+resumechecked!(terminal::Terminal, agent::Agent, history, selected::History.Tree, restored::Agent, pending, resources, ::PendingInputs) = (agent, history, 1)
 
-function resumechecked!(terminal::Terminal, agent::Agent, history, selected::History.Tree, restored::Agent, pending, ::Nothing)
+function resumechecked!(terminal::Terminal, agent::Agent, history, selected::History.Tree, restored::Agent, pending, resources, ::Nothing)
+    loaded = attempt(() -> Skills.load(pwd()))
+    resumeloaded!(terminal, agent, history, selected, restored, pending, resources, loaded)
+end
+resumeloaded!(terminal, agent, history, selected, restored, pending, resources, failure::ToolFailure) = resume!(terminal, agent, history, failure)
+function resumeloaded!(terminal, agent, history, selected, restored, pending, resources, skills::Vector{Skills.Skill})
     lock(agent.lock) do
-        resumefinal!(terminal, agent, history, selected, restored, pending, sourcecheck!(terminal, agent, history, agent.fault))
+        resumesource!(terminal, agent, history, selected, restored, pending, resources, skills, sourcecheck!(terminal, agent, history, agent.fault))
     end
 end
+resumesource!(terminal, agent, history, selected, restored, pending, resources, skills, blocked::Union{PendingInputs, History.Rejected}) = resumefinal!(terminal, agent, history, selected, restored, pending, resources, skills, blocked)
+function resumesource!(terminal, agent, history, selected, restored, pending, resources, skills, ::Nothing)
+    refreshed = attempt(() -> refreshskills!(restored, skills))
+    resumerefreshed!(terminal, agent, history, selected, restored, pending, resources, skills, refreshed)
+end
+resumerefreshed!(terminal, agent, history, selected, restored, pending, resources, skills, failure::ToolFailure) = resume!(terminal, agent, history, failure)
+resumerefreshed!(terminal, agent, history, selected, restored, pending, resources, skills, rejected::History.Rejected) = (agent, history, result!(terminal, rejected))
+resumerefreshed!(terminal, agent, history, selected, restored, pending, resources, skills, ::Nothing) = resumefinal!(terminal, agent, history, selected, restored, pending, resources, skills, nothing)
 
-resumefinal!(terminal::Terminal, agent::Agent, history, selected::History.Tree, restored::Agent, pending, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
+resumefinal!(terminal::Terminal, agent::Agent, history, selected::History.Tree, restored::Agent, pending, resources, skills, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
 
-function resumefinal!(terminal::Terminal, agent::Agent, history, selected::History.Tree, restored::Agent, pending, ::Nothing)
+function resumefinal!(terminal::Terminal, agent::Agent, history, selected::History.Tree, restored::Agent, pending, resources, skills, ::Nothing)
     result = (restored, selected, 0)
     println(terminal.diagnostics, "Resuming session.")
     flush(terminal.diagnostics)
     closehistory!(history)
+    updateskills!(resources, skills, 0)
     pending[] = nothing
     result
 end

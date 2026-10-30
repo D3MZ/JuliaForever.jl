@@ -142,7 +142,7 @@ function resumemenu!(session, history, items::Vector{JuliaForever.SessionCatalog
     selected = menu!(session, "Resume session", labels)
     iszero(selected) && return session.agent, history, 0
     chosen = JuliaForever.attempt(() -> JuliaForever.SessionCatalog.openinfo(items[selected]))
-    JuliaForever.resume!(session.terminal, session.agent, history, chosen)
+    JuliaForever.resume!(session.terminal, session.agent, history, chosen, session.templates)
 end
 
 function uicommand!(session, ::Fullscreen, command::Union{JuliaForever.TreeCommand, JuliaForever.ForkCommand}, terminal, history, input, directory, snapshot, draft)

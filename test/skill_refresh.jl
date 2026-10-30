@@ -25,7 +25,7 @@ function refresh_process(requests, workspace, directory, args; input="", fail=fa
     end
 end
 
-@testset "new session refreshes skills; resume preserves recorded context" begin
+@testset "new and resumed sessions refresh skills" begin
     mktempdir() do root
         workspace, sessions = joinpath.((root,), ("project", "sessions"))
         mkpath(joinpath(workspace, ".pi", "skills", "example"))
@@ -41,8 +41,9 @@ end
         @test resumed.status == 0
         captured = JSON3.read.(readlines(requests))
         systems(request) = [m.content for m in request if m.role == "system"]
-        @test any(s -> occursin("original metadata", s), systems(captured[2]))
-        @test all(!occursin("updated metadata", s) for s in systems(captured[2]))
+        @test any(s -> occursin("original metadata", s), systems(captured[1]))
+        @test any(s -> occursin("updated metadata", s), systems(captured[2]))
+        @test all(!occursin("original metadata", s) for s in systems(captured[2]))
         @test any(s -> occursin("updated metadata", s), systems(captured[3]))
         @test all(!occursin("private body", s) for s in systems(captured[3]))
         @test [m.content for m in captured[3] if m.role == "user"] == ["third"]
