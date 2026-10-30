@@ -139,7 +139,7 @@ function switchback(process, channel, observed, state)
     (; reply, restored, invalid, after)
 end
 
-function exchangequeued(cmd, env, arrivals)
+function exchangequeued(cmd, env, arrivals; image=false, protect=false)
     mktempdir() do dir
         process = open(pipeline(addenv(cmd, env...); stderr=joinpath(dir, "error")), "r+")
         channel = Channel{Any}(Inf)
@@ -155,12 +155,24 @@ function exchangequeued(cmd, env, arrivals)
             timedwait(() -> isready(arrivals), 45) == :ok || error("Provider request did not start")
             firstgate = take!(arrivals)
             push!(held, firstgate)
-            send((; id="steer", type="steer", message="change"))
+            images = image ? [(; type="image", mimeType="image/png", data="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aX0AAAAASUVORK5CYII=")] : []
+            send((; id="steer", type="steer", message="change", images))
             steer = receive!(channel, observed, value -> get(value, "id", "") == "steer")
-            send((; id="follow", type="follow_up", message="after"))
+            send((; id="follow", type="follow_up", message="after", images))
             follow = receive!(channel, observed, value -> get(value, "id", "") == "follow")
             send((; id="busy", type="prompt", message="overlap"))
             busy = receive!(channel, observed, value -> get(value, "id", "") == "busy")
+            if image
+                send((; id="stream-image", type="prompt", message="stream", streamingBehavior="followUp", images))
+                receive!(channel, observed, value -> get(value, "id", "") == "stream-image")
+            end
+            if protect
+                for (id, type) in (("protected-clear", "clear_queue"), ("protected-clone", "clone"), ("protected-new", "new_session"))
+                    send((; id, type))
+                    reply = receive!(channel, observed, value -> get(value, "id", "") == id)
+                    @test reply["success"] == false
+                end
+            end
             put!(firstgate, nothing)
             while true
                 timedwait(() -> isready(arrivals) || isready(channel), 45) == :ok || error("RPC run did not settle")
@@ -184,6 +196,57 @@ function exchangequeued(cmd, env, arrivals)
             while isready(arrivals)
                 put!(take!(arrivals), nothing)
             end
+            close(process.in)
+            timedwait(() -> process_exited(process), 5) == :ok || kill(process)
+            wait(process)
+            wait(reader)
+        end
+    end
+end
+
+function saveimagequeue(cmd, env, image)
+    mktempdir() do dir
+        process = open(pipeline(addenv(cmd, env...); stderr=joinpath(dir, "error")), "r+")
+        channel = Channel{Any}(Inf)
+        reader = @async for line in eachline(process)
+            put!(channel, JSON3.read(line, Dict{String, Any}))
+        end
+        observed = Any[]
+        try
+            send(value) = (println(process, JSON3.write(value)); flush(process))
+            send((; id="seed", type="prompt", message="seed"))
+            receive!(channel, observed, value -> get(value, "type", "") == "agent_settled")
+            send((; id="queue", type="steer", message="saved", images=[image]))
+            receive!(channel, observed, value -> get(value, "id", "") == "queue")
+        finally
+            close(process.in)
+            timedwait(() -> process_exited(process), 5) == :ok || kill(process)
+            wait(process)
+            wait(reader)
+        end
+    end
+end
+
+function exchangereplay(cmd, env)
+    mktempdir() do dir
+        process = open(pipeline(addenv(cmd, env...); stderr=joinpath(dir, "error")), "r+")
+        channel = Channel{Any}(Inf)
+        reader = @async for line in eachline(process)
+            put!(channel, JSON3.read(line, Dict{String, Any}))
+        end
+        observed = Any[]
+        try
+            send(value) = (println(process, JSON3.write(value)); flush(process))
+            send((; id="state", type="get_state"))
+            state = receive!(channel, observed, value -> get(value, "id", "") == "state")
+            send((; id="clear", type="clear_queue"))
+            clear = receive!(channel, observed, value -> get(value, "id", "") == "clear")
+            send((; id="prompt", type="prompt", message="resume"))
+            receive!(channel, observed, value -> get(value, "type", "") == "agent_settled")
+            send((; id="messages", type="get_messages"))
+            messages = receive!(channel, observed, value -> get(value, "id", "") == "messages")
+            (; state, clear, messages, observed)
+        finally
             close(process.in)
             timedwait(() -> process_exited(process), 5) == :ok || kill(process)
             wait(process)
@@ -815,6 +878,18 @@ toolview(value) = (; role=value["role"], id=value["toolCallId"], name=value["too
             @test jf_restored["state"]["data"]["sessionId"] == first(records(jf_first.output))["id"]
             @test isfile(jf_restored["state"]["data"]["sessionFile"])
 
+            image_dir = joinpath(workspace, "image-sessions")
+            image_cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $image_dir`; dir=workspace)
+            image = (; type="image", mimeType="image/png", data="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aX0AAAAASUVORK5CYII=")
+            saved = saveimagequeue(image_cmd, env, image)
+            @test saved["success"]
+            image_resume = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --continue --session-dir $image_dir`; dir=workspace)
+            replay = exchangereplay(image_resume, env)
+            @test replay.state["data"]["pendingMessageCount"] == 1
+            @test !replay.clear["success"]
+            @test any(event -> event["type"] == "queue_update" && event["steering"] == ["saved"], replay.observed)
+            @test any(block -> get(block, "type", "") == "image" && block["data"] == image.data, Iterators.flatten(message["content"] for message in replay.messages["data"]["messages"] if message["role"] == "user"))
+
             arrivals = Channel{Channel{Nothing}}(Inf)
             gated = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
                 gate = Channel{Nothing}(1)
@@ -827,6 +902,12 @@ toolview(value) = (; role=value["role"], id=value["toolCallId"], name=value["too
                 write(joinpath(agentdir, "models.json"), JSON3.write(Dict("providers" => Dict("openai" => Dict("baseUrl" => gatedbase, "api" => "openai-completions", "apiKey" => "fixture", "models" => [Dict("id" => "fixture")])))))
                 gatedenv = [pair for pair in env if first(pair) != "OPENAI_BASE_URL"]
                 push!(gatedenv, "OPENAI_BASE_URL" => gatedbase)
+                pi_image = exchangequeued(pi_rpc, gatedenv, arrivals; image=true)
+                jf_image = exchangequeued(jf_rpc, gatedenv, arrivals; image=true, protect=true)
+                imageusers(run) = [message["content"] for message in run.messages["data"]["messages"] if message["role"] == "user"]
+                @test imageusers(jf_image) == imageusers(pi_image)
+                @test count(block -> block["type"] == "image", Iterators.flatten(imageusers(jf_image))) == 3
+                @test all(event -> event["steering"] isa AbstractVector && event["followUp"] isa AbstractVector, filter(event -> event["type"] == "queue_update", jf_image.observed))
                 pi_queue = exchangequeued(pi_rpc, gatedenv, arrivals)
                 jf_queue = exchangequeued(jf_rpc, gatedenv, arrivals)
                 @test jf_queue.first == pi_queue.first
