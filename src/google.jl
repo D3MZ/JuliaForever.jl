@@ -1,7 +1,7 @@
 module GoogleAPI
 
 using HTTP, JSON3, Random, SHA
-import ..JuliaForever: requestcontext, complete, stream, payload, headers, endpoint, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Usage
+import ..JuliaForever: requestcontext, complete, stream, payload, headers, endpoint, definition, decode, incomplete, InvalidResponse, ProviderStatus, ProviderError, providererror, Completion, Finished, Unfinished, Usage
 
 struct Google
     base::String
@@ -292,19 +292,19 @@ function finish(state::State, provider::Google)
     result(message, state, state.reason)
 end
 function result(message, state, ::Nothing)
-    Completion(message, state.used, nothing, false, something(state.failure, "Google stream ended without a finish reason"))
+    Completion(message, state.used, nothing, Unfinished(), something(state.failure, "Google stream ended without a finish reason"))
 end
 function result(message, state, reason::AbstractString)
     result(message, state, reason, finish(reason))
 end
 function result(message, state, reason, ::Other)
-    Completion(message, state.used, nothing, false, something(state.failure, providererror(:google, reason)))
+    Completion(message, state.used, nothing, Unfinished(), something(state.failure, providererror(:google, reason)))
 end
 function result(message, state, reason, mapped::Union{Stop, Limit})
     outcome(message, state, finishname(mapped, state.calls), state.failure)
 end
-outcome(message, state, finish, ::Nothing) = Completion(message, state.used, finish, true, nothing)
-outcome(message, state, finish, failure) = Completion(message, state.used, finish, false, failure)
+outcome(message, state, finish, ::Nothing) = Completion(message, state.used, finish, Finished(), nothing)
+outcome(message, state, finish, failure) = Completion(message, state.used, finish, Unfinished(), failure)
 
 httpfailure(status) = incomplete(ProviderStatus(status))
 

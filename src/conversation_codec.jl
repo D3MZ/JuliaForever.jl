@@ -110,6 +110,7 @@ packed(items::Vector, item) = push!(items, item)
 pack(x) = Rejected(:unsupported_value)
 pack(x::C.User) = node("user", x.content)
 pack(x::C.Summary) = node("summary", x.content)
+pack(x::C.SkillContext) = node("skill_context", x.content)
 pack(x::C.ImageUser) = node("user_images", x.content, packall(x.images))
 pack(x::C.RawMessage) = node("raw", packvalue(x.value))
 pack(x::C.ToolCall) = node("tool_call", x.id, x.name, x.arguments, packvalue(x.metadata))
@@ -158,7 +159,7 @@ unpacked(items::Vector, item) = Rejected(:invalid_record)
 unpacked(items::Vector{T}, item::T) where T = push!(items, item)
 
 const nodetypes = Dict(
-    "user" => C.User, "user_images" => C.ImageUser, "summary" => C.Summary, "raw" => C.RawMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant,
+    "user" => C.User, "user_images" => C.ImageUser, "summary" => C.Summary, "skill_context" => C.SkillContext, "raw" => C.RawMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant,
     "tool_message" => C.ToolMessage, "model_request" => C.ModelRequest, "tool_request" => C.ToolRequest,
     "skip_request" => C.SkipRequest, "model_reply" => C.ModelReply, "tool_reply" => C.ToolReply,
     "tool_search_reply" => ToolLoaded, "tool_discovery_reply" => ToolDiscovery,
@@ -173,6 +174,7 @@ unpack(x::Dict) = unpack(get(nodetypes, x["kind"], nothing), x["fields"])
 unpack(type, fields) = Rejected(:invalid_record)
 unpack(::Type{C.User}, f::Vector) = C.User(f[1])
 unpack(::Type{C.Summary}, f::Vector) = C.Summary(f[1])
+unpack(::Type{C.SkillContext}, f::Vector) = C.SkillContext(f[1])
 unpack(::Type{C.ImageUser}, f::Vector) = C.ImageUser(f[1], unpackall(f[2], C.Image))
 unpack(::Type{C.RawMessage}, f::Vector) = C.RawMessage(unvalue(f[1]))
 unpack(::Type{C.ToolCall}, f::Vector) = C.ToolCall(f[1], f[2], f[3], unvalue(f[4]))

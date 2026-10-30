@@ -38,6 +38,12 @@ function Agent(provider, tools, messages; history=nothing)
     openagent(provider, fresh(tools), messages, initial, history)
 end
 
+function Agent(provider, tools, messages::Vector{Conversation.Message}; history=nothing)
+    initial = Conversation.State("agent-" * randstring(16); automatic=false, messages)
+    projected = Dict{String, Any}[convert(Dict{String, Any}, message) for message in messages]
+    openagent(provider, fresh(tools), projected, initial, history)
+end
+
 Agent(provider, tools; history=nothing) = Agent(provider, Dict{String, Tool}(name(tool) => tool for tool in tools), Dict{String, Any}[]; history)
 Agent(provider, tools::ToolSet; history=nothing) = Agent(provider, tools, Dict{String, Any}[]; history)
 
@@ -219,12 +225,34 @@ function attach!(value, image::Image)
 end
 
 Base.convert(::Type{Dict{String, Any}}, message::Conversation.RawMessage) = deepcopy(message.value)
+Base.convert(::Type{Dict{String, Any}}, message::Conversation.SkillContext) = Dict{String, Any}("role" => "system", "content" => message.content)
+
+synccontext(current, ::Conversation.Message) = current
+synccontext(current, message::Conversation.SkillContext) = message
+syncmessage!(messages, value, ::Nothing) = (push!(messages, Conversation.RawMessage(deepcopy(value))); nothing)
+function syncmessage!(messages, value, previous::Conversation.SkillContext)
+    if Kernel.same(value, convert(Dict{String, Any}, previous))
+        push!(messages, previous)
+        return nothing
+    end
+    push!(messages, Conversation.RawMessage(deepcopy(value)))
+    previous
+end
+function syncmessages(values, previous)
+    context = foldl(synccontext, previous; init=nothing)
+    messages = Conversation.Message[]
+    for value in values
+        context = syncmessage!(messages, value, context)
+    end
+    messages
+end
 
 function sync!(agent::Agent)
     result = lock(agent.lock) do
-        recorded = [convert(Dict{String, Any}, message) for message in agent.state.messages]
+        previous = agent.state.messages
+        recorded = Dict{String, Any}[convert(Dict{String, Any}, message) for message in previous]
         if !Kernel.same(recorded, agent.messages)
-            history = Conversation.Message[Conversation.RawMessage(deepcopy(message)) for message in agent.messages]
+            history = syncmessages(agent.messages, previous)
             result, _ = transition!(revision -> Conversation.History(revision, history), agent)
             return outcome(result, nothing)
         end
@@ -400,7 +428,7 @@ function request!(f, agent::Agent, partial, started)
         unregister!(agent, context)
         exceptions = current_exceptions()
         if length(exceptions) > depth && requestcancelled(last(exceptions).exception, turnstate(agent))
-            result = Completion(deepcopy(partial), nothing, "cancelled", false, "cancelled")
+            result = Completion(deepcopy(partial), nothing, "cancelled", Unfinished(), "cancelled")
             return (; message=result.message, result, started=started[])
         end
     end
@@ -633,7 +661,9 @@ function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing
     tool_execution = defaultmode(tool_execution, executor)
     used = Ref{Union{Nothing, Usage}}(nothing)
     result = task_local_storage(:jf_compaction_usage, used) do
-        respond!(agent, prompt, executor, context; on_event, on_agent_event, parameters, tool_execution)
+        task_local_storage(:jf_overflow_recovery, recovery(auto_compaction, summarize, agent.provider)) do
+            respond!(agent, prompt, executor, context; on_event, on_agent_event, parameters, tool_execution)
+        end
     end
     finishauto!(agent, result, used[], auto_compaction, summarize, on_agent_event)
     result
@@ -729,10 +759,8 @@ function direct_partial!(run, answer, result)
     message_start!(run.callback, answer.message, answer.started)
     emit(run.callback, (; type=:message_end, message=deepcopy(answer.message)))
     emit(run.callback, (; type=:turn_end, message=deepcopy(answer.message), tool_results=Dict{String, Any}[]))
-    direct_partial!(result, turnstate(run.agent))
+    recover!(run, result, turnstate(run.agent))
 end
-direct_partial!(result, ::Cancelled) = :cancelled
-direct_partial!(result, ::Union{Idle, Running}) = result
 
 function direct_complete!(run, answer, transition, added)
     agent = run.agent
@@ -755,10 +783,15 @@ end
 
 "Continue a transcript ending in a user or tool message. Returns :empty or :assistant_tail for unsupported tails."
 function continue!(agent::Agent; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:parallel)
-    selected = lock(agent.lock) do
-        continue_start!(agent, agent.turn, agent.fault, toolmode(tool_execution))
+    used = Ref{Union{Nothing, Usage}}(nothing)
+    task_local_storage(:jf_compaction_usage, used) do
+        task_local_storage(:jf_overflow_recovery, nothing) do
+            selected = lock(agent.lock) do
+                continue_start!(agent, agent.turn, agent.fault, toolmode(tool_execution))
+            end
+            continue_selected!(agent, selected; on_event, on_agent_event, parameters, tool_execution)
+        end
     end
-    continue_selected!(agent, selected; on_event, on_agent_event, parameters, tool_execution)
 end
 continue_start!(agent, ::Union{Running, Cancelled}, fault, mode) = :busy
 continue_start!(agent, ::Idle, fault::History.Rejected, mode) = fault

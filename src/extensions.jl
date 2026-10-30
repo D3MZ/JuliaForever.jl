@@ -137,6 +137,7 @@ end
 
 Agent(provider, snapshot::Extensions.Snapshot; history=nothing) = Agent(provider, Extensions.tools(snapshot); history)
 Agent(provider, snapshot::Extensions.Snapshot, messages; history=nothing) = Agent(provider, Dict{String, Tool}(name(tool) => tool for tool in Extensions.tools(snapshot)), messages; history)
+Agent(provider, snapshot::Extensions.Snapshot, messages::Vector{Conversation.Message}; history=nothing) = Agent(provider, Dict{String, Tool}(name(tool) => tool for tool in Extensions.tools(snapshot)), messages; history)
 
 """Chain `:tool_result` hooks on a listener. Return a `ToolResult` to replace the current result, or `nothing` to leave it unchanged. Hook failures are recorded and later hooks still run. Pass this listener as `on_agent_event` to enable interception."""
 function interceptresult(listener::Extensions.Listener, call, args, result::ToolResult)

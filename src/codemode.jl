@@ -62,7 +62,8 @@ end
 
 CodeSuccess(value, output, calls, writes, kind, message, stdout, stderr, pid) = CodeSuccess(value, output, calls, writes, String[], kind, message, stdout, stderr, pid)
 CodeFailure(value, output, calls, writes, kind, message, stdout, stderr, pid) = CodeFailure(value, output, calls, writes, String[], kind, message, stdout, stderr, pid)
-CodeResult(ok::Bool, fields...) = ok ? CodeSuccess(fields...) : CodeFailure(fields...)
+const coderesults = Dict(true => CodeSuccess, false => CodeFailure)
+CodeResult(ok::Bool, fields...) = coderesults[ok](fields...)
 CodeResult(ok, fields...) = CodeResult(convert(Bool, ok), fields...)
 ok(::CodeSuccess) = true
 ok(::CodeFailure) = false
@@ -78,7 +79,7 @@ codedeletes(deletes::Vector{String}) = deletes
 
 codefields(data::CodeResultData) = (data.value, data.output, data.calls, data.writes, codedeletes(data.deletes), data.kind, data.message, data.stdout, data.stderr, data.pid)
 
-StructTypes.construct(::Type{CodeResult}, data::CodeResultData) = CodeResult(data.ok, codefields(data)...)
+StructTypes.construct(::Type{CodeResult}, data::CodeResultData) = coderesults[convert(Bool, data.ok)](codefields(data)...)
 StructTypes.construct(::Type{CodeSuccess}, data::CodeResultData) = CodeSuccess(codefields(data)...)
 StructTypes.construct(::Type{CodeFailure}, data::CodeResultData) = CodeFailure(codefields(data)...)
 
@@ -192,7 +193,7 @@ function codefailure(cancel, timedout, started, timeout)
 end
 
 codeimage(result::ToolResult, ::Nothing) = result
-codeimage(::ToolResult, ::Image) = ToolResult("Image output is not supported by CodeMode", true)
+codeimage(::ToolResult, ::Image) = ToolFailure("Image output is not supported by CodeMode")
 
 function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, Any}(), cancel=CodeCancellation())
     cancel.cancelled[] && return CodeFailure(nothing, String[], NamedTuple[], Dict{String, Any}(), :cancelled, "Execution cancelled", "", "", 0)

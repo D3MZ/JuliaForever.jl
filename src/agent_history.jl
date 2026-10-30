@@ -305,7 +305,7 @@ end
 recorded_incomplete!(run, result, rejected::History.Rejected) = rejected
 recorded_incomplete!(run, result, ::Nothing) = recorded_incomplete!(run, result, turnstate(run.agent))
 recorded_incomplete!(run, result, ::Cancelled) = :cancelled
-recorded_incomplete!(run, result, ::Union{Idle, Running}) = result
+recorded_incomplete!(run, result, turn::Union{Idle, Running}) = recover!(run, result, turn)
 
 function recorded_complete!(run, answer, transition, added)
     present!(run.agent, added, run.messages, run.callback; started=answer.started)

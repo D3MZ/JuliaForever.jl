@@ -26,7 +26,7 @@ function fixturestream(provider, messages, tools, on_event)
         on_event((; type=:text, text="draft"))
         return Completion(Dict{String, Any}("role" => "assistant", "content" => "final"), nothing, "stop", true, nothing)
     end
-    text = scenario in ("tool", "badargs") ? "after" : "reply:" * messages[end]["content"]
+    text = scenario == "skills" ? join((message["content"] for message in messages if message["role"] == "system"), "\n") : scenario in ("tool", "badargs") ? "after" : "reply:" * messages[end]["content"]
     on_event((; type=:text, text))
     on_event((; type=:usage, usage=Usage(3, 2, 0, 0, 0, 5, nothing)))
     Completion(Dict{String, Any}("role" => "assistant", "content" => text), Usage(3, 2, 0, 0, 0, 5, nothing), "stop", true, nothing)
