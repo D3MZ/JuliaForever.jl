@@ -30,7 +30,7 @@ using Test, JSON3
         cmd = addenv(cmd, "PI_CODING_AGENT_DIR" => agentdir, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic-secret", "JF_FIXTURE" => "reply")
         process = run(pipeline(ignorestatus(cmd); stdin=stdinpath, stdout=output, stderr=diagnostics))
         @test process.exitcode == 0
-        @test all(path -> occursin(path, read(diagnostics, String)), reference.diagnostics)
+        @test all(path -> occursin(repr(String(path)), read(diagnostics, String)), reference.diagnostics)
         @test read(output, String) == join(("reply:" * prompt * "\n" for prompt in reference.expanded))
         oneshot = Cmd(`$cmd $(prompts[1])`; dir=cwd)
         @test read(pipeline(oneshot; stderr=devnull), String) == "reply:$(reference.expanded[1])\n"
