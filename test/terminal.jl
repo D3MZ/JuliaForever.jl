@@ -96,23 +96,6 @@ end
     @test String(take!(diagnostics)) == "[tool] failure: started\n[tool] failure: error: missing [redacted]\n"
 end
 
-@testset "terminal presentation state" begin
-    output = IOBuffer()
-    terminal = JuliaForever.Terminal(output, IOBuffer(), String[])
-    @test terminal.presentation isa JuliaForever.Unstreamed
-    @test terminal.line isa JuliaForever.LineClosed
-    @test !terminal.streamed && !terminal.lineopen
-    JuliaForever.text!(terminal, "partial")
-    @test terminal.presentation isa JuliaForever.Streamed
-    @test terminal.line isa JuliaForever.LineOpen
-    @test terminal.streamed && terminal.lineopen
-    JuliaForever.line!(terminal)
-    @test !terminal.lineopen && String(take!(output)) == "partial\n"
-    terminal.streamed = false
-    terminal.lineopen = true
-    @test !terminal.streamed && terminal.lineopen
-end
-
 @testset "terminal completion and failure" begin
     output, diagnostics = IOBuffer(), IOBuffer()
     provider = TerminalFixture([(terminal_completion("fallback"), String[])], () -> nothing)

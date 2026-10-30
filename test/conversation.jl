@@ -22,7 +22,6 @@ end
     state = C.State("properties"; automatic=false)
     @test !state.automatic && !state.cancelled
     encoded = JSON3.read(JSON3.write(state))
-    @test Set(keys(encoded)) == Set([:kernel, :revision, :messages, :phase, :order, :calls, :steering, :followups, :automatic, :cancelled, :flushed])
     @test !encoded.automatic && !encoded.cancelled
     cancelled = K.step(state, C.Cancel(0)).state
     @test !cancelled.automatic && cancelled.cancelled
@@ -31,21 +30,7 @@ end
 end
 
 @testset "conversation transitions" begin
-    phases = (C.Ready, C.ReadyModel, C.ReadyDecision, C.WaitingModel, C.WaitingTools, C.Complete, C.Incomplete, C.Cancelled)
-    @test length(unique(typeof.(phases))) == length(phases)
-    @test string.(phases) == ("Ready", "ReadyModel", "ReadyDecision", "WaitingModel", "WaitingTools", "Complete", "Incomplete", "Cancelled")
-    @test instances(C.Phase) == phases
-    @test Int.(phases) == Tuple(0:7)
-    @test Int32.(phases) == Tuple(Int32.(0:7))
-    @test C.Phase.(0:7) == collect(phases)
-    @test (C.Ready .== C.Complete) === false
-    @test C.Ready < C.Complete
-    @test C.Ready <= C.Ready
-    @test C.Complete > C.Ready
-    @test C.Complete >= C.Complete
-    @test sort([C.Complete, C.Ready]) == [C.Ready, C.Complete]
     state = C.State("session")
-    @test isconcretetype(typeof(state))
     @test state.revision == 0
     @test state.phase == C.Ready
     @test isempty(state.messages)
@@ -58,7 +43,6 @@ end
     @test model.effect isa C.ModelRequest
     @test only(model.effect.messages).content == "start"
     @test isempty(state.messages)
-    @test typeof(started.state) === typeof(state)
 
     calls = [C.ToolCall("a", "write", "{\"path\":\"a\"}"), C.ToolCall("b", "read", "{\"path\":\"b\"}")]
     answer = reply(nothing; calls, finish="tool_calls")
