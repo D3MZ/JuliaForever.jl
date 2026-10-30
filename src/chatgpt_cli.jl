@@ -90,22 +90,26 @@ resumechatgpt(store, chosen, result::ChatGPT.Rejected) = resumerejected(store, c
 resumerejected(store, chosen, result, reason) = result
 resumerejected(store, chosen, result, ::ReauthorizeChatGPT) = connectchatgpt(store, chosen)
 
+const ChatGPTModel = @NamedTuple{id::String, name::String}
+
 function chatgptmodels(session; request=HTTP.get)
     response = request("https://api.openai.com/v1/models", ["Authorization" => "Bearer $(session.access)"]; redirect=false, retry=false, cookies=false, status_exception=false, request_timeout=10, read_idle_timeout=5, max_decompressed_size=1_048_576)
     200 <= response.status < 300 || return ProviderStatus(response.status)
     modeldata(decode(String(response.body)))
 end
-modeldata(::InvalidResponse) = String[]
+modeldata(::InvalidResponse) = ChatGPTModel[]
 function modeldata(data::AbstractDict)
-    models = String[]
+    models = ChatGPTModel[]
     foreach(model -> addchatgptmodel!(models, model), get(data, "models", []))
     models
 end
 addchatgptmodel!(models, model) = nothing
 struct ListedChatGPTModel end
-addchatgptmodel!(models, model::AbstractDict) = addchatgptmodel!(models, get(Dict("list" => ListedChatGPTModel()), get(model, "visibility", nothing), nothing), get(model, "slug", nothing))
-addchatgptmodel!(models, state, slug) = nothing
-addchatgptmodel!(models, ::ListedChatGPTModel, slug::AbstractString) = isempty(slug) || push!(models, String(slug))
+addchatgptmodel!(models, model::AbstractDict) = addchatgptmodel!(models, get(Dict("list" => ListedChatGPTModel()), get(model, "visibility", nothing), nothing), get(model, "slug", nothing), get(model, "display_name", nothing))
+addchatgptmodel!(models, state, slug, label) = nothing
+addchatgptmodel!(models, ::ListedChatGPTModel, slug::AbstractString, label) = isempty(slug) || push!(models, (; id=String(slug), name=chatgptdisplay(slug, label)))
+chatgptdisplay(slug, label) = String(slug)
+chatgptdisplay(slug, label::AbstractString) = String(label)
 
 chatgptmodel(session, requested::AbstractString) = requested
 function chatgptmodel(session, ::Nothing)
@@ -122,7 +126,7 @@ function choosechatgptmodel(models)
 end
 function choosechatgptmodel(models::AbstractVector)
     isempty(models) && return choosechatgptmodel(nothing)
-    first(models)
+    first(models).id
 end
 
 acquirechatgpt(requested, mode) = acquirechatgpt(ChatGPT.Store(chatgptdirectory(ENV)), requested, mode)
@@ -225,15 +229,15 @@ function LiveTerminal.modeloptions(session, provider::ManagedChatGPT)
         credential = ChatGPT.refresh(provider.store, provider.client, provider.subject; post=provider.refresh, now=provider.now)
         chatgptchoices(provider, credential)
     catch
-        String[]
+        ChatGPTModel[]
     end
-    [(; id=model, name=model) for model in choices]
+    choices
 end
-chatgptchoices(provider, failure) = String[]
+chatgptchoices(provider, failure) = ChatGPTModel[]
 function chatgptchoices(provider, session::ChatGPT.Credential)
-    ChatGPT.direct in split(session.scope) || return String[]
+    ChatGPT.direct in split(session.scope) || return ChatGPTModel[]
     append!(provider.secrets, filter(secret -> !isempty(secret) && !(secret in provider.secrets), chatgptsecrets(session)))
     chatgptchoices(provider.catalog(session))
 end
-chatgptchoices(models) = String[]
+chatgptchoices(models) = ChatGPTModel[]
 chatgptchoices(models::AbstractVector) = models

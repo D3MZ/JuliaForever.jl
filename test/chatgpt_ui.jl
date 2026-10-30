@@ -1,4 +1,4 @@
-using Test, JuliaForever
+using Test, JuliaForever, HTTP, JSON3
 
 @testset "ChatGPT login options reject mixed providers" begin
     mktempdir() do directory
@@ -20,8 +20,18 @@ end
         C = JuliaForever.ChatGPT
         credential = C.Session("client", C.Identity("subject", nothing), "access", "refresh", "id", C.direct, 2000.0)
         C.save(store, credential)
-        model = JuliaForever.ManagedChatGPT(store, "client", "subject", "first-model", String[]; now=() -> 1000.0, catalog=session -> ["first-model", "second-model"])
-        @test [item.id for item in JuliaForever.LiveTerminal.modeloptions(nothing, model)] == ["first-model", "second-model"]
+        requests = []
+        request = (url, headers; kwargs...) -> begin
+            push!(requests, (; url, headers))
+            models = [(; visibility="hidden", slug="hidden", display_name="Hidden"), (; visibility="list", slug="first-model", display_name="First Model"), (; visibility="list", slug="second-model")]
+            HTTP.Response(200, [], JSON3.write((; models)))
+        end
+        model = JuliaForever.ManagedChatGPT(store, "client", "subject", "first-model", String[]; now=() -> 1000.0, catalog=session -> JuliaForever.chatgptmodels(session; request))
+        options = JuliaForever.LiveTerminal.modeloptions(nothing, model)
+        @test options == [(; id="first-model", name="First Model"), (; id="second-model", name="second-model")]
+        @test JuliaForever.choosechatgptmodel(options) == "first-model"
+        @test only(requests).url == "https://api.openai.com/v1/models"
+        @test only(requests).headers == ["Authorization" => "Bearer access"]
         agent = Agent(model, JuliaForever.Tool[])
         terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), String[])
         @test JuliaForever.LiveTerminal.modelname(model) == "first-model"
@@ -41,6 +51,8 @@ end
             C.save(store, credential)
             cmd = `python3 $(joinpath(@__DIR__, "chatgpt_ui_pty.py")) $(first(Base.julia_cmd().exec)) $(dirname(@__DIR__)) $directory`
             @test occursin("terminal modes passed", read(cmd, String))
+            picker = `python3 $(joinpath(@__DIR__, "chatgpt_picker_pty.py")) $(first(Base.julia_cmd().exec)) $(dirname(@__DIR__)) $directory`
+            @test occursin("model picker passed", read(picker, String))
         end
     end
 end

@@ -42,7 +42,7 @@ end
         returning_output = String(take!(output))
         @test !occursin("id_token_hint", returning_output) && !occursin(first.id_token, returning_output)
         @test length(redirects) == 2
-        @test JuliaForever.modeldata(Dict("models" => [Dict("visibility" => "hidden", "slug" => "hide"), Dict("visibility" => "list", "slug" => "shown")])) == ["shown"]
+        @test JuliaForever.modeldata(Dict("models" => [Dict("visibility" => "hidden", "slug" => "hide"), Dict("visibility" => "list", "slug" => "shown")])) == [(; id="shown", name="shown")]
     end
 end
 
