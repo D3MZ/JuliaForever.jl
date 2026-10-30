@@ -45,6 +45,58 @@ const path = joinpath(@__DIR__, "..", "data", "models.json")
 const punctuation = Dict(char => Char(index) for (index, char) in enumerate(" _-,;:!?.()[]{}@*/&#%`^+<=>|~\$"))
 
 catalog() = JSON3.read(read(path), Vector{Model})
+
+function catalog(configpath::AbstractString)
+    models = catalog()
+    isfile(configpath) || return models
+    config = JSON3.read(read(configpath), Dict{String, Any})
+    for (provider, settings) in config["providers"]
+        overlay!(models, provider, settings)
+    end
+    models
+end
+
+function overlay!(models, provider, settings)
+    for definition in get(settings, "models", [])
+        existing = filter(model -> model.provider == provider, models)
+        index = findfirst(model -> model.provider == provider && model.id == definition["id"], models)
+        defaults = findmodel(model -> model.id == definition["id"], existing)
+        defaults = modeldefaults(defaults, existing, get(definition, "api", get(settings, "api", "")))
+        model = custommodel(provider, definition, settings, defaults)
+        upsert!(models, index, model)
+    end
+    overrides = get(settings, "modelOverrides", Dict())
+    for index in eachindex(models)
+        model = models[index]
+        model.provider == provider || continue
+        models[index] = override(model, get(overrides, model.id, Dict()))
+    end
+    models
+end
+
+modeldefaults(model::Model, existing, api) = model
+function modeldefaults(::Nothing, existing, api::AbstractString)
+    matching = findmodel(model -> model.api == api, existing)
+    modeldefaults(matching, existing)
+end
+modeldefaults(model::Model, existing) = model
+function modeldefaults(::Nothing, existing)
+    modeldefaults(findmodel(model -> model.api == "openai-completions", existing), existing, nothing)
+end
+modeldefaults(::Nothing, existing, ::Nothing) = isempty(existing) ? nothing : first(existing)
+defaultapi(::Nothing) = ""
+defaultapi(model::Model) = model.api
+
+function custommodel(provider, definition, settings, defaults)
+    id = String(definition["id"])
+    Model(String(provider), id, String(get(definition, "name", id)), String(get(definition, "api", get(settings, "api", defaultapi(defaults)))), Int(get(definition, "contextWindow", 128000)), Int(get(definition, "maxTokens", 16384)), Bool(get(definition, "reasoning", false)), "image" in get(definition, "input", ["text"]))
+end
+upsert!(models, ::Nothing, model) = push!(models, model)
+upsert!(models, index::Integer, model) = (models[index] = model)
+function override(model::Model, fields)
+    Model(model.provider, model.id, String(get(fields, "name", model.name)), model.api, Int(get(fields, "contextWindow", model.context)), Int(get(fields, "maxTokens", model.maxoutput)), Bool(get(fields, "reasoning", model.reasoning)), images(fields, model.images))
+end
+images(fields, fallback) = haskey(fields, "input") ? "image" in fields["input"] : fallback
 function collation(text)
     primary = String([get(punctuation, char, char) for char in lowercase(text)])
     case = String([isuppercase(char) ? '1' : '0' for char in text])
