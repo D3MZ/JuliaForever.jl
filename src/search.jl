@@ -437,7 +437,8 @@ lineprefix(consumed, position, ::Nothing) = consumed
 lineprefix(consumed, position, lastline::Int) = lastline > position ? lastline : consumed
 
 binarycontent!(bytes, ::SearchDirectory, nul) = resize!(bytes, binaryprefix(bytes, nul))
-binarycontent!(bytes, ::SearchFile, nul) = replace!(bytes, 0x00 => 0x0a)
+# Ripgrep converts NULs in buffered searches, but not in memory-mapped files.
+binarycontent!(bytes, ::SearchFile, nul) = Sys.isapple() ? replace!(bytes, 0x00 => 0x0a) : bytes
 function searchcontent(bytes, root, ::Nothing)
     raw = String(bytes)
     raw, raw
@@ -506,10 +507,12 @@ function searchutf16(bytes, root, unitvalue)
     searchtext(text, root, original)
 end
 searchtext(raw, root, original) = searchtext(raw, root, original, findfirst(==(0x00), codeunits(raw)))
+bufferedbinary!(bytes, root::SearchDirectory, nul) = binarycontent!(bytes, root, nul)
+bufferedbinary!(bytes, ::SearchFile, nul) = replace!(bytes, 0x00 => 0x0a)
 searchtext(raw, root, original, ::Nothing) = raw, original
 function searchtext(raw, root, original, nul::Integer)
     bytes = Vector{UInt8}(codeunits(raw))
-    binarycontent!(bytes, root, nul)
+    bufferedbinary!(bytes, root, nul)
     String(bytes), original
 end
 

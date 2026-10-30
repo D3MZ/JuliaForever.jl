@@ -53,6 +53,30 @@ directory(env) = abspath(expanduser(get(env, "JF_SESSION_DIR", joinpath(homedir(
 project(cwd) = bytes2hex(sha256(abspath(cwd)))[1:24]
 filename(cwd, id) = project(cwd) * "--" * id * ".sqlite"
 
+function winpath(cwd, api)
+    input = transcode(UInt16, abspath(cwd) * "\0")
+    output = zeros(UInt16, 32768)
+    n = api(input, output)
+    n == 0 || n >= length(output) ? abspath(cwd) : transcode(String, output[1:n])
+end
+
+@static if Sys.iswindows()
+    longpath(input, output) = ccall((:GetLongPathNameW, "kernel32"), stdcall, UInt32, (Ptr{UInt16}, Ptr{UInt16}, UInt32), input, output, length(output))
+    shortpath(input, output) = ccall((:GetShortPathNameW, "kernel32"), stdcall, UInt32, (Ptr{UInt16}, Ptr{UInt16}, UInt32), input, output, length(output))
+    spellings(cwd) = unique((abspath(cwd), winpath(cwd, longpath), winpath(cwd, shortpath)))
+    projectlist(dir, cwd, paths) = listcase(dir, paths)
+    caseform(path) = winpath(path, longpath)
+    function caseequal(a, b)
+        left, right = transcode(UInt16, a), transcode(UInt16, b)
+        ccall((:CompareStringOrdinal, "kernel32"), stdcall, Cint, (Ptr{UInt16}, Cint, Ptr{UInt16}, Cint, Cint), left, length(left), right, length(right), 1) == 2
+    end
+else
+    spellings(cwd) = (abspath(cwd),)
+    projectlist(dir, cwd, paths) = list(dir, projectpattern(paths))
+    caseequal(a, b) = lowercase(a) == lowercase(b)
+    caseform(path) = abspath(path)
+end
+
 mutable struct Deferred <: H.Store
     path::String
     store::H.Store
@@ -187,10 +211,9 @@ end
 pushinfo!(items, ::Nothing) = items
 pushinfo!(items, item::Info) = (push!(items, item); items)
 
-function list(dir, cwd::AbstractString)
-    pattern = Regex("^" * project(cwd) * raw"--([0-9a-f]{32})\.sqlite$")
-    list(dir, pattern)
-end
+projectpattern(paths) = Regex("^(?:" * join(project.(paths), "|") * raw")--([0-9a-f]{32})\.sqlite$")
+list(dir, cwd::AbstractString) = projectlist(dir, cwd, spellings(cwd))
+include("session_case.jl")
 
 function list(dir, pattern::Regex)
     isdir(dir) || return Info[]

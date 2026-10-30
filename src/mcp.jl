@@ -2,7 +2,7 @@ module MCP
 
 using JSON3, Base64
 import HTTP, JSON
-import ..JuliaForever: Tool, ToolResult, ToolFailure, tooltype, Image, imagelimit, imageformat, imageproblem, name, description, schema, execute
+import ..JuliaForever: Tool, ToolResult, ToolFailure, tooltype, Image, readlimit, limitmessage, imageformat, imageproblem, name, description, schema, execute
 
 struct Failure
     kind::Symbol
@@ -161,15 +161,15 @@ function httpheaders(transport::HttpTransport)
     headers
 end
 
-include("mcp_sse_json.jl")
+include("mcp_json.jl")
 
 function ssemessage!(client::Client, data, event, id)
     (isempty(data) || !(event in ("", "message"))) && return false
-    ssereply(client, sseparse(data), id)
+    ssereply(client, jsonmessage(join(data, "\n")), id)
 end
-ssereply(client, invalid::InvalidSSE, id) = false
+ssereply(client, invalid::InvalidMessage, id) = false
 function ssereply(client, value::AbstractDict, id)
-    value = ssevalid(value)
+    value = validmessage(value)
     received(client, value) || return false
     get(value, "id", nothing) == id && !haskey(value, "method")
 end
@@ -178,7 +178,7 @@ struct ServerStream end
 function servermessage!(client::Client, data, event)
     (isempty(data) || !(event in ("", "message"))) && return nothing
     try
-        received(client, ssevalid(sseparse(data)))
+        received(client, validmessage(jsonmessage(join(data, "\n"))))
     catch
     end
     nothing
@@ -439,9 +439,11 @@ resumed(::StreamEnded) = StreamStopped()
 resumed(::StreamAnswered) = StreamAnswered()
 
 function jsonhttp!(client, stream, message, id, type)
-    value = JSON3.read(read(stream), Dict{String, Any})
-    received(client, value) || httpfailure!(client, message, Failure(:protocol, "Invalid JSON-RPC message"))
+    value = jsonmessage(String(read(stream)), Union{Dict{String, Any}, Vector{Any}})
+    receivedhttp(client, value) || httpfailure!(client, message, Failure(:protocol, "Invalid JSON-RPC message"))
 end
+receivedhttp(client, value) = received(client, validmessage(value))
+receivedhttp(client, values::AbstractVector) = all(value -> received(client, validmessage(value)), values)
 unsupportedhttp!(client, stream, message, id, type) = httpfailure!(client, message, Failure(:protocol, "Unsupported MCP HTTP response content type: $type"))
 const httpreaders = Dict("text/event-stream" => ssehttp!, "application/json" => jsonhttp!)
 forgethttp!(transport, client, ::Nothing) = nothing
@@ -730,24 +732,38 @@ end
 retirematching!(client, id, pending, ::Nothing) = nothing
 retirematching!(client, id, pending, current::Pending) = current === pending ? retire!(client, id) : nothing
 
+const stdiolimit = 16 * 1024 * 1024
+
+function stdioappend!(bytes, chunk, start, stop)
+    length(bytes) + stop - start + 1 > stdiolimit && (empty!(bytes); sizehint!(bytes, 0; shrink=true); return nothing)
+    append!(bytes, @view chunk[start:stop])
+end
+stdioreceive!(client, ::Nothing) = nothing
+function stdioreceive!(client, bytes::Vector{UInt8})
+    received(client, validmessage(jsonmessage(String(bytes))))
+    nothing
+end
+function stdiochunk!(client, bytes, chunk)
+    start = 1
+    while start <= length(chunk)
+        newline = sseend(findnext(==(0x0a), chunk, start), chunk)
+        line = stdioappend!(bytes, chunk, start, newline - 1)
+        newline > length(chunk) && break
+        stdioreceive!(client, line)
+        start = newline + 1
+    end
+end
+
 function readmessages(client::Client)
     try
-        for line in eachline(client.process.out; keep=true)
-            if !endswith(line, '\n')
-                fail!(client, Failure(:protocol, "Incomplete JSON-RPC message"))
-                return
-            end
-            message = try
-                JSON3.read(codeunits(line), Dict{String, Any})
-            catch
-                fail!(client, Failure(:protocol, "Invalid JSON-RPC message"))
-                return
-            end
-            if !received(client, message)
-                fail!(client, Failure(:protocol, "Invalid JSON-RPC message"))
-                return
-            end
+        bytes = UInt8[]
+        chunk = Vector{UInt8}(undef, 64 * 1024)
+        stream = client.process.out
+        while !eof(stream)
+            count = readbytes!(stream, chunk, min(bytesavailable(stream), length(chunk)))
+            stdiochunk!(client, bytes, @view chunk[1:count])
         end
+        isempty(bytes) || (fail!(client, Failure(:protocol, "Incomplete JSON-RPC message")); return)
         fail!(client, Failure(:closed, "MCP server closed its output"))
     catch exception
         fail!(client, Failure(:transport, sprint(showerror, exception)))
@@ -1045,31 +1061,34 @@ end
 resourceimage(mime, resource::AbstractDict) = nothing
 
 function resourceimage(mime::AbstractString, resource::AbstractDict)
-    startswith(mime, "image/") || return nothing
+    startswith(imagemime(mime), "image/") || return nothing
     (; mime, data=get(resource, "blob", nothing))
 end
 
 image(content) = image(content.mime, content.data)
 image(mime, data) = Failure(:protocol, "Malformed image content")
 
-function image(mime::AbstractString, data::AbstractString)
-    mime in ("image/png", "image/jpeg") || return Failure(:capability, "Image MIME type $mime is not supported")
-    ncodeunits(data) <= 4 * cld(imagelimit, 3) || return Failure(:capability, "Image exceeds the 10 MiB limit")
+imagemime(mime) = lowercase(strip(first(split(mime, ';'; limit=2))))
+const imagemimes = Dict("image/png" => MIME"image/png"(), "image/jpeg" => MIME"image/jpeg"(), "image/jpg" => MIME"image/jpeg"(), "image/gif" => MIME"image/gif"(), "image/webp" => MIME"image/webp"())
+image(mime::AbstractString, data::AbstractString) = imageinput(mime, data, get(imagemimes, imagemime(mime), nothing))
+imageinput(mime, data, ::Nothing) = Failure(:capability, "Image MIME type $mime is not supported")
+function imageinput(mime, data, format::MIME)
+    limit = readlimit(format)
+    ncodeunits(data) <= 4 * cld(limit, 3) || return Failure(:capability, limitmessage(format))
     bytes = try
         base64decode(data)
     catch
         return Failure(:protocol, "Invalid image base64")
     end
     base64encode(bytes) == data || return Failure(:protocol, "Invalid image base64")
-    length(bytes) <= imagelimit || return Failure(:capability, "Image exceeds the 10 MiB limit")
-    image(mime, data, bytes, imageformat(bytes))
+    length(bytes) <= limit || return Failure(:capability, limitmessage(format))
+    image(mime, data, bytes, imageformat(bytes), format)
 end
 
-image(mime, data, bytes, ::MIME) = Failure(:protocol, "Mismatched image data for $mime")
+image(mime, data, bytes, ::MIME, ::MIME) = Failure(:protocol, "Mismatched image data for $mime")
 
-function image(mime, data, bytes, format::Union{MIME"image/png", MIME"image/jpeg"})
-    mime == string(format) || return Failure(:protocol, "Mismatched image data for $mime")
-    image(mime, data, imageproblem(format, bytes))
+function image(mime, data, bytes, format::T, ::T) where {T<:Union{MIME"image/png", MIME"image/jpeg", MIME"image/gif", MIME"image/webp"}}
+    image(string(format), data, imageproblem(format, bytes))
 end
 
 image(mime, data, ::Nothing) = Image(mime, data)

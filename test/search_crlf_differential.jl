@@ -21,6 +21,8 @@
             (; pattern="needle", path="long.txt", literal=true, limit=1),
             (; pattern="needle\$", path="invalid.txt", context=1),
             (; pattern="needle", path="invalid.txt", literal=true, context=1),
+            (; pattern="needle\$", path="binary.txt"),
+            (; pattern="needle", path="binary.txt", literal=true),
             (; pattern="needle\$", path="binary.txt", context=1),
             (; pattern="needle", path="binary.txt", literal=true, context=1),
             (; pattern="needle\$", glob="*.txt"),
@@ -29,6 +31,8 @@
             (; pattern="needle", path=".", literal=true),
             (; pattern="needle\$", path="ignored.txt"),
         ]
+        binary = execute(Grep(dir), (; pattern="needle", path="binary.txt", literal=true))
+        @test binary.text == (Sys.isapple() ? "binary.txt:1: needle\nbinary.txt:3: needle" : "binary.txt:1: needle\nbinary.txt:2: \0needle")
         input = tempname()
         write(input, JSON3.write([(; tool="grep", args) for args in cases]))
         try

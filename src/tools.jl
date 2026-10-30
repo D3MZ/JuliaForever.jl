@@ -231,11 +231,16 @@ end
 
 imageproblem(::MIME"image/png", bytes) = pngproblem(bytes)
 imageproblem(::MIME"image/jpeg", bytes) = nothing
+readproblem(format::MIME, bytes) = imageproblem(format, bytes)
+readlimit(::MIME) = imagelimit
+limitmessage(::MIME) = "Image exceeds the 10 MiB limit"
+readimagebytes!(io, ::MIME, bytes, limit) = append!(bytes, read(io, limit + 1 - length(bytes)))
 
-function readimage(io, format::Union{MIME"image/png", MIME"image/jpeg"}, bytes)
-    append!(bytes, read(io, imagelimit + 1 - length(bytes)))
-    length(bytes) <= imagelimit || return ToolFailure("Image exceeds the 10 MiB limit")
-    imagefile(format, bytes, imageproblem(format, bytes))
+function readimage(io, format::Union{MIME"image/png", MIME"image/jpeg", MIME"image/gif", MIME"image/webp"}, bytes)
+    limit = readlimit(format)
+    readimagebytes!(io, format, bytes, limit)
+    length(bytes) <= limit || return ToolFailure(limitmessage(format))
+    imagefile(format, bytes, readproblem(format, bytes))
 end
 
 readimage(io, ::MIME, bytes) = ToolFailure("Image format is not supported")

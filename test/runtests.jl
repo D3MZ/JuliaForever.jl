@@ -109,6 +109,8 @@ include("tool_options.jl")
 include("file_arguments.jl")
 include("file_cli_loopback.jl")
 include("session_catalog.jl")
+include("windows_alias_catalog.jl")
+include("windows_case_catalog.jl")
 include("session_cli.jl")
 include("skill_refresh.jl")
 include("skill_commands.jl")
@@ -229,6 +231,8 @@ include("codemode_store.jl")
 include("codemode_compat.jl")
 include("mcp.jl")
 include("mcp_image.jl")
+include("image_formats.jl")
+include("image_switch_rpc.jl")
 include("mcp_resources.jl")
 module MCPWriteRaceTests
 include("mcp_write_race.jl")
@@ -247,6 +251,11 @@ include("mcp_fractional.jl")
 end
 module MCPHTTPSSETests
 include("mcp_http_sse.jl")
+end
+module MCPWireJSONTests
+include("mcp_wire_json.jl")
+include("mcp_http_batch.jl")
+include("mcp_stdio_limit.jl")
 end
 module MCPPOSTSSETests
 include("mcp_post_sse.jl")
