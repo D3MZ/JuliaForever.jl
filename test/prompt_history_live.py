@@ -6,11 +6,13 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 from tmux_exit import wait_for_exit
 
 project, julia, mode = Path(sys.argv[1]).resolve(), sys.argv[2], sys.argv[3]
 tmux = ["tmux", "-f", "/dev/null", "-L", f"jf-prompt-history-{os.getpid()}"]
+terminal_fd = None
 
 def run(*args, check=True, env=None):
     return subprocess.run([*tmux, *args], check=check, text=True, capture_output=True, env=env)
@@ -33,7 +35,8 @@ def prompt(value):
     return next((line[2:] for line in reversed(value.splitlines()) if line.startswith("> ")), None)
 
 def ready(value):
-    return prompt(value) is not None and (mode == "regular" or " | ready" in value)
+    raw = terminal_fd is not None and not termios.tcgetattr(terminal_fd)[3] & termios.ICANON
+    return raw and prompt(value) is not None and (mode == "regular" or " | ready" in value)
 
 def send(text):
     run("send-keys", "-t", "history", "-l", text)
@@ -61,11 +64,14 @@ def request(path, events, text):
     wait_for(lambda s: len(records(path)) == count + 1 and records(path)[-1] == text and endings(events) == completed + 1 and f"reply:{text}" in s and ready(s), f"request {text}")
 
 def exit_session():
+    global terminal_fd
     send("/exit")
     key("Enter")
     status, signal = wait_for_exit(run, "history", seconds=30)
     assert status == "0", (status, signal, screen())
     run("kill-session", "-t", "history")
+    os.close(terminal_fd)
+    terminal_fd = None
 
 try:
     with tempfile.TemporaryDirectory(prefix="jf-prompt-history-") as temporary:
@@ -77,9 +83,12 @@ try:
         settings = [f"{name}={env[name]}" for name in names if name in env]
 
         def launch(*options):
+            global terminal_fd
             command = shlex.join(["env", *settings, julia, "--startup-file=no", "--compiled-modules=existing", f"--project={project}", str(project / "test/terminal_process.jl"), "--plugin-env", str(project / "test/fixtures"), "--plugin", "GreetingPlugin", "--tui-mode", mode, *options])
             run("new-session", "-d", "-s", "history", "-x", "100", "-y", "30", "-c", str(root), command, env=env)
             run("set-option", "-t", "history", "remain-on-exit", "on")
+            terminal = run("display-message", "-p", "-t", "history", "#{pane_tty}").stdout.strip()
+            terminal_fd = os.open(terminal, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
             wait_for(ready, "startup", timeout=90)
 
         launch("--name", "Alpha")
@@ -143,6 +152,18 @@ try:
         wait_for(lambda s: prompt(s) == "alpha", "selected branch prompt")
         key("C-c")
         exit_session()
+
+        explicit = root / "explicit.sqlite"
+        launch("--history", str(explicit))
+        request(capture, events, "explicit history")
+        exit_session()
+        launch("--history", str(explicit))
+        key("Up")
+        wait_for(lambda s: prompt(s) == "explicit history", "explicit history prompt")
+        key("C-c")
+        exit_session()
     print(f"{mode} restored prompt history passed")
 finally:
+    if terminal_fd is not None:
+        os.close(terminal_fd)
     run("kill-server", check=False)
