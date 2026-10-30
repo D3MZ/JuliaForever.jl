@@ -236,6 +236,7 @@ if haskey(ENV, "PI_SOURCE")
     mktempdir() do oracle
         withenv("PI_CODING_AGENT_DIR" => oracle) do
             include("search_differential.jl")
+            include("search_bytes_differential.jl")
         end
     end
 end

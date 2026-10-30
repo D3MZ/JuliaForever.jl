@@ -14,14 +14,44 @@ end
 
 # Separators keep full-fold expansions inside their original character boundaries.
 const foldescapes = Dict('\0' => "\x01\x02", '\x01' => "\x01\x01")
-function foldliteral(text::AbstractString)
+
+# Memoize only after a longer line contains several non-ASCII characters.
+mutable struct FoldCache
+    seen::Int
+    values::Dict{Char, String}
+end
+FoldCache() = FoldCache(0, Dict{Char, String}())
+
+foldliteral(text::AbstractString) = foldliteral(text, ncodeunits(text) < 128 ? nothing : FoldCache())
+function foldliteral(text::AbstractString, cache)
     output = IOBuffer()
     for character in text
         write(output, '\0')
-        isascii(character) ? write(output, get(foldescapes, character, lowercase(character))) : write(output, Unicode.normalize(string(character); casefold=true, compose=false))
+        if !isvalid(character)
+            # This sequence cannot occur in a folded valid character.
+            write(output, "\x01\x03")
+        elseif isascii(character)
+            write(output, get(foldescapes, character, lowercase(character)))
+        else
+            writefolded!(output, cache, character)
+        end
     end
     write(output, '\0')
     String(take!(output))
+end
+
+writefolded!(output, ::Nothing, character::Char) = write(output, Unicode.normalize(string(character); casefold=true, compose=false))
+function writefolded!(output, cache::FoldCache, character::Char)
+    cache.seen += 1
+    cache.seen < 8 && return writefolded!(output, nothing, character)
+    # Titlecase characters are neither lowercase nor uppercase, but have lowercase mappings.
+    if islowercase(character) || isuppercase(character) || lowercase(character) != character
+        folded = get!(cache.values, character) do
+            Unicode.normalize(string(character); casefold=true, compose=false)
+        end
+        return write(output, folded)
+    end
+    write(output, character)
 end
 
 function Base.occursin(pattern::FoldedPattern, line::AbstractString)
@@ -349,6 +379,65 @@ selectglob(filter::ExcludedGlob, target) = !selectglob(filter.filter, target)
 whitelistglob(::Union{Nothing, ExcludedGlob}, target) = false
 whitelistglob(filter::GlobFilter, target) = selectglob(filter, target)
 
+function decoded(bytes)
+    text = String(copy(bytes))
+    isvalid(text) && return text
+    out = IOBuffer()
+    i = 1
+    while i <= length(bytes)
+        b = bytes[i]
+        size = b < 0x80 ? 1 : 0xc2 <= b <= 0xdf ? 2 : 0xe0 <= b <= 0xef ? 3 : 0xf0 <= b <= 0xf4 ? 4 : 0
+        if size == 0
+            print(out, '�')
+            i += 1
+            continue
+        end
+        j = i + 1
+        while j < i + size && j <= length(bytes)
+            c = bytes[j]
+            low = j == i + 1 && b == 0xe0 ? 0xa0 : j == i + 1 && b == 0xf0 ? 0x90 : 0x80
+            high = j == i + 1 && b == 0xed ? 0x9f : j == i + 1 && b == 0xf4 ? 0x8f : 0xbf
+            low <= c <= high || break
+            j += 1
+        end
+        if j == i + size
+            write(out, @view bytes[i:j-1])
+        else
+            print(out, '�')
+        end
+        i = j
+    end
+    String(take!(out))
+end
+
+originallines!(cache, original, raw, rawlines) = originallines!(cache, original, raw, rawlines, cache[])
+originallines!(cache, original, raw, rawlines, cached::Vector) = cached
+function originallines!(cache, original, raw, rawlines, ::Nothing)
+    lines = original === raw && isvalid(raw) ? rawlines : split(replace(decoded(codeunits(original)), "\r\n" => "\n"), '\n'; keepempty=true)
+    cache[] = lines
+    lines
+end
+
+function binaryprefix(bytes, nul)
+    # A binary read is discarded; incomplete lines carry over as the buffer grows.
+    capacity = 65536
+    position = 0
+    consumed = 0
+    while position < nul
+        retained = position - consumed
+        retained == capacity && (capacity *= 3)
+        stop = min(length(bytes), position + capacity - retained)
+        nul <= stop && return consumed
+        lastline = something(findprev(==(0x0a), bytes, stop), 0)
+        lastline > position && (consumed = lastline)
+        position = stop
+    end
+    consumed
+end
+
+binarycontent!(bytes, ::SearchDirectory, nul) = resize!(bytes, binaryprefix(bytes, nul))
+binarycontent!(bytes, ::SearchFile, nul) = replace!(bytes, 0x00 => 0x0a)
+
 function execute(tool::Grep, args)
     root = searchpath(tool, get(args, :path, "."))
     ispath(root) || return ToolFailure("Path not found: $root")
@@ -375,19 +464,27 @@ function execute(tool::Grep, args)
         relative = searchrelative(rootentry, target)
         selectglob(filter, target) || return true
         bytes = read(target)
-        0x00 in bytes && return true
-        text = String(bytes)
-        isvalid(text) || return true
-        isempty(text) && return true
-        lines = split(replace(text, "\r\n" => "\n"), '\n'; keepempty=true)
-        lastmatch = length(lines) - endswith(text, '\n')
+        nul = something(findfirst(==(0x00), bytes), length(bytes) + 1)
+        if nul > length(bytes)
+            raw = String(bytes)
+            originalraw = raw
+        else
+            originalraw = String(copy(bytes))
+            binarycontent!(bytes, rootentry, nul)
+            raw = String(bytes)
+        end
+        isempty(raw) && return true
+        rawlines = split(replace(raw, "\r\n" => "\n"), '\n'; keepempty=true)
+        original_lines = Ref{Union{Nothing,Vector{SubString{String}}}}(nothing)
+        lastmatch = length(rawlines) - endswith(raw, '\n')
         for number in 1:lastmatch
-            line = lines[number]
-            matched = occursin(regex, line)
-            matched || continue
+            line = rawlines[number]
+            occursin(regex, line) || continue
             count += 1
-            for n in max(1, number - context):min(length(lines), number + context)
-                shown = shortline(replace(lines[n], '\r' => ""))
+            displaylines = context > 0 || !isvalid(line) ? originallines!(original_lines, originalraw, raw, rawlines) : rawlines
+            lastline = context > 0 ? min(length(displaylines), number + context) : number
+            for n in max(1, number - context):lastline
+                shown = shortline(replace(get(displaylines, n, ""), '\r' => ""))
                 linenotice!(linenotices, shown)
                 text = linetext(shown)
                 push!(output, n == number ? "$relative:$n: $text" : "$relative-$n- $text")

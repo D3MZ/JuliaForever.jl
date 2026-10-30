@@ -318,15 +318,15 @@ end
 waittask(::Nothing) = nothing
 waittask(task::Task) = wait(task)
 
-continuation!(state, ::Follow) = false
-function continuation!(state, ::Send)
+sendinput!(session, state, mode::Follow) = submitinput!(session, state, mode)
+function sendinput!(session, state, mode::Send)
     buffer = LineEdit.buffer(state)
     if position(buffer) > 0 && buffer.data[position(buffer)] == UInt8('\\')
         LineEdit.edit_backspace(state)
         LineEdit.edit_insert_newline(state, 0)
-        return true
+        return :ok
     end
-    false
+    submitinput!(session, state, mode)
 end
 
 send!(session, state, mode::Submission) = sendcompletion!(session, state, mode, synccompletion!(session, state))
@@ -337,8 +337,7 @@ function sendcompletion!(session, state, ::Send, completion::Completion.Menu)
 end
 sendcompletion!(session, state, ::Send, completion::Union{Completion.FileMenu, Completion.ModelMenu}) = (applycompletion!(session, state, completion); :ok)
 
-function sendinput!(session, state, mode::Submission)
-    continuation!(state, mode) && return :ok
+function submitinput!(session, state, mode::Submission)
     text = String(strip(LineEdit.input_string(state)))
     isempty(text) && return :ok
     session.completion = Completion.DismissedFiles(text, text)
