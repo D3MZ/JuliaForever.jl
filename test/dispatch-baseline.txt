@@ -131,13 +131,11 @@ provider.jl	:denied
 provider.jl	:streaming
 provider.jl	:success
 provider.jl	:success
-scheduler.jl	:(key !== nothing)
 scheduler.jl	:(name === :cancelled)
 scheduler.jl	:(same(record.state["spec"], spec))
 scheduler.jl	:(same(state["checkpoint"], next))
 scheduler.jl	:(typeof(a))
 scheduler.jl	:(typeof(b))
-scheduler.jl	:(view === nothing)
 scheduler.jl	:(view.kind == name(handler))
 scheduler.jl	:cancelled
 scheduler.jl	:success

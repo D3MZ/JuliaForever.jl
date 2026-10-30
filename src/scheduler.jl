@@ -242,15 +242,23 @@ function enqueue!(scheduler::Scheduler, conversation::Integer, handler::Handler,
 end
 
 enqueue!(tx, scheduler, conversation, handler, spec, key, owner, rejected::Rejected) = rejected
-function enqueue!(tx, scheduler, conversation, handler, spec, key, owner, ::Nothing)
-    if key !== nothing
-        for record in scan(scheduler.store, Task; conversation)
-            view = taskview(record)
-            view === nothing && continue
-            view.request == key || continue
-            return same(record.state["spec"], spec) && get(record.state, "owner", nothing) == owner ? record.id : Rejected(:request_conflict)
-        end
-    end
+enqueue!(tx, scheduler, conversation, handler, spec, key, owner, ::Nothing) = enqueuerequest!(tx, conversation, spec, key, owner, findrequest(scheduler, conversation, key, spec, owner))
+
+findrequest(scheduler, conversation, ::Nothing, spec, owner) = nothing
+function findrequest(scheduler, conversation, key::String, spec, owner)
+    records = scan(scheduler.store, Task; conversation)
+    foldl((result, record) -> matchtask(result, record, key, spec, owner), records; init=nothing)
+end
+matchtask(result::Union{Integer, Rejected}, record, key, spec, owner) = result
+matchtask(::Nothing, record, key, spec, owner) = matchview(record, taskview(record), key, spec, owner)
+matchview(record, ::Nothing, key, spec, owner) = nothing
+function matchview(record, view::TaskView, key, spec, owner)
+    view.request == key || return nothing
+    same(record.state["spec"], spec) && get(record.state, "owner", nothing) == owner ? record.id : Rejected(:request_conflict)
+end
+
+enqueuerequest!(tx, conversation, spec, key, owner, result::Union{Integer, Rejected}) = result
+function enqueuerequest!(tx, conversation, spec, key, owner, ::Nothing)
     id = mint!(tx)
     state = Dict("scheduler" => "JuliaForever.Scheduler/1", "spec" => spec, "request" => key, "checkpoint" => spec["initial"], "phase" => 1, "attempts" => 0, "restarts" => 0, "message" => nothing, "status" => "pending", "cancelled" => false, "result" => nothing, "reason" => nothing)
     setowner!(state, owner)
