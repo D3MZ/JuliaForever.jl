@@ -16,7 +16,7 @@ function result(file, bytes)
 end
 
 @testset "MCP image media types normalize against pinned Pi" begin
-    cases = (("static.gif", "IMAGE/GIF", "image/gif"), ("static.gif", " image/gif; name=static.gif ", "image/gif"), ("static.webp", "IMAGE/WEBP; name=inline.webp", "image/webp"), ("pixel.png", "IMAGE/PNG; name=pixel.png", "image/png"), ("pixel.jpg", "image/JPG", "image/jpeg"), ("pixel.jpg", "image/JPEG; name=pixel.jpg", "image/jpeg"))
+    cases = (("animated.gif", "IMAGE/GIF", "image/gif"), ("animated.webp", "IMAGE/WEBP; name=inline.webp", "image/webp"), ("static.gif", "IMAGE/GIF", "image/gif"), ("static.gif", " image/gif; name=static.gif ", "image/gif"), ("static.webp", "IMAGE/WEBP; name=inline.webp", "image/webp"), ("pixel.png", "IMAGE/PNG; name=pixel.png", "image/png"), ("pixel.jpg", "image/JPG", "image/jpeg"), ("pixel.jpg", "image/JPEG; name=pixel.jpg", "image/jpeg"))
     reference = if haskey(ENV, "PI_SOURCE")
         source = ENV["PI_SOURCE"]
         @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
@@ -79,7 +79,7 @@ end
         bytes = read(joinpath(fixtures, file))
         actual = execute(Read(fixtures), (; path=file, offset=9, limit=1))
         remote = result(file, bytes)
-        if file in static
+        if file in (static..., animated...)
             mime = endswith(file, ".gif") ? "image/gif" : "image/webp"
             @test !actual.iserror && actual.text == "Read image file [$mime]"
             @test isequal(actual.image, Image(mime, base64encode(bytes)))
@@ -98,7 +98,7 @@ end
             end
         end
     end
-    for file in static
+    for file in (static..., animated...)
         bytes = read(joinpath(fixtures, file))
         @test result(file, bytes[1:end-5]).iserror
         other = endswith(file, ".gif") ? "image/webp" : "image/gif"
@@ -118,6 +118,13 @@ end
             @test execute(Read(root), (; path=file)).iserror
             @test result(file, bytes).iserror
         end
+        for (file, range) in (("animated.gif", 89:91), ("animated.webp", 158:165))
+            bytes = read(joinpath(fixtures, file))
+            bytes[range] .= 0xff
+            write(joinpath(root, file), bytes)
+            @test execute(Read(root), (; path=file)).iserror
+            @test result(file, bytes).iserror
+        end
         largeframe = read(joinpath(fixtures, "static.gif"))
         largeframe[33:34] .= 0xff
         @test result("corrupt.gif", largeframe).iserror
@@ -131,13 +138,13 @@ end
             @test all(item -> length(item.content) == 1 && item.content[1].type == "image", reference)
         end
     end
-    images = [read(joinpath(fixtures, file)) for file in ("static.gif", "static.webp")]
-    tasks = [Threads.@spawn all(!result(file, images[index]).iserror for _ in 1:50) for (index, file) in enumerate(("static.gif", "static.webp")) for _ in 1:4]
+    images = [read(joinpath(fixtures, file)) for file in ("static.gif", "static.webp", animated...)]
+    tasks = [Threads.@spawn all(!result(file, images[index]).iserror for _ in 1:50) for (index, file) in enumerate(("static.gif", "static.webp", animated...)) for _ in 1:4]
     @test all(fetch, tasks)
 end
 
 @testset "GIF and WebP encoded-size boundary" begin
-    files = ("static.gif", "static.webp")
+    files = ("static.gif", "static.webp", animated...)
     reference = if haskey(ENV, "PI_SOURCE")
         source = ENV["PI_SOURCE"]
         JSON3.read(read(`node $(joinpath(@__DIR__, "image_limits_pi.mjs")) $source $fixtures $files`, String))
@@ -157,8 +164,12 @@ end
             @test execute(Read(root), (; path=file)).iserror
             @test result(file, bytes).iserror
             if !isnothing(reference)
-                @test reference[2index - 1].ok && reference[2index - 1].unchanged
-                @test reference[2index].ok && !reference[2index].unchanged && reference[2index].mime in ("image/png", "image/jpeg")
+                if file == "animated.webp"
+                    @test !reference[2index - 1].ok && !reference[2index].ok
+                else
+                    @test reference[2index - 1].ok && reference[2index - 1].unchanged
+                    @test reference[2index].ok && !reference[2index].unchanged && reference[2index].mime in ("image/png", "image/jpeg")
+                end
             end
         end
     end
@@ -233,13 +244,13 @@ end
         try
             base = "http://$(HTTP.server_addr(server))"
             models = ((:chat, OpenAI(base, "fixture", "synthetic")), (:responses, OpenAIResponses(base, "fixture", "synthetic")), (:anthropic, Anthropic(base, "fixture", "synthetic")), (:google, Google(base, "gemini-3-fixture", "synthetic")))
-            for (file, name, arguments) in (("static.gif", "read", "{\"path\":\"static.gif\"}"), ("static.webp", "mcp_image_webp", "{}")), (api, model) in models
+            for (file, name, arguments) in (("static.gif", "read", "{\"path\":\"static.gif\"}"), ("animated.gif", "read", "{\"path\":\"animated.gif\"}"), ("static.webp", "mcp_image_webp", "{}"), ("animated.webp", "mcp_image_animated_webp", "{}")), (api, model) in models
                 empty!(requests)
                 selection[] = (api, name, arguments)
                 bytes = read(joinpath(fixtures, file))
                 path = joinpath(root, file)
                 write(path, bytes)
-                tool = name == "read" ? Read(root) : MCP.RemoteTool(client, "image_webp", name, "", Dict("type" => "object"))
+                tool = name == "read" ? Read(root) : MCP.RemoteTool(client, name == "mcp_image_webp" ? "image_webp" : "image_animated_webp", name, "", Dict("type" => "object"))
                 historypath = joinpath(root, "$api-$file.sqlite")
                 history = open(H.SQLite, historypath)
                 try
@@ -286,7 +297,7 @@ end
 
 @testset "retained tool images survive compaction and reopen" begin
     mktempdir() do root
-        for file in ("static.gif", "static.webp")
+        for file in ("static.gif", "static.webp", animated...)
             bytes = read(joinpath(fixtures, file))
             imagepath = joinpath(root, file)
             write(imagepath, bytes)
@@ -318,7 +329,7 @@ end
 
 @testset "tool image survives automatic compaction between requests" begin
     mktempdir() do root
-        for file in ("static.gif", "static.webp")
+        for file in ("static.gif", "static.webp", animated...)
             bytes = read(joinpath(fixtures, file))
             write(joinpath(root, file), bytes)
             history = H.Memory()

@@ -116,8 +116,8 @@ while !eof(stdin)
                 [Dict("type" => "text", "text" => "before"), image, Dict("type" => "text", "text" => "after"), Dict("type" => "resource_link", "uri" => "file:///item", "name" => "item")]
             elseif name == "image_multiple"
                 [Dict("type" => "text", "text" => "before"), image, Dict("type" => "text", "text" => "between"), embedded, Dict("type" => "text", "text" => "after")]
-            elseif name == "image_webp"
-                data = base64encode(read(joinpath(@__DIR__, "fixtures", "static.webp")))
+            elseif name in ("image_webp", "image_animated_webp")
+                data = base64encode(read(joinpath(@__DIR__, "fixtures", name == "image_webp" ? "static.webp" : "animated.webp")))
                 [Dict("type" => "resource", "resource" => Dict("uri" => "file:///image.webp", "mimeType" => "image/webp", "blob" => data))]
             elseif name == "image_unsupported"
                 [Dict("type" => "image", "mimeType" => "image/gif", "data" => base64encode("GIF89a"))]
