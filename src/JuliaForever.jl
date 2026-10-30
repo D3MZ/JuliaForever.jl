@@ -149,11 +149,11 @@ function acquire(auth::OpenRouterAuth, info::NamedTuple, model)
     login!(login, code, info, model)
 end
 
-launch(status::Integer, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded) = status
+launch(output, status::Integer, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode) = status
 
-function launch(model::Union{OpenAI, OpenAIResponses, Anthropic, Google}, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
+function launch(output, model::Union{OpenAI, OpenAIResponses, Anthropic, Google}, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, mode)
     tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), PowerShell(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
-    terminal = Terminal(stdout, stderr, [model.key])
+    terminal = Terminal(output, stderr, [model.key], mode)
     registry = plugins(terminal, tools, packages, environments)
     Base.invokelatest(terminal!, terminal, model, registry, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
 end
@@ -213,6 +213,7 @@ function help!()
     println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
     println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --fork PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
     println("Tools: --tools (-t) LIST, --exclude-tools (-xt) LIST, --no-builtin-tools (-nbt), --no-tools (-nt).")
+    println("Output: --mode text|json.")
     println("Use @PATH to include a text file or image in the initial prompt.")
     0
 end
@@ -232,6 +233,7 @@ function (@main)(args)
     baseline = ToolSelection.Defaults()
     rules = ToolSelection.Inherit()
     excluded = Regex[]
+    outputmode = TextMode()
     while !isempty(args)
         if first(args) == "--"
             append!(positional, args)
@@ -241,6 +243,13 @@ function (@main)(args)
         elseif first(args) == "--codemode"
             codemode = true
             args = args[2:end]
+        elseif first(args) == "--mode"
+            if length(args) < 2 || startswith(args[2], "-")
+                println(stderr, "--mode requires text or json.")
+                return 2
+            end
+            outputmode = assignmode(outputmode, terminalmode(args[2]))
+            args = args[3:end]
         elseif first(args) in ("--no-tools", "-nt")
             baseline = ToolSelection.baseline(baseline, ToolSelection.NoTools())
             args = args[2:end]
@@ -338,10 +347,25 @@ function (@main)(args)
         end
     end
     args = positional
-    options = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
-    selectedtools(action, options, rules)
+    options = (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, outputmode, output=stdout)
+    selectedmode(action, options, outputmode)
 end
 
+selectedmode(action, options, ::TerminalMode) = selectedtools(action, options, options.rules)
+function selectedmode(action, options, ::JSONMode)
+    output = Base.fdio(reinterpret(Int32, Base.Libc.dup(Base.RawFD(1))), true)
+    try
+        redirect_stdout(first(Base.unwrapcontext(stderr))) do
+            selectedtools(action, merge(options, (; output)), options.rules)
+        end
+    finally
+        close(output)
+    end
+end
+function selectedmode(action, options, ::InvalidMode)
+    println(stderr, "--mode requires text or json.")
+    2
+end
 selectedtools(action, options, ::ToolSelection.Rule) = selectedprovider(action, options, options.selected)
 function selectedtools(action, options, invalid::ToolSelection.Invalid)
     println(stderr, "--tools: ", invalid.message)
@@ -365,10 +389,11 @@ function loginprovider(options, ::Nothing)
     2
 end
 function launchprovider(options)
-    (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded) = options
-    info = providerinfo(providername(auth, selected))
+    (; auth, selected, requested_model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, outputmode, output) = options
+    name = providername(auth, selected)
+    info = providerinfo(name)
     model = acquire(auth, info, requested_model)
-    launch(model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded)
+    launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, provider(outputmode, name))
 end
 historyaction(::HistoryInspection, options) = inspectrequest!(options.session, options.auth, options.sessionname, options.args)
 historyaction(::HistoryConflict, options) = invalidinspection()
@@ -398,7 +423,7 @@ function initial(extensions)
     cwd = pwd()
     files = Instructions.load(cwd; agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing))
     prompt = context(cwd, Extensions.tools(extensions), files)
-    messages = Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+    messages = Conversation.Message[Conversation.RawMessage(Dict("role" => "system", "content" => prompt))]
     Skills.appendprompt!(messages, Skills.render(Skills.load(cwd)))
     messages
 end
@@ -490,6 +515,10 @@ function starttemplates!(terminal, agent, extensions, store, args, sessiondir, f
 end
 
 function starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates::AbstractDict)
+    starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates, terminal.mode)
+end
+
+function starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates::AbstractDict, ::TextMode)
     parsed = FileArguments.parse(args)
     startfiles!(terminal, agent, extensions, store, sessiondir, templates, parsed.messages, parsed.files)
 end
@@ -564,5 +593,7 @@ end
 readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, ::Nothing) = (agent, history, run!(terminal, agent, Prompts.expand(line, templates), extensions))
 readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, ::ForkCommand) = forkcommand!(terminal, agent, history, input, sessiondir, extensions, text -> Prompts.expand(text, templates))
 readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, command::TerminalCommand) = command!(command, terminal, agent, history, input, sessiondir, extensions)
+
+include("live_json.jl")
 
 end

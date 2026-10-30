@@ -3,6 +3,7 @@ module Skills
 import YAML
 using ..Prompts: frontmatter
 import ..JuliaForever: FileRule, ignored, rules
+import ..Conversation
 
 struct Automatic end
 struct Explicit end
@@ -155,5 +156,6 @@ available!(available, skill, ::Explicit) = nothing
 
 appendprompt!(messages, ::Nothing) = nothing
 appendprompt!(messages, content::AbstractString) = push!(messages, Dict("role" => "system", "content" => content))
+appendprompt!(messages::Vector{Conversation.Message}, content::AbstractString) = push!(messages, Conversation.SkillContext(String(content)))
 
 end

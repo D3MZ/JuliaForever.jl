@@ -2,6 +2,7 @@ abstract type TerminalCommand end
 struct TreeCommand <: TerminalCommand end
 struct ResumeCommand <: TerminalCommand end
 struct CompactCommand <: TerminalCommand end
+struct ReloadCommand <: TerminalCommand end
 struct NewCommand <: TerminalCommand end
 struct CloneCommand <: TerminalCommand end
 struct ForkCommand <: TerminalCommand end
@@ -11,7 +12,7 @@ struct SetName <: TerminalCommand
     name::String
 end
 
-const terminalcommands = Dict{String, TerminalCommand}("/compact" => CompactCommand(), "/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand(), "/clone" => CloneCommand(), "/fork" => ForkCommand(), "/exit" => ExitCommand())
+const terminalcommands = Dict{String, TerminalCommand}("/compact" => CompactCommand(), "/reload" => ReloadCommand(), "/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand(), "/clone" => CloneCommand(), "/fork" => ForkCommand(), "/exit" => ExitCommand())
 const namepattern = r"\A/name(?: +([\s\S]*))?\z"
 terminalcommand(text) = terminalcommand(get(terminalcommands, text, nothing), text)
 terminalcommand(command::TerminalCommand, text) = command
@@ -19,6 +20,8 @@ terminalcommand(::Nothing, text) = namecommand(match(namepattern, text))
 namecommand(::Nothing) = nothing
 namecommand(found::RegexMatch) = namecommand(Conversation.sessionname(something(found[1], "")))
 namecommand(name::String) = isempty(name) ? ShowName() : SetName(name)
+
+command!(::ReloadCommand, terminal, agent, history, input, directory, snapshot) = reload!(terminal, agent, history, () -> Skills.render(Skills.load(pwd())))
 
 command!(::CompactCommand, terminal, agent, history, input, directory, snapshot) = (agent, history, compactresult!(terminal, compact!(agent)))
 
@@ -29,6 +32,120 @@ function compactresult!(terminal, summary::AbstractString)
 end
 
 compactresult!(terminal, result) = result!(terminal, result)
+
+struct ReloadPlan
+    revision::Int
+    original::Vector{Dict{String, Any}}
+    messages::Vector{Conversation.Message}
+end
+
+function reload!(terminal, agent, history, load)
+    reloadstart!(terminal, agent, history, load, startturn!(agent))
+end
+
+function reloadstart!(terminal, agent, history, load, ::Nothing)
+    println(terminal.diagnostics, "Wait for the current response to finish before reloading.")
+    flush(terminal.diagnostics)
+    agent, history, 0
+end
+
+function reloadstart!(terminal, agent, history, load, ::Running)
+    try
+        plan = lock(agent.lock) do
+            reloadplan(terminal, agent, history, sourcecheck!(terminal, agent, history, agent.fault))
+        end
+        reloadload!(terminal, agent, history, load, plan)
+    finally
+        finish!(agent)
+    end
+end
+
+reloadplan(terminal, agent, history, blocked::Union{PendingInputs, History.Rejected}) = blocked
+reloadplan(terminal, agent, history, ::Nothing) = reloadplan(agent, History.ready(agent.state))
+reloadplan(agent, rejected::History.Rejected) = rejected
+function reloadplan(agent, ::Nothing)
+    messages = agent.state.messages
+    projected = Dict{String, Any}[convert(Dict{String, Any}, message) for message in messages]
+    Kernel.same(projected, agent.messages) || return History.Rejected(:revision)
+    ReloadPlan(agent.state.revision, deepcopy(agent.messages), messages)
+end
+
+reloadload!(terminal, agent, history, load, blocked::Union{PendingInputs, History.Rejected}) = (agent, history, sourcestatus!(terminal, blocked))
+reloadload!(terminal, agent, history, load, plan::ReloadPlan) = reloadloaded!(terminal, agent, history, plan, attempt(load))
+function reloadloaded!(terminal, agent, history, plan, failure::ToolFailure)
+    println(terminal.diagnostics, "Skill reload failed: ", redact(terminal, failure.text))
+    flush(terminal.diagnostics)
+    agent, history, 1
+end
+function reloadloaded!(terminal, agent, history, plan, content::Union{Nothing, AbstractString})
+    lock(agent.lock) do
+        reloadcommit!(terminal, agent, history, plan, content, agent.turn)
+    end
+end
+reloadcommit!(terminal, agent, history, plan, content, ::Cancelled) = (agent, history, 1)
+reloadcommit!(terminal, agent, history, plan, content, ::Running) = reloadcommit!(terminal, agent, history, plan, content, agent.fault)
+reloadcommit!(terminal, agent, history, plan, content, rejected::History.Rejected) = (agent, history, result!(terminal, rejected))
+function reloadcommit!(terminal, agent, history, plan, content, ::Nothing)
+    agent.state.revision == plan.revision || return (agent, history, result!(terminal, History.Rejected(:revision)))
+    Kernel.same(agent.messages, plan.original) || return (agent, history, result!(terminal, History.Rejected(:revision)))
+    messages = skillmessages(plan.messages, agent.initial.messages, content)
+    projected = Dict{String, Any}[convert(Dict{String, Any}, message) for message in messages]
+    Kernel.same(projected, plan.original) && return reloadsuccess!(terminal, agent, history)
+    result = attempt(() -> transition!(revision -> Conversation.History(revision, messages), agent))
+    reloadtransition!(terminal, agent, history, plan, result)
+end
+reloadtransition!(terminal, agent, history, plan, failure::ToolFailure) = reloadloaded!(terminal, agent, history, plan, failure)
+reloadtransition!(terminal, agent, history, plan, result::Tuple) = reloadresult!(terminal, agent, history, first(result))
+reloadresult!(terminal, agent, history, rejected::History.Rejected) = (agent, history, result!(terminal, rejected))
+function reloadresult!(terminal, agent, history, result::Kernel.Applied)
+    agent.messages = [convert(Dict{String, Any}, message) for message in result.state.messages]
+    reloadsuccess!(terminal, agent, history)
+end
+function reloadsuccess!(terminal, agent, history)
+    println(terminal.diagnostics, "Reloaded skills.")
+    flush(terminal.diagnostics)
+    agent, history, 0
+end
+
+keepmanaged!(messages, ::Conversation.SkillContext) = messages
+keepmanaged!(messages, message::Conversation.Message) = push!(messages, message)
+
+legacy(::Nothing) = nothing
+legacy(::Conversation.Message) = nothing
+legacy(message::Conversation.RawMessage) = legacy(message.value, get(message.value, "content", nothing))
+legacy(value, content) = nothing
+legacy(value, content::AbstractString) = get(skillroles, get(value, "role", nothing), legacynone)(value, content)
+legacynone(value, content) = nothing
+function legacysystem(value, content)
+    startswith(content, "<skills>\nThe following skills provide specialized instructions for specific tasks.\n") || return nothing
+    endswith(content, "\n</available_skills>\n</skills>") || return nothing
+    value
+end
+const skillroles = Dict("system" => legacysystem)
+
+function marklegacy!(messages, initial)
+    original = legacy(get(initial, 2, nothing))
+    marklegacy!(messages, original, get(messages, 2, nothing))
+end
+marklegacy!(messages, original, message) = messages
+function marklegacy!(messages, original::AbstractDict, message::Conversation.RawMessage)
+    Kernel.same(original, message.value) && (messages[2] = Conversation.SkillContext(message.value["content"]))
+    messages
+end
+
+placement(::Nothing) = 1
+placement(::Conversation.Message) = 1
+const skillplacements = Dict("system" => 2)
+placement(message::Conversation.RawMessage) = get(skillplacements, get(message.value, "role", nothing), 1)
+addskill!(messages, ::Nothing) = messages
+function addskill!(messages, content::AbstractString)
+    insert!(messages, placement(get(messages, 1, nothing)), Conversation.SkillContext(String(content)))
+end
+function skillmessages(messages, initial, content)
+    current = marklegacy!(copy(messages), initial)
+    kept = foldl(keepmanaged!, current; init=Conversation.Message[])
+    addskill!(kept, content)
+end
 
 command!(::TreeCommand, terminal, agent, history, input, directory, snapshot) = tree!(terminal, agent, history, input, snapshot)
 command!(::ResumeCommand, terminal, agent, history, input, directory, snapshot) = resume!(terminal, agent, history, input, directory)
@@ -83,7 +200,7 @@ function initial(agent::Agent, ::Nothing)
     cwd = pwd()
     files = Instructions.load(cwd; agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing))
     prompt = context(cwd, collect(values(agent.tools)), files)
-    messages = Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+    messages = Conversation.Message[Conversation.RawMessage(Dict("role" => "system", "content" => prompt))]
     Skills.appendprompt!(messages, Skills.render(Skills.load(cwd)))
     messages
 end
