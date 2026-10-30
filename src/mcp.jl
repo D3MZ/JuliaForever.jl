@@ -827,39 +827,66 @@ end
 cursorparams(::Nothing) = Dict()
 cursorparams(cursor::AbstractString) = Dict("cursor" => cursor)
 
+mutable struct ToolListing{P}
+    client::Client
+    prefix::P
+    found::Vector{RemoteTool}
+    aliases::Set{String}
+    cursors::Set{String}
+    cursor::Union{Nothing, String}
+end
+
 function tools(client::Client; prefix="mcp_")
     haskey(client.server["capabilities"], "tools") || return Failure(:capability, "MCP server did not advertise tools")
-    found = RemoteTool[]
-    aliases = Set{String}()
-    cursors = Set{String}()
-    cursor = nothing
-    for _ in 1:1000
-        params = cursorparams(cursor)
-        page = request(client, "tools/list", params)
-        page isa Failure && return page
-        page isa AbstractDict && get(page, "tools", nothing) isa AbstractVector || return Failure(:protocol, "Invalid MCP tools/list result")
-        for item in page["tools"]
-            item isa AbstractDict && get(item, "name", nothing) isa AbstractString && get(item, "inputSchema", nothing) isa AbstractDict || return Failure(:protocol, "Invalid MCP tool definition")
-            remote = String(item["name"])
-            execution = get(item, "execution", Dict())
-            execution isa AbstractDict || return Failure(:protocol, "Invalid MCP tool execution metadata")
-            support = get(execution, "taskSupport", "forbidden")
-            support in ("forbidden", "optional", "required") || return Failure(:protocol, "Invalid MCP task support")
-            support == "required" && return Failure(:capability, "MCP tool $remote requires unsupported task execution")
-            alias = first(replace(prefix * remote, r"[^A-Za-z0-9_-]" => "_"), 64)
-            alias in aliases && return Failure(:protocol, "MCP tool names collide after adaptation")
-            doc = get(item, "description", remote)
-            doc isa AbstractString || return Failure(:protocol, "Invalid MCP tool description")
-            push!(aliases, alias)
-            push!(found, RemoteTool(client, remote, alias, String(doc), item["inputSchema"]))
-        end
-        haskey(page, "nextCursor") || return found
-        cursor = page["nextCursor"]
-        cursor isa AbstractString || return Failure(:protocol, "Invalid MCP tools/list cursor")
-        cursor in cursors && return Failure(:protocol, "Repeated MCP tools/list cursor")
-        push!(cursors, cursor)
-    end
-    Failure(:protocol, "MCP tools/list exceeded 1000 pages")
+    listing = ToolListing(client, prefix, RemoteTool[], Set{String}(), Set{String}(), nothing)
+    finishtools(foldl(toolstep!, 1:1000; init=listing))
+end
+
+finishtools(listing::ToolListing) = Failure(:protocol, "MCP tools/list exceeded 1000 pages")
+finishtools(result::Union{Failure, Vector{RemoteTool}}) = result
+toolstep!(result::Union{Failure, Vector{RemoteTool}}, page) = result
+function toolstep!(listing::ToolListing, page)
+    response = request(listing.client, "tools/list", cursorparams(listing.cursor))
+    toolpage!(listing, response)
+end
+
+toolpage!(listing, failure::Failure) = failure
+toolpage!(listing, page) = Failure(:protocol, "Invalid MCP tools/list result")
+toolpage!(listing, page::AbstractDict) = toolitems!(listing, get(page, "tools", nothing), get(page, "nextCursor", missing))
+toolitems!(listing, items, cursor) = Failure(:protocol, "Invalid MCP tools/list result")
+toolitems!(listing, items::AbstractVector, cursor) = toolnext!(foldl(toolentry!, items; init=listing), cursor)
+
+toolentry!(failure::Failure, item) = failure
+toolentry!(listing::ToolListing, item) = Failure(:protocol, "Invalid MCP tool definition")
+toolentry!(listing::ToolListing, item::AbstractDict) = tooldefinition!(listing, item, get(item, "name", nothing), get(item, "inputSchema", nothing))
+tooldefinition!(listing, item, remote, parameters) = Failure(:protocol, "Invalid MCP tool definition")
+tooldefinition!(listing, item, remote::AbstractString, parameters::AbstractDict) = toolexecution!(listing, item, String(remote), parameters, get(item, "execution", Dict()))
+toolexecution!(listing, item, remote, parameters, execution) = Failure(:protocol, "Invalid MCP tool execution metadata")
+toolexecution!(listing, item, remote, parameters, execution::AbstractDict) = get(tasksupport, get(execution, "taskSupport", "forbidden"), invalidtasksupport)(listing, item, remote, parameters)
+invalidtasksupport(listing, item, remote, parameters) = Failure(:protocol, "Invalid MCP task support")
+requiredtool(listing, item, remote, parameters) = Failure(:capability, "MCP tool $remote requires unsupported task execution")
+
+function supportedtool!(listing, item, remote, parameters)
+    alias = first(replace(listing.prefix * remote, r"[^A-Za-z0-9_-]" => "_"), 64)
+    alias in listing.aliases && return Failure(:protocol, "MCP tool names collide after adaptation")
+    toolbuild!(listing, remote, alias, parameters, get(item, "description", remote))
+end
+const tasksupport = Dict("forbidden" => supportedtool!, "optional" => supportedtool!, "required" => requiredtool)
+toolbuild!(listing, remote, alias, parameters, doc) = Failure(:protocol, "Invalid MCP tool description")
+function toolbuild!(listing, remote, alias, parameters, doc::AbstractString)
+    push!(listing.aliases, alias)
+    push!(listing.found, RemoteTool(listing.client, remote, alias, String(doc), parameters))
+    listing
+end
+
+toolnext!(failure::Failure, cursor) = failure
+toolnext!(listing::ToolListing, ::Missing) = listing.found
+toolnext!(listing::ToolListing, cursor) = Failure(:protocol, "Invalid MCP tools/list cursor")
+function toolnext!(listing::ToolListing, cursor::AbstractString)
+    cursor in listing.cursors && return Failure(:protocol, "Repeated MCP tools/list cursor")
+    push!(listing.cursors, cursor)
+    listing.cursor = cursor
+    listing
 end
 
 abstract type Listing end
