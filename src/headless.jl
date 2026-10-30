@@ -400,7 +400,7 @@ clone!(session, failure::J.ToolFailure) = Failure(J.redact(session.terminal, fai
 clone!(session, rejected::J.History.Rejected) = Failure(string(rejected.reason))
 function clone!(session, tree::J.History.Tree)
     agent, history, status = J.clone!(session.terminal, session.agent, session.store[], session.directory, tree, nothing)
-    newresult!(session, agent, history, get(newstatuses, status, nothing))
+    newresult!(session, agent, history, get(newstatuses, status, nothing), ResumeBinding())
 end
 
 handle!(session, command::ExportHTML) = export!(session, session.store[], command.path)
