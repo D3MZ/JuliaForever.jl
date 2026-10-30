@@ -13,6 +13,23 @@ struct Model
     images::Bool
 end
 
+struct Registry
+    models::Vector{Model}
+    providers::Dict{String, Any}
+end
+struct InvalidConfig end
+struct ValidConfig end
+
+const validation = Dict(true => ValidConfig(), false => InvalidConfig())
+check(value::Bool) = validation[value]
+combine() = ValidConfig()
+combine(::InvalidConfig, rest...) = InvalidConfig()
+combine(::ValidConfig, rest...) = combine(rest...)
+
+Base.show(io::IO, ::Registry) = print(io, "Model registry ([redacted])")
+StructTypes.StructType(::Type{Registry}) = StructTypes.CustomStruct()
+StructTypes.lower(registry::Registry) = (; models=registry.models, providers="[redacted]")
+
 Model(provider, id, name) = Model(provider, id, name, "", 0, 0, false, false)
 StructTypes.StructType(::Type{Model}) = StructTypes.Struct()
 
@@ -45,6 +62,107 @@ const path = joinpath(@__DIR__, "..", "data", "models.json")
 const punctuation = Dict(char => Char(index) for (index, char) in enumerate(" _-,;:!?.()[]{}@*/&#%`^+<=>|~\$"))
 
 catalog() = JSON3.read(read(path), Vector{Model})
+
+function load(configpath::AbstractString)
+    models = catalog()
+    isfile(configpath) || return Registry(models, Dict{String, Any}())
+    bytes = read(configpath)
+    try
+        config = JSON3.read(bytes, Dict{String, Any})
+        providers = Dict{String, Any}(config["providers"])
+        foldl(applyprovider!, pairs(providers); init=Registry(models, providers))
+    catch
+        InvalidConfig()
+    end
+end
+
+catalog(configpath::AbstractString) = catalog(load(configpath))
+catalog(registry::Registry) = registry.models
+catalog(invalid::InvalidConfig) = invalid
+
+applyprovider!(invalid::InvalidConfig, pair) = invalid
+function applyprovider!(registry::Registry, pair)
+    name, settings = pair
+    applyprovider!(registry, name, settings, validprovider(name, settings, registry.models))
+end
+applyprovider!(registry, name, settings, invalid::InvalidConfig) = invalid
+function applyprovider!(registry, name, settings, ::ValidConfig)
+    overlay!(registry.models, name, settings)
+    registry
+end
+
+validprovider(name, settings, models) = InvalidConfig()
+function validprovider(name, settings::AbstractDict, models)
+    inherited = any(model -> model.provider == name, models)
+    definitions = foldl((result, model) -> combine(result, validdefinition(model, settings, inherited)), get(settings, "models", []); init=ValidConfig())
+    overrides = foldl((result, model) -> combine(result, validmodel(model)), values(get(settings, "modelOverrides", Dict())); init=ValidConfig())
+    combine(validauth(get(settings, "authHeader", nothing)), definitions, overrides)
+end
+validauth(::Nothing) = ValidConfig()
+validauth(::Bool) = ValidConfig()
+validauth(value) = InvalidConfig()
+validdefinition(model, settings, inherited) = InvalidConfig()
+function validdefinition(model::AbstractDict, settings, inherited)
+    combine(validid(get(model, "id", nothing)), validmodel(model), validroute(get(model, "api", get(settings, "api", nothing)), inherited), validroute(get(model, "baseUrl", get(settings, "baseUrl", nothing)), inherited))
+end
+validid(value) = InvalidConfig()
+validid(value::AbstractString) = check(!isempty(value))
+validroute(::Nothing, inherited) = check(inherited)
+validroute(value::AbstractString, inherited) = check(!isempty(value))
+validroute(value, inherited) = InvalidConfig()
+validmodel(model) = InvalidConfig()
+function validmodel(model::AbstractDict)
+    combine(validtokens(get(model, "contextWindow", nothing)), validtokens(get(model, "maxTokens", nothing)), validinput(get(model, "input", nothing)))
+end
+validtokens(::Nothing) = ValidConfig()
+validtokens(::Bool) = InvalidConfig()
+validtokens(value::Integer) = check(value > 0)
+validtokens(value) = InvalidConfig()
+validinput(::Nothing) = ValidConfig()
+validinput(value::AbstractVector) = check(all(item -> item in ("text", "image"), value))
+validinput(value) = InvalidConfig()
+
+function overlay!(models, provider, settings)
+    for definition in get(settings, "models", [])
+        existing = filter(model -> model.provider == provider, models)
+        index = findfirst(model -> model.provider == provider && model.id == definition["id"], models)
+        defaults = findmodel(model -> model.id == definition["id"], existing)
+        defaults = modeldefaults(defaults, existing, get(definition, "api", get(settings, "api", "")))
+        model = custommodel(provider, definition, settings, defaults)
+        upsert!(models, index, model)
+    end
+    overrides = get(settings, "modelOverrides", Dict())
+    for index in eachindex(models)
+        model = models[index]
+        model.provider == provider || continue
+        models[index] = override(model, get(overrides, model.id, Dict()))
+    end
+    models
+end
+
+modeldefaults(model::Model, existing, api) = model
+function modeldefaults(::Nothing, existing, api::AbstractString)
+    matching = findmodel(model -> model.api == api, existing)
+    modeldefaults(matching, existing)
+end
+modeldefaults(model::Model, existing) = model
+function modeldefaults(::Nothing, existing)
+    modeldefaults(findmodel(model -> model.api == "openai-completions", existing), existing, nothing)
+end
+modeldefaults(::Nothing, existing, ::Nothing) = isempty(existing) ? nothing : first(existing)
+defaultapi(::Nothing) = ""
+defaultapi(model::Model) = model.api
+
+function custommodel(provider, definition, settings, defaults)
+    id = String(definition["id"])
+    Model(String(provider), id, String(get(definition, "name", id)), String(get(definition, "api", get(settings, "api", defaultapi(defaults)))), Int(get(definition, "contextWindow", 128000)), Int(get(definition, "maxTokens", 16384)), Bool(get(definition, "reasoning", false)), "image" in get(definition, "input", ["text"]))
+end
+upsert!(models, ::Nothing, model) = push!(models, model)
+upsert!(models, index::Integer, model) = (models[index] = model)
+function override(model::Model, fields)
+    Model(model.provider, model.id, String(get(fields, "name", model.name)), model.api, Int(get(fields, "contextWindow", model.context)), Int(get(fields, "maxTokens", model.maxoutput)), Bool(get(fields, "reasoning", model.reasoning)), images(fields, model.images))
+end
+images(fields, fallback) = haskey(fields, "input") ? "image" in fields["input"] : fallback
 function collation(text)
     primary = String([get(punctuation, char, char) for char in lowercase(text)])
     case = String([isuppercase(char) ? '1' : '0' for char in text])

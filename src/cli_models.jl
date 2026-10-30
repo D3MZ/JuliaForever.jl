@@ -18,9 +18,20 @@ function usableproviders(env)
     providers
 end
 
-function listmodels!(io, query, env)
-    usable = usableproviders(env)
-    available = filter(model -> model.provider in usable, Models.catalog())
+function usableproviders(env, registry::Models.Registry)
+    providers = usableproviders(env)
+    for (name, settings) in registry.providers
+        delete!(providers, name)
+        addusable!(providers, name, configuredkey(name, settings, providerinfo(name), env))
+    end
+    providers
+end
+
+listmodels!(io, query, env) = listmodels!(io, query, env, modelconfig(env))
+listmodels!(io, query, env, ::Models.InvalidConfig) = invalidmodelconfig()
+function listmodels!(io, query, env, registry::Models.Registry)
+    usable = usableproviders(env, registry)
+    available = filter(model -> model.provider in usable, registry.models)
     Models.list(io, available, query)
     0
 end
@@ -29,11 +40,13 @@ modelconstraint(::APIKeyAuth, selected) = modelconstraint(selected)
 modelconstraint(::OpenRouterAuth, selected) = "openrouter"
 modelconstraint(::Nothing) = nothing
 modelconstraint(selected::AbstractString) = get(modelconstraints, selected, selected)
-resolveprovider(options, ::Nothing) = launchprovider(options)
-function resolveprovider(options, text::AbstractString)
-    usable = usableproviders(ENV)
-    result = Models.resolve(text, Models.catalog(), usable; provider=modelconstraint(options.auth, options.selected))
-    resolveprovider(options, result)
+resolveprovider(options, text::Union{Nothing, AbstractString}) = resolveprovider(options, text, modelconfig(ENV))
+resolveprovider(options, text, ::Models.InvalidConfig) = invalidmodelconfig()
+resolveprovider(options, ::Nothing, registry::Models.Registry) = launchprovider(merge(options, (; modelconfig=registry)))
+function resolveprovider(options, text::AbstractString, registry::Models.Registry)
+    usable = usableproviders(ENV, registry)
+    result = Models.resolve(text, registry.models, usable; provider=modelconstraint(options.auth, options.selected))
+    resolveprovider(merge(options, (; modelconfig=registry)), result)
 end
 
 adapter(model::Models.Model) = get(modeladapters, (model.provider, model.api), model.provider)
