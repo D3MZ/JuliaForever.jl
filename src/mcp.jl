@@ -1061,15 +1061,16 @@ end
 resourceimage(mime, resource::AbstractDict) = nothing
 
 function resourceimage(mime::AbstractString, resource::AbstractDict)
-    startswith(mime, "image/") || return nothing
+    startswith(imagemime(mime), "image/") || return nothing
     (; mime, data=get(resource, "blob", nothing))
 end
 
 image(content) = image(content.mime, content.data)
 image(mime, data) = Failure(:protocol, "Malformed image content")
 
-const imagemimes = Dict("image/png" => MIME"image/png"(), "image/jpeg" => MIME"image/jpeg"(), "image/gif" => MIME"image/gif"(), "image/webp" => MIME"image/webp"())
-image(mime::AbstractString, data::AbstractString) = imageinput(mime, data, get(imagemimes, mime, nothing))
+imagemime(mime) = lowercase(strip(first(split(mime, ';'; limit=2))))
+const imagemimes = Dict("image/png" => MIME"image/png"(), "image/jpeg" => MIME"image/jpeg"(), "image/jpg" => MIME"image/jpeg"(), "image/gif" => MIME"image/gif"(), "image/webp" => MIME"image/webp"())
+image(mime::AbstractString, data::AbstractString) = imageinput(mime, data, get(imagemimes, imagemime(mime), nothing))
 imageinput(mime, data, ::Nothing) = Failure(:capability, "Image MIME type $mime is not supported")
 function imageinput(mime, data, format::MIME)
     limit = readlimit(format)
@@ -1081,14 +1082,13 @@ function imageinput(mime, data, format::MIME)
     end
     base64encode(bytes) == data || return Failure(:protocol, "Invalid image base64")
     length(bytes) <= limit || return Failure(:capability, limitmessage(format))
-    image(mime, data, bytes, imageformat(bytes))
+    image(mime, data, bytes, imageformat(bytes), format)
 end
 
-image(mime, data, bytes, ::MIME) = Failure(:protocol, "Mismatched image data for $mime")
+image(mime, data, bytes, ::MIME, ::MIME) = Failure(:protocol, "Mismatched image data for $mime")
 
-function image(mime, data, bytes, format::Union{MIME"image/png", MIME"image/jpeg", MIME"image/gif", MIME"image/webp"})
-    mime == string(format) || return Failure(:protocol, "Mismatched image data for $mime")
-    image(mime, data, imageproblem(format, bytes))
+function image(mime, data, bytes, format::T, ::T) where {T<:Union{MIME"image/png", MIME"image/jpeg", MIME"image/gif", MIME"image/webp"}}
+    image(string(format), data, imageproblem(format, bytes))
 end
 
 image(mime, data, ::Nothing) = Image(mime, data)

@@ -15,6 +15,30 @@ function result(file, bytes)
     MCP.toolresult(Dict("content" => [Dict("type" => "image", "mimeType" => mime, "data" => base64encode(bytes))]))
 end
 
+@testset "MCP image media types normalize against pinned Pi" begin
+    cases = (("static.gif", "IMAGE/GIF", "image/gif"), ("static.gif", " image/gif; name=static.gif ", "image/gif"), ("static.webp", "IMAGE/WEBP; name=inline.webp", "image/webp"), ("pixel.png", "IMAGE/PNG; name=pixel.png", "image/png"), ("pixel.jpg", "image/JPG", "image/jpeg"), ("pixel.jpg", "image/JPEG; name=pixel.jpg", "image/jpeg"))
+    reference = if haskey(ENV, "PI_SOURCE")
+        source = ENV["PI_SOURCE"]
+        @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
+        JSON3.read(read(`node --conditions=source --experimental-strip-types $(joinpath(@__DIR__, "image_mime_pi.mjs")) $source $fixtures`, String))
+    else
+        nothing
+    end
+    for (index, (file, mime, canonical)) in enumerate(cases)
+        data = base64encode(read(joinpath(fixtures, file)))
+        value = MCP.toolresult(Dict("content" => [Dict("type" => "image", "mimeType" => mime, "data" => data)]))
+        @test !value.iserror && isequal(value.image, Image(canonical, data))
+        embedded = MCP.toolresult(Dict("content" => [Dict("type" => "resource", "resource" => Dict("uri" => "file:///image", "mimeType" => mime, "blob" => data))]))
+        @test !embedded.iserror && isequal(embedded.image, Image(canonical, data))
+        isnothing(reference) || @test reference[index].mime == canonical && reference[index].unchanged
+    end
+    for (file, mime) in (("static.gif", "IMAGE/WEBP; name=static.gif"), ("pixel.jpg", "IMAGE/PNG; name=pixel.jpg"))
+        data = base64encode(read(joinpath(fixtures, file)))
+        value = MCP.toolresult(Dict("content" => [Dict("type" => "image", "mimeType" => mime, "data" => data)]))
+        @test value.iserror && isnothing(value.image) && occursin("Mismatched image data", value.text)
+    end
+end
+
 @testset "bounded GIF and WebP tool results" begin
     files = (static..., animated..., wide...)
     reference = if haskey(ENV, "PI_SOURCE")
