@@ -9,9 +9,6 @@
     @test JuliaForever.timeoutcheck(0) isa ToolFailure
     @test JuliaForever.timeoutcheck(Inf) isa ToolFailure
     @test JuliaForever.timeoutcheck(2147484) isa ToolFailure
-    @test JuliaForever.windowoptions(nothing, nothing) === nothing
-    @test occursin("Timeout", JuliaForever.windowoptions(1, ShellCancellation()).text)
-    @test occursin("Cancellation", JuliaForever.windowoptions(nothing, ShellCancellation()).text)
 end
 
 @testset "shell and directory tools" begin
@@ -62,13 +59,16 @@ end
             end
             @test execute(PowerShell(dir), (; command="Write-Output hello")).iserror
         else
-            @test execute(PowerShell(dir), (; command="Write-Output hello", timeout=1)).iserror
-            @test execute(Bash(dir), (; command="true", timeout=1)).iserror
+            @test replace(execute(PowerShell(dir), (; command="Write-Output hello", timeout=30)).text, "\r\n" => "\n") == "hello\n"
+            if !isnothing(JuliaForever.config(shell))
+                @test execute(shell, (; command="true", timeout=30)) == ToolSuccess("(no output)")
+            end
             @test replace(execute(PowerShell(dir), (; command="Write-Output hello")).text, "\r\n" => "\n") == "hello\n"
         end
     end
 end
 
 include("system_cancel.jl")
+include("system_cancel_windows.jl")
 include("system_agent_cancel.jl")
 include("system_stream.jl")

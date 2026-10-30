@@ -21,12 +21,7 @@ end
 end
 
 @testset "shell cancellation" begin
-    if Sys.iswindows()
-        mktempdir() do dir
-            result = execute(Bash(dir), (; command="echo unexpected"); cancel=JuliaForever.ShellCancellation())
-            @test result == ToolResult("Cancellation is not supported on Windows", true)
-        end
-    else
+    if !Sys.iswindows()
         mktempdir() do dir
             shell = Bash(dir)
             cancel = JuliaForever.ShellCancellation()
