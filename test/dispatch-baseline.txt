@@ -125,7 +125,6 @@ search.jl	:directory
 search.jl	:directory
 search.jl	:directory
 search.jl	:isdirectory
-search.jl	:limited
 search.jl	:matched
 search.jl	:negate
 search.jl	:smartcase
@@ -159,7 +158,6 @@ system.jl	:(code != 0)
 system.jl	:bybytes
 system.jl	:partial
 system.jl	:partial
-system.jl	:reached
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :streamed)

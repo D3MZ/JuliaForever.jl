@@ -339,10 +339,9 @@ function execute(tool::Grep, args)
     directory ? walksearch(visit, root, tool; whitelist) : visit(root, false)
     isempty(output) && return ToolResult("No matches found")
     # Match limits count matches, not context rows.
-    limited = count >= limit
     bounded = head(output)
     notices = String[]
-    limited && push!(notices, "$limit matches limit reached. Use limit=$(limit * 2) for more, or refine pattern")
+    count >= limit && push!(notices, "$limit matches limit reached. Use limit=$(limit * 2) for more, or refine pattern")
     headnotice!(notices, bounded)
     text = headtext(bounded)
     append!(notices, linenotices)

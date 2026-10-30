@@ -457,27 +457,38 @@ function head(lines)
     join(output, '\n')
 end
 
+struct LimitedEntries
+    entries::Vector{String}
+end
+
+entrylist(entries::Vector{String}) = entries
+entrylist(entries::LimitedEntries) = entries.entries
+entrynotice!(notices, ::Vector{String}, limit) = nothing
+entrynotice!(notices, ::LimitedEntries, limit) = push!(notices, "$limit entries limit reached. Use limit=$(limit * 2) for more")
+
+function listentries(entries, directory, limit)
+    results = String[]
+    for entry in entries
+        length(results) >= limit && return LimitedEntries(results)
+        target = joinpath(directory, entry)
+        ispath(target) || continue
+        push!(results, entry * (isdir(target) ? "/" : ""))
+    end
+    results
+end
+
 function execute(tool::Ls, args)
     directory = path(tool, get(args, :path, "."))
     !ispath(directory) && return ToolFailure("Path not found: $directory")
     !isdir(directory) && return ToolFailure("Not a directory: $directory")
     entries = sort!(readdir(directory); by=lowercase)
     limit = get(args, :limit, 500)
-    results = String[]
-    reached = false
-    for entry in entries
-        if length(results) >= limit
-            reached = true
-            break
-        end
-        target = joinpath(directory, entry)
-        ispath(target) || continue
-        push!(results, entry * (isdir(target) ? "/" : ""))
-    end
+    result = listentries(entries, directory, limit)
+    results = entrylist(result)
     isempty(results) && return ToolResult("(empty directory)")
     bounded = head(results)
     notices = String[]
-    reached && push!(notices, "$limit entries limit reached. Use limit=$(limit * 2) for more")
+    entrynotice!(notices, result, limit)
     headnotice!(notices, bounded)
     output = headtext(bounded)
     !isempty(notices) && (output *= "\n\n[$(join(notices, ". "))]")
