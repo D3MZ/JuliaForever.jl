@@ -5,11 +5,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      JULIA_DEPOT_PATH: ${{ runner.temp }}/julia-depot
       JULIA_NUM_THREADS: 4
-      PI_SOURCE: ${{ runner.temp }}/pi-source
       PI_OFFLINE: '1'
-      PI_CODING_AGENT_DIR: ${{ runner.temp }}/pi-agent
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
@@ -20,6 +17,10 @@ jobs:
           node-version: '25'
       - run: sudo apt-get update && sudo apt-get install -y ripgrep fd-find
       - run: |
+          echo "JULIA_DEPOT_PATH=$RUNNER_TEMP/julia-depot" >> "$GITHUB_ENV"
+          echo "PI_SOURCE=$RUNNER_TEMP/pi-source" >> "$GITHUB_ENV"
+          echo "PI_CODING_AGENT_DIR=$RUNNER_TEMP/pi-agent" >> "$GITHUB_ENV"
+          PI_SOURCE="$RUNNER_TEMP/pi-source"
           git clone --filter=blob:none https://github.com/earendil-works/pi.git "$PI_SOURCE"
           git -C "$PI_SOURCE" checkout --detach e7a0df27c09d11bf4161d3605246cbf57a129cb2
           npm install --prefix "$RUNNER_TEMP/pi-deps" --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.4.0
