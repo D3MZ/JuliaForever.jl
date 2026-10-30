@@ -100,11 +100,24 @@ summary{cursor:pointer;font-weight:600}[hidden]{display:none!important}output{mi
 .markdown p{margin:.5rem 0}.markdown code{font-family:ui-monospace,monospace}.markdown pre{background:#f4f4f4;padding:.75rem;overflow:auto}
 .markdown table{border-collapse:collapse}.markdown th,.markdown td{border:1px solid #ddd;padding:.35rem .6rem;text-align:left}
 .markdown blockquote{border-left:3px solid #ddd;margin:.5rem 0;padding-left:.8rem}
+.hljs-comment,.hljs-quote{color:#5f6d76}.hljs-keyword,.hljs-selector-tag,.hljs-meta{color:#a21e43}
+.hljs-number,.hljs-literal{color:#075b9b}.hljs-string,.hljs-doctag{color:#087036}
+.hljs-title,.hljs-section,.hljs-name{color:#7343a1}.hljs-type,.hljs-built_in{color:#875000}
 @media(max-width:36rem){input[type=search]{flex-basis:100%}output{min-width:0}}
 """
 
 const conversationscript = raw"""
 (() => {
+  for (const code of document.querySelectorAll(".markdown pre code")) {
+    const language = code.dataset.language;
+    try {
+      const result = language && hljs.getLanguage(language)
+        ? hljs.highlight(code.textContent, { language })
+        : hljs.highlightAuto(code.textContent);
+      code.innerHTML = result.value;
+      code.classList.add("hljs");
+    } catch { /* Keep the escaped source visible if highlighting fails. */ }
+  }
   const search = document.getElementById("conversation-search");
   const status = document.getElementById("search-status");
   const showTools = document.getElementById("show-tools");
@@ -150,7 +163,8 @@ function conversationhtml(io::IO, messages; title="Julia Forever conversation")
     for message in messages
         conversationmessage(io, get(message, "role", ""), message)
     end
-    print(io, "</main><script>", conversationscript, "</script></body></html>\n")
+    assets = joinpath(@__DIR__, "..", "assets")
+    print(io, "</main><script>/*\n", read(joinpath(assets, "highlight-LICENSE"), String), "\n*/\n", read(joinpath(assets, "highlight.min.js"), String), "\n</script><script>", conversationscript, "</script></body></html>\n")
     nothing
 end
 
