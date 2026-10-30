@@ -428,6 +428,7 @@ function streamedchat!(data)
     nothing
 end
 const chatpayloads = Dict(false => bufferedchat!, true => streamedchat!)
+chatdefinition(provider, tool) = definition(tool)
 
 payload(provider::OpenAI, messages, tools, parameters; streaming::Bool=false) = payload(provider, messages, tools, parameters, chatpayloads[streaming])
 function payload(provider::OpenAI, messages, tools, parameters, configure)
@@ -436,7 +437,7 @@ function payload(provider::OpenAI, messages, tools, parameters, configure)
     data["messages"] = chat(chatmessage.(messages))
     delete!(data, "tools")
     delete!(data, "stream_options")
-    isempty(tools) || (data["tools"] = definition.(collect(values(tools))))
+    isempty(tools) || (data["tools"] = [chatdefinition(provider, tool) for tool in values(tools)])
     configure(data)
     JSON3.write(data)
 end

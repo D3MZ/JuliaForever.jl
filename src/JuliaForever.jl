@@ -3,6 +3,7 @@ module JuliaForever
 using HTTP, JSON3, StructTypes, Unicode, Base64, Random, SHA, REPL
 using Giflib_jll: libgif
 using libwebp_jll: libwebp
+using OrderedCollections: OrderedDict
 
 export Execution, ContextEstimates
 export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, CodeSuccess, CodeFailure, cancel!, codeexecute, Image, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Anthropic, Google, Usage, Completion, Truncated, InvalidResponse, ProviderStatus, ProviderError, UnsupportedImage, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
@@ -36,6 +37,7 @@ include("google.jl")
 include("response_info.jl")
 include("pricing.jl")
 include("chatgpt_plan.jl")
+include("request_context.jl")
 include("sessions.jl")
 include("session_catalog.jl")
 include("execution.jl")

@@ -56,16 +56,20 @@ thinkingupdate(provider, effort, ::DirectRoute) = get(thinkingupdates, effort, r
 
 function input(messages)
     items = Any[]
-    foreach(message -> input!(items, get(inputtypes, message["role"], nothing), message), messages)
+    foreach(message -> inputcontext!(items, message), messages)
     items
 end
 input(messages, ::Nothing) = input(messages)
 function input(messages, update::ResponseThinking)
     items = Any[]
-    foreach(message -> input!(items, get(inputtypes, message["role"], nothing), message, update), messages)
+    foreach(message -> inputcontext!(items, message, update), messages)
     responseupdate!(items, update.effort)
     items
 end
+inputcontext!(items, message) = input!(items, get(inputtypes, message["role"], nothing), message)
+inputcontext!(items, message, update) = input!(items, get(inputtypes, message["role"], nothing), message, update)
+inputcontext!(items, message::ResponseContextUpdate) = append!(items, message.items)
+inputcontext!(items, message::ResponseContextUpdate, update) = append!(items, message.items)
 input!(items, type, message, update::ResponseThinking) = input!(items, type, message)
 function input!(items, ::Type{Conversation.Assistant}, message, update::ResponseThinking)
     output = Any[]
@@ -112,6 +116,11 @@ applythinking!(data, effort::AbstractString) = get(reasoningwriters, effort, sum
 applythinking!(data, effort, ::Nothing) = applythinking!(data, effort)
 applythinking!(data, effort, ::ResponseThinking) = (data["reasoning"] = Dict("effort" => "medium", "summary" => "auto"))
 
+responsestool(provider, tool) = merge(Dict("type" => "function", "strict" => false), definition(tool)["function"])
+responsestool(provider, tool::ToolDeclaration) = responsestool(provider, tool, contextstrict(provider))
+responsestool(provider, tool::ToolDeclaration, ::ContextStrictUnsupported) = merge(Dict("type" => "function"), definition(tool)["function"])
+responsestool(provider, tool::ToolDeclaration, ::ContextStrictSupported) = merge(Dict("type" => "function", "strict" => false), definition(tool)["function"])
+
 function payload(provider::OpenAIResponses, messages, tools, parameters; streaming=false)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(parameters))
     data["model"] = provider.model
@@ -126,7 +135,7 @@ function payload(provider::OpenAIResponses, messages, tools, parameters; streami
     delete!(data, "tools")
     delete!(data, "stream_options")
     if !isempty(tools)
-        data["tools"] = [merge(Dict("type" => "function", "strict" => false), definition(tool)["function"]) for tool in values(tools)]
+        data["tools"] = [responsestool(provider, tool) for tool in values(tools)]
     end
     JSON3.write(data)
 end
