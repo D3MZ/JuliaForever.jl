@@ -110,9 +110,6 @@ sessions.jl	:(name === :terminated)
 sqlite_history.jl	:(formaterror((last(exceptions)).exception))
 sqlite_history.jl	:(mode in ("delete", "truncate", "persist", "wal"))
 system.jl	:(code != 0)
-system.jl	:bybytes
-system.jl	:partial
-system.jl	:partial
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :streamed)

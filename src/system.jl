@@ -215,6 +215,54 @@ struct ShellTail
     file::Union{Nothing, String}
 end
 
+struct ShellLines
+    lines::Vector{SubString{String}}
+end
+struct ShellBytes
+    lines::Vector{SubString{String}}
+end
+struct ShellFragment
+    line::SubString{String}
+end
+
+function selecttail(pieces)
+    selected = SubString{String}[]
+    used = 0
+    for piece in Iterators.reverse(pieces)
+        length(selected) == 2000 && return ShellLines(selected)
+        needed = ncodeunits(piece) + !isempty(selected)
+        used + needed > 51200 && return tailoverflow(selected, piece)
+        pushfirst!(selected, piece)
+        used += needed
+    end
+    ShellLines(selected)
+end
+
+function tailoverflow(selected, piece)
+    isempty(selected) || return ShellBytes(selected)
+    raw = collect(codeunits(piece))
+    start = max(1, length(raw) - 51200 + 1)
+    while start <= length(raw) && raw[start] & 0xc0 == 0x80
+        start += 1
+    end
+    ShellFragment(SubString(String(raw[start:end])))
+end
+
+tailstart(selection::ShellFragment, pieces, offset, preceding) = selection
+function tailstart(selection::Union{ShellLines, ShellBytes}, pieces, offset, preceding)
+    if offset > 0 && preceding != 0x0a && length(selection.lines) == length(pieces)
+        popfirst!(selection.lines)
+        return ShellBytes(selection.lines)
+    end
+    selection
+end
+tailtext(selection::Union{ShellLines, ShellBytes}) = join(selection.lines, '\n')
+tailtext(selection::ShellFragment) = String(selection.line)
+tailnotice(selection::ShellFragment, output, lines, lastsize, file) = "Showing last $(sizeformat(ncodeunits(output))) of line $lines (line is $(sizeformat(lastsize))). Full output: $file"
+tailnotice(selection::ShellLines, output, lines, lastsize, file) = tailnotice(selection.lines, lines, "", file)
+tailnotice(selection::ShellBytes, output, lines, lastsize, file) = tailnotice(selection.lines, lines, length(selection.lines) < 2000 ? " (50.0KB limit)" : "", file)
+tailnotice(selected, lines, limit, file) = "Showing lines $(lines - length(selected) + 1)-$lines of $lines$limit. Full output: $file"
+
 function tail(io, file, bytes, lines, lastsize)
     if bytes <= 51200 && lines <= 2000
         seekstart(io)
@@ -226,42 +274,9 @@ function tail(io, file, bytes, lines, lastsize)
     data = read(io, bytes - offset)
     !isempty(data) && last(data) == 0x0a && pop!(data)
     pieces = split(String(data), '\n'; keepempty=true)
-    selected = SubString{String}[]
-    used = 0
-    partial = false
-    bybytes = false
-    for piece in Iterators.reverse(pieces)
-        length(selected) == 2000 && break
-        needed = ncodeunits(piece) + !isempty(selected)
-        if used + needed > 51200
-            bybytes = true
-            if isempty(selected)
-                raw = collect(codeunits(piece))
-                start = max(1, length(raw) - 51200 + 1)
-                while start <= length(raw) && raw[start] & 0xc0 == 0x80
-                    start += 1
-                end
-                pushfirst!(selected, SubString(String(raw[start:end])))
-                partial = true
-            end
-            break
-        end
-        pushfirst!(selected, piece)
-        used += needed
-    end
-    # The first fragment from a bounded read may start in the middle of an earlier line.
-    if offset > 0 && preceding != 0x0a && length(selected) == length(pieces) && !partial
-        popfirst!(selected)
-        bybytes = true
-    end
-    output = join(selected, '\n')
-    if partial
-        notice = "Showing last $(sizeformat(ncodeunits(output))) of line $lines (line is $(sizeformat(lastsize))). Full output: $file"
-    else
-        firstline = lines - length(selected) + 1
-        limit = bybytes && length(selected) < 2000 ? " (50.0KB limit)" : ""
-        notice = "Showing lines $firstline-$lines of $lines$limit. Full output: $file"
-    end
+    selection = tailstart(selecttail(pieces), pieces, offset, preceding)
+    output = tailtext(selection)
+    notice = tailnotice(selection, output, lines, lastsize, file)
     ShellTail(output, "\n\n[$notice]", file)
 end
 
