@@ -133,6 +133,10 @@ const conversationscript = raw"""
   const previous = document.getElementById("previous-match");
   const next = document.getElementById("next-match");
   const expand = document.getElementById("expand-tools");
+  const thinking = document.getElementById("toggle-thinking");
+  const thoughts = Array.from(document.querySelectorAll("article details.thinking"));
+  thinking.hidden = thoughts.length === 0;
+  let thinkingExpanded = true;
   const articles = Array.from(document.querySelectorAll("article[data-role]"));
   let matches = [], selected = 0, expanded = false;
   function update(scroll) {
@@ -158,8 +162,14 @@ const conversationscript = raw"""
   });
   expand.addEventListener("click", () => {
     expanded = !expanded;
-    for (const details of document.querySelectorAll("article details")) details.open = expanded;
+    for (const details of document.querySelectorAll("article details.tool-call")) details.open = expanded;
     expand.textContent = expanded ? "Collapse tool calls" : "Expand tool calls";
+  });
+  thinking.addEventListener("click", () => {
+    thinkingExpanded = !thinkingExpanded;
+    for (const details of thoughts) details.open = thinkingExpanded;
+    thinking.setAttribute("aria-pressed", String(thinkingExpanded));
+    thinking.textContent = thinkingExpanded ? "Collapse thinking" : "Expand thinking";
   });
   update(false);
 })();
@@ -168,7 +178,7 @@ const conversationscript = raw"""
 function conversationhtml(io::IO, messages; title="Julia Forever conversation")
     heading = escape(title)
     print(io, "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>", heading, "</title><style>", conversationstyle, "</style></head><body><main><h1>", heading, "</h1>\n")
-    print(io, """<nav aria-label="Conversation controls"><input id="conversation-search" type="search" aria-label="Search conversation" placeholder="Search conversation"><button id="previous-match" type="button" disabled>Previous match</button><button id="next-match" type="button" disabled>Next match</button><output id="search-status" role="status" aria-live="polite"></output><label><input id="show-tools" type="checkbox" checked> Show tool results</label><button id="expand-tools" type="button">Expand tool calls</button></nav>\n""")
+    print(io, """<nav aria-label="Conversation controls"><input id="conversation-search" type="search" aria-label="Search conversation" placeholder="Search conversation"><button id="previous-match" type="button" disabled>Previous match</button><button id="next-match" type="button" disabled>Next match</button><output id="search-status" role="status" aria-live="polite"></output><label><input id="show-tools" type="checkbox" checked> Show tool results</label><button id="toggle-thinking" type="button" aria-pressed="true" hidden>Collapse thinking</button><button id="expand-tools" type="button">Expand tool calls</button></nav>\n""")
     for message in messages
         conversationmessage(io, get(message, "role", ""), message)
     end
@@ -185,6 +195,7 @@ end
 conversationmessage(io, ::Nothing, message, role) = nothing
 function conversationmessage(io, label::AbstractString, message, role)
     print(io, "<article data-role=\"", escape(role), "\"><h2>", escape(label), "</h2>")
+    get(thinkingrenderers, role, nothinking)(io, message)
     conversationcontent(io, role, get(message, "content", nothing))
     foreach(image -> conversationimage(io, image), get(message, "images", []))
     conversationimage(io, get(message, "image", nothing))
@@ -199,6 +210,16 @@ conversationcontent(io, role, text::AbstractString) = get(conversationrenderers,
 conversationcontent(io, role, content) = plaintext(io, JSON3.write(content))
 plaintext(io, text) = print(io, "<pre>", escape(text), "</pre>")
 const conversationrenderers = Dict("user" => markdowncontent, "assistant" => markdowncontent)
+nothinking(io, message) = nothing
+assistantthinking(io, message) = conversationthinking(io, get(message, "reasoning_content", get(message, "reasoning", get(message, "reasoning_text", nothing))))
+conversationthinking(io, value) = nothing
+conversationthinking(io, text::AbstractString) = conversationthinking(io, text, match(r"\S", text))
+conversationthinking(io, text, ::Nothing) = nothing
+function conversationthinking(io, text, ::RegexMatch)
+    print(io, "<details class=\"thinking\" open><summary>Thinking</summary><pre>", escape(text), "</pre></details>")
+    nothing
+end
+const thinkingrenderers = Dict("assistant" => assistantthinking)
 conversationimage(io, image) = nothing
 conversationimage(io, image::AbstractDict) = conversationimage(io, get(image, "mime", nothing), get(image, "data", nothing))
 conversationimage(io, mime, data) = nothing
@@ -212,7 +233,7 @@ function conversationcall(io, call)
     fn = get(call, "function", Dict())
     name = string(get(fn, "name", "tool"))
     arguments = string(get(fn, "arguments", ""))
-    print(io, "<details><summary>", escape(name), "</summary><pre>", escape(arguments), "</pre></details>")
+    print(io, "<details class=\"tool-call\"><summary>", escape(name), "</summary><pre>", escape(arguments), "</pre></details>")
     nothing
 end
 

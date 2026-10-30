@@ -1,14 +1,17 @@
 @testset "repository boundary retains file ignores" begin
-    file1 = JuliaForever.FileRule("first", r"first", false, false)
-    file2 = JuliaForever.FileRule("second", r"second", true, true)
-    git1 = JuliaForever.GitRule("git", r"git", false, false)
-    rules = JuliaForever.IgnoreRule[git1, file1, git1, file2, git1]
-    @test JuliaForever.cleargit!(rules) === rules
-    @test rules == JuliaForever.IgnoreRule[file1, file2]
-    @test JuliaForever.cleargit!(rules) === rules
-    @test rules == JuliaForever.IgnoreRule[file1, file2]
-    onlygit = JuliaForever.IgnoreRule[git1, git1]
-    @test isempty(JuliaForever.cleargit!(onlygit))
+    mktempdir() do dir
+        path = joinpath(dir, "ignore")
+        write(path, "first\n!second/\n")
+        file1, file2 = JuliaForever.rules(path, JuliaForever.FileRule)
+        git1 = first(JuliaForever.rules(path, JuliaForever.GitRule))
+        rules = JuliaForever.IgnoreRule[git1, file1, git1, file2, git1]
+        @test JuliaForever.cleargit!(rules) === rules
+        @test rules == JuliaForever.IgnoreRule[file1, file2]
+        @test JuliaForever.cleargit!(rules) === rules
+        @test rules == JuliaForever.IgnoreRule[file1, file2]
+        onlygit = JuliaForever.IgnoreRule[git1, git1]
+        @test isempty(JuliaForever.cleargit!(onlygit))
+    end
 end
 
 @testset "repository ignore scope dispatch" begin
@@ -37,6 +40,7 @@ function searchfixture(dir)
     write(joinpath(dir, "src", "deep", "sample.spec.ts"), "needle\n")
     write(joinpath(dir, "src", "local.txt"), "needle\n")
     write(joinpath(dir, "other", "local.txt"), "needle\n")
+    write(joinpath(dir, "other", "node_modules"), "")
     write(joinpath(dir, "ignored.txt"), "needle\n")
     write(joinpath(dir, "node_modules", "dep", "file.txt"), "needle\n")
     write(joinpath(dir, "keep.log"), "needle\n")
@@ -62,6 +66,7 @@ end
         finder = Find(dir)
         grepper = Grep(dir)
         @test Set(split(execute(finder, (; pattern="*.txt")).text, '\n')) == Set([".hidden.txt", "binary.txt", "other/local.txt", "root.txt"])
+        @test execute(finder, (; pattern="node_modules")).text == "other/node_modules"
         @test execute(finder, (; pattern="src/**/*.spec.ts")).text == "src/deep/sample.spec.ts"
         @test execute(finder, (; pattern="*.nope")).text == "No files found matching pattern"
         @test execute(finder, (; pattern="*.txt", path="other")).text == "local.txt"

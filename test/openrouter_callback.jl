@@ -62,6 +62,20 @@ end
     end
 end
 
+@testset "OpenRouter callback accepts one concurrent request" begin
+    callback = OpenRouterCallback()
+    try
+        params = HTTP.queryparams(HTTP.URI(authorize(callback).url))
+        address = params["callback_url"]
+        state = HTTP.escapeuri(params["state"])
+        tasks = [Threads.@spawn HTTP.get("$address?code=synthetic&state=$state"; status_exception=false, redirect=false, retry=false).status for _ in 1:8]
+        @test sort!(fetch.(tasks)) == [200, fill(409, 7)...]
+        @test wait(callback; timeout=1) == "synthetic"
+    finally
+        close(callback)
+    end
+end
+
 @testset "OpenRouter callback CLI" begin
     requests = Channel{Any}(2)
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
