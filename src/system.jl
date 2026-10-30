@@ -57,14 +57,19 @@ description(::Bash) = "Execute a bash command, returning combined stdout and std
 description(::PowerShell) = "Execute a PowerShell command, returning combined stdout and stderr. Output is limited to the last 2000 lines or 50KB; the full output is saved when truncated. Timeout is in seconds."
 description(::Ls) = "List directory entries, including dotfiles and directories marked with /."
 
+fallback(value, next) = value
+fallback(::Nothing, next) = next()
+filecandidate(path) = isfile(path) ? path : nothing
+shellconfig(::Nothing, args) = nothing
+shellconfig(executable::AbstractString, args) = (executable, args)
+
 function config(::Bash)
     if Sys.iswindows()
         for base in (get(ENV, "ProgramFiles", ""), get(ENV, "ProgramFiles(x86)", ""))
             candidate = joinpath(base, "Git", "bin", "bash.exe")
             !isempty(base) && isfile(candidate) && return (candidate, ["-c"])
         end
-        executable = Sys.which("bash.exe")
-        return isnothing(executable) ? nothing : (executable, ["-c"])
+        return shellconfig(Sys.which("bash.exe"), ["-c"])
     end
     executable = isfile("/bin/bash") ? "/bin/bash" : something(Sys.which("bash"), "sh")
     (executable, ["-c"])
@@ -72,17 +77,10 @@ end
 
 function config(::PowerShell)
     Sys.iswindows() || return nothing
-    executable = Sys.which("pwsh.exe")
-    if isnothing(executable)
-        candidate = joinpath(get(ENV, "ProgramFiles", ""), "PowerShell", "7", "pwsh.exe")
-        isfile(candidate) && (executable = candidate)
-    end
-    isnothing(executable) && (executable = Sys.which("powershell.exe"))
-    if isnothing(executable)
-        candidate = joinpath(get(ENV, "SystemRoot", ""), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-        isfile(candidate) && (executable = candidate)
-    end
-    isnothing(executable) ? nothing : (executable, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"])
+    executable = fallback(Sys.which("pwsh.exe"), () -> filecandidate(joinpath(get(ENV, "ProgramFiles", ""), "PowerShell", "7", "pwsh.exe")))
+    executable = fallback(executable, () -> Sys.which("powershell.exe"))
+    executable = fallback(executable, () -> filecandidate(joinpath(get(ENV, "SystemRoot", ""), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")))
+    shellconfig(executable, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"])
 end
 
 shellname(::Bash) = "bash"
@@ -244,10 +242,25 @@ end
 
 function execute(tool::Union{Bash, PowerShell}, args; cancel=nothing)
     timeout = get(args, :timeout, nothing)
-    !isnothing(timeout) && (!isfinite(timeout) || timeout <= 0) && return ToolFailure("Invalid timeout: must be a finite number of seconds")
-    !isnothing(timeout) && timeout * 1000 > 2147483647 && return ToolFailure("Invalid timeout: maximum is 2147483.647 seconds")
-    Sys.iswindows() && !isnothing(timeout) && return ToolFailure("Timeout is not supported on Windows")
-    Sys.iswindows() && !isnothing(cancel) && return ToolFailure("Cancellation is not supported on Windows")
+    execute(tool, args, cancel, timeout, timeoutcheck(timeout))
+end
+
+timeoutcheck(::Nothing) = nothing
+function timeoutcheck(timeout)
+    (!isfinite(timeout) || timeout <= 0) && return ToolFailure("Invalid timeout: must be a finite number of seconds")
+    timeout * 1000 > 2147483647 && return ToolFailure("Invalid timeout: maximum is 2147483.647 seconds")
+    nothing
+end
+
+windowsupport(timeout, cancel) = Sys.iswindows() ? windowoptions(timeout, cancel) : nothing
+windowoptions(::Nothing, ::Nothing) = nothing
+windowoptions(::Nothing, cancel) = ToolFailure("Cancellation is not supported on Windows")
+windowoptions(timeout, cancel) = ToolFailure("Timeout is not supported on Windows")
+
+execute(tool::Union{Bash, PowerShell}, args, cancel, timeout, failure::ToolFailure) = failure
+execute(tool::Union{Bash, PowerShell}, args, cancel, timeout, ::Nothing) = shelloptions(tool, args, cancel, timeout, windowsupport(timeout, cancel))
+shelloptions(tool, args, cancel, timeout, failure::ToolFailure) = failure
+function shelloptions(tool, args, cancel, timeout, ::Nothing)
     !isdir(tool.cwd) && return ToolFailure("Working directory does not exist: $(tool.cwd)\nCannot execute $(shellname(tool)) commands.")
     shell(tool, args, cancel, timeout, config(tool))
 end

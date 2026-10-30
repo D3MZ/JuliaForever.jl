@@ -1,3 +1,19 @@
+@testset "shell option dispatch" begin
+    calls = Ref(0)
+    next() = (calls[] += 1; "fallback")
+    @test JuliaForever.fallback("existing", next) == "existing" && calls[] == 0
+    @test JuliaForever.fallback(nothing, next) == "fallback" && calls[] == 1
+    @test JuliaForever.shellconfig(nothing, ["-c"]) === nothing
+    @test JuliaForever.shellconfig("bash", ["-c"]) == ("bash", ["-c"])
+    @test JuliaForever.timeoutcheck(nothing) === nothing
+    @test JuliaForever.timeoutcheck(0) isa ToolFailure
+    @test JuliaForever.timeoutcheck(Inf) isa ToolFailure
+    @test JuliaForever.timeoutcheck(2147484) isa ToolFailure
+    @test JuliaForever.windowoptions(nothing, nothing) === nothing
+    @test occursin("Timeout", JuliaForever.windowoptions(1, ShellCancellation()).text)
+    @test occursin("Cancellation", JuliaForever.windowoptions(nothing, ShellCancellation()).text)
+end
+
 @testset "shell and directory tools" begin
     mktempdir() do dir
         shell = Bash(dir)

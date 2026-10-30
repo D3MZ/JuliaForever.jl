@@ -226,16 +226,7 @@ sqlite_history.jl	:create
 sqlite_history.jl	:create
 sqlite_history.jl	:create
 sqlite_history.jl	:opened
-system.jl	:(isnothing(cancel))
-system.jl	:(isnothing(executable))
-system.jl	:(isnothing(executable))
-system.jl	:(isnothing(executable))
-system.jl	:(isnothing(executable))
-system.jl	:(isnothing(executable))
 system.jl	:(isnothing(shellrun))
-system.jl	:(isnothing(timeout))
-system.jl	:(isnothing(timeout))
-system.jl	:(isnothing(timeout))
 system.jl	:(token.cancelled)
 system.jl	:bybytes
 system.jl	:keep
