@@ -137,6 +137,28 @@ end
             @test failure isa MCP.Failure && failure.kind == :capability && occursin("long_task", failure.message)
             close(required)
         end
+        for (mode, message) in (("badtools", "Invalid MCP tools/list result"), ("baddefinition", "Invalid MCP tool definition"), ("badschema", "Invalid MCP tool definition"), ("badexecution", "Invalid MCP tool execution metadata"), ("badsupport", "Invalid MCP task support"), ("badtypesupport", "Invalid MCP task support"), ("baddescription", "Invalid MCP tool description"))
+            invalid = MCP.connect(mcpserver(mode, marker); timeout=10, grace=0.2)
+            @test invalid isa MCP.Client
+            if invalid isa MCP.Client
+                failure = MCP.tools(invalid)
+                @test failure isa MCP.Failure && failure.kind == :protocol && failure.message == message
+                close(invalid)
+            end
+        end
+        for mode in ("lasttoolpage", "limittools")
+            paged = MCP.connect(mcpserver(mode, marker); timeout=10, grace=0.2)
+            @test paged isa MCP.Client
+            if paged isa MCP.Client
+                result = MCP.tools(paged)
+                if mode == "lasttoolpage"
+                    @test result == MCP.RemoteTool[]
+                else
+                    @test result isa MCP.Failure && result.kind == :protocol && result.message == "MCP tools/list exceeded 1000 pages"
+                end
+                close(paged)
+            end
+        end
         incomplete = MCP.connect(mcpserver("incomplete", marker); timeout=10, grace=0.2)
         @test incomplete isa MCP.Client
         if incomplete isa MCP.Client

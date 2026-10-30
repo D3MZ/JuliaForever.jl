@@ -39,6 +39,9 @@ include("dispatch_checks.jl")
     @test length(dispatchchecks(Meta.parse("f(x) = x isa Int"))) == 1
     @test length(dispatchchecks(Meta.parse("f(x) = x !== nothing"))) == 1
     @test length(dispatchchecks(Meta.parse("f(x) = x === false"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(matches, exclude) = matches != exclude"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(matches, done) = matches == done"))) == 1
+    @test isempty(dispatchchecks(Meta.parse("f(left, right) = left == right")))
     @test length(dispatchchecks(Meta.parse("f(x) = typeof(x) === String"))) == 1
     @test length(dispatchchecks(Meta.parse("f(x) = Base.typeof(x) != Int"))) == 1
     @test isempty(dispatchchecks(Meta.parse("f(x) = typeof(x)")))

@@ -100,7 +100,8 @@ end
                 @test timedwait(() -> istaskdone(run), 5) == :ok
                 result = fetch(run)
                 @test result in (ToolResult("complete"), ToolResult("Command aborted", true), ToolResult("complete\n\nCommand aborted", true), ToolResult("Command timed out after 0.01 seconds", true), ToolResult("complete\n\nCommand timed out after 0.01 seconds", true))
-                @test isempty(cancel.runs)
+                @test execute(shell, (; command="touch unexpected"); cancel) == ToolFailure("Command aborted")
+                @test !isfile(joinpath(dir, "unexpected"))
             end
         end
     end

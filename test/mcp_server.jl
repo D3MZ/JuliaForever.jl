@@ -43,7 +43,12 @@ while !eof(stdin)
             continue
         end
         cursor = get(get(message, "params", Dict()), "cursor", nothing)
-        if mode == "loopcursor"
+        if mode in ("limittools", "lasttoolpage")
+            page = isnothing(cursor) ? 1 : parse(Int, cursor) + 1
+            result = Dict{String, Any}("tools" => [])
+            (mode == "limittools" || page < 1000) && (result["nextCursor"] = string(page))
+            reply(message["id"], result)
+        elseif mode == "loopcursor"
             reply(message["id"], Dict("tools" => [], "nextCursor" => "same"))
         elseif mode == "collisions"
             reply(message["id"], Dict("tools" => [Dict("name" => "a.b", "inputSchema" => Dict("type" => "object")), Dict("name" => "a_b", "inputSchema" => Dict("type" => "object"))]))
@@ -51,6 +56,20 @@ while !eof(stdin)
             reply(message["id"], Dict("tools" => [], "nextCursor" => nothing))
         elseif mode == "taskrequired"
             reply(message["id"], Dict("tools" => [Dict("name" => "long_task", "inputSchema" => Dict("type" => "object"), "execution" => Dict("taskSupport" => "required"))]))
+        elseif mode == "badtools"
+            reply(message["id"], Dict("tools" => "not an array"))
+        elseif mode == "baddefinition"
+            reply(message["id"], Dict("tools" => [Dict("name" => 1, "inputSchema" => Dict())], "nextCursor" => nothing))
+        elseif mode == "badschema"
+            reply(message["id"], Dict("tools" => [Dict("name" => "x", "inputSchema" => "bad")]))
+        elseif mode == "badexecution"
+            reply(message["id"], Dict("tools" => [Dict("name" => "x", "inputSchema" => Dict(), "execution" => 3)]))
+        elseif mode == "badsupport"
+            reply(message["id"], Dict("tools" => [Dict("name" => "x", "inputSchema" => Dict(), "execution" => Dict("taskSupport" => "future"))]))
+        elseif mode == "badtypesupport"
+            reply(message["id"], Dict("tools" => [Dict("name" => "x", "inputSchema" => Dict(), "execution" => Dict("taskSupport" => Dict()))]))
+        elseif mode == "baddescription"
+            reply(message["id"], Dict("tools" => [Dict("name" => "x", "inputSchema" => Dict(), "description" => 3)]))
         elseif isnothing(cursor)
             reply(message["id"], Dict("tools" => [Dict("name" => "alpha", "description" => "First", "inputSchema" => Dict("type" => "object", "properties" => Dict("value" => Dict("type" => "integer"))))], "nextCursor" => "opaque/+="))
         elseif cursor == "opaque/+="
