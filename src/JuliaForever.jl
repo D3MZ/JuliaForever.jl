@@ -1,9 +1,9 @@
 module JuliaForever
 
-using HTTP, JSON3, Unicode, Base64, Random, SHA
+using HTTP, JSON3, StructTypes, Unicode, Base64, Random, SHA, REPL
 
-export Execution
-export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, CodeSuccess, CodeFailure, cancel!, codeexecute, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Anthropic, Google, Usage, Completion, InvalidResponse, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
+export Execution, ContextEstimates
+export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, CodeSuccess, CodeFailure, cancel!, codeexecute, Image, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Anthropic, Google, Usage, Completion, Truncated, InvalidResponse, ProviderStatus, ProviderError, UnsupportedImage, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
 
 include("instructions.jl")
 include("prompts.jl")
@@ -16,6 +16,8 @@ include("durable.jl")
 include("history.jl")
 include("sqlite_history.jl")
 include("agent.jl")
+include("estimates.jl")
+include("extensions.jl")
 include("agent_history.jl")
 include("responses.jl")
 include("anthropic.jl")
@@ -27,6 +29,7 @@ include("execution_kernel.jl")
 include("agent_execution.jl")
 include("logs.jl")
 include("search.jl")
+include("context.jl")
 include("codemode.jl")
 include("terminal.jl")
 include("terminal_editor.jl")
@@ -35,22 +38,172 @@ include("session_terminal.jl")
 include("terminal_live.jl")
 include("mcp.jl")
 
-const credentials = Dict("openai" => ("OPENAI_MODEL", "OPENAI_API_KEY"), "openai-responses" => ("OPENAI_MODEL", "OPENAI_API_KEY"), "openrouter" => ("OPENROUTER_MODEL", "OPENROUTER_API_KEY"), "anthropic" => ("ANTHROPIC_MODEL", "ANTHROPIC_API_KEY"), "google" => ("GEMINI_MODEL", "GEMINI_API_KEY"))
+missingmodel(env, info, ::Nothing) = isempty(strip(get(env, info.model, ""))) ? [info.model] : String[]
+missingmodel(env, info, model::AbstractString) = isempty(strip(model)) ? [info.model] : String[]
 
-function configured(env, login)
-    selected = get(env, "JF_PROVIDER", "openai")
-    required = login ? ("OPENROUTER_MODEL",) : get(credentials, selected, ())
-    missing = filter(name -> !haskey(env, name), required)
+function reportmissing(missing)
     isempty(missing) && return true
     println(stderr, "Set ", join(missing, " and "), ".")
     false
 end
 
+function configured(env, info, model)
+    missing = missingmodel(env, info, model)
+    isempty(get(env, info.key, "")) && push!(missing, info.key)
+    reportmissing(missing)
+end
+
+configuredlogin(env, info, model) = reportmissing(missingmodel(env, info, model))
+
+abstract type Authentication end
+struct APIKeyAuth <: Authentication end
+abstract type OpenRouterAuth <: Authentication end
+struct CodeAuth <: OpenRouterAuth end
+struct CallbackAuth <: OpenRouterAuth end
+
+haslogin(::APIKeyAuth) = false
+haslogin(::OpenRouterAuth) = true
+validprovider(::Nothing) = true
+validprovider(name::AbstractString) = known(providerinfo(name))
+known(::Nothing) = false
+known(::NamedTuple) = true
+compatible(::APIKeyAuth, selected) = true
+compatible(::OpenRouterAuth, ::Nothing) = true
+compatible(::OpenRouterAuth, selected::AbstractString) = selected == "openrouter"
+providername(::APIKeyAuth, ::Nothing) = get(ENV, "JF_PROVIDER", "openai")
+providername(::APIKeyAuth, selected::AbstractString) = selected
+providername(::OpenRouterAuth, selected) = "openrouter"
+
+function authorize(::CodeAuth)
+    login = authorize()
+    println("Open this URL and authorize Julia Forever: ", login.url)
+    print("Authorization code: ")
+    flush(stdout)
+    login, strip(readline(stdin))
+end
+
+function authorize(::CallbackAuth)
+    callback = OpenRouterCallback()
+    try
+        login = authorize(callback)
+        println("Open this URL and authorize Julia Forever: ", login.url)
+        flush(stdout)
+        login, wait(callback)
+    finally
+        close(callback)
+    end
+end
+
+function authenticated(::Nothing, base, model)
+    println(stderr, "OpenRouter did not return an API key.")
+    2
+end
+
+authenticated(failure::InvalidResponse, base, model) = failure!(Terminal(stdout, stderr, String[]), failure)
+authenticated(failure::ProviderStatus, base, model) = failure!(Terminal(stdout, stderr, String[]), failure)
+authenticated(key::AbstractString, base, model) = OpenAI(base, model, key)
+
+function login!(login::OpenRouterLogin, ::Nothing, info, model)
+    println(stderr, "OpenRouter authorization was denied or timed out.")
+    2
+end
+
+function login!(login::OpenRouterLogin, code::AbstractString, info, model)
+    base = get(ENV, info.base, info.url)
+    result = request!(Terminal(stdout, stderr, String[])) do
+        exchange(login, code; base)
+    end
+    result.status == 0 || return result.status
+    authenticated(result.value, base, modelvalue(ENV, info.model, model))
+end
+
+function acquire(::Authentication, ::Nothing, model)
+    println(stderr, "Unknown provider; choose openai, openai-responses, openrouter, anthropic, or google.")
+    2
+end
+
+function acquire(::APIKeyAuth, info::NamedTuple, model)
+    configured(ENV, info, model) || return 2
+    provider(info, ENV, model)
+end
+
+function acquire(auth::OpenRouterAuth, info::NamedTuple, model)
+    configuredlogin(ENV, info, model) || return 2
+    login, code = authorize(auth)
+    login!(login, code, info, model)
+end
+
+launch(status::Integer, packages, environments, codemode, session, sessiondir, args, sessionname) = status
+
+function launch(model::Union{OpenAI, OpenAIResponses, Anthropic, Google}, packages, environments, codemode, session, sessiondir, args, sessionname)
+    tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
+    Sys.iswindows() && push!(tools, PowerShell(pwd()))
+    terminal = Terminal(stdout, stderr, [model.key])
+    registry = plugins(terminal, tools, packages, environments)
+    Base.invokelatest(terminal!, terminal, model, registry, codemode, session, sessiondir, args, sessionname)
+end
+
+pluginfailure!(terminal::Terminal, name, exception::InterruptException) = failure!(terminal, exception)
+
+function pluginfailure!(terminal::Terminal, name, exception)
+    println(terminal.diagnostics, "[plugin] ", redact(terminal, name), ": ", redact(terminal, sprint(showerror, exception)))
+    flush(terminal.diagnostics)
+    2
+end
+
+function pluginfailure!(terminal::Terminal, name, rejected::Extensions.Rejected)
+    println(terminal.diagnostics, "[plugin] ", redact(terminal, name), ": ", rejected.reason, " ", redact(terminal, rejected.name))
+    flush(terminal.diagnostics)
+    2
+end
+
+function plugins(terminal::Terminal, tools, packages, environments)
+    registry = Extensions.Registry()
+    Extensions.register!(registry, gensym(:builtins), Extensions.Plugin(; tools))
+    if !isempty(packages)
+        for environment in reverse(environments)
+            insert!(LOAD_PATH, min(2, length(LOAD_PATH) + 1), abspath(expanduser(environment)))
+        end
+        isempty(environments) || (ENV["JULIA_LOAD_PATH"] = join(Base.load_path(), Sys.iswindows() ? ';' : ':'))
+    end
+    seen = Set{Symbol}()
+    result = registry
+    for name in packages
+        result = plugin!(terminal, result, name, seen)
+    end
+    result
+end
+
+plugin!(terminal, status::Integer, name, seen) = status
+
+function plugin!(terminal, registry::Extensions.Registry, name, seen)
+    id = Symbol(name)
+    id in seen && return pluginfailure!(terminal, name, Extensions.Rejected(:duplicate_plugin, name))
+    push!(seen, id)
+    result = try
+        package = Base.require(Main, id)
+        factory = Base.invokelatest(getproperty, package, :plugin)
+        plugin = Base.invokelatest(factory)
+        Base.invokelatest(Extensions.register!, registry, id, plugin)
+    catch exception
+        return pluginfailure!(terminal, name, exception)
+    end
+    registered(terminal, registry, name, result)
+end
+
+registered(terminal, registry, name, ::Bool) = registry
+registered(terminal, registry, name, result::Extensions.Rejected) = pluginfailure!(terminal, name, result)
+
 function (@main)(args)
     codemode = false
+    packages = String[]
+    environments = String[]
     path = nothing
     reason = nothing
     inspect = false
+    selected = nothing
+    requested_model = nothing
+    auth = APIKeyAuth()
     session = SessionCatalog.New()
     sessiondir = SessionCatalog.directory(ENV)
     sessionname = nothing
@@ -58,6 +211,33 @@ function (@main)(args)
         if first(args) == "--codemode"
             codemode = true
             args = args[2:end]
+        elseif first(args) in ("--provider", "--model")
+            option = first(args)
+            if length(args) < 2 || isempty(strip(args[2])) || startswith(args[2], "--")
+                println(stderr, option, " requires a value.")
+                return 2
+            end
+            if option == "--provider"
+                selected = args[2]
+            else
+                requested_model = args[2]
+            end
+            args = args[3:end]
+        elseif first(args) in ("--login-openrouter", "--login-openrouter-callback")
+            if haslogin(auth)
+                println(stderr, "Select only one OpenRouter login mode.")
+                return 2
+            end
+            auth = first(args) == "--login-openrouter" ? CodeAuth() : CallbackAuth()
+            args = args[2:end]
+        elseif first(args) in ("--plugin", "--plugin-env")
+            option = first(args)
+            if length(args) < 2 || isempty(args[2]) || startswith(args[2], "--")
+                println(stderr, option, " requires a ", option == "--plugin" ? "package name" : "path", ".")
+                return 2
+            end
+            push!(option == "--plugin" ? packages : environments, args[2])
+            args = args[3:end]
         elseif first(args) == "--history"
             if length(args) < 2 || startswith(args[2], "--")
                 println(stderr, "--history requires a path.")
@@ -108,154 +288,175 @@ function (@main)(args)
         end
     end
     if args == ["--help"] || args == ["-h"]
-        println("jf [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [--codemode] [--history PATH] --login-openrouter [prompt] | jf [--codemode] [--history PATH] --login-openrouter-callback [prompt]\nSet OPENAI_API_KEY and OPENAI_MODEL. Set JF_PROVIDER=openai-responses for Responses or JF_PROVIDER=openrouter and OPENROUTER_API_KEY and OPENROUTER_MODEL for OpenRouter; or JF_PROVIDER=anthropic and ANTHROPIC_API_KEY and ANTHROPIC_MODEL for Anthropic; or JF_PROVIDER=google and GEMINI_API_KEY and GEMINI_MODEL for Google. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
+        println("jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt] | jf --history PATH --inspect-history | jf --history PATH --abandon REASON | jf [options] --login-openrouter [prompt] | jf [options] --login-openrouter-callback [prompt]\nProviders: openai, openai-responses, openrouter, anthropic, google. --provider overrides JF_PROVIDER; --model overrides the selected provider's model environment variable. Set the selected provider's API key. Use --plugin PACKAGE and optional --plugin-env PATH to load a trusted native Julia plugin; both options may be repeated. Code mode runs Julia with your permissions. Set JF_INSTRUCTIONS_DIR to include global instructions.")
         println("Sessions: --continue (-c), --resume (-r), --session PATH|ID, --session-dir DIR, --no-session, --name NAME (-n). Set JF_SESSION_DIR to choose the default directory.")
         return 0
     end
+    if !validprovider(selected)
+        println(stderr, "Unknown provider; choose openai, openai-responses, openrouter, anthropic, or google.")
+        return 2
+    end
     if inspect
-        if isnothing(path) || !isnothing(reason) || !isempty(args) || !SessionCatalog.recovery(session) || !recoveryname(sessionname)
+        if isnothing(path) || !isnothing(reason) || haslogin(auth) || !isempty(args) || !SessionCatalog.recovery(session) || !recoveryname(sessionname)
             println(stderr, "--inspect-history requires --history PATH and no prompt or --abandon.")
             return 2
         end
         return inspecthistory!(Terminal(stdout, stderr, String[]), path)
     end
     if !isnothing(reason)
-        if isnothing(path) || !isempty(args) || !SessionCatalog.recovery(session) || !recoveryname(sessionname)
+        if isnothing(path) || haslogin(auth) || !isempty(args) || !SessionCatalog.recovery(session) || !recoveryname(sessionname)
             println(stderr, "--abandon requires --history PATH and no prompt.")
             return 2
         end
         return abandonhistory!(Terminal(stdout, stderr, String[]), path, reason)
     end
-    callback_requested = !isempty(args) && first(args) == "--login-openrouter-callback"
-    login_requested = callback_requested || (!isempty(args) && first(args) == "--login-openrouter")
-    configured(ENV, login_requested) || return 2
-    if login_requested
-        if callback_requested
-            callback = OpenRouterCallback()
-            try
-                login = authorize(callback)
-                println("Open this URL and authorize Julia Forever: ", login.url)
-                flush(stdout)
-                code = wait(callback)
-            finally
-                close(callback)
-            end
-            if isnothing(code)
-                println(stderr, "OpenRouter authorization was denied or timed out.")
-                return 2
-            end
-        else
-            login = authorize()
-            println("Open this URL and authorize Julia Forever: ", login.url)
-            print("Authorization code: ")
-            flush(stdout)
-            code = strip(readline(stdin))
-        end
-        base = get(ENV, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-        result = request!(Terminal(stdout, stderr, String[])) do
-            exchange(login, code; base)
-        end
-        result.status == 0 || return result.status
-        key = result.value
-        key isa InvalidResponse && return failure!(Terminal(stdout, stderr, String[]), key)
-        if isnothing(key)
-            println(stderr, "OpenRouter did not return an API key.")
-            return 2
-        end
-        model = OpenAI(base, ENV["OPENROUTER_MODEL"], key)
-        args = args[2:end]
-    else
-        model = provider()
-    end
-    if isnothing(model)
-        println(stderr, "Unknown JF_PROVIDER; choose openai, openai-responses, openrouter, anthropic, or google.")
+    if !compatible(auth, selected)
+        println(stderr, "OpenRouter login requires --provider openrouter.")
         return 2
     end
-    tools = Tool[Read(pwd()), Write(pwd()), Edit(pwd()), Bash(pwd()), Ls(pwd()), Find(pwd()), Grep(pwd())]
-    Sys.iswindows() && push!(tools, PowerShell(pwd()))
-    codemode && push!(tools, CodeMode(tools))
-    terminal = Terminal(stdout, stderr, [model.key])
-    history = SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr)
-    runsession!(history, terminal, model, tools, args, sessiondir, sessionname)
+    info = providerinfo(providername(auth, selected))
+    model = acquire(auth, info, requested_model)
+    launch(model, packages, environments, codemode, session, sessiondir, args, sessionname)
 end
 
 recoveryname(::Nothing) = true
 recoveryname(::String) = false
-runsession!(::SessionCatalog.Cancelled, terminal, model, tools, args, sessiondir, sessionname) = 0
+terminal!(terminal::Terminal, model, registry::Integer, codemode, session, sessiondir, args, sessionname) = registry
 
-function runsession!(invalid::SessionCatalog.Invalid, terminal, model, tools, args, sessiondir, sessionname)
-    println(terminal.diagnostics, invalid.message)
+function initial(extensions)
+    cwd = pwd()
+    files = Instructions.load(cwd; agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing))
+    prompt = context(cwd, Extensions.tools(extensions), files)
+    Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+end
+
+initial(extensions, ::Nothing) = initial(extensions)
+initial(extensions, snapshot::History.Snapshot) = iszero(snapshot.revision) ? initial(extensions) : Dict{String, Any}[]
+
+selection(result::ToolFailure) = SessionCatalog.Invalid(result.text)
+selection(result) = result
+
+function terminal!(terminal::Terminal, model, registry::Extensions.Registry, codemode, session, sessiondir, args, sessionname)
+    if codemode
+        mode = CodeMode(Extensions.tools(Extensions.snapshot(registry)))
+        result = Extensions.register!(registry, gensym(:codemode), Extensions.Plugin(; tools=(mode,)))
+        return terminal!(terminal, model, registered(terminal, registry, "codemode", result), false, session, sessiondir, args, sessionname)
+    end
+    extensions = Extensions.snapshot(registry)
+    history = selection(attempt(() -> SessionCatalog.choose(session, sessiondir, pwd(), stdin, stderr, text -> redact(terminal, text))))
+    runsession!(history, terminal, model, extensions, args, sessiondir, sessionname)
+end
+
+runsession!(history, terminal, model, extensions, args) = runsession!(history, terminal, model, extensions, args, SessionCatalog.directory(ENV), nothing)
+runsession!(history, terminal, model, extensions, args, sessiondir) = runsession!(history, terminal, model, extensions, args, sessiondir, nothing)
+runsession!(::SessionCatalog.Cancelled, terminal, model, extensions, args, sessiondir, sessionname) = 0
+
+function runsession!(invalid::SessionCatalog.Invalid, terminal, model, extensions, args, sessiondir, sessionname)
+    println(terminal.diagnostics, redact(terminal, invalid.message))
     2
 end
 
 function sessionfault!(terminal, fault, history)
     status = result!(terminal, fault)
-    println(terminal.diagnostics, "History file: ", SessionCatalog.path(history))
+    println(terminal.diagnostics, "History file: ", redact(terminal, SessionCatalog.path(history)))
     flush(terminal.diagnostics)
     status
 end
 
-function interactive!(terminal, agent, history, input::IO, sessiondir, templates)
-    status = 0
-    for line in terminalinput(input, terminal.diagnostics)
-        line == "/exit" && break
-        agent, selected, result = interactive!(terminal, agent, history[], terminalcommand(line), line, input, sessiondir, templates)
-        history[] = selected
-        status = max(status, result)
-    end
-    status
-end
-interactive!(terminal, agent, history, ::Nothing, line, input, sessiondir, templates) = (agent, history, run!(terminal, agent, Prompts.expand(line, templates)))
-interactive!(terminal, agent, history, command::TerminalCommand, line, input, sessiondir, templates) = command!(command, terminal, agent, history, input, sessiondir)
-interactive!(terminal, agent, history, input::Base.TTY, sessiondir, templates) = LiveTerminal.loop!(terminal, agent, history, input, sessiondir, templates)
-finishhistory(::Nothing) = nothing
-finishhistory(history::History.Store) = close(history)
+sessionfault!(terminal, fault, ::Nothing) = result!(terminal, fault)
 
-runsession!(history, terminal, model, tools, args, sessiondir) = runsession!(history, terminal, model, tools, args, sessiondir, nothing)
-runsession!(rejected::History.Rejected, terminal, model, tools, args, sessiondir, sessionname) = result!(terminal, rejected)
+runsession!(rejected::History.Rejected, terminal, model, extensions, args, sessiondir, sessionname) = result!(terminal, rejected)
 
-function runsession!(history, terminal, model, tools, args, sessiondir, sessionname)
-    selected = Ref{Union{Nothing, History.Store}}(history)
+function runsession!(history, terminal, model, extensions, args, sessiondir, sessionname)
+    store = Ref{Union{Nothing, History.Store}}(history)
     try
-        runsession!(sessionsnapshot(history), history, terminal, model, tools, args, sessiondir, selected, sessionname)
+        preparesession!(sessionsnapshot(history), terminal, model, extensions, store, args, sessiondir, sessionname)
     finally
-        finishhistory(selected[])
+        closehistory!(store[])
     end
 end
 
 sessionsnapshot(::Nothing) = nothing
 sessionsnapshot(history::History.Store) = History.snapshot(history)
+preparesession!(rejected::History.Rejected, terminal, model, extensions, store, args, sessiondir, sessionname) = result!(terminal, rejected)
+preparesession!(snapshot, terminal, model, extensions, store, args, sessiondir, sessionname) = startsession!(terminal, model, extensions, store, args, sessiondir, sessionname, attempt(() -> initial(extensions, snapshot)))
 
-runsession!(rejected::History.Rejected, history, terminal, model, tools, args, sessiondir, selected, sessionname) = result!(terminal, rejected)
-function runsession!(snapshot, history, terminal, model, tools, args, sessiondir, selected, sessionname)
-    messages = sessionmessages(snapshot)
-    agent = Agent(model, Dict{String, Tool}(name(tool) => tool for tool in tools), messages; history)
-    sessionagent!(agent, history, terminal, args, sessiondir, selected, sessionname)
+closehistory!(::Nothing) = nothing
+closehistory!(history::History.Store) = close(history)
+
+function startsession!(terminal, model, extensions, store, args, sessiondir, sessionname, failure::ToolFailure)
+    println(terminal.diagnostics, "Failed to initialize project context: ", redact(terminal, failure.text))
+    flush(terminal.diagnostics)
+    1
 end
 
-sessionmessages(::Nothing) = sessionmessages(0)
-sessionmessages(snapshot::History.Snapshot) = sessionmessages(snapshot.revision)
-function sessionmessages(revision::Int)
-    messages = Dict{String, Any}[]
-    revision == 0 || return messages
-    context = Instructions.render(Instructions.load(pwd(); agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing)))
-    sessioncontext!(messages, context)
-    messages
+function startsession!(terminal, model, extensions, store, args, sessiondir, sessionname, messages)
+    agent = Agent(model, extensions, messages; history=store[])
+    startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname)
 end
-sessioncontext!(messages, ::Nothing) = nothing
-sessioncontext!(messages, context::AbstractString) = push!(messages, Dict("role" => "system", "content" => context))
 
-sessionagent!(rejected::History.Rejected, history, terminal, args, sessiondir, selected, sessionname) = result!(terminal, rejected)
-sessionagent!(agent::Agent, history, terminal, args, sessiondir, selected, sessionname) = sessionagent!(agent.fault, agent, history, terminal, args, sessiondir, selected, sessionname)
-sessionagent!(fault::History.Rejected, agent, history, terminal, args, sessiondir, selected, sessionname) = sessionfault!(terminal, fault, history)
-sessionagent!(::Nothing, agent, history, terminal, args, sessiondir, selected, sessionname) = runselected!(terminal, agent, selected, args, sessiondir, startname!(agent, sessionname))
+startagent!(terminal, rejected::History.Rejected, extensions, store, args, sessiondir, sessionname) = result!(terminal, rejected)
+startagent!(terminal, agent::Agent, extensions, store, args, sessiondir, sessionname) = startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, agent.fault)
+startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, fault::History.Rejected) = sessionfault!(terminal, fault, store[])
+function startagent!(terminal, agent, extensions, store, args, sessiondir, sessionname, ::Nothing)
+    startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, checkqueues!(terminal, agent.state, store[]))
+end
+
+startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, ::PendingInputs) = 1
+
+startsession!(terminal, agent, extensions, store, args, sessiondir, sessionname, ::Nothing) = startnamed!(terminal, agent, extensions, store, args, sessiondir, startname!(agent, sessionname))
 startname!(agent, ::Nothing) = nothing
 startname!(agent, name::String) = name!(agent, name)
-runselected!(terminal, agent, history, args, sessiondir, rejected::History.Rejected) = result!(terminal, rejected)
-function runselected!(terminal, agent, history, args, sessiondir, ::Nothing)
-    templates = Prompts.load(pwd())
-    isempty(args) && return interactive!(terminal, agent, history, stdin, sessiondir, templates)
-    run!(terminal, agent, Prompts.expand(join(args, " "), templates))
+startnamed!(terminal, agent, extensions, store, args, sessiondir, rejected::History.Rejected) = result!(terminal, rejected)
+startnamed!(terminal, agent, extensions, store, args, sessiondir, ::Nothing) = starttemplates!(terminal, agent, extensions, store, args, sessiondir, attempt(() -> Prompts.load(pwd())))
+
+function starttemplates!(terminal, agent, extensions, store, args, sessiondir, failure::ToolFailure)
+    println(terminal.diagnostics, "Failed to load prompt templates: ", redact(terminal, failure.text))
+    flush(terminal.diagnostics)
+    1
 end
+
+function starttemplates!(terminal, agent, extensions, store, args, sessiondir, templates::AbstractDict)
+    if isempty(args)
+        return interact!(terminal, agent, extensions, stdin, stderr, store, sessiondir, templates)
+    else
+        return run!(terminal, agent, Prompts.expand(join(args, " "), templates), extensions)
+    end
+end
+
+intro!(output, input) = nothing
+intro!(output, input::Base.TTY) = println(output, "Julia Forever — enter a message, or /exit to quit")
+prompt!(output, input) = nothing
+
+function prompt!(output, input::Base.TTY)
+    print(output, "> ")
+    flush(output)
+end
+
+interact!(terminal, agent, extensions, input, output) = interact!(terminal, agent, extensions, input, output, Ref{Union{Nothing, History.Store}}(agent.history), SessionCatalog.directory(ENV))
+interact!(terminal, agent, extensions, input, output, store, sessiondir) = interact!(terminal, agent, extensions, input, output, store, sessiondir, Dict{String, String}())
+interact!(terminal, agent, extensions, input, output, store, sessiondir, templates) = readloop!(terminal, agent, extensions, input, output, store, sessiondir, templates)
+
+function interact!(terminal, agent, extensions, input::Base.TTY, output::Base.TTY, store, sessiondir, templates)
+    get(ENV, "TERM", "") in ("", "dumb") && return readloop!(terminal, agent, extensions, input, output, store, sessiondir, templates)
+    LiveTerminal.loop!(terminal, agent, extensions, store, input, sessiondir, templates)
+end
+
+function readloop!(terminal, agent, extensions, input, output, store, sessiondir, templates)
+    intro!(output, input)
+    status = 0
+    while true
+        prompt!(output, input)
+        eof(input) && break
+        line = readline(input)
+        line == "/exit" && break
+        agent, store[], result = readcommand!(terminal, agent, extensions, store[], line, input, sessiondir, templates, terminalcommand(line))
+        status = max(status, result)
+    end
+    status
+end
+
+readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, ::Nothing) = (agent, history, run!(terminal, agent, Prompts.expand(line, templates), extensions))
+readcommand!(terminal, agent, extensions, history, line, input, sessiondir, templates, command::TerminalCommand) = command!(command, terminal, agent, history, input, sessiondir, extensions)
 
 end

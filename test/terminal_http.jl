@@ -1,8 +1,9 @@
 using Test, JuliaForever, HTTP, JSON3
 
-function terminal_http(base, prompt; provider="openai")
+function terminal_http(base, prompt; provider="openai", history=nothing, options=nothing)
     project = dirname(@__DIR__)
-    cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever --no-session $prompt`, "JF_PROVIDER" => provider, "OPENAI_BASE_URL" => base, "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic-secret")
+    options = isnothing(options) ? (isnothing(history) ? ["--no-session"] : ["--history", history]) : options
+    cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever $options $prompt`, "JF_PROVIDER" => provider, "OPENAI_BASE_URL" => base, "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic-secret")
     mktempdir() do dir
         output, diagnostics = joinpath.((dir,), ("output", "diagnostics"))
         process = run(pipeline(ignorestatus(cmd); stdout=output, stderr=diagnostics))
@@ -26,6 +27,14 @@ end
         elseif input == "partial"
             data = JSON3.write((; choices=[(; delta=(; content="partial"), finish_reason="stop")]))
             return HTTP.Response(200, ["Content-Type" => "text/event-stream"], "data: $data\n\n")
+        elseif input == "length-incomplete"
+            data = JSON3.write((; choices=[(; delta=(; content="partial"), finish_reason="length")]))
+            return HTTP.Response(200, ["Content-Type" => "text/event-stream"], "data: $data\n\n")
+        elseif input == "length"
+            first = JSON3.write((; choices=[(; delta=(; content="partial"), finish_reason=nothing)]))
+            second = JSON3.write((; choices=[(; delta=(; content=" content"), finish_reason=nothing)]))
+            finish = JSON3.write((; choices=[(; delta=(;), finish_reason="length")]))
+            return HTTP.Response(200, ["Content-Type" => "text/event-stream"], "data: $first\n\ndata: $second\n\ndata: $finish\n\ndata: [DONE]\n\n")
         elseif request.target == "/v1/responses"
             delta = JSON3.write((; type="response.output_text.delta", delta="Responses"))
             output = [(; type="message", content=[(; type="output_text", text="Responses")])]
@@ -40,7 +49,17 @@ end
         @test terminal_http(base, "ok") == (; status=0, output="Hello\n", diagnostics="")
         @test terminal_http(base, "ok"; provider="openai-responses") == (; status=0, output="Responses\n", diagnostics="")
         @test terminal_http(base, "partial") == (; status=1, output="partial\n", diagnostics="Response incomplete: the provider stream did not finish\n")
+        @test terminal_http(base, "length-incomplete") == (; status=1, output="partial\n", diagnostics="Response incomplete: the provider stream did not finish\n")
+        expected = (; status=1, output="partial content\n", diagnostics="Response was truncated: the model reached its output token limit.\n")
+        @test terminal_http(base, "length") == expected
+        mktempdir() do dir
+            @test terminal_http(base, "length"; history=joinpath(dir, "history.sqlite")) == expected
+            @test terminal_http(base, "length"; options=["--session-dir", dir]) == expected
+            failed = terminal_http(base, "http"; options=["--session-dir", dir])
+            @test failed == (; status=1, output="", diagnostics="Request failed (HTTP 401).\n")
+        end
         @test terminal_http(base, "http") == (; status=1, output="", diagnostics="Request failed (HTTP 401).\n")
+        @test terminal_http(base, "http"; provider="openai-responses") == (; status=1, output="", diagnostics="Request failed (HTTP 401).\n")
         @test terminal_http(base, "json") == (; status=1, output="", diagnostics="Request failed (invalid provider response).\n")
         invalid = terminal_http(base, "shape")
         @test invalid.status == 1

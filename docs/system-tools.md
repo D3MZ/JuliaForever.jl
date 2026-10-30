@@ -6,6 +6,8 @@ At the agent boundary, unknown tool names, invalid call envelopes or JSON, and o
 
 `Bash`, `PowerShell`, and `Ls` use Julia and the host shell; Pi and Node are used only by optional differential tests. The command runner captures combined stdout and stderr, returns nonzero exit status as an error, stores truncated output in a temporary file, and exposes the last 2,000 lines or 50 KiB. `PowerShell` is available only on Windows, matching Pi's platform boundary.
 
+Direct shell calls accept `on_update`, which receives cumulative `ShellUpdate` snapshots while the command runs. Truncated updates include the retained full-output file path. Agent and terminal event wiring remains separate work.
+
 On Unix, a shell can be cancelled from another Julia task:
 
 ```julia
@@ -21,7 +23,7 @@ The process-group signal covers members that remain in the original group, inclu
 
 On Windows, passing a cancellation token or a timeout returns an explicit unsupported result before starting the command; untimed commands without a token retain their existing behavior. For an in-process `Agent`, `cancel!(agent)` stops active Unix shell calls, including parallel calls, and prevents later calls from starting. It does not interrupt a running provider, other tools, Windows shell calls, or tools run through the separate executor-backed path. Recorded agents use the same in-process shell cancellation after the cancellation transition is persisted. See [native execution](execution.md) for executor cancellation.
 
-The tested Pi cases cover ordinary output, errors, Unix timeout and cancellation, and output truncation. The implementation does not yet provide streaming updates, Pi's structured shell output, custom shells, shell hooks, session metadata, or Windows WSL shell transport. Directory sorting uses Julia's case-insensitive lexical order, which can differ from Pi's locale-aware collation. Advanced file-tool parity and cross-platform verification remain outstanding. Native search and its remaining differences are described in [search-tools.md](search-tools.md).
+The tested Pi cases cover ordinary output, errors, Unix timeout and cancellation, output truncation, and selected streaming updates. The implementation does not yet provide agent or terminal streaming updates, Pi's structured shell output, custom shells, shell hooks, session metadata, or Windows WSL shell transport. Directory sorting uses Julia's case-insensitive lexical order, which can differ from Pi's locale-aware collation. Advanced file-tool parity and cross-platform verification remain outstanding. Native search and its remaining differences are described in [search-tools.md](search-tools.md).
 
 Safe group signalling uses Julia's internal process-handle and I/O lock APIs to prevent PID reuse while signalling. The current tests were run with Julia 1.12.6 on macOS. Compatibility with other Julia versions must be verified; the conditional Windows cases are not evidence of a Windows test run.
 

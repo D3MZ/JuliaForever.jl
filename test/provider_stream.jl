@@ -86,7 +86,7 @@ end
         @test partial.usage === nothing
         failed = JuliaForever.stream(model, [], Dict())
         @test !failed.done
-        @test occursin("capacity", failed.error)
+        @test failed.error isa ProviderError && failed.error.provider == :openai_compatible && failed.error.status == 503
         @test failed.usage === nothing
     finally
         close(server)
@@ -164,8 +164,8 @@ end
         model = OpenAI(base, "test", "synthetic")
         failed = JuliaForever.stream(model, [], Dict())
         @test !failed.done
-        @test occursin("content_filter", failed.error)
-        @test_throws HTTP.StatusError JuliaForever.stream(model, [], Dict())
+        @test failed.error isa ProviderError && failed.error.kind == :content_filter
+        @test JuliaForever.stream(model, [], Dict()).error == ProviderStatus(401)
         @test JuliaForever.exchange(JuliaForever.authorize(), "synthetic-code"; base) === nothing
     finally
         close(server)

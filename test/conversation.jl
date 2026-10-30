@@ -136,6 +136,32 @@ end
     @test third.state.phase == C.Complete
 end
 
+@testset "queued messages retain earlier revisions" begin
+    initial = C.State("snapshots"; automatic=false)
+    first = K.step(initial, C.Steer(0, "steer one")).state
+    second = K.step(first, C.Steer(1, "steer two")).state
+    third = K.step(second, C.Followup(2, "follow one")).state
+    fourth = K.step(third, C.Followup(3, "follow two")).state
+    branch = K.step(first, C.Followup(1, "branch")).state
+
+    @test isempty(initial.steering) && isempty(initial.followups)
+    @test first.steering == ["steer one"] && isempty(first.followups)
+    @test second.steering == ["steer one", "steer two"] && isempty(second.followups)
+    @test third.followups == ["follow one"]
+    @test fourth.followups == ["follow one", "follow two"]
+    @test branch.steering == ["steer one"] && branch.followups == ["branch"]
+    push!(fourth.steering, "outside")
+    empty!(fourth.followups)
+    @test fourth.steering == ["steer one", "steer two"]
+    @test fourth.followups == ["follow one", "follow two"]
+
+    input = K.step(fourth, C.Input(4, "start"))
+    model = K.step(input.state, C.Advance(5))
+    @test [message.content for message in only(model.effects).effect.messages] == ["start", "steer one"]
+    @test model.state.steering == ["steer two"]
+    @test fourth.steering == ["steer one", "steer two"]
+end
+
 @testset "deferred planning and ordered tool messages" begin
     input = K.step(C.State("deferred"; automatic=false), C.Input(0, "start"))
     @test input.state.phase == C.ReadyModel && isempty(input.effects)

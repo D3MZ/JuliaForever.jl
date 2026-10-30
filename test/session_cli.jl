@@ -10,16 +10,167 @@ using Test, JuliaForever, JSON3
     @test occursin("invalid_record", String(take!(diagnostics)))
 end
 
-function session_process(requests, workspace, directory, args; input="", fail=false)
+function session_process(requests, workspace, directory, args; input="", fail=false, key="session-test-secret")
     project = dirname(@__DIR__)
     script = joinpath(@__DIR__, "session_cli_process.jl")
     cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project $script $args`; dir=workspace)
-    cmd = addenv(cmd, "JF_SESSION_REQUESTS" => requests, "JF_SESSION_FAIL" => (fail ? "1" : nothing), "JF_SESSION_DIR" => directory, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "session-test-secret", "JF_INSTRUCTIONS_DIR" => nothing)
+    cmd = addenv(cmd, "JF_SESSION_REQUESTS" => requests, "JF_SESSION_FAIL" => (fail ? "1" : nothing), "JF_SESSION_DIR" => directory, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => key, "JF_INSTRUCTIONS_DIR" => nothing)
     mktempdir() do dir
         stdinpath, output, diagnostics = joinpath.((dir,), ("stdin", "output", "diagnostics"))
         write(stdinpath, input)
         process = run(pipeline(ignorestatus(cmd); stdin=stdinpath, stdout=output, stderr=diagnostics))
         (; status=process.exitcode, output=read(output, String), diagnostics=read(diagnostics, String))
+    end
+end
+
+@testset "session diagnostics redact provider credentials" begin
+    for key in ("session-test-secret", "synthetic" * Char(0x80))
+        mktempdir() do root
+            workspace = joinpath(root, "project")
+            sessions = joinpath(root, "sessions-" * key)
+            requests = joinpath(root, "requests.jsonl")
+            mkpath(workspace)
+            escaped = chop(repr(key); head=1, tail=1)
+            crashed = session_process(requests, workspace, sessions, ["interrupted"]; fail=true, key)
+            @test crashed.status == 17
+            blocked = session_process(requests, workspace, sessions, ["--continue", "not retried"]; key)
+            @test blocked.status == 1 && occursin("History file:", blocked.diagnostics)
+            @test occursin("[redacted]", blocked.diagnostics)
+            @test !occursin(key, blocked.diagnostics) && !occursin(escaped, blocked.diagnostics)
+            selected = session_process(requests, workspace, sessions, ["--session", only(readdir(sessions; join=true)), "not retried"]; key)
+            @test selected.status == 1 && occursin("History file:", selected.diagnostics)
+            @test occursin("[redacted]", selected.diagnostics) && !occursin(key, selected.diagnostics)
+            contextual = chop(repr(key * "a"); head=1, tail=1)
+            invalid = session_process(requests, workspace, sessions, ["--session", joinpath(root, "missing-" * key * "a"), "not sent"]; key)
+            @test invalid.status == 2
+            @test occursin("missing-[redacted]a", invalid.diagnostics)
+            @test !occursin(key, invalid.diagnostics) && !occursin(escaped, invalid.diagnostics)
+            @test !occursin(contextual, invalid.diagnostics)
+        end
+    end
+end
+
+@testset "unreadable session diagnostics redact provider credentials" begin
+    @test_throws MethodError JuliaForever.selection(JuliaForever.attempt(() -> 1 + "synthetic"))
+    Sys.isunix() && mktempdir() do root
+        key = "synthetic" * Char(0x80)
+        workspace = joinpath(root, "project")
+        sessions = joinpath(root, "sessions")
+        requests = joinpath(root, "requests.jsonl")
+        path = joinpath(root, "unreadable-" * key * "a.sqlite")
+        mkpath(workspace)
+        write(path, "synthetic")
+        chmod(path, 0)
+        try
+            result = session_process(requests, workspace, sessions, ["--session", path, "not sent"]; key)
+            @test result.status == 2
+            @test occursin("unreadable-[redacted]a.sqlite", result.diagnostics)
+            @test occursin("permission denied", lowercase(result.diagnostics))
+            @test !occursin(key, result.diagnostics)
+            @test !occursin(chop(repr(key * "a"); head=1, tail=1), result.diagnostics)
+            @test !isfile(requests)
+        finally
+            chmod(path, 0o600)
+        end
+        sessions = joinpath(root, "sessions-" * key * "a")
+        mkpath(sessions)
+        catalog = joinpath(sessions, JuliaForever.SessionCatalog.filename(realpath(workspace), repeat("a", 32)))
+        write(catalog, "synthetic")
+        chmod(catalog, 0)
+        try
+            for option in ("--continue", "--resume")
+                result = session_process(requests, workspace, sessions, [option, "not sent"]; key)
+                @test result.status == 2
+                @test occursin("sessions-[redacted]a", result.diagnostics)
+                @test occursin("permission denied", lowercase(result.diagnostics))
+                @test !occursin(key, result.diagnostics)
+                @test !occursin(chop(repr(key * "a"); head=1, tail=1), result.diagnostics)
+                @test !isfile(requests)
+            end
+        finally
+            chmod(catalog, 0o600)
+        end
+    end
+end
+
+@testset "unwritable deferred session redacts provider credentials" begin
+    Sys.isunix() && mktempdir() do root
+        key = "synthetic" * Char(0x80)
+        workspace = joinpath(root, "project")
+        sessions = joinpath(root, "sessions-" * key * "a")
+        requests = joinpath(root, "requests.jsonl")
+        mkpath.((workspace, sessions))
+        chmod(sessions, 0)
+        try
+            result = session_process(requests, workspace, sessions, ["not sent"]; key)
+            @test result.status == 1
+            @test occursin("sessions-[redacted]a", result.diagnostics)
+            @test occursin("permission denied", lowercase(result.diagnostics))
+            @test !occursin(key, result.diagnostics)
+            @test !occursin(chop(repr(key * "a"); head=1, tail=1), result.diagnostics)
+            @test !isfile(requests)
+        finally
+            chmod(sessions, 0o700)
+        end
+        @test isempty(readdir(sessions))
+    end
+end
+
+@testset "session picker redacts provider credentials" begin
+    mktempdir() do root
+        workspace = joinpath(root, "project")
+        sessions = joinpath(root, "sessions")
+        requests = joinpath(root, "requests.jsonl")
+        key = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+        mkpath(workspace)
+        created = session_process(requests, workspace, sessions, ["before " * key * " after"]; key)
+        @test created.status == 0
+        file = only(readdir(sessions; join=true))
+        project = first(split(basename(file), "--"))
+        mv(file, joinpath(sessions, project * "--" * key * ".sqlite"))
+        longtitle = repeat("z", 96) * key * " tail"
+        @test session_process(requests, workspace, sessions, [longtitle]; key).status == 0
+        picked = session_process(requests, workspace, sessions, ["--resume"]; input="q\n", key)
+        @test picked.status == 0
+        @test occursin("before [redacted] after", picked.diagnostics)
+        @test occursin(repeat("z", 96), picked.diagnostics)
+        @test !occursin(key, picked.diagnostics)
+        titles = [last(split(line, "  "; limit=2)) for line in split(picked.diagnostics, '\n') if startswith(line, "[")]
+        @test all(title -> !occursin(first(key, 4), title), titles)
+        choice = only(match(r"\[(\d+)\].*before \[redacted\] after", picked.diagnostics).captures)
+        resumed = session_process(requests, workspace, sessions, ["--resume", "chosen"]; input=choice * "\n", key)
+        @test resumed.status == 0 && resumed.output == "reply:chosen\n"
+        messages = JSON3.read(last(readlines(requests)))
+        @test [m.content for m in messages if m.role in ("user", "assistant")] == ["before " * key * " after", "reply:before " * key * " after", "chosen"]
+        byid = session_process(requests, workspace, sessions, ["--session", key, "chosen-by-id"]; key)
+        @test byid.status == 0 && byid.output == "reply:chosen-by-id\n"
+    end
+end
+
+@testset "sessions preserve plugin context" begin
+    mktempdir() do root
+        workspace = joinpath(root, "project")
+        sessions = joinpath(root, "sessions")
+        mkpath(workspace)
+        workspace = realpath(workspace)
+        write(joinpath(workspace, "AGENTS.md"), "session fixture instructions")
+        requests = joinpath(root, "requests.jsonl")
+        fixture = joinpath(@__DIR__, "fixtures")
+        started = session_process(requests, workspace, sessions, ["--plugin-env", fixture, "--plugin", "GreetingPlugin", "--codemode", "first"])
+        @test started.status == 0 && started.output == "reply:first\n"
+        messages = JSON3.read(first(readlines(requests)))
+        context = first(messages).content
+        @test occursin("session fixture instructions", context)
+        @test occursin("- greet:", context) && occursin("- codemode:", context)
+        write(joinpath(workspace, "AGENTS.md"), "changed instructions")
+        resumed = session_process(requests, workspace, sessions, ["--continue", "second"])
+        @test resumed.status == 0 && resumed.output == "reply:second\n"
+        messages = JSON3.read(last(readlines(requests)))
+        @test first(messages).content == context
+        @test [m.content for m in messages if m.role in ("user", "assistant")] == ["first", "reply:first", "second"]
+        missing = joinpath(root, "not-opened.sqlite")
+        invalid = session_process(requests, workspace, sessions, ["--history", missing, "--continue", "--inspect-history"])
+        @test invalid.status == 2 && !isfile(missing)
     end
 end
 
@@ -158,5 +309,31 @@ end
         @test ephemeral.status == 0
         @test ephemeral.output == "reply:followup\n"
         @test [m.content for m in last(requests()) if m.role in ("user", "assistant")] == ["alternate", "reply:alternate", "followup"]
+    end
+end
+
+@testset "resume picker preserves diagnostics and current session" begin
+    mktempdir() do root
+        workspace, sessions = joinpath.((root,), ("project", "sessions"))
+        mkpath(workspace)
+        workspace = realpath(workspace)
+        requests = joinpath(root, "requests.jsonl")
+        run(args; input="") = session_process(requests, workspace, sessions, args; input)
+        key = "session-test-secret"
+        @test run(["first " * key]).status == 0
+        first = only(readdir(sessions; join=true))
+        @test run(["second"]).status == 0
+        second = only(filter(!=(first), readdir(sessions; join=true)))
+        choices = JuliaForever.SessionCatalog.list(sessions, workspace)
+        first_index = findfirst(item -> item.path == first, choices)
+        second_index = findfirst(item -> item.path == second, choices)
+        input = "/resume\nq\n/resume\n$second_index\n/resume\n$first_index\nlast\n/exit\n"
+        result = run(["--session", first]; input)
+        @test result.status == 0
+        @test result.output == "reply:last\n"
+        @test occursin("first [redacted]", result.diagnostics)
+        @test !occursin(key, result.diagnostics)
+        last_request = JSON3.read(last(readlines(requests)))
+        @test [message.content for message in last_request if message.role in ("user", "assistant")] == ["first " * key, "reply:first " * key, "last"]
     end
 end

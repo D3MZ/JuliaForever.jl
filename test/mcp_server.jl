@@ -1,4 +1,4 @@
-using JSON3
+using JSON3, Base64
 
 mode = ARGS[1]
 marker = ARGS[2]
@@ -83,6 +83,43 @@ while !eof(stdin)
             reply(message["id"], Dict("content" => [Dict("type" => "text", "text" => "tool failed")], "isError" => true))
         elseif name == "mixed"
             reply(message["id"], Dict("content" => [Dict("type" => "text", "text" => "hello"), Dict("type" => "resource_link", "uri" => "file:///item", "name" => "item")], "structuredContent" => Dict("value" => 3)))
+        elseif startswith(name, "image_")
+            png = read(joinpath(@__DIR__, "fixtures", "pixel.png"))
+            jpeg = read(joinpath(@__DIR__, "fixtures", "pixel.jpg"))
+            image = Dict("type" => "image", "mimeType" => "image/png", "data" => base64encode(png), "_meta" => Dict("fixture" => true))
+            embedded = Dict("type" => "resource", "resource" => Dict("uri" => "file:///pixel.jpg", "mimeType" => "image/jpeg", "blob" => base64encode(jpeg)))
+            blocks = if name == "image_direct" || name == "image_error"
+                [image]
+            elseif name == "image_embedded"
+                [embedded]
+            elseif name == "image_mixed"
+                [Dict("type" => "text", "text" => "before"), image, Dict("type" => "text", "text" => "after"), Dict("type" => "resource_link", "uri" => "file:///item", "name" => "item")]
+            elseif name == "image_multiple"
+                [Dict("type" => "text", "text" => "before"), image, Dict("type" => "text", "text" => "between"), embedded, Dict("type" => "text", "text" => "after")]
+            elseif name == "image_unsupported"
+                [Dict("type" => "image", "mimeType" => "image/gif", "data" => base64encode("GIF89a"))]
+            elseif name == "image_embedded_unsupported"
+                [Dict("type" => "resource", "resource" => Dict("uri" => "file:///item.svg", "mimeType" => "image/svg+xml", "blob" => base64encode("<svg/>")))]
+            elseif name == "image_embedded_missing"
+                [Dict("type" => "resource", "resource" => Dict("uri" => "file:///item.png", "mimeType" => "image/png"))]
+            elseif name == "image_invalid_base64"
+                [Dict("type" => "image", "mimeType" => "image/png", "data" => base64encode(png) * "!")]
+            elseif name == "image_missing"
+                [Dict("type" => "image", "mimeType" => "image/png")]
+            elseif name == "image_mismatch"
+                [Dict("type" => "image", "mimeType" => "image/png", "data" => base64encode(jpeg))]
+            elseif name == "image_animated"
+                animated = [png[1:33]; UInt8[0,0,0,8,0x61,0x63,0x54,0x4c,0,0,0,1,0,0,0,0,0,0,0,0]; png[34:end]]
+                [Dict("type" => "image", "mimeType" => "image/png", "data" => base64encode(animated))]
+            elseif name in ("image_boundary", "image_oversized", "image_overlong")
+                extra = name == "image_boundary" ? 0 : name == "image_oversized" ? 1 : 3
+                [Dict("type" => "image", "mimeType" => "image/png", "data" => base64encode([png; zeros(UInt8, 10 * 1024 * 1024 + extra - length(png))]))]
+            else
+                []
+            end
+            result = Dict{String, Any}("content" => blocks, "isError" => name == "image_error")
+            name == "image_mixed" && (result["structuredContent"] = Dict("value" => 3))
+            reply(message["id"], result)
         elseif name == "check_cancelled"
             for item in held
                 reply(item["id"], Dict("content" => []))

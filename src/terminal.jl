@@ -36,10 +36,16 @@ function Base.setproperty!(terminal::Terminal, name::Symbol, value)
 end
 Base.propertynames(::Terminal, private::Bool=false) = (:output, :diagnostics, :secrets, :streamed, :lineopen, :presentation, :line)
 
+# A following hexadecimal or octal digit can change the last escape.
+forms(secret) = (chop(repr(secret * "0"); head=1, tail=2), chop(repr(secret); head=1, tail=1), secret)
+
 function redact(terminal::Terminal, text)
     result = string(text)
     for secret in terminal.secrets
-        isempty(secret) || (result = replace(result, secret => "[redacted]"))
+        isempty(secret) && continue
+        for form in forms(secret)
+            result = replace(result, form => "[redacted]")
+        end
     end
     result
 end
@@ -114,6 +120,19 @@ end
 const finishdetails = Dict("content_filter" => "content was filtered", "failed" => "the provider reported failure", "incomplete" => "the provider reported incomplete output")
 result!(terminal::Terminal, result::Completion) = result!(terminal, result, result.error)
 result!(terminal::Terminal, result::Completion, error::InvalidResponse) = failure!(terminal, error)
+result!(terminal::Terminal, result::Completion, error::ProviderStatus) = failure!(terminal, error)
+
+function result!(terminal::Terminal, ::Completion, ::UnsupportedImage)
+    println(terminal.diagnostics, "The selected provider does not support image attachments in tool results.")
+    flush(terminal.diagnostics)
+    1
+end
+
+function result!(terminal::Terminal, ::Truncated)
+    println(terminal.diagnostics, "Response was truncated: the model reached its output token limit.")
+    flush(terminal.diagnostics)
+    1
+end
 
 function result!(terminal::Terminal, result::Completion, error)
     detail = get(finishdetails, result.finish, "the provider stream did not finish")
@@ -130,6 +149,27 @@ function result!(terminal::Terminal, result::Symbol)
 end
 
 result!(::Terminal, ::Union{AbstractString, Nothing}) = 0
+
+struct PendingInputs end
+
+queueplace(::Union{Nothing, History.Memory}) = "These messages exist only in memory."
+queueplace(history::History.Tree) = queueplace(history.store)
+queueplace(history::SessionCatalog.Deferred) = queueplace(history.store)
+queueplace(::History.Store) = "These messages remain saved; start a new session to resubmit them."
+
+function checkqueues!(terminal::Terminal, state::Conversation.State, history)
+    isempty(state.steering) && isempty(state.followups) && return nothing
+    println(terminal.diagnostics, "History has unprocessed queued messages. No new prompt was sent.")
+    for text in state.steering
+        println(terminal.diagnostics, "Unprocessed steering: ", repr(redact(terminal, text)))
+    end
+    for text in state.followups
+        println(terminal.diagnostics, "Unprocessed follow-up: ", repr(redact(terminal, text)))
+    end
+    println(terminal.diagnostics, queueplace(history))
+    flush(terminal.diagnostics)
+    PendingInputs()
+end
 
 const historydiagnostics = Dict(
     :uncertain_effect => "History has an uncertain pending effect. It was not retried. Use --inspect-history and inspect external state, then use --abandon with a reason before continuing.",
@@ -221,13 +261,25 @@ function failure!(terminal::Terminal, exception::HTTP.HTTPError)
     1
 end
 
+function failure!(terminal::Terminal, exception::Union{SystemError, Base.IOError})
+    println(terminal.diagnostics, "Request failed: ", redact(terminal, sprint(showerror, exception)))
+    flush(terminal.diagnostics)
+    1
+end
+
 function failure!(terminal::Terminal, ::InvalidResponse)
     println(terminal.diagnostics, "Request failed (invalid provider response).")
     flush(terminal.diagnostics)
     1
 end
 
-function request!(terminal::Terminal, task, exception::Union{HTTP.HTTPError, InterruptException})
+function failure!(terminal::Terminal, failure::ProviderStatus)
+    println(terminal.diagnostics, "Request failed (HTTP ", failure.status, ").")
+    flush(terminal.diagnostics)
+    1
+end
+
+function request!(terminal::Terminal, task, exception::Union{HTTP.HTTPError, InterruptException, SystemError, Base.IOError})
     line!(terminal)
     terminal.presentation = Unstreamed()
     (; value=nothing, status=failure!(terminal, exception))
@@ -261,12 +313,31 @@ streamrender!(terminal::Terminal, event) = streamrender!(terminal, streamevent(e
 streamrender!(terminal::Terminal, ::Nothing) = nothing
 streamrender!(terminal::Terminal, event::TextDelta) = text!(terminal, event.text)
 
-function run!(terminal::Terminal, agent::Agent, prompt; on_agent_event=identity)
-    result = request!(terminal) do
-        respond!(agent, prompt; on_event=event -> streamrender!(terminal, event), on_agent_event=event -> begin
-            render!(terminal, event)
-            on_agent_event(event)
-        end)
+function failures!(terminal::Terminal, listener::Extensions.Listener)
+    for failure in Extensions.failures(listener)
+        println(terminal.diagnostics, "[plugin] ", redact(terminal, failure.plugin), " ", failure.event, ": ", redact(terminal, sprint(showerror, failure.exception)))
+    end
+    flush(terminal.diagnostics)
+end
+
+failures!(::Terminal, ::Function) = nothing
+observer(terminal::Terminal, ::Nothing) = event -> render!(terminal, event)
+observer(terminal::Terminal, snapshot::Extensions.Snapshot) = Extensions.listen(snapshot; on_event=event -> render!(terminal, event))
+
+run!(terminal::Terminal, agent::Agent, prompt, snapshot=nothing; on_agent_event=identity) = run!(terminal, agent, prompt, snapshot, checkqueues!(terminal, agent.state, agent.history), on_agent_event)
+run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::PendingInputs, on_agent_event) = 1
+
+function run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::Nothing, on_agent_event)
+    callback = observer(terminal, snapshot)
+    result = try
+        request!(terminal) do
+            respond!(agent, prompt; on_event=event -> streamrender!(terminal, event), on_agent_event=event -> begin
+                callback(event)
+                on_agent_event(event)
+            end)
+        end
+    finally
+        failures!(terminal, callback)
     end
     result.status == 0 || return result.status
     result!(terminal, result.value)

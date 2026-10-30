@@ -11,10 +11,10 @@ register!(tools::Dict{String, Tool}, tool) = (tools[name(tool)] = tool; tools)
 CodeMode(tools; timeout=300.0) = CodeMode(foldl(register!, tools; init=Dict{String, Tool}()), Float64(timeout), Dict{String, Any}(), ReentrantLock())
 name(::CodeMode) = "codemode"
 schema(::CodeMode) = Dict("type" => "object", "properties" => Dict("code" => Dict("type" => "string")), "required" => ["code"])
+guidance(::CodeMode) = "Run Julia source in a separate process. Call tools.read((; path=\"...\")) or tools[\"name\"](args); each tool returns an object with text and iserror. ALL_TOOLS lists names, descriptions, and argument schemas. text(value) adds output; the last expression is the result. store(key, value) and load(key) keep JSON values across successful calls; forget!(key) deletes a key. The process inherits the host permissions and environment, including permitted filesystem, network, and subprocess access; it is not a security sandbox."
 function description(mode::CodeMode)
-    intro = "Run Julia source in a separate process. Call tools.read((; path=\"...\")) or tools[\"name\"](args); each tool returns an object with text and iserror. ALL_TOOLS lists names, descriptions, and argument schemas. text(value) adds output; the last expression is the result. store(key, value) and load(key) keep JSON values across successful calls. The process inherits the host permissions and environment, including permitted filesystem, network, and subprocess access; it is not a security sandbox."
     specs = ["- $(name(tool)): $(description(tool)) Arguments: $(JSON3.write(schema(tool)))" for tool in sort!(collect(values(mode.tools)); by=name)]
-    join([intro; specs], "\n")
+    join([guidance(mode); specs], "\n")
 end
 
 struct CodeCancellation
@@ -39,6 +39,7 @@ struct CodeSuccess <: CodeResult
     output::Vector{String}
     calls::Vector{NamedTuple}
     writes::Dict{String, Any}
+    deletes::Vector{String}
     kind::Union{Nothing, Symbol}
     message::String
     stdout::String
@@ -51,6 +52,7 @@ struct CodeFailure <: CodeResult
     output::Vector{String}
     calls::Vector{NamedTuple}
     writes::Dict{String, Any}
+    deletes::Vector{String}
     kind::Union{Nothing, Symbol}
     message::String
     stdout::String
@@ -58,11 +60,27 @@ struct CodeFailure <: CodeResult
     pid::Int
 end
 
+CodeSuccess(value, output, calls, writes, kind, message, stdout, stderr, pid) = CodeSuccess(value, output, calls, writes, String[], kind, message, stdout, stderr, pid)
+CodeFailure(value, output, calls, writes, kind, message, stdout, stderr, pid) = CodeFailure(value, output, calls, writes, String[], kind, message, stdout, stderr, pid)
 CodeResult(ok::Bool, fields...) = ok ? CodeSuccess(fields...) : CodeFailure(fields...)
+CodeResult(ok, fields...) = CodeResult(convert(Bool, ok), fields...)
 ok(::CodeSuccess) = true
 ok(::CodeFailure) = false
 Base.getproperty(result::CodeResult, name::Symbol) = name === :ok ? ok(result) : getfield(result, name)
 Base.propertynames(result::CodeResult, private::Bool=false) = (:ok, fieldnames(typeof(result))...)
+
+StructTypes.StructType(::Type{<:CodeResult}) = StructTypes.CustomStruct()
+const CodeResultData = @NamedTuple{ok::Union{Nothing, Bool}, value::Any, output::Vector{String}, calls::Vector{NamedTuple}, writes::Dict{String, Any}, deletes::Union{Nothing, Vector{String}}, kind::Union{Nothing, Symbol}, message::String, stdout::String, stderr::String, pid::Int}
+StructTypes.lowertype(::Type{<:CodeResult}) = CodeResultData
+StructTypes.lower(result::CodeResult) = (; ok=ok(result), result.value, result.output, result.calls, result.writes, result.deletes, result.kind, result.message, result.stdout, result.stderr, result.pid)
+codedeletes(::Nothing) = String[]
+codedeletes(deletes::Vector{String}) = deletes
+
+codefields(data::CodeResultData) = (data.value, data.output, data.calls, data.writes, codedeletes(data.deletes), data.kind, data.message, data.stdout, data.stderr, data.pid)
+
+StructTypes.construct(::Type{CodeResult}, data::CodeResultData) = CodeResult(data.ok, codefields(data)...)
+StructTypes.construct(::Type{CodeSuccess}, data::CodeResultData) = CodeSuccess(codefields(data)...)
+StructTypes.construct(::Type{CodeFailure}, data::CodeResultData) = CodeFailure(codefields(data)...)
 
 function enqueue(events, event)
     try
@@ -89,6 +107,7 @@ abstract type CodeReply <: CodeEvent end
 struct CodeReturned <: CodeReply
     value
     writes
+    deletes
 end
 struct CodeErrored <: CodeReply
     message
@@ -108,7 +127,7 @@ codeevent(::Type{CodeText}, event) = CodeText(event.text)
 codeevent(::Type{CodeCall}, event) = CodeCall(event)
 codeevent(::Type{CodeCallDone}, event) = CodeCallDone(event)
 codeevent(::Type{CodeReply}, event) = codeevent((CodeErrored, CodeReturned)[Int(event.ok) + 1], event)
-codeevent(::Type{CodeReturned}, event) = CodeReturned(event.value, event.writes)
+codeevent(::Type{CodeReturned}, event) = CodeReturned(event.value, event.writes, get(event, :deletes, String[]))
 codeevent(::Type{CodeErrored}, event) = CodeErrored(event.message)
 codeevent(::Type{CodeTransportError}, event) = CodeTransportError(event.message)
 codeevent(::Type{CodeClosed}, event) = CodeClosed()
@@ -135,7 +154,8 @@ function handlecode!(context, event::CodeCall)
         callstart = time_ns()
         tool = get(context.mode.tools, String(event.name), nothing)
         answer = try
-            attempt(() -> invoke(tool, event.args, String(event.name)))
+            callresult = attempt(() -> invoke(tool, event.args, String(event.name)))
+            codeimage(callresult, callresult.image)
         catch exception
             enqueue(context.events, CodeCallDone((; index, status=:error, duration=(time_ns() - callstart) / 1e9)))
             enqueue(context.events, CodeTransportError(sprint(showerror, exception, catch_backtrace())))
@@ -163,13 +183,16 @@ codeoutcome(value::Tuple, result, failure) = result, value
 codecomplete(result, failure::Tuple, output, calls, stdout, stderr, pid) = CodeFailure(nothing, output, calls, Dict{String, Any}(), failure[1], failure[2], stdout, stderr, pid)
 codecomplete(result, ::Nothing, output, calls, stdout, stderr, pid) = codecomplete(result, output, calls, stdout, stderr, pid)
 codecomplete(result::CodeErrored, output, calls, stdout, stderr, pid) = CodeFailure(nothing, output, calls, Dict{String, Any}(), :script, String(result.message), stdout, stderr, pid)
-codecomplete(result::CodeReturned, output, calls, stdout, stderr, pid) = CodeSuccess(result.value, output, calls, Dict{String, Any}(String(key) => value for (key, value) in pairs(result.writes)), nothing, "", stdout, stderr, pid)
+codecomplete(result::CodeReturned, output, calls, stdout, stderr, pid) = CodeSuccess(result.value, output, calls, Dict{String, Any}(String(key) => value for (key, value) in pairs(result.writes)), String.(result.deletes), nothing, "", stdout, stderr, pid)
 
 function codefailure(cancel, timedout, started, timeout)
     cancel.cancelled[] && return (:cancelled, "Execution cancelled")
     (timedout[] || (time_ns() - started) / 1e9 >= timeout) && return (:timeout, "Execution timed out")
     nothing
 end
+
+codeimage(result::ToolResult, ::Nothing) = result
+codeimage(::ToolResult, ::Image) = ToolResult("Image output is not supported by CodeMode", true)
 
 function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, Any}(), cancel=CodeCancellation())
     cancel.cancelled[] && return CodeFailure(nothing, String[], NamedTuple[], Dict{String, Any}(), :cancelled, "Execution cancelled", "", "", 0)
@@ -291,6 +314,7 @@ store!(mode::CodeMode, ::CodeFailure) = nothing
 
 function store!(mode::CodeMode, result::CodeSuccess)
     lock(mode.lock) do
+        foreach(key -> delete!(mode.store, key), result.deletes)
         merge!(mode.store, result.writes)
     end
     nothing

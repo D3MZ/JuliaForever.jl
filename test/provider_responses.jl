@@ -21,10 +21,10 @@ end
     @test completed.done && completed.finish == "tool_calls" && completed.error === nothing
     text = JuliaForever.completion(model, response_done([response_text("answer")]))
     @test text.done && text.finish == "stop"
-    for status in ("failed", "incomplete", nothing)
+    for (status, kind) in (("failed", :failed), ("incomplete", :incomplete), (nothing, :unknown))
         result = JuliaForever.completion(model, response_done([call]; status))
         @test !result.done && result.finish === status
-        @test occursin("Responses", result.error)
+        @test result.error isa ProviderError && result.error.provider == :openai_responses && result.error.kind == kind
     end
     unfinished = merge(call, Dict("status" => "in_progress"))
     result = JuliaForever.completion(model, response_done([unfinished]))
@@ -184,16 +184,16 @@ end
             @test partial.message["content"] == "partial"
             failed = stream(model, [], Dict())
             @test !failed.done
-            @test occursin("capacity", failed.error)
+            @test failed.error isa ProviderError && failed.error.provider == :openai_responses
             unfinished = respond!(Agent(model, [Write(dir)]), "create"; on_event=identity)
             @test !unfinished.done
             @test occursin("unfinished", unfinished.error)
             incomplete = respond!(Agent(model, [Write(dir)]), "create"; on_event=identity)
             @test !incomplete.done
-            @test occursin("max_output_tokens", incomplete.error)
+            @test incomplete.error isa ProviderError && incomplete.error.kind == :max_output_tokens
             nonstream = respond!(Agent(model, [Write(dir)]), "create")
             @test !nonstream.done
-            @test occursin("max_output_tokens", nonstream.error)
+            @test nonstream.error isa ProviderError && nonstream.error.kind == :max_output_tokens
             @test !isfile(joinpath(dir, "unsafe.txt"))
         end
     finally

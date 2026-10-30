@@ -103,6 +103,11 @@ end
 respond_execution!(::Agent, prompt, executor, context; kwargs...) = Execution.Rejected(:executor)
 respond_execution!(::Agent, prompt, ::Execution.Executor, context; kwargs...) = Execution.Rejected(:context)
 
+function finish(message, result::Execution.ModelResult{Conversation.ModelReply})
+    reply = result.observation.message
+    finish(message, Completion(message, result.usage, reply.finish, reply.done, result.error))
+end
+
 function respond_execution!(agent::Agent, prompt, executor::Execution.Executor, context::AbstractString; on_event, on_agent_event, parameters, tool_execution)
     respond_execution!(agent, prompt, executor, context, on_event, fault(agent); on_agent_event, parameters, tool_execution)
 end
@@ -259,7 +264,7 @@ execution_next!(run, message, result, added) = Execution.Turn(result, run.models
 execution_next!(run, message, result::Kernel.Applied, added) = execution_next!(run, message, result, added, turnstate(run.agent))
 execution_next!(run, message, result, added, ::Cancelled) = Execution.Turn(:cancelled, run.models)
 function execution_next!(run, message, result, added, ::Union{Idle, Running})
-    isempty(result.effects) && return Execution.Turn(message["content"], run.models)
+    isempty(result.effects) && return Execution.Turn(finish(message, last(run.models)), run.models)
     emit(run.callback, (; type=:turn_start))
     present!(run.agent, added, run.messages, run.callback)
     only(result.effects)

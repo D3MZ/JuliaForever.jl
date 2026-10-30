@@ -2,7 +2,7 @@
 import { pathToFileURL } from "node:url";
 
 const source = `${process.env.PI_SOURCE}/packages/mcp/src/index.ts`;
-const { McpClient, StdioTransport } = await import(pathToFileURL(source).href);
+const { McpClient, StdioTransport, toLlmContent } = await import(pathToFileURL(source).href);
 const transport = new StdioTransport({ command: process.env.JF_JULIA, args: ["--startup-file=no", `--project=${process.env.JF_JULIA_PROJECT}`, `${process.env.JF_PROJECT}/test/mcp_server.jl`, "normal", process.env.JF_MARKER] });
 const client = new McpClient({ name: "JuliaForever", version: "0.1.0" });
 try {
@@ -11,13 +11,18 @@ try {
   const echo = await client.callTool("alpha", { value: 7 });
   const toolError = await client.callTool("tool_error", {});
   const mixed = await client.callTool("mixed", {});
+  const images = {};
+  for (const name of ["image_direct", "image_embedded", "image_mixed", "image_error", "image_multiple"]) {
+    const raw = await client.callTool(name, {});
+    images[name] = { raw, content: toLlmContent(raw) };
+  }
   let code;
   try {
     await client.callTool("protocol_error", {});
   } catch (error) {
     code = error.code;
   }
-  console.log(JSON.stringify({ version: server.protocolVersion, tools, echo, toolError, mixed, code }));
+  console.log(JSON.stringify({ version: server.protocolVersion, tools, echo, toolError, mixed, images, code }));
 } finally {
   await client.close();
 }

@@ -15,6 +15,12 @@ function JuliaForever.execute(tool::FaultTool, args)
     fault()
 end
 
+struct InvalidReturnTool <: JuliaForever.Tool end
+JuliaForever.name(::InvalidReturnTool) = "invalid_return"
+JuliaForever.description(::InvalidReturnTool) = "Test tool with an invalid result"
+JuliaForever.schema(::InvalidReturnTool) = Dict("type" => "object")
+JuliaForever.execute(::InvalidReturnTool, args) = 1
+
 struct ContextTool <: JuliaForever.Tool
     caller::Task
 end
@@ -102,6 +108,11 @@ end
         @test result.kind == :worker
         @test occursin("MethodError", result.message)
         @test occursin("fault", result.message)
+        @test only(result.calls).status == :error
+
+        result = codeexecute(CodeMode([InvalidReturnTool()]; timeout=30), "tools.invalid_return((;))")
+        @test !result.ok && result.kind == :worker
+        @test occursin("image", result.message)
         @test only(result.calls).status == :error
 
         result = codeexecute(CodeMode([Read(dir)]; timeout=30), "tools.read((; path=\"absent.txt\"))")

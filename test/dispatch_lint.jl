@@ -72,6 +72,7 @@ include("dispatch_checks.jl")
         @test only(dispatchbaseline(root)) == "consumer.jl\t:(selected(x))"
     end
 
+    # Julia's REPL.prompt! returns `ok` and `suspend` booleans at the terminal boundary.
     actual = dispatchbaseline(joinpath(@__DIR__, "..", "src"))
     expected = readlines(joinpath(@__DIR__, "dispatch-baseline.txt"))
     @test isempty(dispatchdifference(actual, expected))

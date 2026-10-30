@@ -125,7 +125,7 @@ with tempfile.TemporaryDirectory(prefix="jf-editor-") as temporary:
         os.write(master, b"/resume\r")
         wait_for(lambda: b"Choose a session" in output)
         os.write(master, b"1\r")
-        wait_for(lambda: b"Resumed session." in output and output.count(b"\x1b[?2004h") >= 2)
+        wait_for(lambda: b"Resuming session." in output and output.count(b"\x1b[?2004h") >= 2)
         count = len(messages())
         start = len(output)
         os.write(master, b"continued\r")

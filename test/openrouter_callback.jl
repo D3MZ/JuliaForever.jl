@@ -77,7 +77,7 @@ end
     try
         project = dirname(@__DIR__)
         base = "http://$(HTTP.server_addr(server))/api/v1"
-        cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever --no-session --login-openrouter-callback hello`, "OPENROUTER_BASE_URL" => base, "OPENROUTER_MODEL" => "fixture/model")
+        cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project -m JuliaForever --no-session --provider openrouter --login-openrouter-callback --model cli/model hello`, "OPENROUTER_BASE_URL" => base, "OPENROUTER_MODEL" => "fixture/model")
         output = open(cmd, "r") do io
             line = readline(io)
             url = match(r"https://openrouter\.ai/auth\?\S+", line).match
@@ -91,10 +91,25 @@ end
         @test first.target == "/api/v1/auth/keys"
         @test first.body.code == "synthetic-code"
         @test second.authorization == "Bearer synthetic-key"
-        @test second.body.model == "fixture/model"
+        @test second.body.model == "cli/model"
         @test occursin("done", output)
         @test !occursin("synthetic-key", output)
         @test !occursin(first.body.code_verifier, output)
+
+        mktempdir() do dir
+            diagnostics = joinpath(dir, "diagnostics")
+            denied = open(pipeline(ignorestatus(cmd); stderr=diagnostics), "r") do io
+                line = readline(io)
+                url = match(r"https://openrouter\.ai/auth\?\S+", line).match
+                params = HTTP.queryparams(HTTP.URI(url))
+                state = HTTP.escapeuri(params["state"])
+                @test HTTP.get("$(params["callback_url"])?error=access_denied&state=$state"; redirect=false, retry=false).status == 200
+                line * "\n" * read(io, String)
+            end
+            @test occursin("authorization was denied or timed out", read(diagnostics, String))
+            @test !occursin("synthetic-key", denied * read(diagnostics, String))
+            @test !isready(requests)
+        end
     finally
         close(server)
         wait(server)
