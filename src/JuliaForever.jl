@@ -4,10 +4,12 @@ using HTTP, JSON3, StructTypes, Unicode, Base64, Random, SHA, REPL
 
 export Execution, ContextEstimates
 export Read, Write, Edit, Bash, PowerShell, Ls, Find, Grep, CodeMode, CodeCancellation, CodeResult, CodeSuccess, CodeFailure, cancel!, codeexecute, Image, ToolResult, ToolSuccess, ToolFailure, execute, Agent, OpenAI, OpenAIResponses, Anthropic, Google, Usage, Completion, Truncated, InvalidResponse, ProviderStatus, ProviderError, UnsupportedImage, OpenRouterLogin, OpenRouterCallback, provider, authorize, exchange, stream, respond!, Durable, History, Sessions, Kernel, Conversation
+export ToolSet, ToolNamespace, expose!, register!, unregister!
 
 include("instructions.jl")
 include("prompts.jl")
 include("tools.jl")
+include("tool_search.jl")
 include("file_arguments.jl")
 include("system.jl")
 include("provider.jl")
@@ -16,10 +18,12 @@ include("conversation.jl")
 include("durable.jl")
 include("history.jl")
 include("sqlite_history.jl")
+include("tool_search_events.jl")
 include("agent.jl")
 include("estimates.jl")
 include("extensions.jl")
 include("agent_history.jl")
+include("compaction.jl")
 include("responses.jl")
 include("anthropic.jl")
 include("google.jl")
@@ -31,6 +35,7 @@ include("agent_execution.jl")
 include("logs.jl")
 include("search.jl")
 include("context.jl")
+include("skills.jl")
 include("codemode.jl")
 include("terminal.jl")
 include("terminal_editor.jl")
@@ -48,9 +53,12 @@ function reportmissing(missing)
     false
 end
 
+missingkey!(missing, ::Nothing, info) = push!(missing, info.key)
+missingkey!(missing, key::AbstractString, info) = isempty(key) && push!(missing, info.key)
+
 function configured(env, info, model)
     missing = missingmodel(env, info, model)
-    isempty(get(env, info.key, "")) && push!(missing, info.key)
+    missingkey!(missing, keyvalue(env, info), info)
     reportmissing(missing)
 end
 
@@ -363,7 +371,9 @@ function initial(extensions)
     cwd = pwd()
     files = Instructions.load(cwd; agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing))
     prompt = context(cwd, Extensions.tools(extensions), files)
-    Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+    messages = Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+    Skills.appendprompt!(messages, Skills.render(Skills.load(cwd)))
+    messages
 end
 
 initial(extensions, ::Nothing) = initial(extensions)

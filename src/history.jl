@@ -4,6 +4,7 @@ import Base: append!
 import ..Durable as D
 import ..Kernel as K
 import ..Conversation as C
+import ..JuliaForever: ToolResult, ToolLoaded, ToolDiscovery, loaded
 
 struct Rejected
     reason::Symbol

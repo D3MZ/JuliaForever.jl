@@ -18,9 +18,12 @@ submitted(agent::Agent, executor, effect, context, rejected::History.Rejected) =
 submitted(agent::Agent, executor, effect, context, ::Cancelled) = nothing
 submitted(agent::Agent, executor, effect, context, ::Union{Idle, Running}) = submitted(agent, executor, effect, context)
 
+exposure(tools) = nothing
+exposure(tools::ToolSet) = lock(() -> copy(tools.loaded), tools.lock)
+
 function submitted(agent::Agent, executor, effect, context, ::Nothing)
     handle = try
-        Execution.submit!(executor, effect, 1, context; detailed=detailed(effect.effect), on_handle=handle -> register!(agent, handle))
+        Execution.submit!(executor, effect, 1, context; detailed=detailed(effect.effect), exposed=exposure(agent.tools), on_handle=handle -> register!(agent, handle))
     catch
         lock(agent.lock) do
             agent.handle = nothing
@@ -86,7 +89,7 @@ after_tool!(callback, ended, ::History.Store) = emit(callback, ended)
 
 function observe_tool!(agent, effect, messages, callback, results, call, reply::Conversation.ToolReply)
     result = reply.result
-    ended = (; type=:tool_execution_end, tool_call_id=call["id"], tool_name=callinfo(call).name, result, iserror=result.iserror)
+    ended = (; type=:tool_execution_end, tool_call_id=call["id"], tool_name=callinfo(call).name, result=visible(result), iserror=result.iserror)
     before_tool!(callback, ended, agent.history)
     transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, reply), agent)
     finish_tool!(agent, messages, callback, results, call, result, ended, transition, added)
@@ -277,3 +280,8 @@ function interrupt!(agent::Agent, ::Nothing)
 end
 
 interrupt!(agent::Agent, ::History.Store) = interrupted!(agent)
+
+function finishauto!(agent, result::Execution.Turn, usage, settings::AutoCompaction, summarize, callback)
+    latest = isempty(result.models) ? nothing : last(result.models).usage
+    finishauto!(agent, result.value, latest, settings, summarize, callback)
+end

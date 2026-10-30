@@ -267,3 +267,37 @@ end
         @test_skip "PTY test requires Unix and python3"
     end
 end
+
+@testset "shell progress reaches agent and terminal" begin
+    call = Dict("id" => "shell-1", "type" => "function", "function" => Dict("name" => "bash", "arguments" => JSON3.write((; command="printf first; sleep 0.2; printf second"))))
+    replies = [(terminal_completion(""; calls=[call]), String[]), (terminal_completion("done"), String[])]
+    events = Any[]
+    output, diagnostics = IOBuffer(), IOBuffer()
+    terminal = JuliaForever.Terminal(output, diagnostics, String[])
+    agent = Agent(TerminalFixture(replies, () -> nothing), [Bash(pwd())])
+    respond!(agent, "start"; on_event=identity, on_agent_event=event -> begin
+        push!(events, event)
+        JuliaForever.render!(terminal, event)
+    end)
+    updates = filter(event -> event.type == :tool_execution_update, events)
+    @test any(event -> occursin("first", event.partial_result.text), updates)
+    @test all(event -> event.tool_call_id == "shell-1" && event.tool_name == "bash", updates)
+    @test findfirst(event -> event.type == :tool_execution_update && occursin("first", event.partial_result.text), events) < findfirst(event -> event.type == :tool_execution_end, events)
+    @test occursin("[tool] bash: output", String(take!(diagnostics)))
+end
+
+@testset "agent shell updates preserve truncation" begin
+    if !Sys.iswindows()
+        call = Dict("id" => "large", "type" => "function", "function" => Dict("name" => "bash", "arguments" => JSON3.write((; command="for ((i=1;i<=2001;i++)); do echo \$i; done"))))
+        provider = TerminalFixture([(terminal_completion(""; calls=[call]), String[]), (terminal_completion("done"), String[])], () -> nothing)
+        events = Any[]
+        @test respond!(Agent(provider, [Bash(pwd())]), "run"; on_event=identity, on_agent_event=event -> push!(events, event)) == "done"
+        updates = [event.partial_result for event in events if event.type == :tool_execution_update && !isnothing(event.partial_result.file)]
+        @test !isempty(updates)
+        if !isempty(updates)
+            @test read(last(updates).file, String) == join(1:2001, '\n') * "\n"
+            @test last(updates).text == join(2:2001, '\n')
+            rm(last(updates).file; force=true)
+        end
+    end
+end

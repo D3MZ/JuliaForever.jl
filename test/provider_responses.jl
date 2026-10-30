@@ -26,11 +26,11 @@ response_reasoning() = Dict("type" => "reasoning", "id" => "rs_1", "summary" => 
 response_done(output; status="completed", usage=nothing) = Dict("id" => "resp_1", "status" => status, "output" => output, "usage" => usage)
 
 @testset "Responses configuration" begin
-    model = provider(Dict("JF_PROVIDER" => "openai-responses", "OPENAI_MODEL" => "gpt-6-astra", "OPENAI_API_KEY" => "synthetic", "OPENAI_BASE_URL" => "http://localhost/v1/"))
+    model = provider(Dict("JF_PROVIDER" => "openai-responses", "OPENAI_MODEL" => "gpt-6-astra", "OPENAI_API_KEY" => "synthetic", "OPENAI_BASE_URL" => "http://localhost/v1/", "PI_CODING_AGENT_DIR" => mktempdir()))
     @test model isa OpenAIResponses
     @test model.model == "gpt-6-astra"
     @test !occursin("synthetic", sprint(show, model))
-    @test provider(Dict("OPENAI_MODEL" => "old", "OPENAI_API_KEY" => "synthetic")) isa OpenAI
+    @test provider(Dict("OPENAI_MODEL" => "old", "OPENAI_API_KEY" => "synthetic", "PI_CODING_AGENT_DIR" => mktempdir())) isa OpenAI
 end
 
 @testset "Responses completion status and call validation" begin

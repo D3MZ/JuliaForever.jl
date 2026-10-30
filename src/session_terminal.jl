@@ -1,6 +1,7 @@
 abstract type TerminalCommand end
 struct TreeCommand <: TerminalCommand end
 struct ResumeCommand <: TerminalCommand end
+struct CompactCommand <: TerminalCommand end
 struct NewCommand <: TerminalCommand end
 struct CloneCommand <: TerminalCommand end
 struct ForkCommand <: TerminalCommand end
@@ -10,7 +11,7 @@ struct SetName <: TerminalCommand
     name::String
 end
 
-const terminalcommands = Dict{String, TerminalCommand}("/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand(), "/clone" => CloneCommand(), "/fork" => ForkCommand(), "/exit" => ExitCommand())
+const terminalcommands = Dict{String, TerminalCommand}("/compact" => CompactCommand(), "/tree" => TreeCommand(), "/resume" => ResumeCommand(), "/new" => NewCommand(), "/clone" => CloneCommand(), "/fork" => ForkCommand(), "/exit" => ExitCommand())
 const namepattern = r"\A/name(?: +([\s\S]*))?\z"
 terminalcommand(text) = terminalcommand(get(terminalcommands, text, nothing), text)
 terminalcommand(command::TerminalCommand, text) = command
@@ -18,6 +19,16 @@ terminalcommand(::Nothing, text) = namecommand(match(namepattern, text))
 namecommand(::Nothing) = nothing
 namecommand(found::RegexMatch) = namecommand(Conversation.sessionname(something(found[1], "")))
 namecommand(name::String) = isempty(name) ? ShowName() : SetName(name)
+
+command!(::CompactCommand, terminal, agent, history, input, directory, snapshot) = (agent, history, compactresult!(terminal, compact!(agent)))
+
+function compactresult!(terminal, summary::AbstractString)
+    println(terminal.diagnostics, "Context compacted.")
+    flush(terminal.diagnostics)
+    0
+end
+
+compactresult!(terminal, result) = result!(terminal, result)
 
 command!(::TreeCommand, terminal, agent, history, input, directory, snapshot) = tree!(terminal, agent, history, input, snapshot)
 command!(::ResumeCommand, terminal, agent, history, input, directory, snapshot) = resume!(terminal, agent, history, input, directory)
@@ -72,7 +83,9 @@ function initial(agent::Agent, ::Nothing)
     cwd = pwd()
     files = Instructions.load(cwd; agentdir=get(ENV, "JF_INSTRUCTIONS_DIR", nothing))
     prompt = context(cwd, collect(values(agent.tools)), files)
-    Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+    messages = Dict{String, Any}[Dict("role" => "system", "content" => prompt)]
+    Skills.appendprompt!(messages, Skills.render(Skills.load(cwd)))
+    messages
 end
 
 newresult!(terminal, agent, history, selected, rejected::History.Rejected, pending) = (agent, history, result!(terminal, rejected))

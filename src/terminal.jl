@@ -76,17 +76,22 @@ end
 struct ToolStarted <: TerminalEvent
     name::Any
 end
+struct ToolUpdated <: TerminalEvent
+    name::Any
+    result::ShellUpdate
+end
 struct ToolEnded <: TerminalEvent
     name::Any
     result::Any
 end
 
-const terminaleventtypes = Dict(:message_end => AssistantEnded, :tool_execution_start => ToolStarted, :tool_execution_end => ToolEnded)
+const terminaleventtypes = Dict(:message_end => AssistantEnded, :tool_execution_start => ToolStarted, :tool_execution_end => ToolEnded, :tool_execution_update => ToolUpdated)
 const terminalroles = Dict("assistant" => AssistantEnded)
 terminalevent(event) = terminalevent(get(terminaleventtypes, event.type, nothing), event)
 terminalevent(::Nothing, event) = nothing
 terminalevent(::Type{AssistantEnded}, event) = terminalassistant(get(terminalroles, get(event.message, "role", nothing), nothing), event.message)
 terminalevent(::Type{ToolStarted}, event) = ToolStarted(event.tool_name)
+terminalevent(::Type{ToolUpdated}, event) = ToolUpdated(event.tool_name, event.partial_result)
 terminalevent(::Type{ToolEnded}, event) = ToolEnded(event.tool_name, event.result)
 terminalassistant(::Nothing, message) = nothing
 terminalassistant(::Type{AssistantEnded}, message) = AssistantEnded(get(message, "content", nothing))
@@ -107,6 +112,11 @@ showcontent!(terminal::Terminal, content::AbstractString, ::Streamed) = nothing
 
 function render!(terminal::Terminal, event::ToolStarted)
     println(terminal.diagnostics, "[tool] ", redact(terminal, something(event.name, "unknown")), ": started")
+    flush(terminal.diagnostics)
+end
+
+function render!(terminal::Terminal, event::ToolUpdated)
+    println(terminal.diagnostics, "[tool] ", redact(terminal, event.name), ": output ", ncodeunits(event.result.text), " bytes available")
     flush(terminal.diagnostics)
 end
 
@@ -322,20 +332,17 @@ function failures!(terminal::Terminal, listener::Extensions.Listener)
 end
 
 failures!(::Terminal, ::Function) = nothing
-observer(terminal::Terminal, ::Nothing) = event -> render!(terminal, event)
-observer(terminal::Terminal, snapshot::Extensions.Snapshot) = Extensions.listen(snapshot; on_event=event -> render!(terminal, event))
+observer(terminal::Terminal, ::Nothing, callback) = event -> (render!(terminal, event); callback(event))
+observer(terminal::Terminal, snapshot::Extensions.Snapshot, callback) = Extensions.listen(snapshot; on_event=observer(terminal, nothing, callback))
 
 run!(terminal::Terminal, agent::Agent, prompt, snapshot=nothing; on_agent_event=identity) = run!(terminal, agent, prompt, snapshot, checkqueues!(terminal, agent.state, agent.history), on_agent_event)
 run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::PendingInputs, on_agent_event) = 1
 
 function run!(terminal::Terminal, agent::Agent, prompt, snapshot, ::Nothing, on_agent_event)
-    callback = observer(terminal, snapshot)
+    callback = observer(terminal, snapshot, on_agent_event)
     result = try
         request!(terminal) do
-            respond!(agent, prompt; on_event=event -> streamrender!(terminal, event), on_agent_event=event -> begin
-                callback(event)
-                on_agent_event(event)
-            end)
+            respond!(agent, prompt; on_event=event -> streamrender!(terminal, event), on_agent_event=callback)
         end
     finally
         failures!(terminal, callback)

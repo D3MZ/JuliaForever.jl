@@ -15,9 +15,9 @@ struct Parallel <: ToolMode end
 const toolmodes = Dict(:sequential => Sequential(), :parallel => Parallel())
 toolmode(mode) = get(toolmodes, mode, nothing)
 
-mutable struct Agent{P}
+mutable struct Agent{P, T}
     provider::P
-    tools::Dict{String, Tool}
+    tools::T
     messages::Vector{Dict{String, Any}}
     initial::Conversation.State
     state::Conversation.State
@@ -34,10 +34,11 @@ end
 function Agent(provider, tools, messages; history=nothing)
     transcript = Conversation.Message[Conversation.RawMessage(deepcopy(message)) for message in messages]
     initial = Conversation.State("agent-" * randstring(16); automatic=false, messages=transcript)
-    openagent(provider, tools, messages, initial, history)
+    openagent(provider, fresh(tools), messages, initial, history)
 end
 
 Agent(provider, tools; history=nothing) = Agent(provider, Dict{String, Tool}(name(tool) => tool for tool in tools), Dict{String, Any}[]; history)
+Agent(provider, tools::ToolSet; history=nothing) = Agent(provider, tools, Dict{String, Any}[]; history)
 
 function Base.getproperty(agent::Agent, name::Symbol)
     name === :running && return running(getfield(agent, :turn))
@@ -74,6 +75,7 @@ transition!(agent::Agent, event, before, result, rejected::History.Rejected) = (
 function transition!(agent::Agent, event, before, result::Kernel.Applied, ::Nothing)
     agent.state = result.state
     push!(getfield(agent, :events), event)
+    applied!(agent.tools, event)
     result, result.state.messages[before+1:end]
 end
 
@@ -249,18 +251,29 @@ description(::Edit) = "Replace unique, non-overlapping text in a file."
 
 definition(tool) = Dict("type" => "function", "function" => Dict("name" => name(tool), "description" => description(tool), "parameters" => schema(tool)))
 
-invoke(tool::Tool, args, ::ShellCancellation) = execute(tool, args)
-invoke(tool::Union{Bash, PowerShell}, args, cancel::ShellCancellation) = Sys.iswindows() ? execute(tool, args) : execute(tool, args; cancel)
+invoke(tool::Tool, args, ::ShellCancellation, update) = execute(tool, args)
+invoke(tool::ToolSearch, args, ::ShellCancellation, update) = search(tool, args)
+invoke(tool::Union{Bash, PowerShell}, args, cancel::ShellCancellation, update) = Sys.iswindows() ? execute(tool, args; on_update=update) : execute(tool, args; cancel, on_update=update)
 
-function invoke(agent, call)
+function invoke(agent, call, update, callback)
     tool, args = try
         tool = call["function"]
         agent.tools[tool["name"]], JSON3.read(tool["arguments"])
     catch exception
         return ToolFailure(sprint(showerror, exception))
     end
-    attempt(() -> invoke(tool, args, agent.shell))
+    result = attempt(() -> invoke(tool, args, agent.shell, update))
+    interceptresult(callback, call, args, result)
 end
+
+interceptresult(callback, call, args, result) = result
+
+struct EventSink{F}
+    lock::ReentrantLock
+    callback::F
+end
+(sink::EventSink)(event) = lock(() -> emit(sink.callback, event), sink.lock)
+interceptresult(sink::EventSink, call, args, result) = lock(() -> interceptresult(sink.callback, call, args, result), sink.lock)
 
 emit(::Nothing, event) = nothing
 emit(callback, event) = callback(event)
@@ -410,16 +423,17 @@ function toolstart(call, on_agent_event)
     emit(on_agent_event, (; type=:tool_execution_start, tool_call_id=call["id"], tool_name=info.name, args=info.args))
 end
 
-invoke(agent, call, ::Conversation.ToolRequest, ::Union{Idle, Running}) = invoke(agent, call)
-invoke(agent, call, ::Conversation.SkipRequest, ::Union{Idle, Running}) = ToolFailure("Tool call \"$(callinfo(call).name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.")
-invoke(agent, call, ::Union{Conversation.ToolRequest, Conversation.SkipRequest}, ::Cancelled) = ToolFailure("Operation cancelled")
+invoke(agent, call, ::Conversation.ToolRequest, ::Union{Idle, Running}, update, callback) = invoke(agent, call, update, callback)
+invoke(agent, call, ::Conversation.SkipRequest, ::Union{Idle, Running}, update, callback) = ToolFailure("Tool call \"$(callinfo(call).name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.")
+invoke(agent, call, ::Union{Conversation.ToolRequest, Conversation.SkipRequest}, ::Cancelled, update, callback) = ToolFailure("Operation cancelled")
 
 function toolresult(agent, call, request, on_agent_event)
     info = callinfo(call)
     id = call["id"]
     turn = lock(() -> agent.turn, agent.lock)
-    result = invoke(agent, call, request, turn)
-    emit(on_agent_event, (; type=:tool_execution_end, tool_call_id=id, tool_name=info.name, result, iserror=result.iserror))
+    update = partial_result -> emit(on_agent_event, (; type=:tool_execution_update, tool_call_id=id, tool_name=info.name, args=info.args, partial_result))
+    result = invoke(agent, call, request, turn, update, on_agent_event)
+    emit(on_agent_event, (; type=:tool_execution_end, tool_call_id=id, tool_name=info.name, result=visible(result), iserror=result.iserror))
     result
 end
 
@@ -488,6 +502,7 @@ function modelresponse(agent, effect, parameters, on_event, on_agent_event)
     try
         messages = [convert(Dict{String, Any}, message) for message in effect.effect.messages]
         answer = response(agent, messages, parameters, on_event, on_agent_event)
+        rememberusage!(answer.result)
         returned = true
         answer
     finally
@@ -507,8 +522,13 @@ Run a turn and queued messages. `on_event` receives provider stream events; `on_
 
 Supplying `executor` and `context` selects the executor-backed path, including for a recorded agent. It returns an `Execution.Turn` with the outcome and per-model usage and error metadata; unsupported combinations return `Execution.Rejected` before starting. See `docs/execution.md` for its limitations.
 """
-function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential, executor=nothing, context=nothing)
-    respond!(agent, prompt, executor, context; on_event, on_agent_event, parameters, tool_execution)
+function respond!(agent::Agent, prompt; on_event=nothing, on_agent_event=nothing, parameters=Dict(), tool_execution=:sequential, executor=nothing, context=nothing, auto_compaction=nothing, summarize=Summarizer(agent.provider))
+    used = Ref{Union{Nothing, Usage}}(nothing)
+    result = task_local_storage(:jf_compaction_usage, used) do
+        respond!(agent, prompt, executor, context; on_event, on_agent_event, parameters, tool_execution)
+    end
+    finishauto!(agent, result, used[], auto_compaction, summarize, on_agent_event)
+    result
 end
 
 respond!(agent::Agent, prompt, executor, context; kwargs...) = respond_execution!(agent, prompt, executor, context; kwargs...)
@@ -519,9 +539,7 @@ respond!(agent::Agent, prompt, ::Nothing; on_event, on_agent_event, parameters, 
 direct_start!(agent, prompt, ::Nothing; kwargs...) = :busy
 function direct_start!(agent, prompt, ::Running; on_event, on_agent_event, parameters, tool_execution)
     messages = Dict{String, Any}[]
-    event_lock = ReentrantLock()
-    callback = on_agent_event
-    on_agent_event = event -> lock(() -> emit(callback, event), event_lock)
+    on_agent_event = EventSink(ReentrantLock(), on_agent_event)
     run = (; agent, on_event, callback=on_agent_event, parameters, tool_execution, messages)
     try
         emit(on_agent_event, (; type=:agent_start))
