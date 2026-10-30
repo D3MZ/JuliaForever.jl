@@ -3,6 +3,12 @@ struct CatalogRoute
     name::String
     registry::Models.Registry
 end
+
+abstract type ThinkingWire end
+struct DirectThinking <: ThinkingWire end
+struct UpdateThinking <: ThinkingWire end
+const thinkingwires = Dict(false => DirectThinking(), true => UpdateThinking())
+thinkingwire(levels) = get(thinkingwires, get(levels, "configurationUpdate", false), UpdateThinking())
 Base.show(io::IO, ::CatalogRoute) = print(io, "Catalog route ([redacted])")
 StructTypes.StructType(::Type{CatalogRoute}) = StructTypes.CustomStruct()
 StructTypes.lower(::CatalogRoute) = "[redacted]"
@@ -162,11 +168,30 @@ Base.show(io::IO, ::OpenRouterCallback) = print(io, "OpenRouterCallback([redacte
 StructTypes.StructType(::Type{<:OpenRouterCallback}) = StructTypes.CustomStruct()
 StructTypes.lower(::OpenRouterCallback) = "[redacted]"
 
+function openrouterresult(codes, states, failures, state)
+    length(codes) == 1 && !isempty(only(codes)) && isempty(failures) && states == [state] && return only(codes)
+    isempty(codes) && failures == ["access_denied"] && (isempty(states) || states == [state]) && return nothing
+    HTTP.Response(400)
+end
+
+openrouterreply(response::HTTP.Response, pending, gate) = response
+function openrouterreply(value::Union{Nothing, AbstractString}, pending, gate)
+    lock(gate) do
+        openrouteraccept(value, pending[], pending)
+    end
+end
+openrouteraccept(value, ::Nothing, pending) = HTTP.Response(409)
+function openrouteraccept(value, result::Channel, pending)
+    pending[] = nothing
+    put!(result, value)
+    HTTP.Response(200, ["Content-Type" => "text/plain; charset=utf-8", "Cache-Control" => "no-store", "Referrer-Policy" => "no-referrer"], "You may close this window.")
+end
+
 function OpenRouterCallback()
     path = "/oauth/callback/" * base64url(rand(RandomDevice(), UInt8, 24))
     state = String(base64url(rand(RandomDevice(), UInt8, 32)))
     result = Channel{Union{Nothing, String}}(1)
-    pending = Ref(true)
+    pending = Ref{Union{Nothing, typeof(result)}}(result)
     gate = ReentrantLock()
     server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
         request.method == "GET" || return HTTP.Response(405)
@@ -176,15 +201,7 @@ function OpenRouterCallback()
         codes = [value for (key, value) in params if key == "code"]
         states = [value for (key, value) in params if key == "state"]
         failures = [value for (key, value) in params if key == "error"]
-        success = length(codes) == 1 && !isempty(only(codes)) && isempty(failures) && states == [state]
-        denied = isempty(codes) && failures == ["access_denied"] && (isempty(states) || states == [state])
-        (success || denied) || return HTTP.Response(400)
-        lock(gate) do
-            pending[] || return HTTP.Response(409)
-            pending[] = false
-            put!(result, success ? only(codes) : nothing)
-            HTTP.Response(200, ["Content-Type" => "text/plain; charset=utf-8", "Cache-Control" => "no-store", "Referrer-Policy" => "no-referrer"], "You may close this window.")
-        end
+        openrouterreply(openrouterresult(codes, states, failures, state), pending, gate)
     end
     OpenRouterCallback(server, "http://127.0.0.1:$(HTTP.port(server))$path", state, result)
 end
@@ -194,7 +211,9 @@ function authorize(callback::OpenRouterCallback)
     OpenRouterLogin("$(login.url)&callback_url=$(HTTP.escapeuri(callback.url))&state=$(HTTP.escapeuri(callback.state))", login.verifier)
 end
 
-Base.wait(callback::OpenRouterCallback; timeout=300) = timedwait(() -> isready(callback.result), timeout; pollint=0.01) == :ok ? take!(callback.result) : nothing
+openroutertimeout(channel) = nothing
+const openrouterwait = Dict(:ok => take!, :timed_out => openroutertimeout)
+Base.wait(callback::OpenRouterCallback; timeout=300) = openrouterwait[timedwait(() -> isready(callback.result), timeout; pollint=0.01)](callback.result)
 Base.close(callback::OpenRouterCallback) = (close(callback.server); wait(callback.server); nothing)
 
 function exchange(login::OpenRouterLogin, code; base="https://openrouter.ai/api/v1")
