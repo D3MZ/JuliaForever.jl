@@ -1,6 +1,27 @@
-using Test, JuliaForever
+using Test, JuliaForever, JSON3
 
 const MCP = JuliaForever.MCP
+
+@testset "MCP response conversion" begin
+    failure = MCP.Failure(:rpc, "bad")
+    @test MCP.toolresponse(failure) === failure
+    @test MCP.toolresponse(Dict("content" => Any[])) == Dict("content" => Any[])
+    @test MCP.toolresponse(Dict("content" => "bad")) isa MCP.Failure
+    @test MCP.cursorparams(nothing) == Dict()
+    @test MCP.cursorparams("next") == Dict("cursor" => "next")
+    blocks = Any[Dict("type" => "text", "text" => "ok"), Dict("type" => "text", "text" => 3), Dict("type" => "resource_link", "uri" => "file:///item"), false]
+    result = MCP.toolresult(Dict("content" => blocks, "isError" => true))
+    @test result isa ToolFailure
+    @test result.text == join(["ok", JSON3.write(blocks[2]), JSON3.write(blocks[3]), JSON3.write(blocks[4])], "\n")
+end
+
+@testset "MCP connection admission" begin
+    @test MCP.admit(MCP.Open(), MCP.Open())
+    @test MCP.admit(MCP.Open(), MCP.Connecting())
+    @test MCP.admit(MCP.Connecting(), MCP.Connecting())
+    @test !MCP.admit(MCP.Connecting(), MCP.Open())
+    @test !MCP.admit(MCP.Closed(), MCP.Connecting())
+end
 
 mutable struct MCPProvider
     requests::Vector{Any}
@@ -25,6 +46,8 @@ end
         client = MCP.connect(mcpserver("normal", marker); timeout=10, grace=0.2)
         @test client isa MCP.Client
         if client isa MCP.Client
+            @test client.state === :open
+            @test client.connection isa MCP.Open
             @test client.server["serverInfo"]["name"] == "mock"
             @test client.server["capabilities"]["tools"]["listChanged"]
             tools = MCP.tools(client)
@@ -69,6 +92,8 @@ end
             pending = Threads.@spawn MCP.call(client, "hold", Dict())
             @test timedwait(() -> isfile(marker), 5) == :ok
             close(client)
+            @test client.state === :closed
+            @test client.connection isa MCP.Closed
             @test timedwait(() -> istaskdone(pending), 5) == :ok
             @test fetch(pending) isa MCP.Failure
             @test process_exited(client.process)

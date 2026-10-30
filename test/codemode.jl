@@ -2,6 +2,15 @@ using Test, JuliaForever, HTTP, JSON3, TOML
 
 using JuliaForever: CodeMode, CodeCancellation, cancel!, codeexecute
 
+@testset "CodeMode tool selection" begin
+    mktempdir() do dir
+        nested = CodeMode([Read(dir)])
+        mode = CodeMode([Read(dir), nested, Write(dir)])
+        @test Set(keys(mode.tools)) == Set(["read", "write"])
+        @test isempty(CodeMode([nested]).tools)
+    end
+end
+
 struct DelayedWrite <: JuliaForever.Tool
     path::String
 end

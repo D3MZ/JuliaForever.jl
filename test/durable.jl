@@ -40,6 +40,8 @@ else
         @test saved.value == Dict("text" => "first", "parts" => ["a"])
         saved.value["parts"][1] = "changed"
         @test get(store, D.Entry, entry).value["parts"] == ["a"]
+        @test get(store, D.Task, entry) === nothing
+        @test get(store, D.Record, entry).id == entry
         @test get(store, D.Submission, submission).status == "queued"
         @test get(store, D.Submission, conversation, "request-1").id == submission
         @test get(store, D.Submission, conversation, "missing") === nothing

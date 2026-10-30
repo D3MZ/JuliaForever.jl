@@ -11,11 +11,25 @@ end
 
 abstract type Store end
 
+abstract type SQLiteStatus end
+struct Open <: SQLiteStatus end
+struct Closed <: SQLiteStatus end
+struct Uncertain <: SQLiteStatus end
+
+status(::Open) = :open
+status(::Closed) = :closed
+status(::Uncertain) = :uncertain
+
 "A SQLite-backed history."
 mutable struct SQLite{T} <: Store
     db::T
     lock::ReentrantLock
-    status::Symbol
+    status::SQLiteStatus
+end
+
+function Base.getproperty(history::SQLite, name::Symbol)
+    name === :status && return status(getfield(history, :status))
+    getfield(history, name)
 end
 
 mutable struct Memory <: Store
@@ -129,58 +143,77 @@ function append!(history::Memory, revision::Integer, batch::Vector)
         batches = getfield(history, :batches)
         length(batches) == revision || return Rejected(:revision)
         isempty(batch) && return Rejected(:empty_batch)
-        saved = value(batch, IdDict())
-        saved isa Rejected && return saved
-        push!(batches, saved)
-        length(batches)
+        save!(batches, value(batch, IdDict()))
     end
+end
+
+save!(batches::Vector, rejected::Rejected) = rejected
+
+function save!(batches::Vector, saved::Vector)
+    push!(batches, saved)
+    length(batches)
 end
 
 function create(store::D.Store)
-    result = D.commit!(store) do tx
-        conversation = D.mint!(tx)
-        conversation isa D.Rejected && return conversation
-        created = D.put!(tx, D.Conversation(conversation, nothing))
-        created isa D.Rejected && return created
-        id = D.mint!(tx)
-        id isa D.Rejected && return id
-        created = D.put!(tx, D.Document(id, conversation, Dict("format" => "JuliaForever.History/1", "revision" => 0, "batches" => Any[])))
-        created isa D.Rejected ? created : id
-    end
-    result isa D.Rejected ? Rejected(result.reason) : Journal(store, result)
+    result = D.commit!(create, store)
+    Journal(store, result)
 end
+
+create(tx::D.Transaction) = create(tx, D.mint!(tx))
+create(tx::D.Transaction, rejected::D.Rejected) = rejected
+create(tx::D.Transaction, conversation::Integer) = create!(tx, conversation, D.put!(tx, D.Conversation(conversation, nothing)))
+create!(tx::D.Transaction, conversation::Integer, rejected::D.Rejected) = rejected
+create!(tx::D.Transaction, conversation::Integer, ::Integer) = document!(tx, conversation, D.mint!(tx))
+document!(tx::D.Transaction, conversation::Integer, rejected::D.Rejected) = rejected
+document!(tx::D.Transaction, conversation::Integer, id::Integer) = D.put!(tx, D.Document(id, conversation, Dict("format" => "JuliaForever.History/1", "revision" => 0, "batches" => Any[])))
+
+Journal(store::D.Store, result::D.Rejected) = Rejected(result.reason)
 
 content(result::D.Rejected) = Rejected(result.reason)
 content(::Nothing) = Rejected(:history_missing)
+content(value) = Rejected(:history_missing)
+content(record::D.Document) = content(record.value)
 
-function content(record::D.Document)
-    data = record.value
-    data isa Dict || return Rejected(:history_missing)
+function content(data::Dict)
     get(data, "format", nothing) == "JuliaForever.History/1" || return Rejected(:history_missing)
     data
 end
 
-function snapshot(history::Journal)
-    data = content(get(history.store, D.Document, history.id))
-    data isa Rejected && return data
+snapshot(history::Journal) = snapshot(content(get(history.store, D.Document, history.id)))
+snapshot(rejected::Rejected) = rejected
+
+function snapshot(data::Dict)
     Snapshot(data["revision"], Vector{Any}[Any[decode(item) for item in batch] for batch in data["batches"]])
 end
+
+outcome(result::D.Rejected) = Rejected(result.reason)
+outcome(result) = result
+outcome(result::D.Rejected, value) = Rejected(result.reason)
+outcome(result, value) = value
 
 function append!(history::Journal, revision::Integer, batch::Vector)
     result = D.commit!(history.store) do tx
         record = get(tx, D.Document, history.id)
-        data = content(record)
-        data isa Rejected && return data
-        data["revision"] == revision || return Rejected(:revision)
-        isempty(batch) && return Rejected(:empty_batch)
-        saved = value(batch, IdDict())
-        saved isa Rejected && return saved
-        push!(data["batches"], Any[encode(item) for item in saved])
-        data["revision"] += 1
-        written = D.put!(tx, D.Document(record.id, record.conversation, data))
-        written isa D.Rejected ? Rejected(written.reason) : data["revision"]
+        append!(tx, record, revision, batch, content(record))
     end
-    result isa D.Rejected ? Rejected(result.reason) : result
+    outcome(result)
+end
+
+append!(tx::D.Transaction, record, revision, batch, rejected::Rejected) = rejected
+
+function append!(tx::D.Transaction, record, revision, batch, data::Dict)
+    data["revision"] == revision || return Rejected(:revision)
+    isempty(batch) && return Rejected(:empty_batch)
+    append!(tx, record, data, value(batch, IdDict()))
+end
+
+append!(tx::D.Transaction, record, data::Dict, rejected::Rejected) = rejected
+
+function append!(tx::D.Transaction, record, data::Dict, saved::Vector)
+    push!(data["batches"], Any[encode(item) for item in saved])
+    data["revision"] += 1
+    written = D.put!(tx, D.Document(record.id, record.conversation, data))
+    outcome(written, data["revision"])
 end
 
 include("conversation_codec.jl")

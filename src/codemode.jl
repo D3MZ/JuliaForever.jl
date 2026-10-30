@@ -6,7 +6,9 @@ struct CodeMode <: Tool
     lock::ReentrantLock
 end
 
-CodeMode(tools; timeout=300.0) = CodeMode(Dict{String, Tool}(name(tool) => tool for tool in tools if !(tool isa CodeMode)), Float64(timeout), Dict{String, Any}(), ReentrantLock())
+register!(tools::Dict{String, Tool}, ::CodeMode) = tools
+register!(tools::Dict{String, Tool}, tool) = (tools[name(tool)] = tool; tools)
+CodeMode(tools; timeout=300.0) = CodeMode(foldl(register!, tools; init=Dict{String, Tool}()), Float64(timeout), Dict{String, Any}(), ReentrantLock())
 name(::CodeMode) = "codemode"
 schema(::CodeMode) = Dict("type" => "object", "properties" => Dict("code" => Dict("type" => "string")), "required" => ["code"])
 guidance(::CodeMode) = "Run Julia source in a separate process. Call tools.read((; path=\"...\")) or tools[\"name\"](args); each tool returns an object with text and iserror. ALL_TOOLS lists names, descriptions, and argument schemas. text(value) adds output; the last expression is the result. store(key, value) and load(key) keep JSON values across successful calls. The process inherits the host permissions and environment, including permitted filesystem, network, and subprocess access; it is not a security sandbox."
@@ -30,8 +32,9 @@ function cancel!(cancel::CodeCancellation)
     nothing
 end
 
-struct CodeResult
-    ok::Bool
+abstract type CodeResult end
+
+struct CodeSuccess <: CodeResult
     value::Any
     output::Vector{String}
     calls::Vector{NamedTuple}
@@ -42,6 +45,24 @@ struct CodeResult
     stderr::String
     pid::Int
 end
+
+struct CodeFailure <: CodeResult
+    value::Any
+    output::Vector{String}
+    calls::Vector{NamedTuple}
+    writes::Dict{String, Any}
+    kind::Union{Nothing, Symbol}
+    message::String
+    stdout::String
+    stderr::String
+    pid::Int
+end
+
+CodeResult(ok::Bool, fields...) = ok ? CodeSuccess(fields...) : CodeFailure(fields...)
+ok(::CodeSuccess) = true
+ok(::CodeFailure) = false
+Base.getproperty(result::CodeResult, name::Symbol) = name === :ok ? ok(result) : getfield(result, name)
+Base.propertynames(result::CodeResult, private::Bool=false) = (:ok, fieldnames(typeof(result))...)
 
 function enqueue(events, event)
     try
@@ -54,6 +75,85 @@ invoke(::Nothing, args, name::AbstractString) = ToolFailure("Unknown tool: $name
 
 invoke(tool::Tool, args, ::AbstractString) = execute(tool, args)
 
+abstract type CodeEvent end
+struct CodeText <: CodeEvent
+    text
+end
+struct CodeCall <: CodeEvent
+    message
+end
+struct CodeCallDone <: CodeEvent
+    message
+end
+struct CodeReply <: CodeEvent
+    message
+end
+struct CodeTransportError <: CodeEvent
+    message
+end
+struct CodeClosed <: CodeEvent end
+struct CodeDisconnected <: CodeEvent end
+
+const codeevents = Dict("text" => CodeText, "call" => CodeCall, "call_done" => CodeCallDone, "result" => CodeReply, "transport_error" => CodeTransportError, "closed" => CodeClosed)
+codeevent(::Nothing) = CodeDisconnected()
+codeevent(event::CodeEvent) = event
+codeevent(event) = codeevent(get(codeevents, event.type, Nothing), event)
+codeevent(::Type{Nothing}, event) = nothing
+codeevent(::Type{CodeText}, event) = CodeText(event.text)
+codeevent(::Type{CodeCall}, event) = CodeCall(event)
+codeevent(::Type{CodeCallDone}, event) = CodeCallDone(event)
+codeevent(::Type{CodeReply}, event) = CodeReply(event)
+codeevent(::Type{CodeTransportError}, event) = CodeTransportError(event.message)
+codeevent(::Type{CodeClosed}, event) = CodeClosed()
+
+handlecode!(context, ::Nothing) = nothing
+handlecode!(context, event::CodeText) = (push!(context.output, String(event.text)); nothing)
+handlecode!(context, event::CodeReply) = event
+handlecode!(context, event::CodeTransportError) = (:worker, String(event.message))
+handlecode!(context, ::CodeClosed) = (:worker, "Worker exited without a result")
+handlecode!(context, ::CodeDisconnected) = (:worker, "Worker connection closed")
+
+function handlecode!(context, event::CodeCallDone)
+    message = event.message
+    call = context.calls[message.index]
+    context.calls[message.index] = (; call.name, status=message.status, duration=message.duration)
+    nothing
+end
+
+function handlecode!(context, event::CodeCall)
+    message = event.message
+    index = length(context.calls) + 1
+    push!(context.calls, (; name=String(message.name), status=:running, duration=0.0))
+    Threads.@spawn let context=context, event=message, index=index
+        callstart = time_ns()
+        tool = get(context.mode.tools, String(event.name), nothing)
+        answer = try
+            callresult = attempt(() -> invoke(tool, event.args, String(event.name)))
+            codeimage(callresult, callresult.image)
+        catch exception
+            enqueue(context.events, CodeCallDone((; index, status=:error, duration=(time_ns() - callstart) / 1e9)))
+            enqueue(context.events, CodeTransportError(sprint(showerror, exception, catch_backtrace())))
+            return
+        end
+        duration = (time_ns() - callstart) / 1e9
+        enqueue(context.events, CodeCallDone((; index, status=status(answer), duration)))
+        lock(context.lockwrite) do
+            if !context.done[]
+                try
+                    write(context.process, JSON3.write((; id=event.id, result=(; text=answer.text, iserror=answer.iserror))) * "\n")
+                    flush(context.process)
+                catch
+                end
+            end
+        end
+    end
+    nothing
+end
+
+codeoutcome(::Nothing, result, failure) = result, failure
+codeoutcome(event::CodeReply, result, failure) = event.message, failure
+codeoutcome(value::Tuple, result, failure) = result, value
+
 function codefailure(cancel, timedout, started, timeout)
     cancel.cancelled[] && return (:cancelled, "Execution cancelled")
     (timedout[] || (time_ns() - started) / 1e9 >= timeout) && return (:timeout, "Execution timed out")
@@ -64,7 +164,7 @@ codeimage(result::ToolResult, ::Nothing) = result
 codeimage(::ToolResult, ::Image) = ToolResult("Image output is not supported by CodeMode", true)
 
 function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, Any}(), cancel=CodeCancellation())
-    cancel.cancelled[] && return CodeResult(false, nothing, String[], NamedTuple[], Dict{String, Any}(), :cancelled, "Execution cancelled", "", "", 0)
+    cancel.cancelled[] && return CodeFailure(nothing, String[], NamedTuple[], Dict{String, Any}(), :cancelled, "Execution cancelled", "", "", 0)
     mktempdir() do dir
         stdoutfile = joinpath(dir, "stdout")
         stderrfile = joinpath(dir, "stderr")
@@ -111,7 +211,7 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
                         write(process, request)
                         flush(process)
                     catch exception
-                        enqueue(events, (; type="transport_error", message=sprint(showerror, exception)))
+                        enqueue(events, CodeTransportError(sprint(showerror, exception)))
                     end
                 end
                 reader = Threads.@spawn begin
@@ -120,9 +220,9 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
                             enqueue(events, JSON3.read(line))
                         end
                     catch exception
-                        enqueue(events, (; type="transport_error", message=sprint(showerror, exception)))
+                        enqueue(events, CodeTransportError(sprint(showerror, exception)))
                     end
-                    enqueue(events, (; type="closed"))
+                    enqueue(events, CodeClosed())
                 end
             end
             while isnothing(result) && isnothing(failure)
@@ -136,46 +236,8 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
                 failure = codefailure(cancel, timedout, started, mode.timeout)
                 isnothing(failure) || break
                 try
-                    if isnothing(event)
-                        failure = (:worker, "Worker connection closed")
-                    elseif event.type == "text"
-                        push!(output, String(event.text))
-                    elseif event.type == "call"
-                        index = length(calls) + 1
-                        push!(calls, (; name=String(event.name), status=:running, duration=0.0))
-                        Threads.@spawn let event=event, index=index
-                            callstart = time_ns()
-                            tool = get(mode.tools, String(event.name), nothing)
-                            answer = try
-                                callresult = attempt(() -> invoke(tool, event.args, String(event.name)))
-                                codeimage(callresult, callresult.image)
-                            catch exception
-                                enqueue(events, (; type="call_done", index, status=:error, duration=(time_ns() - callstart) / 1e9))
-                                enqueue(events, (; type="transport_error", message=sprint(showerror, exception, catch_backtrace())))
-                                return
-                            end
-                            duration = (time_ns() - callstart) / 1e9
-                            enqueue(events, (; type="call_done", index, status=status(answer), duration))
-                            lock(lockwrite) do
-                                if !done[]
-                                    try
-                                        write(process, JSON3.write((; id=event.id, result=(; text=answer.text, iserror=answer.iserror))) * "\n")
-                                        flush(process)
-                                    catch
-                                    end
-                                end
-                            end
-                        end
-                    elseif event.type == "call_done"
-                        call = calls[event.index]
-                        calls[event.index] = (; call.name, status=event.status, duration=event.duration)
-                    elseif event.type == "result"
-                        result = event
-                    elseif event.type == "transport_error"
-                        failure = (:worker, String(event.message))
-                    elseif event.type == "closed"
-                        failure = (:worker, "Worker exited without a result")
-                    end
+                    context = (; mode, output, calls, events, process, lockwrite, done)
+                    result, failure = codeoutcome(handlecode!(context, codeevent(event)), result, failure)
                 catch exception
                     failure = (:worker, sprint(showerror, exception))
                 end
@@ -214,28 +276,40 @@ function codeexecute(mode::CodeMode, code::AbstractString; store=Dict{String, An
         stdout = isfile(stdoutfile) ? read(stdoutfile, String) : ""
         stderr = isfile(stderrfile) ? read(stderrfile, String) : ""
         if !isnothing(failure)
-            return CodeResult(false, nothing, output, calls, Dict{String, Any}(), failure[1], failure[2], stdout, stderr, pid)
+            return CodeFailure(nothing, output, calls, Dict{String, Any}(), failure[1], failure[2], stdout, stderr, pid)
         elseif !result.ok
-            return CodeResult(false, nothing, output, calls, Dict{String, Any}(), :script, String(result.message), stdout, stderr, pid)
+            return CodeFailure(nothing, output, calls, Dict{String, Any}(), :script, String(result.message), stdout, stderr, pid)
         end
-        CodeResult(true, result.value, output, calls, Dict{String, Any}(String(key) => value for (key, value) in pairs(result.writes)), nothing, "", stdout, stderr, pid)
+        CodeSuccess(result.value, output, calls, Dict{String, Any}(String(key) => value for (key, value) in pairs(result.writes)), nothing, "", stdout, stderr, pid)
     end
 end
+
+store!(mode::CodeMode, ::CodeFailure) = nothing
+
+function store!(mode::CodeMode, result::CodeSuccess)
+    lock(mode.lock) do
+        merge!(mode.store, result.writes)
+    end
+    nothing
+end
+
+present!(lines::Vector{String}, ::Nothing) = nothing
+present!(lines::Vector{String}, value::AbstractString) = push!(lines, String(value))
+present!(lines::Vector{String}, value) = push!(lines, JSON3.write(value))
+render!(lines::Vector{String}, result::CodeSuccess) = present!(lines, result.value)
+render!(lines::Vector{String}, result::CodeFailure) = push!(lines, "$(result.kind): $(result.message)")
+toolresult(::CodeSuccess, lines) = ToolSuccess(join(lines, "\n"))
+toolresult(::CodeFailure, lines) = ToolFailure(join(lines, "\n"))
 
 function execute(mode::CodeMode, args)
     state = lock(mode.lock) do
         deepcopy(mode.store)
     end
     result = codeexecute(mode, args.code; store=state)
-    if result.ok
-        lock(mode.lock) do
-            merge!(mode.store, result.writes)
-        end
-    end
+    store!(mode, result)
     lines = copy(result.output)
     !isempty(result.stdout) && push!(lines, result.stdout)
     !isempty(result.stderr) && push!(lines, result.stderr)
-    result.ok && !isnothing(result.value) && push!(lines, result.value isa AbstractString ? String(result.value) : JSON3.write(result.value))
-    !result.ok && push!(lines, "$(result.kind): $(result.message)")
-    ToolResult(join(lines, "\n"), !result.ok)
+    render!(lines, result)
+    toolresult(result, lines)
 end

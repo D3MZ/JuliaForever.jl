@@ -4,6 +4,36 @@ import JuliaForever.Durable as D
 import JuliaForever.Conversation as C
 import JuliaForever.Kernel as K
 
+@testset "recorded incomplete streams and cancellation" begin
+    provider = AgentFixture([completion("partial"; finish="content_filter", done=false)], [])
+    history = H.Memory()
+    agent = Agent(provider, []; history)
+    events = Symbol[]
+    result = respond!(agent, "start"; on_event=identity, on_agent_event=event -> push!(events, event.type))
+    @test result isa Completion && !result.done
+    @test result.message["content"] == "partial"
+    @test agent.state.phase == C.Incomplete
+    @test events == [:agent_start, :turn_start, :message_start, :message_end, :message_start, :message_update, :message_end, :turn_end, :agent_end]
+    @test Agent(provider, []; history).state.phase == C.Incomplete
+    @test length(provider.requests) == 1
+
+    provider = Scripted([Dict("role" => "assistant", "content" => "unused")], [])
+    agent = Agent(provider, []; history=H.Memory())
+    result = respond!(agent, "cancel before dispatch"; on_agent_event=event -> begin
+        event.type == :message_end && event.message["role"] == "user" && cancel!(agent)
+    end)
+    @test result == :cancelled
+    @test isempty(provider.requests)
+
+    provider = AgentFixture([completion("partial"; finish="content_filter", done=false)], [])
+    agent = Agent(provider, []; history=H.Memory())
+    result = respond!(agent, "cancel during stream"; on_event=identity, on_agent_event=event -> begin
+        event.type == :message_update && cancel!(agent)
+    end)
+    @test result == :cancelled
+    @test length(provider.requests) == 1
+end
+
 mutable struct FailHistory <: H.Store
     store::H.Memory
     fail::Int
@@ -121,6 +151,28 @@ end
     @test H.decode_event(Dict("format" => "JuliaForever.AgentEvent/2")) == H.Rejected(:invalid_record)
     @test H.decode_event(Dict("format" => "JuliaForever.AgentEvent/1", "event" => Dict("kind" => "observe", "fields" => Any[0]))) == H.Rejected(:invalid_record)
     @test H.encode(K.Observe(0, "x", K.Return((a=1,)))) == H.Rejected(:unsupported_value)
+    @test H.typecode(Vector{Vector{Int}}) == Any["vector", Any["vector", "int"]]
+    @test H.typecode(Vector{Tuple{Int}}) == H.Rejected(:unsupported_value)
+    @test H.valuetype(Any["vector", Any["dict", "int"]]) === Vector{Dict{String, Int}}
+    @test H.valuetype(Any["vector", "unknown"]) == H.Rejected(:invalid_record)
+    @test H.packall(C.Message[C.User("first"), C.RawMessage(Dict{String, Any}("bad" => (a=1,))), C.User("last")]) == H.Rejected(:unsupported_value)
+    nodes = Any[
+        C.User("hi"), C.RawMessage(Dict{String, Any}("text" => "hello")), call, answer,
+        C.ToolMessage("id", "result", false), C.ModelRequest(C.Message[C.User("hi")]),
+        C.ToolRequest(call), C.SkipRequest(call), C.ModelReply(answer), C.ToolReply("ok", false),
+        C.ModelFailure("failed"), C.Abandoned("reason"), C.Input(0, "input"), C.Steer(1, "steer"),
+        C.Followup(2, "followup"), C.Advance(3), C.Cancel(4), C.History(5, C.Message[C.User("hi")]),
+        C.Interrupt(6, "interrupted"), C.Abandon(7, "abandon"), K.Call("read", Dict("x" => 1)),
+        K.Return(1), K.Fail("bad"), K.Plan(0, "id", K.Call("read", 1)),
+        K.Observe(1, "id", K.Return(2)), K.Finish(2),
+    ]
+    for node in nodes
+        encoded = H.pack(node)
+        @test isequal(H.pack(H.unpack(encoded)), encoded)
+    end
+    @test H.unpack(Dict("kind" => "unknown", "fields" => Any[])) == H.Rejected(:invalid_record)
+    @test H.unpack(Dict("kind" => "tool_reply", "fields" => "bad")) == H.Rejected(:invalid_record)
+    @test H.unvalue(Dict("kind" => "vector", "type" => "int", "items" => Dict())) == H.Rejected(:invalid_record)
 end
 
 @testset "planning and tool observation failures are boundaries" begin

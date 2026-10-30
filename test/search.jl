@@ -45,6 +45,9 @@ end
         @test execute(grepper, (; pattern="NEEDLE", path="root.txt", ignoreCase=true, context=1, limit=1)).text == "root.txt-1- alpha\nroot.txt:2: Beta needle\nroot.txt-3- omega\n\n[1 matches limit reached. Use limit=2 for more, or refine pattern]"
         @test execute(grepper, (; pattern="^Beta", path="root.txt")).text == "root.txt:2: Beta needle"
         @test execute(grepper, (; pattern="^Beta", path="root.txt", literal=true)).text == "No matches found"
+        write(joinpath(dir, "literal.dat"), "CAFÉ [x]\ncafé [x]\n")
+        @test execute(grepper, (; pattern="café [x]", path="literal.dat", literal=true)).text == "literal.dat:2: café [x]"
+        @test execute(grepper, (; pattern="café [x]", path="literal.dat", literal=true, ignoreCase=true)).text == "literal.dat:1: CAFÉ [x]\nliteral.dat:2: café [x]"
         @test execute(grepper, (; pattern="needle", glob="*.ts")).text == "src/deep/sample.spec.ts:1: needle"
         @test Set(split(execute(grepper, (; pattern="needle")).text, '\n')) == Set([".hidden.txt:1: hidden needle", "keep.log:1: needle", "other/local.txt:1: needle", "root.txt:2: Beta needle", "root.txt:4: needle again", "src/deep/sample.spec.ts:1: needle"])
         @test Set(split(execute(grepper, (; pattern="needle", glob="*.txt")).text, '\n')) == Set([".hidden.txt:1: hidden needle", "ignored.txt:1: needle", "other/local.txt:1: needle", "root.txt:2: Beta needle", "root.txt:4: needle again", "src/local.txt:1: needle"])
@@ -98,11 +101,13 @@ function nestedfixture(dir)
     mkpath(joinpath(dir, ".git", "info"))
     mkpath(joinpath(dir, "nested", ".git", "info"))
     write(joinpath(dir, ".gitignore"), "blocked.txt\n")
+    write(joinpath(dir, ".ignore"), "local-only.txt\n")
     write(joinpath(dir, ".git", "info", "exclude"), "private.txt\n")
     write(joinpath(dir, "blocked.txt"), "needle\n")
     write(joinpath(dir, "private.txt"), "needle\n")
     write(joinpath(dir, "nested", "blocked.txt"), "needle\n")
     write(joinpath(dir, "nested", "private.txt"), "needle\n")
+    write(joinpath(dir, "nested", "local-only.txt"), "needle\n")
     write(joinpath(dir, "nested", ".git", "info", "exclude"), "nested-secret.txt\n")
     write(joinpath(dir, "nested", "nested-secret.txt"), "needle\n")
 end
@@ -110,8 +115,10 @@ end
 @testset "nested repository ignore boundaries" begin
     mktempdir() do dir
         nestedfixture(dir)
+        @test length(unique(typeof.(first(JuliaForever.initialrules(joinpath(dir, "nested"), true))))) == 2
         @test execute(Find(dir), (; pattern="blocked.txt")).text == "nested/blocked.txt"
         @test execute(Find(dir), (; pattern="private.txt")).text == "nested/private.txt"
+        @test execute(Find(dir), (; pattern="local-only.txt")).text == "No files found matching pattern"
         @test execute(Find(dir), (; pattern="nested-secret.txt")).text == "No files found matching pattern"
         @test Set(split(execute(Grep(dir), (; pattern="needle")).text, '\n')) == Set(["nested/blocked.txt:1: needle", "nested/private.txt:1: needle"])
     end

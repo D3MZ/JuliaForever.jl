@@ -1,14 +1,26 @@
-function submitted(agent, executor, effect, context)
-    rejected = fault(agent)
-    isnothing(rejected) || return rejected
+detailed(::Conversation.ModelRequest) = true
+detailed(::Kernel.Effect) = false
+
+function register!(agent::Agent, handle::Execution.Handle)
+    turn, failure = lock(agent.lock) do
+        agent.handle = handle
+        agent.turn, agent.fault
+    end
+    register!(handle, turn, failure)
+end
+
+register!(handle::Execution.Handle, ::Union{Idle, Running}, ::Nothing) = nothing
+register!(handle::Execution.Handle, ::Union{Idle, Running}, ::History.Rejected) = Execution.cancel!(handle)
+register!(handle::Execution.Handle, ::Cancelled, failure) = Execution.cancel!(handle)
+
+submitted(agent::Agent, executor, effect, context) = submitted(agent, executor, effect, context, fault(agent))
+submitted(agent::Agent, executor, effect, context, rejected::History.Rejected) = rejected
+submitted(agent::Agent, executor, effect, context, ::Cancelled) = nothing
+submitted(agent::Agent, executor, effect, context, ::Union{Idle, Running}) = submitted(agent, executor, effect, context)
+
+function submitted(agent::Agent, executor, effect, context, ::Nothing)
     handle = try
-        Execution.submit!(executor, effect, 1, context; detailed=effect.effect isa Conversation.ModelRequest, on_handle=handle -> begin
-            cancel = lock(agent.lock) do
-                agent.handle = handle
-                agent.cancelled || !isnothing(agent.fault)
-            end
-            cancel && Execution.cancel!(handle)
-        end)
+        Execution.submit!(executor, effect, 1, context; detailed=detailed(effect.effect), on_handle=handle -> register!(agent, handle))
     catch
         lock(agent.lock) do
             agent.handle = nothing
@@ -22,40 +34,70 @@ function submitted(agent, executor, effect, context)
             agent.handle = nothing
         end
     end
-    rejected = fault(agent)
-    isnothing(rejected) || return rejected
+    submitted(outcome, effect, fault(agent))
+end
+
+submitted(outcome, effect, rejected::History.Rejected) = rejected
+
+function submitted(outcome, effect, ::Nothing)
     outcome.id == effect.id && outcome.attempt == 1 ? outcome : Execution.Rejected(:stale_outcome)
 end
 
 unresolved(agent::Agent, outcome::History.Rejected) = outcome
-unresolved(agent::Agent, outcome) = isnothing(agent.history) ? outcome : Execution.Uncertain(outcome)
+unresolved(agent::Agent, outcome) = unresolved(agent.history, outcome)
+unresolved(::Nothing, outcome) = outcome
+unresolved(::History.Store, outcome) = Execution.Uncertain(outcome)
+
+toolreply(::Nothing, ::TurnState) = Conversation.ToolReply(ToolFailure("Operation cancelled"))
+toolreply(outcome::Execution.Cancelled, ::Cancelled) = Conversation.ToolReply(ToolFailure("Operation cancelled"))
+toolreply(outcome::Execution.Completed, ::TurnState) = toolreply(outcome.value)
+toolreply(reply::Conversation.ToolReply) = reply
+toolreply(value) = Execution.Rejected(:unexpected_result)
+toolreply(outcome, ::TurnState) = outcome
 
 function execution_tools!(agent, executor, context, effects, messages, callback)
-    results = Dict{String, Any}[]
-    for effect in effects
-        call = convert(Dict{String, Any}, effect.effect.call)
-        toolstart(call, callback)
-        rejected = fault(agent)
-        isnothing(rejected) || return rejected
-        outcome = cancelled(agent) ? nothing : submitted(agent, executor, effect, context)
-        reply = if isnothing(outcome) || outcome isa Execution.Cancelled && cancelled(agent)
-            Conversation.ToolReply(ToolFailure("Operation cancelled"))
-        elseif outcome isa Execution.Completed
-            outcome.value isa Conversation.ToolReply || return Execution.Rejected(:unexpected_result)
-            outcome.value
-        else
-            return outcome
-        end
-        result = reply.result
-        ended = (; type=:tool_execution_end, tool_call_id=call["id"], tool_name=callinfo(call).name, result, iserror=result.iserror)
-        isnothing(agent.history) && emit(callback, ended)
-        transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, reply), agent)
-        transition isa Kernel.Applied || return transition
-        isnothing(agent.history) || emit(callback, ended)
-        present!(agent, added, messages, callback)
-        push!(results, toolmessage(call, result))
+    foldl(effects; init=Dict{String, Any}[]) do results, effect
+        execution_tool!(agent, executor, context, effect, messages, callback, results)
     end
-    results
+end
+
+execution_tool!(agent, executor, context, effect, messages, callback, outcome) = outcome
+
+function execution_tool!(agent, executor, context, effect, messages, callback, results::Vector{Dict{String, Any}})
+    call = convert(Dict{String, Any}, effect.effect.call)
+    toolstart(call, callback)
+    execution_tool!(agent, executor, context, effect, messages, callback, results, call, fault(agent))
+end
+
+execution_tool!(agent, executor, context, effect, messages, callback, results, call, rejected::History.Rejected) = rejected
+
+function execution_tool!(agent, executor, context, effect, messages, callback, results, call, ::Nothing)
+    turn = lock(() -> agent.turn, agent.lock)
+    outcome = submitted(agent, executor, effect, context, turn)
+    turn = lock(() -> agent.turn, agent.lock)
+    observe_tool!(agent, effect, messages, callback, results, call, toolreply(outcome, turn))
+end
+
+observe_tool!(agent, effect, messages, callback, results, call, outcome) = outcome
+before_tool!(callback, ended, ::Nothing) = emit(callback, ended)
+before_tool!(callback, ended, ::History.Store) = nothing
+after_tool!(callback, ended, ::Nothing) = nothing
+after_tool!(callback, ended, ::History.Store) = emit(callback, ended)
+
+function observe_tool!(agent, effect, messages, callback, results, call, reply::Conversation.ToolReply)
+    result = reply.result
+    ended = (; type=:tool_execution_end, tool_call_id=call["id"], tool_name=callinfo(call).name, result, iserror=result.iserror)
+    before_tool!(callback, ended, agent.history)
+    transition, added = transition!(revision -> Kernel.Observe(revision, effect.id, reply), agent)
+    finish_tool!(agent, messages, callback, results, call, result, ended, transition, added)
+end
+
+finish_tool!(agent, messages, callback, results, call, result, ended, transition, added) = transition
+
+function finish_tool!(agent, messages, callback, results, call, result, ended, transition::Kernel.Applied, added)
+    after_tool!(callback, ended, agent.history)
+    present!(agent, added, messages, callback)
+    push!(results, toolmessage(call, result))
 end
 
 respond_execution!(::Agent, prompt, executor, context; kwargs...) = Execution.Rejected(:executor)
@@ -67,9 +109,13 @@ function finish(message, result::Execution.ModelResult{Conversation.ModelReply})
 end
 
 function respond_execution!(agent::Agent, prompt, executor::Execution.Executor, context::AbstractString; on_event, on_agent_event, parameters, tool_execution)
-    rejected = fault(agent)
-    isnothing(rejected) || return rejected
-    isnothing(on_event) || return Execution.Rejected(:streaming)
+    respond_execution!(agent, prompt, executor, context, on_event, fault(agent); on_agent_event, parameters, tool_execution)
+end
+
+respond_execution!(agent::Agent, prompt, executor::Execution.Executor, context::AbstractString, on_event, rejected::History.Rejected; kwargs...) = rejected
+respond_execution!(agent::Agent, prompt, executor::Execution.Executor, context::AbstractString, on_event, ::Nothing; kwargs...) = Execution.Rejected(:streaming)
+
+function respond_execution!(agent::Agent, prompt, executor::Execution.Executor, context::AbstractString, ::Nothing, ::Nothing; on_agent_event, parameters, tool_execution)
     isempty(parameters) || return Execution.Rejected(:parameters)
     tool_execution == :sequential || return Execution.Rejected(:parallel_tools)
     begin!(agent) || return :busy
@@ -154,17 +200,18 @@ function respond_execution!(agent::Agent, prompt, executor::Execution.Executor, 
         end
     finally
         try
-            if isnothing(agent.history)
-                if agent.state.phase in (Conversation.ReadyModel, Conversation.ReadyDecision, Conversation.WaitingModel, Conversation.WaitingTools)
-                    transition!(revision -> Conversation.Interrupt(revision, "turn interrupted"), agent)
-                end
-                sync!(agent)
-            else
-                interrupted!(agent)
-            end
+            interrupt!(agent, agent.history)
             emit(on_agent_event, (; type=:agent_end, messages=deepcopy(messages)))
         finally
             finish!(agent)
         end
     end
 end
+
+function interrupt!(agent::Agent, ::Nothing)
+    interrupt!(agent, agent.state.phase)
+    sync!(agent)
+    nothing
+end
+
+interrupt!(agent::Agent, ::History.Store) = interrupted!(agent)

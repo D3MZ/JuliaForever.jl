@@ -104,7 +104,50 @@ Base.hash(value::ToolReply, h::UInt) = hash((value.text, value.iserror, value.im
 Base.hash(value::ModelFailure, h::UInt) = hash(value.reason, hash(ModelFailure, h))
 Base.hash(value::Abandoned, h::UInt) = hash(value.reason, hash(Abandoned, h))
 
-@enum Phase Ready ReadyModel ReadyDecision WaitingModel WaitingTools Complete Incomplete Cancelled
+abstract type Phase end
+struct ReadyPhase <: Phase end
+struct ReadyModelPhase <: Phase end
+struct ReadyDecisionPhase <: Phase end
+struct WaitingModelPhase <: Phase end
+struct WaitingToolsPhase <: Phase end
+struct CompletePhase <: Phase end
+struct IncompletePhase <: Phase end
+struct CancelledPhase <: Phase end
+
+const Ready = ReadyPhase()
+const ReadyModel = ReadyModelPhase()
+const ReadyDecision = ReadyDecisionPhase()
+const WaitingModel = WaitingModelPhase()
+const WaitingTools = WaitingToolsPhase()
+const Complete = CompletePhase()
+const Incomplete = IncompletePhase()
+const Cancelled = CancelledPhase()
+
+Base.instances(::Type{Phase}) = (Ready, ReadyModel, ReadyDecision, WaitingModel, WaitingTools, Complete, Incomplete, Cancelled)
+Phase(value::Integer) = instances(Phase)[Int(value) + 1]
+phasecode(::ReadyPhase) = 0
+phasecode(::ReadyModelPhase) = 1
+phasecode(::ReadyDecisionPhase) = 2
+phasecode(::WaitingModelPhase) = 3
+phasecode(::WaitingToolsPhase) = 4
+phasecode(::CompletePhase) = 5
+phasecode(::IncompletePhase) = 6
+phasecode(::CancelledPhase) = 7
+Base.convert(::Type{T}, phase::Phase) where {T <: Integer} = convert(T, phasecode(phase))
+(::Type{T})(phase::Phase) where {T <: Integer} = convert(T, phase)
+Base.broadcastable(phase::Phase) = Ref(phase)
+Base.isless(a::Phase, b::Phase) = isless(phasecode(a), phasecode(b))
+Base.:<(a::Phase, b::Phase) = phasecode(a) < phasecode(b)
+Base.:<=(a::Phase, b::Phase) = phasecode(a) <= phasecode(b)
+
+Base.show(io::IO, ::ReadyPhase) = print(io, "Ready")
+Base.show(io::IO, ::ReadyModelPhase) = print(io, "ReadyModel")
+Base.show(io::IO, ::ReadyDecisionPhase) = print(io, "ReadyDecision")
+Base.show(io::IO, ::WaitingModelPhase) = print(io, "WaitingModel")
+Base.show(io::IO, ::WaitingToolsPhase) = print(io, "WaitingTools")
+Base.show(io::IO, ::CompletePhase) = print(io, "Complete")
+Base.show(io::IO, ::IncompletePhase) = print(io, "Incomplete")
+Base.show(io::IO, ::CancelledPhase) = print(io, "Cancelled")
 
 struct State
     kernel::K.State
@@ -186,7 +229,12 @@ end
 
 function K.step(state::State, event::Input)
     event.revision == state.revision || return K.Rejected(state, :revision)
-    state.phase in (Ready, Complete, Incomplete, Cancelled) || return K.Rejected(state, :phase)
+    K.step(state, event, state.phase)
+end
+
+K.step(state::State, event::Input, ::Phase) = K.Rejected(state, :phase)
+
+function K.step(state::State, event::Input, ::Union{ReadyPhase, CompletePhase, IncompletePhase, CancelledPhase})
     messages = copy(getfield(state, :messages))
     push!(messages, User(event.text))
     state.automatic || return K.Applied(update(state; messages, phase=ReadyModel, cancelled=false), ())
@@ -237,32 +285,50 @@ function K.step(state::State, event::Abandon)
         kernel = result.state
     end
     messages = copy(getfield(state, :messages))
-    if state.phase == WaitingTools
-        order = getfield(state, :order)
-        calls = getfield(state, :calls)
-        observations = kernel.observations
-        for index in state.flushed+1:length(order)
-            observation = only(item.observation for item in observations if item.id == order[index])
-            push!(messages, ToolMessage(calls[index], observation, event.reason))
-        end
-    end
+    abandon!(messages, state, kernel, event, state.phase)
     K.Applied(update(state; kernel, messages, phase=Incomplete, order=String[], calls=ToolCall[], flushed=0), ())
+end
+
+abandon!(messages, state, kernel, event, ::Phase) = nothing
+
+function abandon!(messages, state, kernel, event, ::WaitingToolsPhase)
+    order = getfield(state, :order)
+    calls = getfield(state, :calls)
+    observations = kernel.observations
+    for index in state.flushed+1:length(order)
+        observation = only(item.observation for item in observations if item.id == order[index])
+        push!(messages, ToolMessage(calls[index], observation, event.reason))
+    end
+    nothing
 end
 
 function K.step(state::State, event::Advance)
     event.revision == state.revision || return K.Rejected(state, :revision)
-    state.phase in (ReadyModel, ReadyDecision) || return K.Rejected(state, :phase)
+    advance(state, state.phase)
+end
+
+advance(state::State, ::Phase) = K.Rejected(state, :phase)
+
+function advance(state::State, phase::Union{ReadyModelPhase, ReadyDecisionPhase})
     state.cancelled && return K.Applied(update(state; phase=Cancelled), ())
     steering = getfield(state, :steering)
     followups = getfield(state, :followups)
-    if state.phase == ReadyDecision && isempty(steering) && isempty(followups)
-        return K.Applied(update(state; phase=Complete), ())
-    end
+    advance(state, phase, steering, followups)
+end
+
+function advance(state::State, ::ReadyDecisionPhase, steering, followups)
+    isempty(steering) && isempty(followups) && return K.Applied(update(state; phase=Complete), ())
     messages = copy(getfield(state, :messages))
-    if state.phase == ReadyDecision && isempty(steering)
+    if isempty(steering)
         followups = copy(followups)
         push!(messages, User(popfirst!(followups)))
     end
+    advance(state, messages, steering, followups)
+end
+
+advance(state::State, ::ReadyModelPhase, steering, followups) = advance(state, copy(getfield(state, :messages)), steering, followups)
+
+function advance(state::State, messages::Vector{Message}, steering, followups)
     kernel, effect, steering = model(state.kernel, messages, steering)
     updated = update(state; kernel, messages, steering, followups, phase=WaitingModel)
     K.Applied(updated, (effect,))
@@ -270,16 +336,23 @@ end
 
 function observe(state::State, event::K.Observe, phase::Phase)
     result = K.step(state.kernel, K.Observe(state.kernel.revision, event.id, event.observation))
-    result isa K.Duplicate && return K.Duplicate(state)
-    result isa K.Rejected && return K.Rejected(state, result.reason)
-    event.revision == state.revision || return K.Rejected(state, :revision)
-    state.phase == phase || return K.Rejected(state, :phase)
-    result
+    observe(state, event, phase, result)
 end
 
-function K.step(state::State, event::K.Observe{ModelReply})
-    result = observe(state, event, WaitingModel)
-    result isa K.Applied || return result
+observe(state::State, event::K.Observe, phase::Phase, ::K.Duplicate) = K.Duplicate(state)
+observe(state::State, event::K.Observe, phase::Phase, result::K.Rejected) = K.Rejected(state, result.reason)
+
+function observe(state::State, event::K.Observe, phase::Phase, result::K.Applied)
+    event.revision == state.revision || return K.Rejected(state, :revision)
+    observe(state, state.phase, phase, result)
+end
+
+observe(state::State, actual::Phase, expected::Phase, result::K.Applied) = K.Rejected(state, :phase)
+observe(state::State, actual::T, expected::T, result::K.Applied) where {T <: Phase} = result
+observe(state::State, event::K.Observe, result::Union{K.Rejected, K.Duplicate}) = result
+K.step(state::State, event::K.Observe{ModelReply}) = observe(state, event, observe(state, event, WaitingModel))
+
+function observe(state::State, event::K.Observe{ModelReply}, result::K.Applied)
     kernel = result.state
     answer = deepcopy(event.observation.message)
     answer.done || return K.Applied(update(state; kernel, phase=Incomplete), ())
@@ -319,9 +392,9 @@ function K.step(state::State, event::K.Observe{ModelReply})
     K.Applied(updated, Tuple(effects))
 end
 
-function K.step(state::State, event::K.Observe{ToolReply})
-    result = observe(state, event, WaitingTools)
-    result isa K.Applied || return result
+K.step(state::State, event::K.Observe{ToolReply}) = observe(state, event, observe(state, event, WaitingTools))
+
+function observe(state::State, event::K.Observe{ToolReply}, result::K.Applied)
     kernel = result.state
     messages = copy(getfield(state, :messages))
     observations = kernel.observations
@@ -346,9 +419,9 @@ function K.step(state::State, event::K.Observe{ToolReply})
     K.Applied(updated, (effect,))
 end
 
-function K.step(state::State, event::K.Observe{ModelFailure})
-    result = observe(state, event, WaitingModel)
-    result isa K.Applied || return result
+K.step(state::State, event::K.Observe{ModelFailure}) = observe(state, event, observe(state, event, WaitingModel))
+
+function observe(state::State, event::K.Observe{ModelFailure}, result::K.Applied)
     K.Applied(update(state; kernel=result.state, phase=state.cancelled ? Cancelled : Incomplete), ())
 end
 

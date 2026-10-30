@@ -12,14 +12,21 @@ end
 
 export ShellCancellation
 
+abstract type ShellOutcome end
+struct ShellComplete <: ShellOutcome end
+struct ShellTimeout <: ShellOutcome end
+struct ShellCancelled <: ShellOutcome end
+struct ShellStopFailed <: ShellOutcome end
+struct Signalled end
+
 mutable struct ShellRun
     process::Base.Process
     lock::ReentrantLock
-    outcome::Union{Nothing, Symbol}
-    done::Channel{Symbol}
+    outcome::Union{Nothing, ShellOutcome}
+    done::Channel{ShellOutcome}
 end
 
-ShellRun(process::Base.Process) = ShellRun(process, ReentrantLock(), nothing, Channel{Symbol}(1))
+ShellRun(process::Base.Process) = ShellRun(process, ReentrantLock(), nothing, Channel{ShellOutcome}(1))
 
 mutable struct ShellCancellation
     lock::ReentrantLock
@@ -29,10 +36,12 @@ end
 
 ShellCancellation() = ShellCancellation(ReentrantLock(), false, Set{ShellRun}())
 
+cancel!(::Nothing) = nothing
+
 function cancel!(cancel::ShellCancellation)
     lock(cancel.lock) do
         cancel.cancelled = true
-        foreach(run -> signal!(run, :cancelled), cancel.runs)
+        foreach(run -> signal!(run, ShellCancelled()), cancel.runs)
     end
     nothing
 end
@@ -85,25 +94,70 @@ function stop(process::Base.Process)
     # Keep Julia's process handle locked until signalling finishes, so its PID cannot be reaped and reused in between.
     Base.iolock_begin()
     try
-        process_exited(process) && return :complete
+        process_exited(process) && return ShellComplete()
         pid = ccall(:jl_uv_process_pid, Cint, (Ptr{Cvoid},), process.handle)
-        ccall(:kill, Cint, (Cint, Cint), -pid, Base.SIGKILL) == 0 && return :signalled
-        Base.Libc.errno() == Base.Libc.ESRCH ? :complete : :stop_failed
+        ccall(:kill, Cint, (Cint, Cint), -pid, Base.SIGKILL) == 0 && return Signalled()
+        Base.Libc.errno() == Base.Libc.ESRCH ? ShellComplete() : ShellStopFailed()
     finally
         Base.iolock_end()
     end
 end
 
-function signal!(run::ShellRun, outcome::Symbol)
+stop(process::Base.Process, ::ShellComplete) = ShellComplete()
+
+function stop(process::Base.Process, requested::Union{ShellTimeout, ShellCancelled})
+    result = Sys.iswindows() ? ShellStopFailed() : stop(process)
+    stop(requested, result)
+end
+
+stop(requested::ShellOutcome, ::Signalled) = requested
+stop(requested::ShellOutcome, result::Union{ShellComplete, ShellStopFailed}) = result
+
+function signal!(run::ShellRun, outcome::ShellOutcome)
     lock(run.lock) do
-        isnothing(run.outcome) || return
-        if outcome != :complete
-            status = Sys.iswindows() ? :stop_failed : stop(run.process)
-            status == :signalled || (outcome = status)
-        end
-        run.outcome = outcome
-        put!(run.done, outcome)
+        signal!(run, outcome, run.outcome)
     end
+end
+
+signal!(run::ShellRun, outcome::ShellOutcome, previous::ShellOutcome) = nothing
+
+function signal!(run::ShellRun, outcome::ShellOutcome, ::Nothing)
+    result = stop(run.process, outcome)
+    run.outcome = result
+    put!(run.done, result)
+    nothing
+end
+
+cancellation(::Nothing) = ShellCancellation()
+cancellation(cancel::ShellCancellation) = cancel
+deadline(run::ShellRun, ::Nothing) = nothing
+deadline(run::ShellRun, timeout::Real) = Timer(_ -> signal!(run, ShellTimeout()), timeout)
+waitfor(::Nothing, outcome::ShellOutcome) = nothing
+waitfor(task::Task, ::ShellStopFailed) = nothing
+waitfor(task::Task, outcome::ShellOutcome) = wait(task)
+cleanup!(::Nothing) = nothing
+cleanup!(timer::Timer) = close(timer)
+cleanup!(token::ShellCancellation, ::Nothing, watcher) = nothing
+
+function cleanup!(token::ShellCancellation, run::ShellRun, watcher)
+    lock(token.lock) do
+        delete!(token.runs, run)
+    end
+    signal!(run, ShellCancelled())
+    waitfor(watcher, run.outcome)
+    nothing
+end
+
+shellfailure(output, status) = ToolFailure(isempty(output) ? status : "$output\n\n$status")
+shellresult(::ShellTimeout, output, timeout, process) = shellfailure(output, "Command timed out after $timeout seconds")
+shellresult(::ShellCancelled, output, timeout, process) = shellfailure(output, "Command aborted")
+shellresult(::ShellStopFailed, output, timeout, process) = shellfailure(output, "Could not stop shell process group; the command may still be running")
+
+function shellresult(::ShellComplete, output, timeout, process)
+    isempty(output) && (output = "(no output)")
+    code = process.termsignal == 0 ? process.exitcode : 128 + process.termsignal
+    code != 0 && return ToolFailure("$output\n\nCommand exited with code $code")
+    ToolResult(output)
 end
 
 function measure(io)
@@ -208,7 +262,7 @@ function execute(tool::Union{Bash, PowerShell}, args; cancel=nothing)
     command = Cmd(Cmd([executable; arguments; shellcommand(tool, args.command)]); dir=tool.cwd, detach=!Sys.iswindows(), env)
     file, io = mktemp(; cleanup=false)
     keep = false
-    token = isnothing(cancel) ? ShellCancellation() : cancel
+    token = cancellation(cancel)
     shellrun = nothing
     watcher = nothing
     timer = nothing
@@ -224,30 +278,17 @@ function execute(tool::Union{Bash, PowerShell}, args; cancel=nothing)
         process = shellrun.process
         watcher = @async begin
             wait(process)
-            signal!(shellrun, :complete)
+            signal!(shellrun, ShellComplete())
         end
-        !isnothing(timeout) && (timer = Timer(_ -> signal!(shellrun, :timeout), timeout))
+        timer = deadline(shellrun, timeout)
         outcome = take!(shellrun.done)
-        outcome != :stop_failed && wait(watcher)
+        waitfor(watcher, outcome)
         flush(io)
         output, keep = tail(io, file)
-        if outcome in (:timeout, :cancelled, :stop_failed)
-            status = outcome == :timeout ? "Command timed out after $timeout seconds" : outcome == :cancelled ? "Command aborted" : "Could not stop shell process group; the command may still be running"
-            return ToolFailure(isempty(output) ? status : "$output\n\n$status")
-        end
-        isempty(output) && (output = "(no output)")
-        code = process.termsignal == 0 ? process.exitcode : 128 + process.termsignal
-        code != 0 && return ToolFailure("$output\n\nCommand exited with code $code")
-        ToolResult(output)
+        shellresult(outcome, output, timeout, process)
     finally
-        !isnothing(timer) && close(timer)
-        if !isnothing(shellrun)
-            lock(token.lock) do
-                delete!(token.runs, shellrun)
-            end
-            signal!(shellrun, :cancelled)
-            shellrun.outcome != :stop_failed && !isnothing(watcher) && wait(watcher)
-        end
+        cleanup!(timer)
+        cleanup!(token, shellrun, watcher)
         close(io)
         !keep && rm(file; force=true)
     end

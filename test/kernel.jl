@@ -19,6 +19,15 @@ end
 Base.isequal(a::EqualBox, b::EqualBox) = isequal(a.value, b.value)
 
 @testset "observation equality preserves value types" begin
+    @test K.same(Int, Int)
+    @test !K.same(Int, Float64)
+    @test K.same(identity, identity)
+    @test !K.same(+, -)
+    @test !K.same("x", SubString("x", 1:1))
+    @test !K.same(Any[1], Int[1])
+    @test !K.same((true,), (1,))
+    @test !K.same((; x=1), (; y=1))
+    @test !K.same((; x=1), (; x=true))
     original = K.Return(Dict{Any, Any}("items" => Any[(flag=true,)], true => "key"))
     duplicate = K.Return(Dict{Any, Any}(true => "key", "items" => Any[(flag=true,)]))
     different_value = K.Return(Dict{Any, Any}("items" => Any[(flag=1,)], true => "key"))
