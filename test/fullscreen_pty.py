@@ -47,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix="jf-fullscreen-failure-") as directory:
 with tempfile.TemporaryDirectory(prefix="jf-fullscreen-redirect-") as directory:
     session = Session(julia, project, directory, stdout_tty=False, args=("--tui-mode", "fullscreen"))
     try:
-        session.ready()
+        session.until(lambda: b"> " in session.output, "initial prompt", timeout=90)
         os.write(session.master, b"redirected\r")
         session.until(lambda: session.stdout.exists() and "reply:redirected" in session.stdout.read_text(), "redirected output")
         os.write(session.master, b"/exit\r")

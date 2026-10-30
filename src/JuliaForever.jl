@@ -13,6 +13,7 @@ include("tool_search.jl")
 include("file_arguments.jl")
 include("system.jl")
 include("provider.jl")
+include("models.jl")
 include("kernel.jl")
 include("conversation.jl")
 include("durable.jl")
@@ -79,12 +80,15 @@ struct HistoryAbandonment
     reason::String
 end
 struct HistoryConflict end
+include("cli_models.jl")
 
 historyinspect(::Nothing) = HistoryInspection()
 historyinspect(action::HistoryInspection) = action
 historyinspect(::Union{HistoryAbandonment, HistoryConflict}) = HistoryConflict()
+historyinspect(action::ModelListing) = action
 historyabandon(::Union{Nothing, HistoryAbandonment}, reason) = HistoryAbandonment(reason)
 historyabandon(::Union{HistoryInspection, HistoryConflict}, reason) = HistoryConflict()
+historyabandon(action::ModelListing, reason) = action
 
 haslogin(::APIKeyAuth) = false
 haslogin(::OpenRouterAuth) = true
@@ -219,6 +223,7 @@ function help!()
     println("Terminal: --tui-mode fullscreen|regular (default: fullscreen).")
     println("Output: --mode text|json.")
     println("Use @PATH to include a text file or image in the initial prompt.")
+    println("Models: --list-models [search] lists models for configured providers; --model accepts provider/model or a model name.")
     0
 end
 
@@ -280,6 +285,14 @@ function (@main)(args)
                 excluded = ToolSelection.patterns(args[2])
             end
             args = args[3:end]
+        elseif first(args) == "--list-models"
+            if length(args) > 1 && !startswith(args[2], "-") && !startswith(args[2], "@")
+                action = ModelListing(args[2])
+                args = args[3:end]
+            else
+                action = ModelListing("")
+                args = args[2:end]
+            end
         elseif first(args) in ("--provider", "--model")
             option = first(args)
             if length(args) < 2 || isempty(strip(args[2])) || startswith(args[2], "--")
@@ -287,7 +300,7 @@ function (@main)(args)
                 return 2
             end
             if option == "--provider"
-                selected = args[2]
+                selected = lowercase(args[2])
             else
                 requested_model = args[2]
             end
@@ -392,10 +405,11 @@ function providerselection(action, options, ::Nothing)
 end
 
 historyaction(::Nothing, options) = loginprovider(options.auth, options.selected, options)
-loginprovider(::APIKeyAuth, selected, options) = launchprovider(options)
-loginprovider(::OpenRouterAuth, ::Nothing, options) = launchprovider(options)
+historyaction(action::ModelListing, options) = listmodels!(options.output, action.query, ENV)
+loginprovider(::APIKeyAuth, selected, options) = resolveprovider(options, options.requested_model)
+loginprovider(::OpenRouterAuth, ::Nothing, options) = resolveprovider(options, options.requested_model)
 loginprovider(::OpenRouterAuth, selected::AbstractString, options) = loginprovider(options, get(loginproviders, selected, nothing))
-loginprovider(options, ::NamedTuple) = launchprovider(options)
+loginprovider(options, ::NamedTuple) = resolveprovider(options, options.requested_model)
 function loginprovider(options, ::Nothing)
     println(stderr, "OpenRouter login requires --provider openrouter.")
     2
@@ -405,10 +419,11 @@ function launchprovider(options)
     name = providername(auth, selected)
     info = providerinfo(name)
     model = acquire(auth, info, requested_model)
-    Base.ScopedValues.with(tuimode => options.tui) do
+    Base.ScopedValues.with(tuimode => LiveTerminal.withprovider(options.tui, name)) do
         launch(output, model, packages, environments, codemode, session, sessiondir, args, sessionname, baseline, rules, excluded, provider(outputmode, name))
     end
 end
+
 historyaction(::HistoryInspection, options) = inspectrequest!(options.session, options.auth, options.sessionname, options.args)
 historyaction(::HistoryConflict, options) = invalidinspection()
 historyaction(action::HistoryAbandonment, options) = abandonrequest!(options.session, options.auth, options.sessionname, options.args, action.reason)

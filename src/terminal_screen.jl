@@ -1,8 +1,13 @@
 import Unicode
 
 abstract type Mode end
-struct FullscreenMode <: Mode end
+struct FullscreenMode <: Mode
+    provider::String
+end
+FullscreenMode() = FullscreenMode("")
 struct RegularMode <: Mode end
+withprovider(::FullscreenMode, name) = FullscreenMode(name)
+withprovider(mode::RegularMode, name) = mode
 abstract type View end
 struct Regular <: View end
 abstract type Detail end
@@ -46,12 +51,13 @@ mutable struct Fullscreen <: View
     timer::Union{Nothing, Timer}
     frame::Union{Unpainted, Painted}
     name::String
+    provider::String
 end
-Fullscreen() = Fullscreen(Union{TextBlock, ToolBlock}[], Dict{String, ToolBlock}(), Collapsed(), 0, (0, 0), nothing, Unpainted(), "session")
+Fullscreen(provider="") = Fullscreen(Union{TextBlock, ToolBlock}[], Dict{String, ToolBlock}(), Collapsed(), 0, (0, 0), nothing, Unpainted(), "session", provider)
 
 createview(::RegularMode, output) = Regular()
 createview(::FullscreenMode, output::IO) = Regular()
-createview(::FullscreenMode, output::Base.TTY) = Fullscreen()
+createview(mode::FullscreenMode, output::Base.TTY) = Fullscreen(mode.provider)
 intro!(::Regular, output) = println(output, "Julia Forever — Enter sends, Alt+Enter follows up, Esc interrupts, /exit quits")
 intro!(::Fullscreen, output) = nothing
 

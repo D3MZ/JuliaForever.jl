@@ -423,7 +423,7 @@ function request!(f, agent::Agent, partial, started)
         unregister!(agent, context)
         exceptions = current_exceptions()
         if length(exceptions) > depth && requestcancelled(last(exceptions).exception, turnstate(agent))
-            result = Completion(deepcopy(partial), nothing, "cancelled", false, "cancelled")
+            result = Completion(deepcopy(partial), nothing, "cancelled", Unfinished(), "cancelled")
             return (; message=result.message, result, started=started[])
         end
     end

@@ -96,8 +96,13 @@ uicommand!(session, ::Fullscreen, command, terminal, history, input, directory, 
 
 function uicommand!(session, ::Fullscreen, ::JuliaForever.SelectModel, terminal, history, input, directory, snapshot, draft)
     current = modelname(session.agent.provider)
-    index = menu!(session, "Select model", ["Current: " * current, "Enter a model ID…"])
-    index == 2 || return session.agent, history, 0
+    provider = JuliaForever.modelconstraint(session.view.provider)
+    models = sort!(JuliaForever.Models.pool(JuliaForever.Models.catalog(), provider); by=model -> JuliaForever.Models.collation(model.id))
+    labels = ["Current: " * current, "Enter a model ID…"]
+    append!(labels, (model.id * "  " * model.name for model in models))
+    index = menu!(session, "Select model", labels)
+    index <= 1 && return session.agent, history, 0
+    index > 2 && return JuliaForever.setmodel!(session.terminal, session.agent, history, models[index - 2].id)
     print(session.physical, "\e[H\e[2JModel ID (empty cancels): ")
     flush(session.physical)
     eof(input) && return session.agent, history, 0
