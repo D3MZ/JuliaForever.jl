@@ -8,7 +8,7 @@ function branchpoints!(result, node, file)
     if kind in ("if", "elseif", "for", "while", "?", "&&", "||", "filter") && !isempty(children)
         condition = kind == "filter" ? last(children) : first(children)
         push!(result, (; file, line=JuliaSyntax.source_line(node), kind, condition=strip(JuliaSyntax.sourcetext(condition))))
-    elseif kind == "call" && length(children) > 1
+    elseif kind == "call" && JuliaSyntax.is_prefix_call(node) && length(children) > 1
         callee = last(split(JuliaSyntax.sourcetext(first(children)), '.'))
         if callee == "ifelse"
             push!(result, (; file, line=JuliaSyntax.source_line(node), kind="ifelse", condition=strip(JuliaSyntax.sourcetext(children[2]))))

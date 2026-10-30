@@ -44,7 +44,12 @@ include("dispatch_checks.jl")
     @test isempty(dispatchchecks(Meta.parse("f(x) = typeof(x)")))
     predicate = Meta.parseall("selected(::Nothing) = false\nselected(::String) = true\nf(x) = selected(x) ? 1 : 0")
     @test length(dispatchchecks(predicate)) == 1
+    @test length(dispatchchecks(Meta.parseall("selected(::Nothing) = false\nselected(::String) = true\nf(xs) = filter(selected, xs)"))) == 1
+    @test length(dispatchchecks(Meta.parseall("selected(::Nothing) = false\nselected(::String) = true\nf(xs) = filter(!selected, xs)"))) == 1
+    @test length(dispatchchecks(Meta.parseall("selected(::Nothing) = false\nselected(::String) = true\nf(xs) = findall(selected, xs)"))) == 1
     @test length(dispatchchecks(Meta.parseall("function selected(::Nothing); return false; end\nf(x) = selected(x) ? 1 : 0"))) == 1
+    @test length(dispatchchecks(Meta.parseall("selected(x::String) = if isempty(x); true; else; return false; end\nf(x) = selected(x) ? 1 : 0"))) == 1
+    @test length(dispatchchecks(Meta.parseall("selected(x::String) = if isempty(x); true; else; return false; end\nf(xs) = filter(selected, xs)"))) == 1
     @test isempty(dispatchchecks(Meta.parseall("selected(x) = x > 0\nf(x) = selected(x) ? 1 : 0")))
     @test length(dispatchchecks(Meta.parse("f(flag) = handle(Val(flag))"))) == 1
     @test length(dispatchchecks(Meta.parse("f(x) = handle(Val(x == 0))"))) == 1
@@ -70,6 +75,8 @@ include("dispatch_checks.jl")
         write(joinpath(root, "predicate.jl"), "selected(::Nothing) = false\nselected(::String) = true")
         write(joinpath(root, "consumer.jl"), "f(x) = selected(x) ? 1 : 0")
         @test only(dispatchbaseline(root)) == "consumer.jl\t:(selected(x))"
+        write(joinpath(root, "consumer.jl"), "f(xs) = filter(selected, xs)")
+        @test only(dispatchbaseline(root)) == "consumer.jl\t:selected"
     end
 
     # Julia's REPL.prompt! returns `ok` and `suspend` booleans at the terminal boundary.
