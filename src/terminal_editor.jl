@@ -212,10 +212,3 @@ Base.iterate(editor::Editor) = next!(editor)
 Base.iterate(editor::Editor, ::Nothing) = next!(editor)
 
 end
-
-terminalinput(input::IO, output::IO) = eachline(input)
-
-function terminalinput(input::Base.TTY, output::IO)
-    println(output, "Julia Forever — Enter sends, Ctrl+J adds a line, /exit quits")
-    TerminalEditor.Editor(input, output)
-end
