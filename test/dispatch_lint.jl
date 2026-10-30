@@ -53,7 +53,21 @@ include("dispatch_checks.jl")
     @test isempty(dispatchchecks(Meta.parseall("selected(x) = x > 0\nf(x) = selected(x) ? 1 : 0")))
     @test length(dispatchchecks(Meta.parseall("flag(::Nothing) = false\nflag(::String) = true\nf(x) = Completion(Dict(), nothing, nothing, flag(x), nothing)"))) == 1
     @test length(dispatchchecks(Meta.parse("f(x) = ToolReply(x.text, x.iserror)"))) == 1
-    @test isempty(dispatchchecks(Meta.parse("f(iserror::Bool) = ToolResult(\"text\", iserror)")))
+    @test length(dispatchchecks(Meta.parse("f() = ToolResult(\"cancelled\", true)"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(image) = ToolResult(\"ok\", false, image)"))) == 1
+    @test length(dispatchchecks(Meta.parse("f() = ToolReply(\"failed\", true)"))) == 1
+    @test length(dispatchchecks(Meta.parse("f() = Completion(Dict(), nothing, nothing, false, nothing)"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(fields...) = CodeResult(true, fields...)"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(reply) = Completion(Dict(), nothing, nothing, reply.done, nothing)"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(reply) = CodeResult(reply.ok, reply)"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(text, failed) = ToolResult(text, failed)"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(text, iserror) = ToolReply(text, iserror)"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(done) = Completion(Dict(), nothing, nothing, done, nothing)"))) == 1
+    @test length(dispatchchecks(Meta.parse("f(ok, fields...) = CodeResult(ok, fields...)"))) == 1
+    @test isempty(dispatchchecks(Meta.parse("CodeResult(ok, fields...) = CodeSuccess(fields...)")))
+    @test isempty(dispatchchecks(Meta.parse("Completion(message, usage, finish, done, error) = Completion(message, usage, finish, Finished(), error)")))
+    @test length(dispatchchecks(Meta.parse("ToolResult(x::Val{true}, flag) = x"))) == 1
+    @test isempty(dispatchchecks(Meta.parse("f() = Completion(Dict(\"enabled\" => true), nothing, nothing, Finished(), nothing)")))
     @test length(dispatchchecks(Meta.parse("f(flag) = handle(Val(flag))"))) == 1
     @test length(dispatchchecks(Meta.parse("f() = handle(Val(true))"))) == 1
     @test length(dispatchchecks(Meta.parse("f() = handle(Val(false))"))) == 1

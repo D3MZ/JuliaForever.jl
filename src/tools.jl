@@ -34,9 +34,11 @@ end
 
 ToolSuccess(text) = ToolSuccess(text, nothing)
 ToolFailure(text) = ToolFailure(text, nothing)
+const tooltypes = Dict(false => ToolSuccess, true => ToolFailure)
+tooltype(iserror::Bool) = tooltypes[iserror]
 ToolResult(text) = ToolSuccess(text)
-ToolResult(text, iserror::Bool) = ToolResult(text, iserror, nothing)
-ToolResult(text, iserror::Bool, image) = iserror ? ToolFailure(text, image) : ToolSuccess(text, image)
+ToolResult(text, iserror::Bool) = tooltype(iserror)(text)
+ToolResult(text, iserror::Bool, image) = tooltype(iserror)(text, image)
 
 iserror(::ToolSuccess) = false
 iserror(::ToolFailure) = true
@@ -220,18 +222,18 @@ imageproblem(::MIME"image/jpeg", bytes) = nothing
 
 function readimage(io, format::Union{MIME"image/png", MIME"image/jpeg"}, bytes)
     append!(bytes, read(io, imagelimit + 1 - length(bytes)))
-    length(bytes) <= imagelimit || return ToolResult("Image exceeds the 10 MiB limit", true)
+    length(bytes) <= imagelimit || return ToolFailure("Image exceeds the 10 MiB limit")
     imagefile(format, bytes, imageproblem(format, bytes))
 end
 
-readimage(io, ::MIME, bytes) = ToolResult("Image format is not supported", true)
+readimage(io, ::MIME, bytes) = ToolFailure("Image format is not supported")
 
 function imagefile(format::MIME, bytes, ::Nothing)
     mime = string(format)
-    ToolResult("Read image file [$mime]", false, Image(mime, base64encode(bytes)))
+    ToolSuccess("Read image file [$mime]", Image(mime, base64encode(bytes)))
 end
 
-imagefile(::MIME, bytes, problem::String) = ToolResult(problem, true)
+imagefile(::MIME, bytes, problem::String) = ToolFailure(problem)
 
 function readfile(io)
     if !eof(io) && peek(io, UInt8) in imageheads
@@ -257,8 +259,11 @@ function readresult(content::String, args)
     limit = get(args, :limit, length(lines))
     stop = min(length(lines), offset + limit - 1)
     content = join(lines[offset:stop], '\n')
-    output = truncate(content, lines, offset, args.path)
-    !isnothing(output) && return ToolResult(output)
+    readresult(truncate(content, lines, offset, args.path), content, lines, stop, args)
+end
+
+readresult(output::String, content, lines, stop, args) = ToolResult(output)
+function readresult(::Nothing, content, lines, stop, args)
     remaining = length(lines) - stop
     remaining > 0 && haskey(args, :limit) && return ToolResult("$content\n\n[$remaining more lines in file. Use offset=$(stop + 1) to continue.]")
     ToolResult(content)
@@ -295,11 +300,11 @@ function fuzzy(text)
     replace(join(lines, '\n'), r"[\u2018\u2019\u201a\u201b]" => "'", r"[\u201c\u201d\u201e\u201f]" => "\"", r"[\u2010-\u2015\u2212]" => "-", r"[\u00a0\u2002-\u200a\u202f\u205f\u3000]" => " ")
 end
 
-duplicate(text, content) = duplicate(text, content, findfirst(text, content))
-duplicate(text, content, ::Nothing) = false
-duplicate(text, content, match) = duplicate(findnext(text, content, nextind(content, first(match))))
-duplicate(::Nothing) = false
-duplicate(match) = true
+editduplicate(text, content) = editduplicate(text, content, findfirst(text, content))
+editduplicate(text, content, ::Nothing) = nothing
+editduplicate(text, content, match::UnitRange) = editduplicate(findnext(text, content, nextind(content, first(match))))
+editduplicate(::Nothing) = nothing
+editduplicate(match::UnitRange) = ToolFailure("Edit text must match exactly once")
 
 function apply(content, edits, offset=0)
     for edit in Iterators.reverse(edits)
@@ -353,28 +358,69 @@ function edit(destination, args)
     requested = [(old=normalize(edit.oldText), text=normalize(edit.newText), fuzzy=fuzzy(edit.oldText)) for edit in args.edits]
     any(edit -> isempty(edit.old), requested) && return ToolFailure("Edit text must not be empty")
     comparable = fuzzy(originalcontent)
-    for edit in requested
-        duplicate(edit.old, originalcontent) && return ToolFailure("Edit text must match exactly once")
-        if isempty(edit.fuzzy)
-            (isempty(comparable) && !isnothing(findfirst(edit.old, originalcontent))) || return ToolFailure("Edit text must match exactly once")
-        else
-            duplicate(edit.fuzzy, comparable) && return ToolFailure("Edit text must match exactly once")
-        end
+    context = (; destination, bom, ending, args, original=originalcontent, comparable, requested)
+    checked = foldl((result, edit) -> editvalidate(result, edit, context), requested; init=nothing)
+    editchecked(context, checked)
+end
+
+editvalidate(failure::ToolFailure, edit, context) = failure
+editvalidate(::Nothing, edit, context) = editunique(edit, context, editduplicate(edit.old, context.original))
+editunique(edit, context, failure::ToolFailure) = failure
+function editunique(edit, context, ::Nothing)
+    if isempty(edit.fuzzy)
+        isempty(context.comparable) || return ToolFailure("Edit text must match exactly once")
+        return editrequired(findfirst(edit.old, context.original))
     end
-    usedfuzzy = any(edit -> isnothing(findfirst(edit.old, originalcontent)), requested)
-    base = usedfuzzy ? comparable : originalcontent
-    edits = NamedTuple{(:range, :text), Tuple{UnitRange{Int}, String}}[]
-    for edit in requested
-        match = findfirst(edit.old, base)
-        isnothing(match) && !isempty(edit.fuzzy) && (match = findfirst(edit.fuzzy, base))
-        isnothing(match) && return ToolFailure("Edit text must match exactly once")
-        push!(edits, (; range=match, text=edit.text))
-    end
+    editduplicate(edit.fuzzy, context.comparable)
+end
+editrequired(::Nothing) = ToolFailure("Edit text must match exactly once")
+editrequired(match::UnitRange) = nothing
+
+editchecked(context, failure::ToolFailure) = failure
+function editchecked(context, ::Nothing)
+    strategy = foldl(editstrategy, context.requested; init=ExactEdit(context.original, context.comparable))
+    base = editbase(strategy)
+    edits = foldl((matches, edit) -> editmatches(matches, edit, base), context.requested; init=NamedTuple{(:range, :text), Tuple{UnitRange{Int}, String}}[])
+    editprepared(merge(context, (; strategy)), edits)
+end
+
+struct ExactEdit
+    original::String
+    comparable::String
+end
+struct FuzzyEdit
+    original::String
+    comparable::String
+end
+editstrategy(strategy::FuzzyEdit, edit) = strategy
+editstrategy(strategy::ExactEdit, edit::NamedTuple) = editstrategy(strategy, findfirst(edit.old, strategy.original))
+editstrategy(strategy::ExactEdit, match::UnitRange) = strategy
+editstrategy(strategy::ExactEdit, ::Nothing) = FuzzyEdit(strategy.original, strategy.comparable)
+editbase(strategy::ExactEdit) = strategy.original
+editbase(strategy::FuzzyEdit) = strategy.comparable
+
+editmatches(failure::ToolFailure, edit, base) = failure
+editmatches(matches::Vector, edit, base) = editmatch!(matches, edit, editmatch(edit, base, findfirst(edit.old, base)))
+editmatch(edit, base, match::UnitRange) = match
+function editmatch(edit, base, ::Nothing)
+    isempty(edit.fuzzy) && return nothing
+    findfirst(edit.fuzzy, base)
+end
+editmatch!(matches, edit, ::Nothing) = ToolFailure("Edit text must match exactly once")
+editmatch!(matches, edit, match::UnitRange) = push!(matches, (; range=match, text=edit.text))
+
+editprepared(context, failure::ToolFailure) = failure
+function editprepared(context, edits::Vector)
     sort!(edits; by=x -> first(x.range))
     all(i -> last(edits[i-1].range) < first(edits[i].range), 2:length(edits)) || return ToolFailure("Edit ranges overlap")
-    content = usedfuzzy ? overlay(originalcontent, base, edits) : apply(base, edits)
-    isnothing(content) && return ToolFailure("Edit lines could not be preserved")
-    content == originalcontent && return ToolFailure("No changes made")
-    write(destination, bom * replace(content, "\n" => ending))
-    ToolResult("Successfully replaced $(length(edits)) block(s) in $(args.path).")
+    content = editapply(context.strategy, edits)
+    editwrite(context, edits, content)
+end
+editapply(strategy::ExactEdit, edits) = apply(strategy.original, edits)
+editapply(strategy::FuzzyEdit, edits) = overlay(strategy.original, strategy.comparable, edits)
+editwrite(context, edits, ::Nothing) = ToolFailure("Edit lines could not be preserved")
+function editwrite(context, edits, content::String)
+    content == context.strategy.original && return ToolFailure("No changes made")
+    write(context.destination, context.bom * replace(content, "\n" => context.ending))
+    ToolResult("Successfully replaced $(length(edits)) block(s) in $(context.args.path).")
 end

@@ -1,0 +1,53 @@
+struct ForkEntry
+    id::String
+    choice::Union{J.TreeTerminal.InputFork, J.TreeTerminal.QueuedFork}
+end
+
+forks(session) = forks(J.sessiontree(session.store[]))
+forks(rejected::J.History.Rejected) = rejected
+forks(tree::J.History.Tree) = forks(tree, J.History.branches(tree))
+forks(tree, rejected::J.History.Rejected) = rejected
+function forks(tree, branches::Vector)
+    entries = ForkEntry[]
+    for item in branches
+        choices = Union{J.TreeTerminal.InputFork, J.TreeTerminal.QueuedFork}[]
+        J.TreeTerminal.forkitem!(choices, item, J.History.treeevent(item.batch), branches)
+        for (index, choice) in enumerate(choices)
+            push!(entries, ForkEntry(string(item.id, ":", index), choice))
+        end
+    end
+    (; tree, entries)
+end
+
+handle!(session, ::GetForkMessages) = forklist(J.attempt(() -> forks(session)))
+forklist(rejected::J.History.Rejected) = Failure(string(rejected.reason))
+forklist(failure::J.ToolFailure) = Failure(failure.text)
+function forklist(result::NamedTuple)
+    Success((; data=(; messages=[(; entryId=entry.id, text=entry.choice.text) for entry in result.entries])))
+end
+
+handle!(session, command::ForkSession) = forkchecked!(session, command, J.sourcecheck!(session.terminal, session.agent, session.store[]))
+forkchecked!(session, command, blocked::J.PendingInputs) = Failure("Session has pending inputs")
+forkchecked!(session, command, rejected::J.History.Rejected) = Failure(string(rejected.reason))
+forkchecked!(session, command, ::Nothing) = fork!(session, command, J.attempt(() -> forks(session)))
+fork!(session, command, failure::J.ToolFailure) = Failure(J.redact(session.terminal, failure.text))
+fork!(session, command, rejected::J.History.Rejected) = Failure(string(rejected.reason))
+function fork!(session, command, result::NamedTuple)
+    choices = Dict(entry.id => entry.choice for entry in result.entries)
+    fork!(session, command, result.tree, get(choices, command.id, nothing))
+end
+fork!(session, command, tree, ::Nothing) = Failure("Entry not found: " * command.id)
+function fork!(session, command, tree, choice::J.TreeTerminal.ForkChoice)
+    draft = Ref("")
+    agent, history, status = J.fork!(session.terminal, session.agent, session.store[], session.directory, draft, tree, choice)
+    forkresult!(session, agent, history, choice, get(newstatuses, status, nothing))
+end
+forkresult!(session, agent, history, choice, ::Nothing) = Failure("Could not fork the session")
+function forkresult!(session, agent, history, choice, ::SessionStarted)
+    rebind!(session, agent, history)
+    lock(session.lock) do
+        append!(session.messages, session.stream.initial)
+        empty!(session.stream.initial)
+    end
+    Success((; data=(; text=choice.text, cancelled=false)))
+end

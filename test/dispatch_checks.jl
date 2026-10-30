@@ -4,6 +4,9 @@ function dispatchcallee(expression)
 end
 
 const dispatchfields = (:type, :kind, :status, :phase, :reason, :role, :finish, :mode, :state, :outcome, :selected)
+const dispatchresultflags = Dict(:Completion => 5, :ToolResult => 3, :ToolReply => 3, :CodeResult => 2)
+const dispatchresultproperties = Dict(:Completion => :done, :CodeResult => :ok)
+const dispatchresultvariables = Set([:iserror, :failed, :failure, :ok, :done, :success, :cancelled, :truncated, :flag])
 
 function dispatchfield(expression)
     expression isa Symbol && expression in dispatchfields && return expression
@@ -120,6 +123,20 @@ function dispatchbools!(names, expression)
     names
 end
 
+function dispatchconstructor(signature)
+    signature isa Expr || return false
+    signature.head in (:where, :(::)) && return dispatchconstructor(first(signature.args))
+    signature.head == :call && haskey(dispatchresultflags, dispatchcallee(first(signature.args)))
+end
+
+function dispatchsignature!(checks, signature, predicates)
+    if signature.head in (:where, :(::))
+        dispatchsignature!(checks, first(signature.args), predicates)
+    end
+    foreach(arg -> dispatchchecks!(checks, arg, false, true, predicates), signature.args[2:end])
+    checks
+end
+
 function dispatchchecks!(checks, expression, condition=false, direct=true, predicates=Set{Symbol}())
     boolcall = condition && expression isa Expr && expression.head == :call && dispatchcallee(first(expression.args)) in predicates
     if boolcall || (condition && dispatchcheck(expression, direct)) || (!condition && (dispatchstatuscheck(expression) || dispatchprobe(expression)))
@@ -129,7 +146,10 @@ function dispatchchecks!(checks, expression, condition=false, direct=true, predi
     end
     expression isa Expr || return checks
     expression.head in (:quote, :inert) && return checks
-    if condition && expression.head == :block
+    if expression.head in (:(=), :function) && length(expression.args) == 2 && dispatchconstructor(first(expression.args))
+        dispatchsignature!(checks, first(expression.args), predicates)
+        dispatchchecks!(checks, last(expression.args), false, true, predicates)
+    elseif condition && expression.head == :block
         foreach(arg -> dispatchchecks!(checks, arg, false, true, predicates), expression.args[1:end-1])
         dispatchchecks!(checks, last(expression.args), true, direct, predicates)
     elseif expression.head in (:if, :while, :elseif, :filter)
@@ -140,7 +160,14 @@ function dispatchchecks!(checks, expression, condition=false, direct=true, predi
         dispatchchecks!(checks, last(expression.args), condition, true, predicates)
     elseif expression.head == :call && first(expression.args) === :!
         dispatchchecks!(checks, expression.args[2], condition, direct, predicates)
-    elseif expression.head == :call && dispatchcallee(first(expression.args)) in (:Completion, :ToolResult, :ToolReply, :CodeResult)
+    elseif expression.head == :call && haskey(dispatchresultflags, dispatchcallee(first(expression.args)))
+        callee = dispatchcallee(first(expression.args))
+        index = dispatchresultflags[callee]
+        property = get(dispatchresultproperties, callee, nothing)
+        if length(expression.args) >= index && (expression.args[index] isa Bool || expression.args[index] in dispatchresultvariables || (!isnothing(property) && dispatchfield(expression.args[index]) === property))
+            value = Base.remove_linenums!(deepcopy(expression))
+            push!(checks, replace(sprint(show, value), '\n' => ' '))
+        end
         foreach(arg -> dispatchchecks!(checks, arg, true, false, predicates), expression.args[2:end])
     elseif expression.head == :call && dispatchcallee(first(expression.args)) === :ifelse
         dispatchchecks!(checks, expression.args[2], true, true, predicates)

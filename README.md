@@ -14,6 +14,8 @@ Julia 1.12 or newer runs the package and its native tests. Node.js is needed onl
 
 For Anthropic set `JF_PROVIDER=anthropic`, `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`; for Google set `JF_PROVIDER=google`, `GEMINI_API_KEY` and `GEMINI_MODEL`.
 
+Use `jf --list-models [search]` to browse the bundled catalog for providers with keys, and `jf --model provider/model` to select a model. See [models](docs/models.md) for snapshot age and compatibility limits.
+
 ```sh
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
 julia --project=. -m JuliaForever 'Create a hello.txt file'
@@ -21,11 +23,11 @@ julia --project=. -m JuliaForever 'Create a hello.txt file'
 
 To install the `jf` command from the checkout, run `julia -e 'using Pkg; Pkg.Apps.add(path=pwd())'` and put the Julia depot's `bin` directory on your `PATH`. Julia's app support is experimental. Run `jf` without a prompt for a session; `/exit` ends it. On a supported terminal, Enter sends, Ctrl+J inserts a line, Alt+Enter queues a follow-up, and Escape interrupts an active request. See [terminal](docs/terminal.md) for input and platform limitations.
 
-Use `--mode json` for one-shot JSONL events or `--mode rpc` for a bidirectional JSONL subprocess. See [headless modes](docs/headless.md) for supported commands and Pi compatibility limits.
+Use `jf --mode json 'prompt'` to stream structured message and tool events as JSONL; see [JSON mode](docs/json-mode.md). Use `jf --mode rpc` for [subprocess control](docs/headless.md).
 
 By default the CLI enables `read`, `bash`, `edit`, and `write`, plus explicitly loaded plugin tools. Use `--tools`, `--exclude-tools`, `--no-builtin-tools`, or `--no-tools` to choose the available tools; see [terminal tools](docs/terminal.md).
 
-Sessions are saved automatically. Use `jf --continue` for the most recent session, `jf --resume` to choose one, `jf --session PATH|ID` to open a specific session, or `jf --fork PATH|ID` to copy one. In the terminal, `/new` starts a session with freshly discovered skills, `/name NAME` names it, `/resume` switches sessions, `/tree` selects an earlier message while retaining other branches, `/fork` creates a session from an earlier message, and `/clone` copies the active branch. `--name NAME` sets the initial name and `--no-session` starts an ephemeral session; `/resume` can then select a saved session. `--history session.sqlite` records and resumes an explicitly chosen history file. Resume from the original project directory with the intended tool and plugin options: the saved context and skill metadata are not regenerated, and explicit paths can open histories from a different project. See [terminal sessions and recovery](docs/terminal.md) for details.
+Sessions are saved automatically. Use `jf --continue` for the most recent session, `jf --resume` to choose one, `jf --session PATH|ID` to open a specific session, or `jf --fork PATH|ID` to copy one. In the terminal, `/reload` refreshes skill metadata in the current session, `/new` starts a session with freshly discovered skills, `/name NAME` names it, `/resume` switches sessions, `/tree` selects an earlier message while retaining other branches, `/fork` creates a session from an earlier message, and `/clone` copies the active branch. `--name NAME` sets the initial name and `--no-session` starts an ephemeral session; `/resume` can then select a saved session. `--history session.sqlite` records and resumes an explicitly chosen history file. Resume from the original project directory with the intended tool and plugin options: the saved context and skill metadata are not regenerated automatically, and explicit paths can open histories from a different project. See [terminal sessions and recovery](docs/terminal.md) for details.
 
 ## Test
 

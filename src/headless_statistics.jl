@@ -22,11 +22,12 @@ function recordprice!(session, usage::J.Usage, ::Nothing)
 end
 
 statistics(session, ::UnavailableStatistics) = Failure("Complete session usage and pricing are unavailable")
+const statisticsroles = Dict("user" => LiveJSON.UserRole(), "assistant" => LiveJSON.AssistantRole(), "toolResult" => LiveJSON.ToolRole())
 function statistics(session, ::AvailableStatistics)
     totals = Statistics()
     for message in session.messages
         totals.total += 1
-        count!(totals, get(roles, message.role, nothing), message)
+        count!(totals, get(statisticsroles, message["role"], nothing), message)
     end
     data = Dict{String, Any}(
         "sessionId" => session.id, "userMessages" => totals.user, "assistantMessages" => totals.assistant,
@@ -38,13 +39,13 @@ function statistics(session, ::AvailableStatistics)
 end
 
 count!(totals, role, message) = nothing
-count!(totals, ::User, message) = (totals.user += 1; nothing)
-count!(totals, ::Tool, message) = (totals.results += 1; nothing)
+count!(totals, ::LiveJSON.UserRole, message) = (totals.user += 1; nothing)
+count!(totals, ::LiveJSON.ToolRole, message) = (totals.results += 1; nothing)
 const toolblocks = Dict("toolCall" => 1)
-function count!(totals, ::Assistant, message)
+function count!(totals, ::LiveJSON.AssistantRole, message)
     totals.assistant += 1
-    totals.calls += sum(block -> get(toolblocks, block.type, 0), message.content; init=0)
-    countusage!(totals, get(message, :usage, nothing))
+    totals.calls += sum(block -> get(toolblocks, block["type"], 0), message["content"]; init=0)
+    countusage!(totals, get(message, "usage", nothing))
 end
 countusage!(totals, ::Nothing) = nothing
 function countusage!(totals, usage)

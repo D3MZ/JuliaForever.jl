@@ -99,7 +99,7 @@ rawbatch(data) = H.Rejected(:history_format)
 function rawbatch(data::AbstractString)
     depth = length(current_exceptions())
     try
-        JSON3.read(data, Vector{Any})
+        JSON3.read(codeunits(data), Vector{Any})
     finally
         exceptions = current_exceptions()
         if length(exceptions) > depth && formaterror(last(exceptions).exception)

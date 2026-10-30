@@ -1,6 +1,6 @@
 module HeadlessDifferentialTests
 
-using Test, JSON3, HTTP
+using Test, JSON3, HTTP, Base64
 
 function runprocess(cmd, input, env)
     mktempdir() do dir
@@ -20,7 +20,7 @@ function records(output)
 end
 
 function responses(output)
-    Dict(record["id"] => record for record in records(output) if get(record, "type", "") == "response")
+    Dict(record["id"] => record for record in records(output) if get(record, "type", "") == "response" && haskey(record, "id"))
 end
 
 function receive!(channel, observed, predicate)
@@ -32,7 +32,7 @@ function receive!(channel, observed, predicate)
     end
 end
 
-function exchange(cmd, env)
+function exchange(cmd, env; switching=false, protect=false)
     mktempdir() do dir
         diagnostics = joinpath(dir, "error")
         process = open(pipeline(addenv(cmd, env...); stderr=diagnostics), "r+")
@@ -57,13 +57,22 @@ function exchange(cmd, env)
             println(process, JSON3.write((; id="stats", type="get_session_stats")))
             flush(process)
             stats = receive!(channel, observed, value -> get(value, "id", "") == "stats")
+            exported = switching ? exportsession(process, channel, observed, state; protect) : nothing
+            println(process, JSON3.write((; id="clone", type="clone")))
+            flush(process)
+            clone = receive!(channel, observed, value -> get(value, "id", "") == "clone")
+            println(process, JSON3.write((; id="clone-state", type="get_state")))
+            flush(process)
+            clonestate = receive!(channel, observed, value -> get(value, "id", "") == "clone-state")
+            fork = forksession(process, channel, observed)
             println(process, JSON3.write((; id="new", type="new_session")))
             flush(process)
             new = receive!(channel, observed, value -> get(value, "id", "") == "new")
             println(process, JSON3.write((; id="new-state", type="get_state")))
             flush(process)
             newstate = receive!(channel, observed, value -> get(value, "id", "") == "new-state")
-            (; observed, messages, name, state, stats, new, newstate)
+            switched = switching ? switchback(process, channel, observed, state) : nothing
+            (; observed, messages, name, state, stats, exported, clone, clonestate, fork, new, newstate, switched)
         finally
             close(process.in)
             timedwait(() -> process_exited(process), 5) == :ok || kill(process)
@@ -71,6 +80,61 @@ function exchange(cmd, env)
             wait(reader)
         end
     end
+end
+
+function forksession(process, channel, observed)
+    send(value) = (println(process, JSON3.write(value)); flush(process))
+    send((; id="fork-messages", type="get_fork_messages"))
+    messages = receive!(channel, observed, value -> get(value, "id", "") == "fork-messages")
+    entries = get(get(messages, "data", Dict()), "messages", [])
+    entry = isempty(entries) ? "missing" : first(entries)["entryId"]
+    send((; id="fork", type="fork", entryId=entry))
+    reply = receive!(channel, observed, value -> get(value, "id", "") == "fork")
+    send((; id="fork-state", type="get_state"))
+    state = receive!(channel, observed, value -> get(value, "id", "") == "fork-state")
+    send((; id="fork-invalid", type="fork", entryId="missing-entry"))
+    invalid = receive!(channel, observed, value -> get(value, "id", "") == "fork-invalid")
+    send((; id="fork-after-invalid", type="get_state"))
+    after = receive!(channel, observed, value -> get(value, "id", "") == "fork-after-invalid")
+    (; messages, reply, state, invalid, after)
+end
+
+function exportsession(process, channel, observed, state; protect=false)
+    path = joinpath(dirname(state["data"]["sessionFile"]), "report.html")
+    send(value) = (println(process, JSON3.write(value)); flush(process))
+    send((; id="export", type="export_html", outputPath=path))
+    reply = receive!(channel, observed, value -> get(value, "id", "") == "export")
+    html = isfile(path) ? read(path, String) : ""
+    send((; id="export-invalid", type="export_html", outputPath=joinpath(dirname(path), "missing", "report.html")))
+    invalid = receive!(channel, observed, value -> get(value, "id", "") == "export-invalid")
+    source = state["data"]["sessionFile"]
+    before = protect ? read(source) : UInt8[]
+    overwrite = if protect
+        send((; id="export-source", type="export_html", outputPath=source))
+        receive!(channel, observed, value -> get(value, "id", "") == "export-source")
+    else
+        nothing
+    end
+    unchanged = protect ? read(source) == before : true
+    (; path, reply, html, invalid, overwrite, unchanged)
+end
+function pihtml(html)
+    data = match(r"<script id=\"session-data\" type=\"application/json\">([^<]+)</script>", html)
+    isnothing(data) ? "" : String(base64decode(data[1]))
+end
+
+function switchback(process, channel, observed, state)
+    path = state["data"]["sessionFile"]
+    send(value) = (println(process, JSON3.write(value)); flush(process))
+    send((; id="switch", type="switch_session", sessionPath=path))
+    reply = receive!(channel, observed, value -> get(value, "id", "") == "switch")
+    send((; id="switched-state", type="get_state"))
+    restored = receive!(channel, observed, value -> get(value, "id", "") == "switched-state")
+    send((; id="switch-invalid", type="switch_session", sessionPath=dirname(path)))
+    invalid = receive!(channel, observed, value -> get(value, "id", "") == "switch-invalid")
+    send((; id="switch-after-invalid", type="get_state"))
+    after = receive!(channel, observed, value -> get(value, "id", "") == "switch-after-invalid")
+    (; reply, restored, invalid, after)
 end
 
 function exchangequeued(cmd, env, arrivals)
@@ -165,15 +229,15 @@ end
         pi = Cmd(`node $oracle $source --mode rpc --no-session --provider openai --model gpt-4.1-mini`; dir=workspace)
         jf = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project $(joinpath(@__DIR__, "terminal_process.jl")) --mode rpc --no-session`; dir=workspace)
         env = ["PI_SOURCE" => source, "HOME" => workspace, "PI_CODING_AGENT_DIR" => joinpath(workspace, "agent"), "PI_OFFLINE" => "1", "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "gpt-4.1-mini", "OPENAI_API_KEY" => "fixture", "JF_FIXTURE" => "text", "JF_INSTRUCTIONS_DIR" => workspace]
-        commands = [(; id="state", type="get_state"), (; id="messages", type="get_messages"), (; id="clear", type="clear_queue"), (; id="bad", type="no_such_command"), (; id="levels", type="get_available_thinking_levels"), (; id="cycle", type="cycle_thinking_level"), (; id="thinking", type="set_thinking_level", level="off"), (; id="steering-mode", type="set_steering_mode", mode="one-at-a-time"), (; id="follow-mode", type="set_follow_up_mode", mode="one-at-a-time"), (; id="compaction", type="set_auto_compaction", enabled=false), (; id="retry", type="set_auto_retry", enabled=false), (; id="abort-retry", type="abort_retry"), (; id="abort-bash", type="abort_bash")]
-        input = join(JSON3.write.(commands), "\n") * "\n"
+        commands = [(; id="state", type="get_state"), (; id="messages", type="get_messages"), (; id="clear", type="clear_queue"), (; id="bad", type="no_such_command"), (; id="export-empty", type="export_html", outputPath=joinpath(workspace, "report.html")), (; id="levels", type="get_available_thinking_levels"), (; id="cycle", type="cycle_thinking_level"), (; id="thinking", type="set_thinking_level", level="off"), (; id="steering-mode", type="set_steering_mode", mode="one-at-a-time"), (; id="follow-mode", type="set_follow_up_mode", mode="one-at-a-time"), (; id="compaction", type="set_auto_compaction", enabled=false), (; id="retry", type="set_auto_retry", enabled=false), (; id="abort-retry", type="abort_retry"), (; id="abort-bash", type="abort_bash")]
+        input = join(JSON3.write.(commands), "\n") * "\n{\n"
         expected = runprocess(pi, input, env)
         actual = runprocess(jf, input, env)
         @test expected.status == actual.status == 0
         reference = responses(expected.output)
         result = responses(actual.output)
         @test Set(keys(result)) == Set(keys(reference))
-        for id in ("messages", "clear", "bad", "levels", "cycle", "thinking", "steering-mode", "follow-mode", "compaction", "retry", "abort-retry", "abort-bash")
+        for id in ("messages", "clear", "bad", "export-empty", "levels", "cycle", "thinking", "steering-mode", "follow-mode", "compaction", "retry", "abort-retry", "abort-bash")
             @test get(result, id, nothing) == reference[id]
         end
         expected_state = reference["state"]["data"]
@@ -183,6 +247,9 @@ end
         end
         @test actual_state["model"]["id"] == expected_state["model"]["id"]
         @test actual_state["model"]["provider"] == expected_state["model"]["provider"]
+        parseerror(output) = only(record for record in records(output) if get(record, "command", "") == "parse")
+        @test parseerror(actual.output)["success"] == parseerror(expected.output)["success"] == false
+        @test startswith(parseerror(actual.output)["error"], "Failed to parse command")
         pi_help = Cmd(`node $oracle $source --mode json --help`; dir=workspace)
         jf_help = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode json --help`; dir=workspace)
         pi_metadata = runprocess(pi_help, "", env)
@@ -297,6 +364,16 @@ toolview(value) = (; role=value["role"], id=value["toolCallId"], name=value["too
             @test [value["role"] for value in jf_run.messages["data"]["messages"]] == [value["role"] for value in pi_run.messages["data"]["messages"]]
             @test jf_run.state["data"]["messageCount"] == pi_run.state["data"]["messageCount"]
             @test jf_run.state["data"]["sessionName"] == pi_run.state["data"]["sessionName"]
+            @test jf_run.clone == pi_run.clone
+            @test jf_run.clonestate["data"]["messageCount"] == pi_run.clonestate["data"]["messageCount"]
+            @test jf_run.clonestate["data"]["sessionId"] != jf_run.state["data"]["sessionId"]
+            forktexts(result) = [item["text"] for item in get(get(result.fork.messages, "data", Dict()), "messages", [])]
+            @test forktexts(jf_run) == forktexts(pi_run) == ["hello"]
+            @test jf_run.fork.reply == pi_run.fork.reply
+            @test jf_run.fork.state["data"]["messageCount"] == pi_run.fork.state["data"]["messageCount"]
+            @test jf_run.fork.state["data"]["sessionId"] != jf_run.clonestate["data"]["sessionId"]
+            @test !jf_run.fork.invalid["success"] && !pi_run.fork.invalid["success"]
+            @test jf_run.fork.after["data"]["sessionId"] == jf_run.fork.state["data"]["sessionId"]
             @test get(jf_run.stats, "data", nothing) !== nothing
             for key in ("userMessages", "assistantMessages", "toolCalls", "toolResults", "totalMessages", "tokens", "cost")
                 @test get(get(jf_run.stats, "data", Dict()), key, nothing) == pi_run.stats["data"][key]
@@ -305,6 +382,26 @@ toolview(value) = (; role=value["role"], id=value["toolCallId"], name=value["too
             @test jf_run.newstate["data"]["messageCount"] == pi_run.newstate["data"]["messageCount"] == 0
             @test jf_run.newstate["data"]["sessionId"] != jf_run.state["data"]["sessionId"]
             @test !haskey(jf_run.newstate["data"], "sessionName")
+
+            pi_switch_rpc = Cmd(`node $oracle $source --mode rpc --session-dir $(joinpath(workspace, "switch-pi")) --provider openai --model fixture`; dir=workspace)
+            jf_switch_rpc = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $(joinpath(workspace, "switch-jf"))`; dir=workspace)
+            pi_switch = exchange(pi_switch_rpc, env; switching=true)
+            jf_switch = exchange(jf_switch_rpc, env; switching=true, protect=true)
+            @test pi_switch.exported.reply["success"] && jf_switch.exported.reply["success"]
+            @test pi_switch.exported.reply["data"]["path"] == pi_switch.exported.path
+            @test get(get(jf_switch.exported.reply, "data", Dict()), "path", nothing) == jf_switch.exported.path
+            @test occursin("Hello world", pihtml(pi_switch.exported.html)) && occursin("Hello world", jf_switch.exported.html)
+            @test !pi_switch.exported.invalid["success"] && !jf_switch.exported.invalid["success"]
+            @test !jf_switch.exported.overwrite["success"] && jf_switch.exported.unchanged
+            @test jf_switch.clone == pi_switch.clone
+            @test jf_switch.clonestate["data"]["messageCount"] == pi_switch.clonestate["data"]["messageCount"]
+            @test forktexts(jf_switch) == forktexts(pi_switch) == ["hello"]
+            @test jf_switch.fork.reply == pi_switch.fork.reply
+            @test jf_switch.switched.reply == pi_switch.switched.reply
+            @test jf_switch.switched.restored["data"]["sessionId"] == jf_switch.state["data"]["sessionId"]
+            @test jf_switch.switched.restored["data"]["messageCount"] == pi_switch.switched.restored["data"]["messageCount"]
+            @test !jf_switch.switched.invalid["success"] && !pi_switch.switched.invalid["success"]
+            @test jf_switch.switched.after["data"]["sessionId"] == jf_switch.state["data"]["sessionId"]
 
             pidir, jfdir = joinpath(workspace, "pi-sessions"), joinpath(workspace, "jf-sessions")
             pi_saved = Cmd(`node $oracle $source --mode json --session-dir $pidir --provider openai --model fixture hello`; dir=workspace)

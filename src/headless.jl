@@ -1,13 +1,16 @@
 module Headless
 
-using JSON3, Dates
+using JSON3
 import ..JuliaForever as J
+const LiveJSON = J.LiveJSON
 
 abstract type Command end
 struct GetState <: Command end
 struct GetMessages <: Command end
 struct GetSessionStats <: Command end
 struct ClearQueue <: Command end
+struct CloneSession <: Command end
+struct GetForkMessages <: Command end
 struct GetLastText <: Command end
 struct Abort <: Command end
 struct GetThinkingLevels <: Command end
@@ -31,6 +34,15 @@ struct SetAutoRetry <: Command
 end
 struct NewSession <: Command
     parent::Union{Nothing, String}
+end
+struct SwitchSession <: Command
+    path::String
+end
+struct ExportHTML <: Command
+    path::Union{Nothing, String}
+end
+struct ForkSession <: Command
+    id::String
 end
 struct SetName <: Command
     name::String
@@ -66,14 +78,14 @@ struct UnavailableStatistics <: StatisticsState end
 const newstatuses = Dict(0 => SessionStarted())
 
 const unsupportedcommands = (
-    "set_model", "cycle_model", "get_available_models", "compact", "bash", "export_html",
-    "switch_session", "fork", "clone", "get_fork_messages", "get_entries", "get_tree", "get_commands",
+    "set_model", "cycle_model", "get_available_models", "compact", "bash",
+    "get_entries", "get_tree", "get_commands",
 )
 const commands = merge(
     Dict(name => Unsupported for name in unsupportedcommands),
     Dict(
         "prompt" => Prompt, "steer" => Queue{Steering}, "follow_up" => Queue{FollowUp}, "abort" => Abort,
-        "clear_queue" => ClearQueue, "new_session" => NewSession, "get_state" => GetState, "get_session_stats" => GetSessionStats,
+        "clear_queue" => ClearQueue, "clone" => CloneSession, "fork" => ForkSession, "get_fork_messages" => GetForkMessages, "new_session" => NewSession, "switch_session" => SwitchSession, "export_html" => ExportHTML, "get_state" => GetState, "get_session_stats" => GetSessionStats,
         "get_messages" => GetMessages, "get_last_assistant_text" => GetLastText, "set_session_name" => SetName,
         "get_available_thinking_levels" => GetThinkingLevels, "cycle_thinking_level" => CycleThinking, "set_thinking_level" => SetThinking,
         "set_steering_mode" => SetSteeringMode, "set_follow_up_mode" => SetFollowUpMode,
@@ -90,52 +102,31 @@ end
 
 struct InvalidInput end
 
-abstract type Block end
-mutable struct TextBlock <: Block
-    text::IOBuffer
-end
-mutable struct ThinkingBlock <: Block
-    text::IOBuffer
-end
-mutable struct CallBlock <: Block
-    id::String
-    name::String
-    arguments::IOBuffer
-end
-TextBlock() = TextBlock(IOBuffer())
-ThinkingBlock() = ThinkingBlock(IOBuffer())
-CallBlock() = CallBlock("", "", IOBuffer())
-function CallBlock(id, name, args::String)
-    buffer = IOBuffer()
-    write(buffer, args)
-    CallBlock(id, name, buffer)
-end
-
-mutable struct Stream
-    blocks::Vector{Union{TextBlock, ThinkingBlock, CallBlock}}
-    indexes::Dict{Tuple{Symbol, String}, Int}
-    ids::Dict{String, Int}
-    usage::Union{Nothing, J.Usage}
-    completion::Union{Nothing, J.Completion}
-    timestamp::Int
-    announced::J.MessagePresentation
-    ended::J.MessagePresentation
-end
-Stream() = Stream(Union{TextBlock, ThinkingBlock, CallBlock}[], Dict{Tuple{Symbol, String}, Int}(), Dict{String, Int}(), nothing, nothing, round(Int, time() * 1000), J.Unannounced(), J.Unannounced())
-
 function request(line)
+    depth = length(current_exceptions())
     try
-        data = JSON3.read(codeunits(line), Dict{String, Any})
-        name = String(get(data, "type", ""))
-        Request(get(data, "id", nothing), name, command(get(commands, name, Unknown), data))
-    catch
-        InvalidInput()
+        return request(J.decode(line))
+    finally
+        for failure in inputfailures(current_exceptions(), depth)
+            return failure
+        end
     end
+end
+inputfailures(exceptions, depth) = length(exceptions) > depth ? inputfailures(last(exceptions).exception) : ()
+inputfailures(::Union{ArgumentError, KeyError, MethodError, TypeError}) = (InvalidInput(),)
+inputfailures(exception) = ()
+request(::J.InvalidResponse) = InvalidInput()
+function request(data::AbstractDict)
+    name = String(get(data, "type", ""))
+    Request(get(data, "id", nothing), name, command(get(commands, name, Unknown), data))
 end
 
 command(type::Type{<:Command}, data) = type()
 command(::Type{SetName}, data) = SetName(String(data["name"]))
 command(::Type{NewSession}, data) = NewSession(get(data, "parentSession", nothing))
+command(::Type{SwitchSession}, data) = SwitchSession(String(data["sessionPath"]))
+command(::Type{ExportHTML}, data) = ExportHTML(get(data, "outputPath", nothing))
+command(::Type{ForkSession}, data) = ForkSession(String(data["entryId"]))
 command(::Type{SetThinking}, data) = SetThinking(String(data["level"]))
 command(::Type{SetSteeringMode}, data) = SetSteeringMode(String(data["mode"]))
 command(::Type{SetFollowUpMode}, data) = SetFollowUpMode(String(data["mode"]))
@@ -154,7 +145,7 @@ struct Failure <: Reply
 end
 Success() = Success(NamedTuple())
 
-mutable struct Session{A, T, E, S, P}
+mutable struct Session{A, T, E, S, P, L}
     agent::A
     terminal::T
     extensions::E
@@ -162,29 +153,22 @@ mutable struct Session{A, T, E, S, P}
     templates::P
     directory::String
     lock::ReentrantLock
-    messages::Vector{NamedTuple}
+    messages::Vector{Dict{String, Any}}
     id::String
     name::Union{Nothing, String}
-    stream::Stream
-    current::Union{Nothing, NamedTuple}
-    assistant::Union{Nothing, NamedTuple}
+    stream::L
     lastcontent::Union{Nothing, String}
-    turntools::Vector{NamedTuple}
-    toolnames::Dict{String, String}
     steering::Vector{String}
     followups::Vector{String}
-    firstturn::J.MessagePresentation
     task::Union{Nothing, Task}
     started::Base.Event
-    runstart::Int
-    outputstate::OutputState
-    turnended::J.MessagePresentation
-    runended::J.MessagePresentation
+    outputstate::Union{OpenOutput, ClosedOutput}
     statistics::Union{AvailableStatistics, UnavailableStatistics}
 end
 
 function Session(terminal, agent, extensions, store, templates, directory)
-    session = Session(agent, terminal, extensions, store, templates, directory, ReentrantLock(), NamedTuple[], agent.state.kernel.id, sessionname(J.SessionCatalog.sessionname(store[])), Stream(), nothing, nothing, nothing, NamedTuple[], Dict{String, String}(), String[], String[], J.Unannounced(), nothing, Base.Event(), 0, OpenOutput(), J.Unannounced(), J.Unannounced(), AvailableStatistics())
+    stream = LiveJSON.Stream(terminal, agent, terminal.mode)
+    session = Session(agent, terminal, extensions, store, templates, directory, ReentrantLock(), Dict{String, Any}[], LiveJSON.id(store[]), sessionname(J.SessionCatalog.sessionname(store[])), stream, nothing, String[], String[], nothing, Base.Event(), OpenOutput(), AvailableStatistics())
     restore!(session, agent)
 end
 sessionname(::Nothing) = nothing
@@ -193,6 +177,7 @@ sessionname(value::J.History.Rejected) = nothing
 
 include("headless_events.jl")
 include("headless_statistics.jl")
+include("headless_history.jl")
 
 function write!(session, value)
     lock(session.lock) do
@@ -231,7 +216,7 @@ function state(session)
     optional!(data, "sessionName", name)
     optional!(data, "sessionFile", sessionfile(session.store[]))
 end
-modelinfo(session) = (; id=session.agent.provider.model, api=apiname(session.agent.provider), provider=session.terminal.provider, baseUrl=session.agent.provider.base)
+modelinfo(session) = (; id=session.agent.provider.model, api=LiveJSON.api(session.agent.provider), provider=session.terminal.mode.provider, baseUrl=session.agent.provider.base)
 sessionfile(::Nothing) = nothing
 sessionfile(::J.History.Memory) = nothing
 sessionfile(history::J.History.Tree) = sessionfile(history.store)
@@ -267,8 +252,8 @@ cleared(session, rejected::J.History.Rejected) = Failure(string(rejected.reason)
 handle!(session, ::GetLastText) = Success((; data=lasttext(session.lastcontent)))
 lasttext(::Nothing) = NamedTuple()
 lasttext(text::String) = (; text)
-blocktext(block::TextBlock) = buffertext(block.text)
-blocktext(block::Block) = ""
+blocktext(block::LiveJSON.TextBlock) = LiveJSON.buffertext(block.text)
+blocktext(block::LiveJSON.Block) = ""
 handle!(session, command::SetName) = setname!(session, strip(command.name))
 function setname!(session, name)
     isempty(name) && return Failure("Session name cannot be empty")
@@ -290,26 +275,73 @@ function newsession!(session, ::Nothing)
 end
 newresult!(session, agent, history, ::Nothing) = Failure("Could not start a new session")
 function newresult!(session, agent, history, ::SessionStarted)
+    rebind!(session, agent, history)
+    Success((; data=(; cancelled=false)))
+end
+
+function rebind!(session, agent, history)
     lock(session.lock) do
         session.agent = agent
         session.store[] = history
-        session.id = agent.state.kernel.id
-        session.name = nothing
-        session.stream = Stream()
-        session.current = nothing
-        session.assistant = nothing
+        session.id = J.LiveJSON.id(history)
+        session.name = sessionname(J.SessionCatalog.sessionname(history))
+        session.stream = LiveJSON.Stream(session.terminal, agent, session.terminal.mode)
         session.lastcontent = nothing
-        session.firstturn = J.Unannounced()
         session.statistics = AvailableStatistics()
         empty!(session.messages)
-        empty!(session.turntools)
-        empty!(session.toolnames)
         empty!(session.steering)
         empty!(session.followups)
+        restore!(session, agent)
         write!(session, (; type="queue_update", steering=String[], followUp=String[]))
     end
-    Success((; data=(; cancelled=false)))
+    nothing
 end
+
+function handle!(session, command::SwitchSession)
+    request = J.SessionCatalog.Target(command.path)
+    selected = J.attempt(() -> J.SessionCatalog.choose(request, session.directory, pwd(), stdin, session.terminal.diagnostics, text -> J.redact(session.terminal, text)))
+    switch!(session, selected)
+end
+switch!(session, invalid::J.SessionCatalog.Invalid) = Failure(invalid.message)
+switch!(session, failure::J.ToolFailure) = Failure(J.redact(session.terminal, failure.text))
+switch!(session, rejected::J.History.Rejected) = Failure(string(rejected.reason))
+function switch!(session, selected::J.History.Tree)
+    agent, history, status = J.resume!(session.terminal, session.agent, session.store[], selected)
+    newresult!(session, agent, history, get(newstatuses, status, nothing))
+end
+
+handle!(session, ::CloneSession) = clonechecked!(session, J.sourcecheck!(session.terminal, session.agent, session.store[]))
+clonechecked!(session, blocked::J.PendingInputs) = Failure("Session has pending inputs")
+clonechecked!(session, rejected::J.History.Rejected) = Failure(string(rejected.reason))
+clonechecked!(session, ::Nothing) = clone!(session, J.attempt(() -> J.sessiontree(session.store[])))
+clone!(session, failure::J.ToolFailure) = Failure(J.redact(session.terminal, failure.text))
+clone!(session, rejected::J.History.Rejected) = Failure(string(rejected.reason))
+function clone!(session, tree::J.History.Tree)
+    agent, history, status = J.clone!(session.terminal, session.agent, session.store[], session.directory, tree, nothing)
+    newresult!(session, agent, history, get(newstatuses, status, nothing))
+end
+
+handle!(session, command::ExportHTML) = export!(session, session.store[], command.path)
+export!(session, ::Union{Nothing, J.History.Memory}, path) = Failure("Cannot export in-memory session to HTML")
+export!(session, history::J.History.Tree, path) = export!(session, history.store, path)
+export!(session, history::J.History.SQLite, path) = export!(session, J.SessionCatalog.path(history), path)
+function export!(session, history::J.SessionCatalog.Deferred, path)
+    store, source = lock(() -> (history.store, history.path), history.lock)
+    export!(session, store, source, path)
+end
+export!(session, ::J.History.Memory, source, path) = Failure("Nothing to export yet - start a conversation first")
+export!(session, ::J.History.SQLite, source, path) = export!(session, source, path)
+function export!(session, source::String, path)
+    target = exportpath(path, source)
+    J.mutationkey(target) == J.mutationkey(source) && return Failure("Cannot overwrite the active session file")
+    messages = lock(() -> deepcopy(session.messages), session.lock)
+    html = J.Logs.html(messages; project=identity, title="Julia Forever session")
+    exported(target, J.attempt(() -> write(target, html)))
+end
+exportpath(::Nothing, source) = "pi-session-" * splitext(basename(source))[1] * ".html"
+exportpath(path::String, source) = expanduser(path)
+exported(path, count::Integer) = Success((; data=(; path)))
+exported(path, failure::J.ToolFailure) = Failure(failure.text)
 
 function queue!(session, message, ::Steering)
     queued!(session, J.steer!(session.agent, message))
@@ -393,8 +425,8 @@ function rpc!(terminal, agent, extensions, store, args, sessiondir, templates)
     for line in eachline(stdin)
         respond!(session, request(line))
     end
-    lock(() -> (session.outputstate = ClosedOutput()), session.lock)
     handle!(session, Abort())
+    lock(() -> (session.outputstate = ClosedOutput()), session.lock)
     0
 end
 
@@ -407,13 +439,13 @@ function turn!(session, prompt)
     callback = J.Extensions.listen(session.extensions; on_event=event -> event!(session, event))
     response = try
         J.request!(session.terminal) do
-            J.respond!(session.agent, prompt; on_event=event -> provider!(session, event), on_agent_event=callback)
+            J.respond!(session.agent, prompt; on_event=ProviderObserver(session), on_agent_event=callback)
         end
     finally
         J.failures!(session.terminal, callback)
     end
     result = turnresult!(session, get(turnresults, response.status, FailedTurn()), response.value)
-    finishrun!(session, session.runended)
+    lock(() -> LiveJSON.finishrun!(session.stream, session.stream.runended), session.lock)
     result
 end
 
@@ -426,32 +458,5 @@ const abortresults = Dict(:cancelled => true)
 aborted(result) = false
 aborted(result::Symbol) = get(abortresults, result, false)
 settled!(session, result) = write!(session, (; type="agent_settled", aborted=aborted(result)))
-
-function json!(terminal, agent, extensions, store, args, sessiondir, templates)
-    session = Session(terminal, agent, extensions, store, templates, sessiondir)
-    stamp = Dates.format(Dates.now(Dates.UTC), dateformat"yyyy-mm-ddTHH:MM:SS.sss") * "Z"
-    write!(session, (; type="session", version=3, id=session.id, timestamp=stamp, cwd=pwd()))
-    parsed = J.FileArguments.parse(args)
-    jsonfiles!(session, parsed.messages, parsed.files, templates)
-end
-
-jsonfiles!(session, messages, files, templates) = jsonfiles!(session, messages, templates, J.attempt(() -> J.FileArguments.load(files, pwd())))
-function jsonfiles!(session, messages, templates, failure::J.ToolFailure)
-    println(session.terminal.diagnostics, "Could not read file argument: ", J.redact(session.terminal, failure.text))
-    1
-end
-function jsonfiles!(session, messages, templates, files::NamedTuple)
-    text = J.fileinput(stdin) * files.text * get(messages, 1, "")
-    jsonprompt!(session, J.Prompts.expand(text, templates), files.images)
-    for message in Iterators.drop(messages, 1)
-        jsonprompt!(session, J.Prompts.expand(message, templates), J.Image[])
-    end
-    0
-end
-function jsonprompt!(session, text, images)
-    isempty(text) && isempty(images) && return nothing
-    result = turn!(session, J.fileprompt(text, images))
-    settled!(session, result)
-end
 
 end
