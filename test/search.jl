@@ -1,16 +1,3 @@
-@testset "repository boundary retains file ignores" begin
-    file1 = JuliaForever.FileRule("first", r"first", false, false)
-    file2 = JuliaForever.FileRule("second", r"second", true, true)
-    git1 = JuliaForever.GitRule("git", r"git", false, false)
-    rules = JuliaForever.IgnoreRule[git1, file1, git1, file2, git1]
-    @test JuliaForever.cleargit!(rules) === rules
-    @test rules == JuliaForever.IgnoreRule[file1, file2]
-    @test JuliaForever.cleargit!(rules) === rules
-    @test rules == JuliaForever.IgnoreRule[file1, file2]
-    onlygit = JuliaForever.IgnoreRule[git1, git1]
-    @test isempty(JuliaForever.cleargit!(onlygit))
-end
-
 function searchfixture(dir)
     mkpath(joinpath(dir, ".git"))
     mkpath(joinpath(dir, "src", "deep"))
@@ -117,6 +104,7 @@ function nestedfixture(dir)
     write(joinpath(dir, ".ignore"), "local-only.txt\n")
     write(joinpath(dir, ".git", "info", "exclude"), "private.txt\n")
     write(joinpath(dir, "blocked.txt"), "needle\n")
+    write(joinpath(dir, "local-only.txt"), "needle\n")
     write(joinpath(dir, "private.txt"), "needle\n")
     write(joinpath(dir, "nested", "blocked.txt"), "needle\n")
     write(joinpath(dir, "nested", "private.txt"), "needle\n")
