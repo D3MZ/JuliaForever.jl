@@ -161,4 +161,66 @@ end
     end
 end
 
+mutable struct BetweenProvider
+    replies::Vector{Completion}
+    requests::Vector{Any}
+end
+function J.complete(provider::BetweenProvider, messages, tools)
+    push!(provider.requests, (; messages=deepcopy(messages), names=[J.name(tool) for tool in values(tools)]))
+    popfirst!(provider.replies)
+end
+
+@testset "context hooks across between-tool compaction and replay" begin
+    reply(text, tokens; calls=[]) = Completion(Dict{String, Any}("role" => "assistant", "content" => text, "tool_calls" => calls), Usage(tokens, 0, 0, 0, 0, tokens, nothing), isempty(calls) ? "stop" : "tool_calls", true, nothing)
+    for remote in (false, true)
+        mktempdir() do root
+            write(joinpath(root, "target.txt"), repeat("x", 400))
+            call = Dict("id" => "read-large", "type" => "function", "function" => Dict("name" => "read", "arguments" => JSON3.write((; path="target.txt"))))
+            provider = BetweenProvider([reply("one", 50), reply("two", 50), reply(nothing, 50; calls=[call]), reply("done", 20), reply("replayed", 20)], [])
+            history = J.History.Memory()
+            agent = Agent(provider, [Read(root)]; history)
+            events = Any[]
+            registry = E.Registry()
+            E.register!(registry, :fixture, E.Plugin(; hooks=(:context_with_system => event -> begin
+                event.messages[1]["sections"] = Dict("temporary" => "request-only instructions")
+                event.messages[1]["toolsAdded"] = []
+                push!(event.messages, Dict("role" => "user", "content" => "request-only input"))
+                nothing
+            end,)))
+            listener = E.listen(E.snapshot(registry); on_event=event -> push!(events, event))
+            id = "context-between-$(remote)"
+            executor = remote ? J.Execution.Executor(Distributed.myid()) : nothing
+            remote && @test J.Execution.install!(id, provider, [Read(root)])
+            function turn(agent, prompt; options...)
+                result = remote ? respond!(agent, prompt; executor, context=id, on_agent_event=listener, options...) : respond!(agent, prompt; on_agent_event=listener, options...)
+                remote ? result.value : result
+            end
+            try
+                @test turn(agent, "first") == "one"
+                @test turn(agent, "second") == "two"
+                empty!(events)
+                summaries = Any[]
+                @test turn(agent, "third"; auto_compaction=J.AutoCompaction(100, 0), summarize=messages -> (push!(summaries, deepcopy(messages)); "checkpoint")) == "done"
+                @test length(summaries) == 1 && !occursin("request-only", repr(summaries))
+                @test all(isempty(request.names) for request in provider.requests)
+                request = last(provider.requests).messages
+                @test occursin("checkpoint", repr(request)) && occursin("request-only", repr(request))
+                @test any(message -> get(message, "role", "") == "tool" && occursin(repeat("x", 400), message["content"]), request)
+                types = getproperty.(events, :type)
+                @test findfirst(==(:tool_execution_end), types) < findfirst(==(:auto_compaction_start), types) < findlast(==(:turn_start), types)
+                @test !occursin("request-only", repr(J.History.snapshot(history)))
+                restored = Agent(provider, [Read(root)]; history)
+                @test restored.messages == agent.messages
+                @test turn(restored, "after") == "replayed"
+                @test occursin("checkpoint", repr(last(provider.requests).messages)) && !occursin("request-only", repr(J.History.snapshot(history)))
+            finally
+                if remote
+                    close(executor)
+                    J.Execution.uninstall!(id)
+                end
+            end
+        end
+    end
+end
+
 end
