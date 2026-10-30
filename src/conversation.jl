@@ -9,6 +9,10 @@ struct User <: Message
     content::String
 end
 
+struct Summary <: Message
+    content::String
+end
+
 struct RawMessage <: Message
     value::Dict{String, Any}
 end

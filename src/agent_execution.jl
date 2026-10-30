@@ -277,3 +277,8 @@ function interrupt!(agent::Agent, ::Nothing)
 end
 
 interrupt!(agent::Agent, ::History.Store) = interrupted!(agent)
+
+function finishauto!(agent, result::Execution.Turn, usage, settings::AutoCompaction, summarize, callback)
+    latest = isempty(result.models) ? nothing : last(result.models).usage
+    finishauto!(agent, result.value, latest, settings, summarize, callback)
+end

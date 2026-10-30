@@ -30,3 +30,13 @@ PI_SOURCE=/path/to/pi julia --startup-file=no --threads=4 --project=. scripts/ci
 ```
 
 This runs the native quality and behavior tests plus selected Pi comparisons locally. On Unix with Git and Python 3.11 or newer it also installs a snapshot of the current source into a temporary depot, offline, and tests the installed CLI with a native plugin. `PI_SOURCE` must point to the pinned Pi checkout with its Node dependencies available. Pass `--native-only` instead to run without Pi; that mode explicitly skips differential tests. The GitHub workflow also prepares the reference and tests macOS. Linux and Windows testing will follow. Until a particular run passes, a configured CI job is not evidence of platform compatibility. Test results cover selected cases, not full Pi compatibility.
+
+Automatic usage-backed compaction can be enabled per `respond!` call with
+`auto_compaction=JuliaForever.AutoCompaction(context_window, reserve_tokens)`.
+It checks the last model usage after a successful run, when the agent is idle,
+and retains the completed response. Pass `summarize=callable` to control the
+summary; otherwise the agent's provider is used. A compaction result (including
+rejection or cancellation) is reported as an `:auto_compaction_end` agent event.
+History-backed agents persist the checkpoint for replay. Missing usage, disabled
+settings, and cancelled or failed turns do not trigger compaction. This threshold
+path does not implement Pi's overflow retry or pre-prompt recovery.
