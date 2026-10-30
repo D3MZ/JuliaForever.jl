@@ -57,9 +57,15 @@ end
             provider = OpenAI("http://$(HTTP.server_addr(server))/v1", "test", "synthetic")
             history = open(JuliaForever.History.SQLite, path)
             agent = Agent(provider, [Write(dir)]; history)
-            @test respond!(agent, "write it"; on_event=identity) == "done"
+            lifecycle = Any[]
+            @test respond!(agent, "write it"; on_event=identity, on_agent_event=event -> push!(lifecycle, deepcopy(event))) == "done"
             @test read(joinpath(dir, "note.txt"), String) == "ok"
             @test length(requests) == 2
+            thinking_updates = [event.message for event in lifecycle if event.type == :message_update && event.assistant_event.type == :thinking]
+            @test last(thinking_updates)["reasoning_content"] == "draft plus"
+            @test !haskey(last(thinking_updates), "reasoning")
+            finished = [event.message for event in lifecycle if event.type == :message_end && haskey(event.message, "reasoning")]
+            @test only(finished)["reasoning"] == "draft plus"
             first_message = agent.state.messages[2]
             @test get(first_message.metadata, "reasoning", nothing) == "draft plus"
             @test ContextEstimates.tokens(first_message) == ContextEstimates.tokens("draft pluswrite{\"path\":\"note.txt\",\"content\":\"ok\"}")
