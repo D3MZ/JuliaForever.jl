@@ -129,6 +129,19 @@ using Test, JuliaForever, HTTP, JSON3
         @test respond!(streaming, "third"; on_event=identity) == "answer"
         @test take!(requests)["max_tokens"] == 3902
 
+        imageagent = Agent(provider, [])
+        image = Image("image/png", "aGVsbG8=")
+        put!(replies, answer("thought", 190000))
+        @test respond!(imageagent, "hi") == "answer"
+        take!(requests)
+        steer!(imageagent, JuliaForever.Conversation.ImagePrompt("look", [image]))
+        put!(replies, answer("thought", 0))
+        @test respond!(imageagent, "next") == "answer"
+        imagerequest = take!(requests)
+        @test 1 < imagerequest["max_tokens"] < 64000
+        @test imagerequest["messages"][end]["content"][2]["source"] == Dict("type" => "base64", "media_type" => "image/png", "data" => "aGVsbG8=")
+        @test !occursin("anthropic_usage_anchor", JSON3.write(imagerequest))
+
         execution = JuliaForever.Execution
         conversation = JuliaForever.Conversation
         context = "anthropic-context-$(objectid(server))"
