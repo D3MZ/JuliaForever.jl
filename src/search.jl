@@ -527,7 +527,7 @@ end
 
 function execute(tool::Grep, args)
     root = searchpath(tool, get(args, :path, "."))
-    ispath(root) || return ToolFailure("Path not found: $root")
+    ispath(Sys.iswindows() ? stat(root) : root) || return ToolFailure("Path not found: $root")
     limit = max(1, Int(get(args, :limit, 100)))
     context = max(0, Int(get(args, :context, 0)))
     regex = try

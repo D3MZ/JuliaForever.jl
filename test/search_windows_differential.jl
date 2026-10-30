@@ -15,7 +15,7 @@
             for (index, case) in enumerate(cases)
                 expected = reference[index]
                 root = JuliaForever.searchpath(Grep(dir), case.args.path)
-                println("WINDOWS_CASE ", JSON3.write((; path=case.args.path, pi=expected, julia_ispath=ispath(root), julia_isfile=isfile(root))))
+                println("WINDOWS_CASE ", JSON3.write((; path=case.args.path, pi=expected, julia_ispath=ispath(root), julia_ispath_stat=ispath(stat(root)), julia_isfile=isfile(root))))
                 # The initial diagnostic avoids potentially blocking reads of console devices.
                 if get(ENV, "JF_RED_DIAGNOSTIC", "") == "1" && !(case.args.path in ("nul", "normal.txt"))
                     continue
