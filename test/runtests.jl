@@ -172,3 +172,5 @@ if haskey(ENV, "PI_SOURCE")
         end
     end
 end
+
+include("extension_interception.jl")
