@@ -61,12 +61,12 @@ isdefined(Main, :models_process) || include_string(Main, first(split(read(joinpa
             @test all(item -> item == (; target="/openai/responses", authorization="Bearer synthetic-openai-secret"), destinations[end-1:end])
 
             switched = models_process(base, workspace, ["--model", "openai/gpt-5.2:high", "--no-session"]; input="first\n/model gpt-5.1\nsecond\n/model gpt-6-luna\nthird\n/exit\n")
-            @test switched.status == 2 && occursin("Thinking", switched.diagnostics)
-            for expected in ("gpt-5.2", "gpt-5.1", "gpt-5.1")
+            @test switched.status == 0
+            for (expected, effort) in (("gpt-5.2", "high"), ("gpt-5.1", "high"), ("gpt-6-luna", "medium"))
                 @test isready(requests)
                 if isready(requests)
                     body = take!(requests)
-                    @test body["model"] == expected && body["reasoning"]["effort"] == "high"
+                    @test body["model"] == expected && body["reasoning"]["effort"] == effort
                 end
             end
             @test all(item -> item == (; target="/openai/responses", authorization="Bearer synthetic-openai-secret"), destinations[end-2:end])
@@ -87,16 +87,15 @@ isdefined(Main, :models_process) || include_string(Main, first(split(read(joinpa
             @test !occursin("synthetic-openai-secret", suffix.output * suffix.diagnostics)
 
             update = models_process(base, workspace, ["--model", "openai/gpt-6-luna:high", "hello"])
-            @test update.status == 2 && occursin("Thinking", update.diagnostics)
-            @test !isready(requests)
-            while isready(requests)
-                take!(requests)
-            end
+            @test update.status == 0 && isready(requests)
+            body = isready(requests) ? take!(requests) : Dict{String, Any}()
             if haskey(ENV, "PI_SOURCE")
                 source = ENV["PI_SOURCE"]
                 pi = JSON3.read(read(`node $(joinpath(@__DIR__, "thinking_pi.mjs")) $source gpt-6-luna high`, String), Dict{String, Any})
                 @test pi["reasoning"] == Dict("effort" => "medium", "summary" => "auto")
                 @test pi["updates"] == [Dict("type" => "configuration_update", "reasoning" => Dict("effort" => "high"))]
+                @test get(body, "reasoning", nothing) == pi["reasoning"]
+                @test filter(item -> get(item, "type", nothing) == "configuration_update", get(body, "input", [])) == pi["updates"]
             end
             updateoff = models_process(base, workspace, ["--model", "openai/gpt-6-luna:off", "hello"])
             @test updateoff.status == 0 && isready(requests)

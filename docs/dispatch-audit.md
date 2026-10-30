@@ -2,13 +2,15 @@
 
 The audit covers Julia source in `src/`. `test/branch_scan.jl` uses JuliaSyntax to list source locations for conditionals, short-circuit expressions, loops, exception handlers, comprehension filters, `ifelse`, and calls that may take predicates. The predicate list can include calls whose first argument is a search value rather than a function. The inventory is a static review aid; it cannot see branches produced by arbitrary macro expansion or dynamic code.
 
-At revision `b1a598e`, the inventory contained 1,268 points, including 73 `for` loops, 36 exception handlers, and 29 possible predicate calls. The integrated tree has 1,509 points. Counts include nested expressions, so they are not counts of independent decisions. `test/branch-baseline.txt` ratchets the normalized inventory, so added, removed, or changed entries require review and an explicit baseline update. It does not detect changes confined to branch bodies or moves of identical entries.
+At revision `b1a598e`, the inventory contained 1,268 points, including 73 `for` loops, 36 exception handlers, and 29 possible predicate calls. The integrated tree has 1,508 points. Counts include nested expressions, so they are not counts of independent decisions. `test/branch-baseline.txt` ratchets the normalized inventory, so added, removed, or changed entries require review and an explicit baseline update. It does not detect changes confined to branch bodies or moves of identical entries.
 
-The dispatch check is a separate heuristic. Applied to both versions with the expanded rules, it reports 750 candidates at `b1a598e` and 135 now: 681 previous occurrences were removed and 66 appeared under new expressions. The integrated tree includes modules and features added since the initial revision. The previous, narrower checks had recorded 542 and 715 candidates at the initial revision. The exact multiset is in `test/dispatch-baseline.txt`; tests fail if it grows or changes without updating the baseline. Compatibility properties for terminal state and MCP shutdown account for some matches.
+The dispatch check is a separate heuristic. Applied to both versions with the expanded rules, it reports 750 candidates at `b1a598e` and 129 now: 690 previous occurrences were removed and 69 appeared under new expressions. The integrated tree includes modules and features added since the initial revision. The previous, narrower checks had recorded 542 and 715 candidates at the initial revision. The exact multiset is in `test/dispatch-baseline.txt`; tests fail if it grows or changes without updating the baseline. Compatibility properties for terminal state and MCP shutdown account for some matches.
 
 The string-status rule found 12 previously unrecognized checks in the provider-merge checkout. Eleven were removed through typed decoding; the remaining OAuth query-key comparison is not a behavioral status. The check also finds status-field and selection comparisons when they return or assign a Boolean instead of controlling a branch directly. A later pass extended this to `isa`, `isnothing`, `ismissing`, and Boolean or missing-value comparisons outside branch conditions; it exposed two additional checks, both replaced with dispatch. It also catches comparisons of `typeof(...)` outside branch conditions; this revealed no additional current candidates. The dynamic `Val(...)` and `Val{...}()` rule found four value-based type tags in the terminal editor; those were replaced with domain outcomes or ordinary numeric checks.
 
 Another pass identifies names of typed methods that directly return a Boolean literal and flags conditional calls to those names across source files. This name-based heuristic can report unrelated methods with the same name; inferred Boolean returns and arbitrary macro expansion are not covered.
+
+The same scan now recognizes typed methods returning literal protocol labels and flags comparisons of their results. It identified a Responses route converted to a string and compared; authentication now dispatches on the route. Two remaining matches test membership in user-selected tool names.
 
 The keyword-value pass also checks typed Boolean predicates passed to calls. It found request and execution result types converted to Booleans and then reconstructed; both now pass the types directly. The remaining new matches include protocol serialization and unrelated functions sharing predicate names.
 
@@ -35,6 +37,8 @@ CLI history actions and provider selection now dispatch on typed outcomes. Durab
 Continuation adds four branch entries for queue availability and revision checks, with no new dispatch candidates; role decoding dispatches on the resulting domain types.
 
 Queue modes and model completion add six net branch entries for revision, queue, and menu data checks, with no new dispatch candidates.
+
+Saved-provider startup routing adds no branch or dispatch entries; it selects behavior using the resolved provider and credential values.
 
 Before-tool hooks add two branch entries for the hook error boundary and an empty block reason, with no new dispatch candidates; hook selection uses a registration lookup.
 
@@ -77,6 +81,8 @@ A constructor-literal pass found 19 uses of Boolean status arguments. They now c
 The constructor check also catches Boolean completion or code-result properties. Execution now carries the typed completion status directly, and CodeMode maps wire-format flags to result types at decoding.
 
 Session file paths and branch selection now dispatch on absent and supplied values.
+
+Session file headers and rows are decoded through typed validation. Duplicate IDs still reject the input, and invalid files remain untouched. Branch traversal ends on missing IDs or cycles.
 
 JSON mode adds 20 branch entries and no dispatch candidates.
 
@@ -132,6 +138,8 @@ RPC shell execution adds 22 branch entries for process output, escape decoding, 
 
 The discriminator rule now includes labels. It identified an unused result-label alternative in find output; the implementation now formats find results directly. Glob character classes dispatch on the matched closing position.
 
+Model reasoning effort is now included in the discriminator rule. Request writing, authorization, and reasoning updates map protocol values at their boundaries; the remaining check validates membership in a model's supported values.
+
 Agent model-response cleanup dispatches on the received response, recording a failure if the provider or usage handling does not complete.
 
 History initial-state encoding dispatches on conversation phase while preserving revision validation.
@@ -141,6 +149,8 @@ The authentication, export, and skill-command integration added 144 branch entri
 OpenRouter persistence adds 11 branch entries for credential paths, filesystem safety, and error handling; it adds no dispatch candidates.
 
 The OpenRouter callback validates requests before dispatching success, denial, and invalid responses. Its pending channel is consumed once under the callback lock, so concurrent replays are rejected.
+
+OpenAI request construction selects buffered or streamed configuration at the call site; the Boolean keyword remains a boundary adapter.
 
 CodeMode event processing now dispatches on received outcomes and uses channel closure to end the loop. The channel-open check remains an inventory candidate; it represents the event stream lifecycle.
 
