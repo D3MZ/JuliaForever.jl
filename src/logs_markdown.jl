@@ -23,7 +23,7 @@ function markdownblock(io, block::Markdown.Header{level}) where level
     markdowninlines(io, block.text)
     print(io, "</h", level, ">")
 end
-markdownblock(io, block::Markdown.Code) = print(io, "<pre><code>", escape(block.code), "</code></pre>")
+markdownblock(io, block::Markdown.Code) = print(io, "<pre><code data-language=\"", escape(block.language), "\">", escape(block.code), "</code></pre>")
 function markdownblock(io, block::Markdown.BlockQuote)
     print(io, "<blockquote>")
     markdownblocks(io, block.content)
