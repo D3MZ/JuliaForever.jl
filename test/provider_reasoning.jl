@@ -24,6 +24,8 @@ using Test, JuliaForever, HTTP, JSON3
             @test result.done
             @test isnothing(field) || get(result.message, field, nothing) == text
             @test [key for key in ("reasoning_content", "reasoning", "reasoning_text") if haskey(result.message, key)] == (isnothing(field) ? [] : [field])
+            native = JuliaForever.Conversation.Assistant(get(result.message, "content", nothing), JuliaForever.Conversation.ToolCall[], result.finish, result.done; metadata=result.message)
+            @test ContextEstimates.tokens(native) == ContextEstimates.tokens(something(result.message["content"], "") * something(text, ""))
             if index == 1
                 thinking = [event for event in events if event.type == :thinking]
                 @test [event.field for event in thinking] == ["reasoning_text", "reasoning_content", "reasoning", "reasoning_text"]
@@ -60,6 +62,7 @@ end
             @test length(requests) == 2
             first_message = agent.state.messages[2]
             @test get(first_message.metadata, "reasoning", nothing) == "draft plus"
+            @test ContextEstimates.tokens(first_message) == ContextEstimates.tokens("draft pluswrite{\"path\":\"note.txt\",\"content\":\"ok\"}")
             @test get(agent.messages[2], "reasoning", nothing) == "draft plus"
             followup = requests[2].messages[2]
             @test get(followup, :reasoning, nothing) == "draft plus"
