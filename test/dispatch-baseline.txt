@@ -175,12 +175,10 @@ sessions.jl	:(name === :terminated)
 sessions.jl	:(parent isa AbstractString)
 sqlite_history.jl	:(formaterror((last(exceptions)).exception))
 sqlite_history.jl	:(mode in ("delete", "truncate", "persist", "wal"))
-sqlite_history.jl	:(result isa H.Rejected)
 sqlite_history.jl	:complete
 sqlite_history.jl	:create
 sqlite_history.jl	:create
 sqlite_history.jl	:create
-sqlite_history.jl	:opened
 system.jl	:(isnothing(shellrun))
 system.jl	:(token.cancelled)
 system.jl	:bybytes
