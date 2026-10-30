@@ -70,7 +70,7 @@ end
             config = (; providers=(; fixture=first, openai=first, other=(; baseUrl=base * "/anthropic", api="anthropic-messages", apiKey="synthetic-anthropic", models=[definition("claude")])))
             write(joinpath(agentdir, "models.json"), JSON3.write(config))
             env = Dict("PATH" => ENV["PATH"], "HOME" => root, "USERPROFILE" => root, "PI_CODING_AGENT_DIR" => agentdir, "PI_OFFLINE" => "1", "JF_INSTRUCTIONS_DIR" => root, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "chat", "JULIA_NUM_THREADS" => "4", "JULIA_DEPOT_PATH" => join(DEPOT_PATH, Sys.iswindows() ? ';' : ':'), "TERM" => "dumb")
-            for file in ("static.gif", "static.webp")
+            for file in ("static.gif", "static.webp", "animated.gif", "animated.webp")
                 filename[] = file
                 empty!(requests)
                 bytes = read(joinpath(@__DIR__, "fixtures", file))
