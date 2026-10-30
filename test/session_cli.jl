@@ -47,6 +47,44 @@ end
     end
 end
 
+@testset "Windows case aliases continue the newest session" begin
+    if Sys.iswindows()
+        mktempdir() do root
+            workspace = joinpath(root, "Case Alias Project Ω")
+            alternate = joinpath(root, "cASE aLIAS pROJECT Ω")
+            mkpath(workspace)
+            if isdir(alternate) && samefile(workspace, alternate)
+                sessions, requests = joinpath(root, "sessions"), joinpath(root, "requests.jsonl")
+                @test session_process(requests, workspace, sessions, ["first case"]).status == 0
+                @test session_process(requests, alternate, sessions, ["second case"]).status == 0
+                files = readdir(sessions; join=true)
+                originals = Dict(file => read(file) for file in files)
+                views = [Set(item.title for item in JuliaForever.SessionCatalog.list(sessions, cwd)) for cwd in (workspace, alternate)]
+                @test all(==(Set(["first case", "second case"])), views)
+                @test all(file -> read(file) == originals[file], files)
+                if haskey(ENV, "PI_SOURCE")
+                    source = ENV["PI_SOURCE"]
+                    @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
+                    script = joinpath(@__DIR__, "session_case_pi.mjs")
+                    function pi(cwd, operation, title)
+                        cmd = Cmd(`node $script $source $operation $title`; dir=cwd)
+                        JSON3.read(read(addenv(cmd, "PI_CODING_AGENT_DIR" => joinpath(root, "pi"), "PI_OFFLINE" => "1"), String), Vector{String})
+                    end
+                    pi(workspace, "create", "first case")
+                    pi(alternate, "create", "second case")
+                    @test [Set(pi(cwd, "list", "")) for cwd in (workspace, alternate)] == views
+                end
+                @test session_process(requests, workspace, sessions, ["--continue", "follow up"]).status == 0
+                sent = JSON3.read(last(readlines(requests)))
+                @test occursin("second case", string(sent))
+                @test !occursin("first case", string(sent))
+            else
+                @test_skip false
+            end
+        end
+    end
+end
+
 @testset "session diagnostics redact provider credentials" begin
     for key in ("session-test-secret", "synthetic" * Char(0x80))
         mktempdir() do root
