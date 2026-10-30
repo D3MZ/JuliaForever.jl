@@ -187,7 +187,25 @@ sseevent!(client, data, event, ::ServerStream) = servermessage!(client, data, ev
 sseend(::Nothing, chunk) = length(chunk) + 1
 sseend(index::Int, chunk) = index
 
-function sseread!(client, stream, id)
+abstract type StreamReceipt end
+struct NoEvents <: StreamReceipt end
+struct EventsReceived <: StreamReceipt end
+abstract type StreamValidity end
+struct ValidStream <: StreamValidity end
+struct InvalidStream <: StreamValidity end
+
+mutable struct StreamCursor
+    id::Union{Nothing, String}
+    retry::Union{Nothing, Float64}
+    received::StreamReceipt
+    validity::StreamValidity
+end
+StreamCursor() = StreamCursor(nothing, nothing, NoEvents(), ValidStream())
+
+retrydelay!(cursor, ::Nothing) = nothing
+retrydelay!(cursor, delay::Float64) = (cursor.retry = delay / 1000; nothing)
+
+function sseread!(client, stream, id, cursor=StreamCursor())
     data = String[]
     bytes = UInt8[]
     size = 0
@@ -197,6 +215,7 @@ function sseread!(client, stream, id)
         empty!(bytes)
         endswith(line, '\r') && (line = chop(line; tail=1))
         if isempty(line)
+            isempty(data) || (cursor.received = EventsReceived())
             sseevent!(client, data, event, id) == id && return 1
             empty!(data)
             size = 0
@@ -208,10 +227,15 @@ function sseread!(client, stream, id)
             startswith(value, ' ') && (value = value[2:end])
             if field == "data"
                 size += ncodeunits(value) + !isempty(data)
-                size > sselimit && return -1
+                size > sselimit && (cursor.validity = InvalidStream(); return -1)
                 push!(data, value)
             elseif field == "event"
                 event = value
+            elseif field == "id" && !occursin('\0', value)
+                cursor.id = String(value)
+            elseif field == "retry" && occursin(r"^[0-9]+$", value)
+                delay = tryparse(Float64, value)
+                retrydelay!(cursor, delay)
             end
         end
         0
@@ -222,7 +246,7 @@ function sseread!(client, stream, id)
         while start <= length(chunk)
             newline = sseend(findnext(==(0x0a), chunk, start), chunk)
             stop = newline - 1
-            length(bytes) + stop - start + 1 > sselimit && return false
+            length(bytes) + stop - start + 1 > sselimit && (cursor.validity = InvalidStream(); return false)
             append!(bytes, @view chunk[start:stop])
             newline > length(chunk) && break
             result = line!()
@@ -246,31 +270,112 @@ function httprequest(client::Client, transport::HttpTransport, message)
     httprequest(client, transport, message, id, admit!(client, transport, id, context))
 end
 
-function getstream!(client::Client, transport::HttpTransport)
-    headers = filter(pair -> lowercase(first(pair)) ∉ ("accept", "content-type"), httpheaders(transport))
-    push!(headers, "Accept" => "text/event-stream")
-    try
-        HTTP.open("GET", transport.url, headers; status_exception=false, request_timeout=0, retry=false, redirect=false, cookies=false, context=transport.getcontext) do stream
-            response = HTTP.startread(stream)
-            get(getstatuses, response.status, ignoreget!)(client, transport, stream, response)
-        end
-    catch
-    end
-    nothing
-end
+abstract type StreamResult end
+struct StreamStopped <: StreamResult end
+struct StreamRunning <: StreamResult end
+struct StreamRetry <: StreamResult end
+struct StreamEnded <: StreamResult end
+struct StreamAnswered <: StreamResult end
 
-ignoreget!(client, transport, stream, response) = nothing
-function gettype!(client, transport, stream, response)
-    type = lowercase(strip(first(split(HTTP.header(response, "Content-Type", ""), ';'))))
-    get(gettypes, type, ignoreget!)(client, transport, stream, response)
+streamstate(client, id) = lock(() -> streamstate(client, id, client.connection), client.lock)
+streamstate(client, id, ::Closed) = StreamStopped()
+streamstate(client, ::ServerStream, ::Closed) = StreamStopped()
+streamstate(client, ::ServerStream, ::Connection) = StreamRunning()
+streamstate(client, id, ::Connection) = streamstate(get(client.pending, id, nothing))
+streamstate(::Nothing) = StreamStopped()
+streamstate(pending::Pending) = streamstate(pending.progress)
+streamstate(::Finishing) = StreamStopped()
+streamstate(::Union{NoProgress, Progress}) = StreamRunning()
+
+streamcontext!(client, transport, id, context, ::Closed) = StreamStopped()
+streamcontext!(client, transport, ::ServerStream, context, ::Closed) = StreamStopped()
+streamcontext!(client, transport, ::ServerStream, context, ::Connection) = (transport.getcontext = context; StreamRunning())
+streamcontext!(client, transport, id, context, ::Connection) = streamcontext!(transport, id, context, get(client.pending, id, nothing))
+streamcontext!(transport, id, context, ::Nothing) = StreamStopped()
+streamcontext!(transport, id, context, pending::Pending) = streamcontext!(transport, id, context, pending.progress)
+streamcontext!(transport, id, context, ::Finishing) = StreamStopped()
+streamcontext!(transport, id, context, ::Union{NoProgress, Progress}) = (transport.requests[id] = context; StreamRunning())
+
+retryfailure(::Exception) = StreamStopped()
+retryfailure(::Union{HTTP.HTTPError, EOFError, Base.IOError, SystemError}) = StreamRetry()
+reconnectdelay(::Nothing, attempt) = min(2.0^attempt, 30.0)
+reconnectdelay(delay::Float64, attempt) = delay
+cursorheader!(headers, ::Nothing) = headers
+cursorheader!(headers, id::String) = (push!(headers, "Last-Event-ID" => id); headers)
+streamresult(answered::Bool) = (StreamEnded(), StreamAnswered())[Int(answered) + 1]
+streamresult(result, ::InvalidStream) = StreamStopped()
+streamresult(result, ::ValidStream) = result
+
+function openstream!(client, transport, id, cursor)
+    context = HTTP.RequestContext()
+    state = lock(() -> streamcontext!(client, transport, id, context, client.connection), client.lock)
+    openstream!(client, transport, id, cursor, context, state)
 end
-function readget!(client, transport, stream, response)
+openstream!(client, transport, id, cursor, context, ::StreamStopped) = StreamStopped()
+function openstream!(client, transport, id, cursor, context, ::StreamRunning)
+    headers = filter(pair -> lowercase(first(pair)) ∉ ("accept", "content-type", "last-event-id"), httpheaders(transport))
+    push!(headers, "Accept" => "text/event-stream")
+    cursorheader!(headers, cursor.id)
+    result = Ref{StreamResult}(StreamStopped())
+    try
+        HTTP.open("GET", transport.url, headers; status_exception=false, request_timeout=0, retry=false, redirect=false, cookies=false, context) do stream
+            response = HTTP.startread(stream)
+            result[] = streamresponse!(client, transport, id, cursor, stream, response, streamstatus(response.status))
+        end
+        result[]
+    catch exception
+        retryfailure(exception)
+    end
+end
+streamstatus(code) = get(Dict(200 => StreamRunning(), 408 => StreamRetry(), 429 => StreamRetry()), code, code >= 500 ? StreamRetry() : StreamStopped())
+streamresponse!(client, transport, id, cursor, stream, response, result::StreamResult) = result
+function streamresponse!(client, transport, id, cursor, stream, response, ::StreamRunning)
+    type = lowercase(strip(first(split(HTTP.header(response, "Content-Type", ""), ';'))))
+    streamcontent!(client, transport, id, cursor, stream, response, get(Dict("text/event-stream" => StreamRunning()), type, StreamStopped()))
+end
+streamcontent!(client, transport, id, cursor, stream, response, ::StreamStopped) = StreamStopped()
+function streamcontent!(client, transport, id, cursor, stream, response, ::StreamRunning)
     session = HTTP.header(response, "Mcp-Session-Id", "")
     isempty(session) || (transport.session = session)
-    sseread!(client, stream, ServerStream())
+    result = streamresult(sseread!(client, stream, id, cursor))
+    streamresult(result, cursor.validity)
 end
-const getstatuses = Dict(200 => gettype!)
-const gettypes = Dict("text/event-stream" => readget!)
+
+reconnect!(client, transport, id, cursor, start::StreamResult) = reconnect!(client, transport, id, cursor, 0, start)
+reconnect!(client, transport, id, cursor, attempt, ::StreamStopped) = false
+reconnect!(client, transport, id, cursor, attempt, ::StreamAnswered) = true
+function reconnect!(client, transport, id, cursor, attempt, ::StreamRunning)
+    reconnectopen!(client, transport, id, cursor, attempt, streamstate(client, id))
+end
+reconnectopen!(client, transport, id, cursor, attempt, ::StreamStopped) = false
+function reconnectopen!(client, transport, id, cursor, attempt, ::StreamRunning)
+    cursor.received = NoEvents()
+    opened = time()
+    result = openstream!(client, transport, id, cursor)
+    reconnectnext!(client, transport, id, cursor, attempt, opened, result)
+end
+reconnectnext!(client, transport, id, cursor, attempt, opened, result::Union{StreamStopped, StreamAnswered}) = reconnect!(client, transport, id, cursor, attempt, result)
+reconnectnext!(client, transport, id, cursor, attempt, opened, result::Union{StreamEnded, StreamRetry}) = reconnectafter!(client, transport, id, cursor, nextattempt(id, cursor, attempt, opened), result)
+reconnectafter!(client, transport, id, cursor, ::Nothing, result) = false
+reconnectafter!(client, transport, id, cursor, attempt::Int, result) = reconnect!(client, transport, id, cursor, attempt, StreamRetry())
+function reconnect!(client, transport, id, cursor, attempt, ::StreamRetry)
+    attempt >= 5 && return false
+    delay = reconnectdelay(cursor.retry, attempt)
+    timedwait(() -> streamstate(client, id) == StreamStopped(), max(delay, 0.001); pollint=0.01)
+    reconnectopen!(client, transport, id, cursor, attempt + 1, streamstate(client, id))
+end
+nextattempt(::ServerStream, cursor, attempt, opened) = nextattempt(cursor.received, attempt, opened)
+nextattempt(::EventsReceived, attempt, opened) = 0
+nextattempt(::NoEvents, attempt, opened) = time() - opened > 30 ? 0 : attempt
+nextattempt(id, cursor, attempt, opened) = nextattempt(cursor.id, cursor.received, attempt)
+nextattempt(::Nothing, receipt, attempt) = nothing
+nextattempt(id::String, ::EventsReceived, attempt) = 0
+nextattempt(id::String, ::NoEvents, attempt) = attempt
+
+function getstream!(client::Client, transport::HttpTransport)
+    reconnect!(client, transport, ServerStream(), StreamCursor(), StreamRunning())
+    nothing
+end
 
 admit!(client, transport, ::Nothing, context) = context
 function admit!(client, transport, id, context)
@@ -307,8 +412,27 @@ function httpresponse!(client, stream, message, id, response)
     get(httpreaders, type, unsupportedhttp!)(client, stream, message, id, type)
 end
 function ssehttp!(client, stream, message, id, type)
-    sseread!(client, stream, id) || httpfailure!(client, message, Failure(:protocol, "MCP response stream ended without a response"))
+    cursor = StreamCursor()
+    result = try
+        streamresult(streamresult(sseread!(client, stream, id, cursor)), cursor.validity)
+    catch exception
+        retryfailure(exception)
+    end
+    ssefinish!(client, message, id, cursor, result)
 end
+ssefinish!(client, message, id, cursor, ::StreamAnswered) = nothing
+ssefinish!(client, message, id, cursor, ::StreamStopped) = httpfailure!(client, message, Failure(:protocol, "MCP response stream ended without a response"))
+ssefinish!(client, message, id, cursor, ::Union{StreamEnded, StreamRetry}) = sseresume!(client, message, id, cursor, cursor.validity, cursor.id)
+sseresume!(client, message, id, cursor, ::InvalidStream, eventid) = ssefinish!(client, message, id, cursor, StreamStopped())
+sseresume!(client, message, id, cursor, ::ValidStream, ::Nothing) = ssefinish!(client, message, id, cursor, StreamStopped())
+function sseresume!(client, message, id, cursor, ::ValidStream, eventid::String)
+    result = streamresult(reconnect!(client, client.process, id, cursor, StreamRetry()))
+    ssefinish!(client, message, id, cursor, resumed(result))
+end
+
+resumed(::StreamEnded) = StreamStopped()
+resumed(::StreamAnswered) = StreamAnswered()
+
 function jsonhttp!(client, stream, message, id, type)
     value = JSON3.read(read(stream), Dict{String, Any})
     received(client, value) || httpfailure!(client, message, Failure(:protocol, "Invalid JSON-RPC message"))
@@ -676,6 +800,7 @@ function request(client::Client, method, params, reservation::Tuple{Int, Pending
         abandoned, connection = lock(client.lock) do
             retire!(client, id), client.connection
         end
+        cancelhttp!(client.process, client, id)
         abandon!(client, id, abandoned, connection)
     end
 end

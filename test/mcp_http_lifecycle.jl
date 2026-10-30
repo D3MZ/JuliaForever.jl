@@ -135,7 +135,6 @@ end
     end
     client = MCP.connect("http://$(HTTP.server_addr(server))/mcp"; timeout=2)
     try
-        @test timedwait(() -> istaskdone(client.reader), 5) == :ok
         @test timedwait(() -> isready(seen), 5) == :ok
         @test take!(seen) == "valid"
         @test !isready(seen)

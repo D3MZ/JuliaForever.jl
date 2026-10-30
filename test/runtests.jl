@@ -243,6 +243,9 @@ end
 module MCPHTTPGETTests
 include("mcp_http_get.jl")
 end
+module MCPReconnectTests
+include("mcp_reconnect.jl")
+end
 module MCPHTTPLifecycleTests
 include("mcp_http_lifecycle.jl")
 end
