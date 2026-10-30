@@ -31,8 +31,8 @@ end
 function alignment(query, text)
     positions = Int[]
     start = 1
-    for code in query
-        index = something(findnext(==(code), text, start), length(text) + 1)
+    for unit in query
+        index = something(findnext(==(unit), text, start), length(text) + 1)
         index > length(text) && return nothing
         push!(positions, index)
         start = index + 1
