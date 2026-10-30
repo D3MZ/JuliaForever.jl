@@ -41,8 +41,6 @@ durable.jl	:(visible(state, conversation, at))
 execution.jl	:(cancelled(cancellation))
 execution.jl	:(cancelled(handle.cancellation))
 execution_conversation.jl	:(name === :detailed)
-extensions.jl	:(hook.event == :tool_result)
-extensions.jl	:(hook.event == event.type)
 history.jl	:(name === :batches)
 history.jl	:(name === :batches)
 history.jl	:(name === :status)
@@ -57,8 +55,6 @@ kernel.jl	:(same(value, result, seen))
 kernel.jl	:(same(x, y, seen))
 kernel.jl	:(same(x, y, seen))
 kernel.jl	:found
-logs.jl	:empty
-logs.jl	:first
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :state)
@@ -71,9 +67,7 @@ mcp.jl	:(visible(item))
 mcp.jl	:validcontent
 model_config.jl	:(effort in values(levels))
 provider.jl	:((last(current_exceptions())).exception isa ArgumentError)
-provider.jl	:(get(data, "is_byok", false))
 provider.jl	:(key == "error")
-provider.jl	:(key isa AbstractString)
 provider.jl	:(name === :done)
 provider.jl	:complete
 scheduler.jl	:(name === :cancelled)
@@ -85,7 +79,6 @@ scheduler.jl	:(view.kind == name(handler))
 scheduler.jl	:cancelled
 search.jl	:(selectglob(filter, target))
 search.jl	:anchored
-search.jl	:anywhere
 search.jl	:directory
 search.jl	:directory
 search.jl	:directory
@@ -94,7 +87,6 @@ search.jl	:directory
 search.jl	:directory
 search.jl	:isdirectory
 search.jl	:matched
-search.jl	:smartcase
 search.jl	:windows
 search.jl	:windows
 session_terminal.jl	:(Kernel.same(agent.messages, plan.original))
@@ -110,9 +102,6 @@ sessions.jl	:(name === :terminated)
 sqlite_history.jl	:(formaterror((last(exceptions)).exception))
 sqlite_history.jl	:(mode in ("delete", "truncate", "persist", "wal"))
 system.jl	:(code != 0)
-system.jl	:bybytes
-system.jl	:partial
-system.jl	:partial
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :lineopen)
 terminal.jl	:(name === :streamed)

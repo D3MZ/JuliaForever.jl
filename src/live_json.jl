@@ -1,7 +1,7 @@
 module LiveJSON
 
 using JSON3, Dates, Random, SHA
-import ..JuliaForever: Terminal, JSONMode, Agent, OpenAI, OpenAIResponses, Anthropic, Google, Usage, Completion, Finished, Unfinished, Truncated, History, SessionCatalog, Extensions, FileArguments, Prompts, Skills, Image, ToolResult, ToolFailure, ShellUpdate, PendingInputs, providercomplete!, run!, runmode!, starttemplates!, request!, respond!, failures!, result!, redact, attempt, fileinput, fileprompt, iserror
+import ..JuliaForever: Terminal, JSONMode, RPCMode, Agent, OpenAI, OpenAIResponses, Anthropic, Google, UnconfiguredProvider, Usage, Completion, Finished, Unfinished, Truncated, History, SessionCatalog, Extensions, FileArguments, Prompts, Skills, Image, ToolResult, ToolFailure, ShellUpdate, PendingInputs, Unannounced, Announced, providercomplete!, run!, runmode!, starttemplates!, request!, respond!, failures!, result!, redact, attempt, fileinput, fileprompt, iserror, modelcatalogname
 
 function write!(io, event)
     JSON3.write(io, event)
@@ -30,8 +30,10 @@ api(::OpenAI) = "openai-completions"
 api(::OpenAIResponses) = "openai-responses"
 api(::Anthropic) = "anthropic-messages"
 api(::Google) = "google-generative-ai"
-providername(::JSONMode, ::OpenAIResponses) = "openai"
-providername(mode::JSONMode, provider) = mode.provider
+api(::UnconfiguredProvider) = "unknown"
+providername(mode::Union{JSONMode, RPCMode}, provider::OpenAIResponses) = modelcatalogname(provider, mode.provider)
+providername(::RPCMode, ::UnconfiguredProvider) = "unknown"
+providername(mode::Union{JSONMode, RPCMode}, provider) = mode.provider
 
 usage(::Nothing) = (; input=0, output=0, cacheRead=0, cacheWrite=0, totalTokens=0, cost=(; input=0, output=0, cacheRead=0, cacheWrite=0, total=0))
 function usage(value::Usage)
@@ -41,14 +43,28 @@ function usage(value::Usage)
 end
 
 abstract type Block end
+function buffer(text::AbstractString)
+    value = IOBuffer()
+    write(value, text)
+    value
+end
+buffertext(value::IOBuffer) = String(take!(copy(value)))
+function settext!(value::IOBuffer, text)
+    truncate(value, 0)
+    seekstart(value)
+    write(value, text)
+    nothing
+end
 mutable struct TextBlock <: Block
     index::Int
-    text::String
+    text::IOBuffer
 end
 mutable struct ThinkingBlock <: Block
     index::Int
-    text::String
+    text::IOBuffer
 end
+TextBlock(index, text::AbstractString) = TextBlock(index, buffer(text))
+ThinkingBlock(index, text::AbstractString) = ThinkingBlock(index, buffer(text))
 abstract type CallState end
 struct Unstarted <: CallState end
 struct Started <: CallState end
@@ -56,10 +72,11 @@ mutable struct CallBlock <: Block
     index::Int
     id::String
     name::String
-    arguments::String
-    pending::String
-    state::CallState
+    arguments::IOBuffer
+    pending::IOBuffer
+    state::Union{Unstarted, Started}
 end
+CallBlock(index, id, name, arguments::AbstractString, pending::AbstractString, state::CallState) = CallBlock(index, id, name, buffer(arguments), buffer(pending), state)
 
 mutable struct Stream{I<:IO, T<:Terminal}
     io::I
@@ -70,7 +87,7 @@ mutable struct Stream{I<:IO, T<:Terminal}
     used::Union{Nothing, Usage}
     completion::Union{Nothing, Completion}
     stamp::Int
-    blocks::Vector{Block}
+    blocks::Vector{Union{TextBlock, ThinkingBlock, CallBlock}}
     active::Union{Nothing, TextBlock, ThinkingBlock}
     calls::Dict{Any, CallBlock}
     names::Dict{String, String}
@@ -78,10 +95,15 @@ mutable struct Stream{I<:IO, T<:Terminal}
     assistant::Dict{String, Any}
     messages::Vector{Dict{String, Any}}
     results::Vector{Dict{String, Any}}
+    initial::Vector{Dict{String, Any}}
+    started::Union{Unannounced, Announced}
+    ended::Union{Unannounced, Announced}
+    turnended::Union{Unannounced, Announced}
+    runended::Union{Unannounced, Announced}
 end
 
 function Stream(terminal, agent, mode)
-    Stream(terminal.output, terminal, api(agent.provider), providername(mode, agent.provider), agent.provider.model, nothing, nothing, nowms(), Block[], nothing, Dict{Any, CallBlock}(), Dict{String, String}(), Dict{String, Any}(), Dict{String, Any}(), Dict{String, Any}[], Dict{String, Any}[])
+    Stream(terminal.output, terminal, api(agent.provider), providername(mode, agent.provider), agent.provider.model, nothing, nothing, nowms(), Union{TextBlock, ThinkingBlock, CallBlock}[], nothing, Dict{Any, CallBlock}(), Dict{String, String}(), Dict{String, Any}(), Dict{String, Any}(), Dict{String, Any}[], Dict{String, Any}[], initialmessages(agent), Unannounced(), Unannounced(), Unannounced(), Unannounced())
 end
 
 struct ProviderObserver{S}
@@ -120,10 +142,14 @@ observe!(stream, event) = observe!(stream, get(events, event.type, nothing), eve
 observe!(stream, ::Nothing, event) = nothing
 function observe!(stream, ::AgentStart, event)
     empty!(stream.messages)
+    stream.runended = Unannounced()
     write!(stream.io, (; type="agent_start"))
 end
-function observe!(stream, ::AgentEnd, event)
+observe!(stream, ::AgentEnd, event) = (stream.runended = Announced(); nothing)
+finishrun!(stream, ::Unannounced) = nothing
+function finishrun!(stream, ::Announced)
     write!(stream.io, (; type="agent_end", messages=stream.messages, willRetry=false))
+    stream.runended = Unannounced()
 end
 function observe!(stream, ::TurnStart, event)
     stream.used = nothing
@@ -132,25 +158,56 @@ function observe!(stream, ::TurnStart, event)
     empty!(stream.blocks)
     empty!(stream.calls)
     stream.active = nothing
+    stream.started = Unannounced()
+    stream.ended = Unannounced()
+    stream.turnended = Unannounced()
     write!(stream.io, (; type="turn_start"))
+    initial!(stream)
 end
 function observe!(stream, ::TurnEnd, event)
     write!(stream.io, (; type="turn_end", message=stream.assistant, toolResults=stream.results))
+    stream.turnended = Announced()
 end
 
 abstract type Role end
 struct UserRole <: Role end
+struct SystemRole <: Role end
 struct AssistantRole <: Role end
 struct ToolRole <: Role end
 struct OtherRole <: Role end
-const roles = Dict("user" => UserRole(), "assistant" => AssistantRole(), "tool" => ToolRole())
+const roles = Dict("user" => UserRole(), "system" => SystemRole(), "assistant" => AssistantRole(), "tool" => ToolRole())
 role(message) = get(roles, get(message, "role", ""), OtherRole())
+
+function initialmessages(agent)
+    values = Dict{String, Any}[]
+    length(getfield(agent.state, :messages)) <= length(getfield(agent.initial, :messages)) || return values
+    for raw in agent.messages
+        initialmessage!(values, role(raw), raw)
+    end
+    values
+end
+initialmessage!(values, role::Role, raw) = nothing
+initialmessage!(values, ::SystemRole, raw) = push!(values, Dict{String, Any}(raw))
+function initial!(stream)
+    for raw in stream.initial
+        value = merge(raw, Dict("timestamp" => nowms()))
+        write!(stream.io, (; type="message_start", message=value))
+        write!(stream.io, (; type="message_end", message=value))
+        push!(stream.messages, value)
+    end
+    empty!(stream.initial)
+    nothing
+end
 
 function observe!(stream, ::MessageStart, event)
     stream.stamp = nowms()
-    stream.current = message(stream, event.message, role(event.message))
+    kind = role(event.message)
+    started!(stream, kind)
+    stream.current = message(stream, event.message, kind)
     write!(stream.io, (; type="message_start", message=stream.current))
 end
+started!(stream, role::Role) = nothing
+started!(stream, ::AssistantRole) = (stream.started = Announced(); nothing)
 
 function observe!(stream, ::MessageEnd, event)
     messageend!(stream, event.message, role(event.message))
@@ -164,6 +221,7 @@ function messageend!(stream, raw, ::AssistantRole)
     closeblocks!(stream, raw)
     value = message(stream, raw, AssistantRole())
     stream.assistant = value
+    stream.ended = Announced()
     push!(stream.messages, value)
     write!(stream.io, (; type="message_end", message=value))
 end
@@ -180,10 +238,8 @@ textblock(text) = Dict("type" => "text", "text" => text)
 content(text, ::Nothing) = [textblock(text)]
 content(text, images::AbstractVector) = [textblock(text); image.(images)]
 function message(stream, raw, ::UserRole)
-    Dict{String, Any}("role" => "user", "content" => content(get(raw, "content", ""), get(raw, "images", nothing)), "timestamp" => stream.stamp) |> usercontent
+    Dict{String, Any}("role" => "user", "content" => content(get(raw, "content", ""), get(raw, "images", nothing)), "timestamp" => stream.stamp)
 end
-usercontent(value) = usercontent(value, value["content"])
-usercontent(value, content::Vector) = length(content) == 1 ? (value["content"] = only(content)["text"]; value) : value
 
 reason(::Nothing, raw) = isempty(get(raw, "tool_calls", [])) ? "pending" : "toolUse"
 reason(result::Completion, raw) = reason(result, getfield(result, :status), raw)
@@ -208,17 +264,17 @@ function message(stream, raw, ::ToolRole)
     image!(blocks, get(raw, "image", nothing))
     Dict{String, Any}("role" => "toolResult", "toolCallId" => id, "toolName" => get(stream.names, id, ""), "content" => blocks, "isError" => get(raw, "is_error", false), "timestamp" => stream.stamp)
 end
-message(stream, raw, ::OtherRole) = Dict{String, Any}(raw)
+message(stream, raw, ::Union{OtherRole, SystemRole}) = Dict{String, Any}(raw)
 image!(blocks, ::Nothing) = blocks
 image!(blocks, value) = (push!(blocks, image(value)); blocks)
 
 assistantcontent(stream, raw) = assistantcontent(stream.blocks, raw)
-function assistantcontent(blocks::Vector{Block}, raw)
+function assistantcontent(blocks::Vector{<:Block}, raw)
     isempty(blocks) && return fallbackcontent(raw)
     [blockcontent(block) for block in blocks]
 end
-blockcontent(block::TextBlock) = textblock(block.text)
-blockcontent(block::ThinkingBlock) = Dict("type" => "thinking", "thinking" => block.text)
+blockcontent(block::TextBlock) = textblock(buffertext(block.text))
+blockcontent(block::ThinkingBlock) = Dict("type" => "thinking", "thinking" => buffertext(block.text))
 blockcontent(block::CallBlock) = toolcall(block)
 function fallbackcontent(raw)
     blocks = Dict{String, Any}[]
@@ -263,7 +319,7 @@ arguments(::InvalidArguments) = Dict{String, Any}()
 toolcall(id, name, value) = toolcall(id, name, parsed(value))
 toolcall(id, name, value::ParsedArguments) = Dict{String, Any}("type" => "toolCall", "id" => id, "name" => name, "arguments" => value.value)
 toolcall(id, name, value::InvalidArguments) = Dict{String, Any}("type" => "toolCall", "id" => id, "name" => name, "arguments" => Dict{String, Any}(), "argumentsError" => "Invalid JSON arguments: " * value.text)
-toolcall(block::CallBlock) = toolcall(block.id, block.name, block.arguments)
+toolcall(block::CallBlock) = toolcall(block.id, block.name, buffertext(block.arguments))
 function toolcall(raw::AbstractDict)
     fn = get(raw, "function", Dict())
     toolcall(get(raw, "id", ""), get(fn, "name", ""), get(fn, "arguments", nothing))
@@ -277,8 +333,8 @@ function closeactive!(stream)
     stream.active = nothing
 end
 closeactive!(stream, ::Nothing) = nothing
-closeactive!(stream, block::TextBlock) = update!(stream, (; type="text_end", contentIndex=block.index, content=block.text))
-closeactive!(stream, block::ThinkingBlock) = update!(stream, (; type="thinking_end", contentIndex=block.index, content=block.text))
+closeactive!(stream, block::TextBlock) = update!(stream, (; type="text_end", contentIndex=block.index, content=buffertext(block.text)))
+closeactive!(stream, block::ThinkingBlock) = update!(stream, (; type="thinking_end", contentIndex=block.index, content=buffertext(block.text)))
 
 function beginblock!(stream, ::Type{T}) where T <: Union{TextBlock, ThinkingBlock}
     closeactive!(stream)
@@ -303,12 +359,12 @@ end
 update!(stream, ::Nothing, event) = nothing
 function update!(stream, ::TextUpdate, event)
     block = active!(stream, TextBlock, stream.active)
-    block.text *= event.text
+    write(block.text, event.text)
     update!(stream, (; type="text_delta", contentIndex=block.index, delta=event.text))
 end
 function update!(stream, ::ThinkingUpdate, event)
     block = active!(stream, ThinkingBlock, stream.active)
-    block.text *= event.text
+    write(block.text, event.text)
     update!(stream, (; type="thinking_delta", contentIndex=block.index, delta=event.text))
 end
 function update!(stream, ::CallUpdate, event)
@@ -320,10 +376,13 @@ function update!(stream, ::CallUpdate, event)
     end
     block.id = something(event.id, block.id)
     block.name = something(event.name, block.name)
-    block.arguments *= event.arguments
-    block.pending *= event.arguments
+    write(block.arguments, event.arguments)
+    write(block.pending, event.arguments)
     startcall!(stream, block)
+    isempty(event.arguments) && emptydelta!(stream, block, block.state)
 end
+emptydelta!(stream, block, ::Unstarted) = nothing
+emptydelta!(stream, block, ::Started) = update!(stream, (; type="toolcall_delta", contentIndex=block.index, delta=""))
 function startcall!(stream, block)
     isempty(block.id) || isempty(block.name) || startcall!(stream, block, block.state)
 end
@@ -334,8 +393,8 @@ function startcall!(stream, block, ::Unstarted)
     startcall!(stream, block, block.state)
 end
 function startcall!(stream, block, ::Started)
-    isempty(block.pending) || update!(stream, (; type="toolcall_delta", contentIndex=block.index, delta=block.pending))
-    block.pending = ""
+    pending = String(take!(block.pending))
+    isempty(pending) || update!(stream, (; type="toolcall_delta", contentIndex=block.index, delta=pending))
 end
 textblocks!(items, ::Block) = items
 textblocks!(items, block::TextBlock) = (push!(items, block); items)
@@ -345,7 +404,7 @@ reconciletext!(blocks, ::Nothing) = nothing
 function reconciletext!(blocks, text::AbstractString)
     items = TextBlock[]
     foreach(block -> textblocks!(items, block), blocks)
-    length(items) == 1 && (only(items).text = String(text))
+    length(items) == 1 && settext!(only(items).text, text)
     nothing
 end
 rawarguments(value::AbstractString) = String(value)
@@ -357,7 +416,7 @@ function reconcilecalls!(blocks, raw)
         fn = get(call, "function", Dict())
         block.id = get(call, "id", block.id)
         block.name = get(fn, "name", block.name)
-        block.arguments = rawarguments(get(fn, "arguments", block.arguments))
+        settext!(block.arguments, rawarguments(get(fn, "arguments", buffertext(block.arguments))))
     end
 end
 function closeblocks!(stream, raw)
@@ -411,8 +470,30 @@ struct RequestFailed <: RequestStatus
 end
 const requeststatuses = Dict(0 => RequestCompleted())
 requeststatus(status) = get(requeststatuses, status, RequestFailed(status))
-finish!(stream, result, ::RequestCompleted) = settled!(stream, result.value)
-finish!(stream, result, failed::RequestFailed) = failed.status
+function finish!(stream, result, ::RequestCompleted)
+    finishrun!(stream, stream.runended)
+    settled!(stream, result.value)
+end
+function finish!(stream, result, failed::RequestFailed)
+    failedturn!(stream, get(failedfinishes, failed.status, nothing))
+    finishrun!(stream, stream.runended)
+    settled!(stream, get(failedsettlements, failed.status, nothing))
+end
+const failedfinishes = Dict(130 => "cancelled")
+const failedsettlements = Dict(130 => :cancelled)
+function failedturn!(stream, finish)
+    raw = Dict{String, Any}("role" => "assistant", "content" => nothing)
+    stream.completion = Completion(raw, nothing, finish, Unfinished(), "Provider request failed")
+    failedstart!(stream, stream.started, raw)
+    failedend!(stream, stream.ended, raw)
+    failedturnend!(stream, stream.turnended)
+end
+failedstart!(stream, ::Announced, raw) = nothing
+failedstart!(stream, ::Unannounced, raw) = observe!(stream, MessageStart(), (; message=raw))
+failedend!(stream, ::Announced, raw) = nothing
+failedend!(stream, ::Unannounced, raw) = messageend!(stream, raw, AssistantRole())
+failedturnend!(stream, ::Announced) = nothing
+failedturnend!(stream, ::Unannounced) = observe!(stream, TurnEnd(), nothing)
 settled!(stream, value) = (write!(stream.io, (; type="agent_settled", aborted=false)); 0)
 settled!(stream, value::Symbol) = (write!(stream.io, (; type="agent_settled", aborted=get(Dict(:cancelled => true), value, false))); 0)
 settled!(stream, rejected::History.Rejected) = result!(stream.terminal, rejected)

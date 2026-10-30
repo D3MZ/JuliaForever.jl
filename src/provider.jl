@@ -23,6 +23,13 @@ end
 OpenAI(base, model, key) = OpenAI(base, model, key, Pair{String, String}[], DirectRoute())
 OpenAI(base, model, key, extra) = OpenAI(base, model, key, extra, DirectRoute())
 
+struct UnconfiguredProvider
+    base::String
+    model::String
+    key::String
+end
+UnconfiguredProvider() = UnconfiguredProvider("", "unknown", "")
+
 # Keep request cancellation scoped to the calling task without changing provider APIs.
 const requestkey = gensym(:request_context)
 requestcontext() = get(task_local_storage(), requestkey, nothing)
@@ -225,10 +232,9 @@ end
 
 apikey(failure::InvalidResponse) = failure
 
-function apikey(data::AbstractDict)
-    key = get(data, "key", nothing)
-    key isa AbstractString && !isempty(key) ? key : nothing
-end
+apikey(data::AbstractDict) = apikeyvalue(get(data, "key", nothing))
+apikeyvalue(value) = nothing
+apikeyvalue(value::AbstractString) = isempty(value) ? nothing : value
 
 struct Usage
     input::Int
@@ -303,7 +309,11 @@ details(data) = data
 upstream(::Nothing) = 0
 upstream(data) = get(data, "upstream_inference_cost", 0)
 usagecost(::Nothing, data) = nothing
-usagecost(cost, data) = Float64(get(data, "is_byok", false) ? cost + upstream(get(data, "cost_details", nothing)) : cost)
+usagecost(cost, data) = usagecost(cost, data, get(data, "is_byok", false))
+plaincost(cost, data) = cost
+byokcost(cost, data) = cost + upstream(get(data, "cost_details", nothing))
+const costcalculators = Dict(false => plaincost, true => byokcost)
+usagecost(cost, data, byok::Bool) = Float64(costcalculators[byok](cost, data))
 
 function usage(data)
     prompt = get(data, "prompt_tokens", 0)

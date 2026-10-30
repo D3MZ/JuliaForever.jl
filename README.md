@@ -27,7 +27,7 @@ julia --project=. -m JuliaForever 'Create a hello.txt file'
 
 To install the `jf` command from the checkout, run `julia -e 'using Pkg; Pkg.Apps.add(path=pwd())'` and put the Julia depot's `bin` directory on your `PATH`. Julia's app support is experimental. Run `jf` without a prompt for a session; `/exit` ends it. On a supported terminal, Enter sends, Ctrl+J inserts a line, Alt+Enter queues a follow-up, and Escape interrupts an active request. See [terminal](docs/terminal.md) for input and platform limitations.
 
-Use `jf --mode json 'prompt'` to stream structured message and tool events as JSONL; see [JSON mode](docs/json-mode.md). Export a saved session with `jf --export session.sqlite` for HTML, or specify an `.html` or `.json` destination; see [history export](docs/logs.md).
+Use `jf --mode json 'prompt'` to stream structured message and tool events as JSONL; see [JSON mode](docs/json-mode.md). Use `jf --mode rpc` for [subprocess control](docs/headless.md). Export a saved session with `jf --export session.sqlite` for HTML, or specify an `.html` or `.json` destination; see [history export](docs/logs.md).
 
 By default the CLI enables `read`, `bash`, `edit`, and `write`, plus explicitly loaded plugin tools. Use `--tools`, `--exclude-tools`, `--no-builtin-tools`, or `--no-tools` to choose the available tools; see [terminal tools](docs/terminal.md).
 

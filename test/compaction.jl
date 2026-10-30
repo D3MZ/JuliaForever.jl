@@ -28,6 +28,16 @@ function compactagent(provider; history=nothing)
     Agent(provider, Dict{String, JuliaForever.Tool}(), compactmessages(); history)
 end
 
+@testset "compaction respects excluded shell context" begin
+    provider = CompactProvider(Dict{String, Any}("role" => "assistant", "content" => "summary"), Any[])
+    included = CompactConversation.BashMessage("printf public", "public", 0, false, false, nothing, 1, CompactConversation.bashcontext(false))
+    excluded = CompactConversation.BashMessage("printf secret", "secret", 0, false, false, nothing, 2, CompactConversation.bashcontext(true))
+    @test JuliaForever.Summarizer(provider)(CompactConversation.Message[included, excluded]) == "summary"
+    transcript = only(provider.requests).messages[1]["content"]
+    @test occursin("Ran `printf public`", transcript)
+    @test !occursin("secret", transcript)
+end
+
 @testset "compaction retains all system context" begin
     messages = compactmessages()
     insert!(messages, 2, Dict{String, Any}("role" => "system", "content" => "<skills>metadata</skills>"))

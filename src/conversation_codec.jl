@@ -113,6 +113,7 @@ pack(x::C.Summary) = node("summary", x.content)
 pack(x::C.SkillContext) = node("skill_context", x.content)
 pack(x::C.ImageUser) = node("user_images", x.content, packall(x.images))
 pack(x::C.RawMessage) = node("raw", packvalue(x.value))
+pack(x::C.BashMessage) = node("bash_message", x.command, x.output, x.exitcode, C.bashcancelled(x.status), C.bashtruncated(x.extent), x.file, x.timestamp, C.bashexcluded(x.context))
 pack(x::C.ToolCall) = node("tool_call", x.id, x.name, x.arguments, packvalue(x.metadata))
 pack(x::C.Assistant) = node("assistant", x.content, packall(x.calls), x.finish, x.done, packvalue(x.metadata))
 pack(x::C.ToolMessage) = pack(x, x.image)
@@ -139,6 +140,12 @@ pack(x::C.SteeringMode) = node("steering_mode", x.revision, C.queuecode(x.mode))
 pack(x::C.FollowupMode) = node("followup_mode", x.revision, C.queuecode(x.mode))
 pack(x::C.Dequeue) = node("dequeue", x.revision)
 pack(x::C.SessionName) = node("session_name", x.revision, x.name)
+pack(x::C.BashOutput) = node("bash_output", x.revision, pack(x.message))
+pack(x::C.ModelEntry) = node("entry_model", x.provider, x.model)
+pack(x::C.ThinkingEntry) = node("entry_thinking", x.level)
+pack(x::C.MessageEntry) = node("entry_message", packvalue(x.message))
+pack(x::C.NameEntry) = node("entry_name", x.name)
+pack(x::C.SessionRecord) = node("session_record", x.revision, x.id, x.parent, x.timestamp, pack(x.entry))
 pack(x::C.ContinueQueued) = node("continue_queued", x.revision)
 pack(x::C.Continue) = node("continue", x.revision)
 pack(x::C.Advance) = node("advance", x.revision)
@@ -161,12 +168,12 @@ unpacked(items::Vector, item) = Rejected(:invalid_record)
 unpacked(items::Vector{T}, item::T) where T = push!(items, item)
 
 const nodetypes = Dict(
-    "user" => C.User, "user_images" => C.ImageUser, "summary" => C.Summary, "skill_context" => C.SkillContext, "raw" => C.RawMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant,
+    "user" => C.User, "user_images" => C.ImageUser, "summary" => C.Summary, "skill_context" => C.SkillContext, "raw" => C.RawMessage, "bash_message" => C.BashMessage, "tool_call" => C.ToolCall, "assistant" => C.Assistant,
     "tool_message" => C.ToolMessage, "model_request" => C.ModelRequest, "tool_request" => C.ToolRequest,
     "skip_request" => C.SkipRequest, "model_reply" => C.ModelReply, "tool_reply" => C.ToolReply,
     "tool_search_reply" => ToolLoaded, "tool_discovery_reply" => ToolDiscovery,
     "model_failure" => C.ModelFailure, "abandoned" => C.Abandoned, "input" => C.Input, "input_images" => C.ImageInput, "steer" => C.Steer,
-    "followup" => C.Followup, "steering_mode" => C.SteeringMode, "followup_mode" => C.FollowupMode, "dequeue" => C.Dequeue, "session_name" => C.SessionName, "continue_queued" => C.ContinueQueued, "continue" => C.Continue, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History,
+    "followup" => C.Followup, "steering_mode" => C.SteeringMode, "followup_mode" => C.FollowupMode, "dequeue" => C.Dequeue, "session_name" => C.SessionName, "bash_output" => C.BashOutput, "entry_model" => C.ModelEntry, "entry_thinking" => C.ThinkingEntry, "entry_message" => C.MessageEntry, "entry_name" => C.NameEntry, "session_record" => C.SessionRecord, "continue_queued" => C.ContinueQueued, "continue" => C.Continue, "advance" => C.Advance, "cancel" => C.Cancel, "history" => C.History,
     "interrupt" => C.Interrupt, "abandon" => C.Abandon, "call" => K.Call, "return" => K.Return,
     "fail" => K.Fail, "plan" => K.Plan, "observe" => K.Observe, "finish" => K.Finish, "image" => C.Image,
 )
@@ -179,6 +186,7 @@ unpack(::Type{C.Summary}, f::Vector) = C.Summary(f[1])
 unpack(::Type{C.SkillContext}, f::Vector) = C.SkillContext(f[1])
 unpack(::Type{C.ImageUser}, f::Vector) = C.ImageUser(f[1], unpackall(f[2], C.Image))
 unpack(::Type{C.RawMessage}, f::Vector) = C.RawMessage(unvalue(f[1]))
+unpack(::Type{C.BashMessage}, f::Vector) = C.BashMessage(f[1], f[2], f[3], f[4], f[5], f[6], f[7], C.bashcontext(f[8]))
 unpack(::Type{C.ToolCall}, f::Vector) = C.ToolCall(f[1], f[2], f[3], unvalue(f[4]))
 unpack(::Type{C.Assistant}, f::Vector) = C.Assistant(f[1], unpackall(f[2], C.ToolCall), f[3], f[4], unvalue(f[5]))
 unpackimage(::Nothing) = nothing
@@ -202,6 +210,12 @@ unpack(::Type{C.SteeringMode}, f::Vector) = C.SteeringMode(f[1], C.queuetypes[f[
 unpack(::Type{C.FollowupMode}, f::Vector) = C.FollowupMode(f[1], C.queuetypes[f[2]]())
 unpack(::Type{C.Dequeue}, f::Vector) = C.Dequeue(f[1])
 unpack(::Type{C.SessionName}, f::Vector) = C.SessionName(f[1], f[2])
+unpack(::Type{C.BashOutput}, f::Vector) = C.BashOutput(f[1], unpack(f[2]))
+unpack(::Type{C.ModelEntry}, f::Vector) = C.ModelEntry(f[1], f[2])
+unpack(::Type{C.ThinkingEntry}, f::Vector) = C.ThinkingEntry(f[1])
+unpack(::Type{C.MessageEntry}, f::Vector) = C.MessageEntry(unvalue(f[1]))
+unpack(::Type{C.NameEntry}, f::Vector) = C.NameEntry(f[1])
+unpack(::Type{C.SessionRecord}, f::Vector) = C.SessionRecord(f[1], f[2], f[3], f[4], unpack(f[5]))
 unpack(::Type{C.ContinueQueued}, f::Vector) = C.ContinueQueued(f[1])
 unpack(::Type{C.Continue}, f::Vector) = C.Continue(f[1])
 unpack(::Type{C.Advance}, f::Vector) = C.Advance(f[1])

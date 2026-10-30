@@ -29,6 +29,53 @@ struct ShellCancelled <: ShellOutcome end
 struct ShellStopFailed <: ShellOutcome end
 struct Signalled end
 
+struct ShellTail
+    text::String
+    notice::String
+    file::Union{Nothing, String}
+end
+
+struct ShellReport
+    tail::ShellTail
+    file::Union{Nothing, String}
+    outcome::Union{ShellComplete, ShellTimeout, ShellCancelled, ShellStopFailed}
+    exitcode::Union{Nothing, Int}
+end
+
+abstract type ShellEscape end
+struct ShellText <: ShellEscape end
+struct ShellEsc <: ShellEscape end
+struct ShellCSI <: ShellEscape end
+struct ShellOSC <: ShellEscape end
+struct ShellOSCEsc <: ShellEscape end
+abstract type ShellChunkEnd end
+struct ShellMore <: ShellChunkEnd end
+struct ShellFinal <: ShellChunkEnd end
+
+mutable struct ShellChunks{F}
+    callback::F
+    offset::Int
+    pending::Vector{UInt8}
+    escape::Union{ShellText, ShellEsc, ShellCSI, ShellOSC, ShellOSCEsc}
+    file::String
+    io::IOStream
+    report::Union{Nothing, ShellReport}
+end
+
+function ShellChunks(callback)
+    file, io = mktemp(; cleanup=false)
+    ShellChunks(callback, 0, UInt8[], ShellText(), file, io, nothing)
+end
+(chunks::ShellChunks)(::ShellUpdate) = nothing
+
+function closechunks!(chunks::ShellChunks)
+    close(chunks.io)
+    keepchunks!(chunks.file, chunks.report)
+    nothing
+end
+keepchunks!(file, ::Nothing) = rm(file; force=true)
+keepchunks!(file, report::ShellReport) = removeoutput(file, report.file)
+
 mutable struct ShellRun
     process::Base.Process
     lock::ReentrantLock
@@ -209,11 +256,53 @@ function sizeformat(bytes)
     "$(round(bytes / (1024 * 1024); digits=1))MB"
 end
 
-struct ShellTail
-    text::String
-    notice::String
-    file::Union{Nothing, String}
+struct ShellLines
+    lines::Vector{SubString{String}}
 end
+struct ShellBytes
+    lines::Vector{SubString{String}}
+end
+struct ShellFragment
+    line::SubString{String}
+end
+
+function selecttail(pieces)
+    selected = SubString{String}[]
+    used = 0
+    for piece in Iterators.reverse(pieces)
+        length(selected) == 2000 && return ShellLines(selected)
+        needed = ncodeunits(piece) + !isempty(selected)
+        used + needed > 51200 && return tailoverflow(selected, piece)
+        pushfirst!(selected, piece)
+        used += needed
+    end
+    ShellLines(selected)
+end
+
+function tailoverflow(selected, piece)
+    isempty(selected) || return ShellBytes(selected)
+    raw = collect(codeunits(piece))
+    start = max(1, length(raw) - 51200 + 1)
+    while start <= length(raw) && raw[start] & 0xc0 == 0x80
+        start += 1
+    end
+    ShellFragment(SubString(String(raw[start:end])))
+end
+
+tailstart(selection::ShellFragment, pieces, offset, preceding) = selection
+function tailstart(selection::Union{ShellLines, ShellBytes}, pieces, offset, preceding)
+    if offset > 0 && preceding != 0x0a && length(selection.lines) == length(pieces)
+        popfirst!(selection.lines)
+        return ShellBytes(selection.lines)
+    end
+    selection
+end
+tailtext(selection::Union{ShellLines, ShellBytes}) = join(selection.lines, '\n')
+tailtext(selection::ShellFragment) = String(selection.line)
+tailnotice(selection::ShellFragment, output, lines, lastsize, file) = "Showing last $(sizeformat(ncodeunits(output))) of line $lines (line is $(sizeformat(lastsize))). Full output: $file"
+tailnotice(selection::ShellLines, output, lines, lastsize, file) = tailnotice(selection.lines, lines, "", file)
+tailnotice(selection::ShellBytes, output, lines, lastsize, file) = tailnotice(selection.lines, lines, length(selection.lines) < 2000 ? " (50.0KB limit)" : "", file)
+tailnotice(selected, lines, limit, file) = "Showing lines $(lines - length(selected) + 1)-$lines of $lines$limit. Full output: $file"
 
 function tail(io, file, bytes, lines, lastsize)
     if bytes <= 51200 && lines <= 2000
@@ -226,42 +315,9 @@ function tail(io, file, bytes, lines, lastsize)
     data = read(io, bytes - offset)
     !isempty(data) && last(data) == 0x0a && pop!(data)
     pieces = split(String(data), '\n'; keepempty=true)
-    selected = SubString{String}[]
-    used = 0
-    partial = false
-    bybytes = false
-    for piece in Iterators.reverse(pieces)
-        length(selected) == 2000 && break
-        needed = ncodeunits(piece) + !isempty(selected)
-        if used + needed > 51200
-            bybytes = true
-            if isempty(selected)
-                raw = collect(codeunits(piece))
-                start = max(1, length(raw) - 51200 + 1)
-                while start <= length(raw) && raw[start] & 0xc0 == 0x80
-                    start += 1
-                end
-                pushfirst!(selected, SubString(String(raw[start:end])))
-                partial = true
-            end
-            break
-        end
-        pushfirst!(selected, piece)
-        used += needed
-    end
-    # The first fragment from a bounded read may start in the middle of an earlier line.
-    if offset > 0 && preceding != 0x0a && length(selected) == length(pieces) && !partial
-        popfirst!(selected)
-        bybytes = true
-    end
-    output = join(selected, '\n')
-    if partial
-        notice = "Showing last $(sizeformat(ncodeunits(output))) of line $lines (line is $(sizeformat(lastsize))). Full output: $file"
-    else
-        firstline = lines - length(selected) + 1
-        limit = bybytes && length(selected) < 2000 ? " (50.0KB limit)" : ""
-        notice = "Showing lines $firstline-$lines of $lines$limit. Full output: $file"
-    end
+    selection = tailstart(selecttail(pieces), pieces, offset, preceding)
+    output = tailtext(selection)
+    notice = tailnotice(selection, output, lines, lastsize, file)
     ShellTail(output, "\n\n[$notice]", file)
 end
 
@@ -356,6 +412,76 @@ function waitoutput(run::ShellRun, watcher, callback::F, file, saved) where {F}
     end
 end
 
+chunk!(chunks::ShellChunks, io) = chunk!(chunks, io, ShellMore())
+function chunk!(chunks::ShellChunks, io, ending::ShellChunkEnd)
+    seek(io, chunks.offset)
+    data = read(io)
+    chunks.offset += length(data)
+    append!(chunks.pending, data)
+    text = String(copy(chunks.pending))
+    ready = chunktext(text, ending)
+    consumed = chunkcount(text, ready, ending)
+    deleteat!(chunks.pending, 1:consumed)
+    cleaned = sanitize!(chunks, ready)
+    if !isempty(cleaned)
+        write(chunks.io, cleaned)
+        chunks.callback(cleaned)
+    end
+    nothing
+end
+chunktext(text, ::ShellMore) = live(text)
+chunktext(text, ::ShellFinal) = shelltext(text)
+chunkcount(text, ready, ::ShellFinal) = ncodeunits(text)
+chunkcount(text, ready, ::ShellMore) = ready == shelltext(text) ? ncodeunits(text) : lastindex(text) - 1
+
+function sanitize!(chunks::ShellChunks, text)
+    buffer = IOBuffer()
+    escape = chunks.escape
+    for char in text
+        escape = sanitize!(buffer, escape, char)
+    end
+    chunks.escape = escape
+    String(take!(buffer))
+end
+
+function sanitize!(io, ::ShellText, char)
+    char == '\e' && return ShellEsc()
+    (char == '\r' || '\x00' <= char <= '\x08' || '\x0b' <= char <= '\x0c' || '\x0e' <= char <= '\x1f' || '\ufff9' <= char <= '\ufffb') || print(io, char)
+    ShellText()
+end
+const shellescapes = Dict('[' => ShellCSI(), ']' => ShellOSC())
+sanitize!(io, ::ShellEsc, char) = get(shellescapes, char, ShellText())
+sanitize!(io, ::ShellCSI, char) = '@' <= char <= '~' ? ShellText() : ShellCSI()
+sanitize!(io, ::ShellOSC, char) = char == '\a' ? ShellText() : char == '\e' ? ShellOSCEsc() : ShellOSC()
+sanitize!(io, ::ShellOSCEsc, char) = char == '\\' ? ShellText() : ShellOSC()
+
+function waitoutput(run::ShellRun, watcher, chunks::ShellChunks, file, saved)
+    open(file) do io
+        while !isready(run.done)
+            chunk!(chunks, io)
+            sleep(0.1)
+        end
+        outcome = take!(run.done)
+        waitfor(watcher, outcome)
+        chunk!(chunks, io, ShellFinal())
+        outcome
+    end
+end
+
+finishreport!(callback, outcome, io, file, process) = nothing
+function finishreport!(chunks::ShellChunks, outcome, io, file, process)
+    flush(chunks.io)
+    snapshot = tail(chunks.io, chunks.file, measure(chunks.io)...)
+    snapshot = bound(snapshot, chunks.file, shelltext(snapshot.text))
+    retained = retainedfile(snapshot.file, chunks)
+    chunks.report = ShellReport(snapshot, retained, outcome, shellexit(outcome, process))
+    nothing
+end
+retainedfile(file::String, chunks) = file
+retainedfile(::Nothing, chunks) = chunks.offset > 51200 && filesize(chunks.io) > 0 ? chunks.file : nothing
+shellexit(::ShellOutcome, process) = nothing
+shellexit(::ShellComplete, process) = process.termsignal == 0 ? process.exitcode : 128 + process.termsignal
+
 function execute(tool::Union{Bash, PowerShell}, args; cancel=nothing, on_update=nothing)
     update(on_update, ShellUpdate("", nothing))
     timeout = get(args, :timeout, nothing)
@@ -406,6 +532,7 @@ function shellrun!(shellrun::ShellRun, token, timeout, on_update, file, io, save
         timer = deadline(shellrun, timeout)
         outcome = waitoutput(shellrun, watcher, on_update, file, saved)
         flush(io)
+        finishreport!(on_update, outcome, io, file, process)
         output, keep[] = tail(io, file)
         shellresult(outcome, output, timeout, process)
     finally

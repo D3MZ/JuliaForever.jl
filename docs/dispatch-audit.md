@@ -2,9 +2,9 @@
 
 The audit covers Julia source in `src/`. `test/branch_scan.jl` uses JuliaSyntax to list source locations for conditionals, short-circuit expressions, loops, exception handlers, comprehension filters, `ifelse`, and calls that may take predicates. The predicate list can include calls whose first argument is a search value rather than a function. The inventory is a static review aid; it cannot see branches produced by arbitrary macro expansion or dynamic code.
 
-At revision `b1a598e`, the inventory contained 1,268 points, including 73 `for` loops, 36 exception handlers, and 29 possible predicate calls. The integrated tree has 1,508 points. Counts include nested expressions, so they are not counts of independent decisions. `test/branch-baseline.txt` ratchets the normalized inventory, so added, removed, or changed entries require review and an explicit baseline update. It does not detect changes confined to branch bodies or moves of identical entries.
+At revision `b1a598e`, the inventory contained 1,268 points, including 73 `for` loops, 36 exception handlers, and 29 possible predicate calls. The integrated tree has 1,573 points. Counts include nested expressions, so they are not counts of independent decisions. `test/branch-baseline.txt` ratchets the normalized inventory, so added, removed, or changed entries require review and an explicit baseline update. It does not detect changes confined to branch bodies or moves of identical entries.
 
-The dispatch check is a separate heuristic. Applied to both versions with the expanded rules, it reports 750 candidates at `b1a598e` and 129 now: 690 previous occurrences were removed and 69 appeared under new expressions. The integrated tree includes modules and features added since the initial revision. The previous, narrower checks had recorded 542 and 715 candidates at the initial revision. The exact multiset is in `test/dispatch-baseline.txt`; tests fail if it grows or changes without updating the baseline. Compatibility properties for terminal state and MCP shutdown account for some matches.
+The dispatch check is a separate heuristic. Applied to both versions with the expanded rules, it reports 750 candidates at `b1a598e` and 118 now: 699 previous occurrences were removed and 67 appeared under new expressions. The integrated tree includes modules and features added since the initial revision. The previous, narrower checks had recorded 542 and 715 candidates at the initial revision. The exact multiset is in `test/dispatch-baseline.txt`; tests fail if it grows or changes without updating the baseline. Compatibility properties for terminal state and MCP shutdown account for some matches.
 
 The string-status rule found 12 previously unrecognized checks in the provider-merge checkout. Eleven were removed through typed decoding; the remaining OAuth query-key comparison is not a behavioral status. The check also finds status-field and selection comparisons when they return or assign a Boolean instead of controlling a branch directly. A later pass extended this to `isa`, `isnothing`, `ismissing`, and Boolean or missing-value comparisons outside branch conditions; it exposed two additional checks, both replaced with dispatch. It also catches comparisons of `typeof(...)` outside branch conditions; this revealed no additional current candidates. The dynamic `Val(...)` and `Val{...}()` rule found four value-based type tags in the terminal editor; those were replaced with domain outcomes or ordinary numeric checks.
 
@@ -13,6 +13,8 @@ Another pass identifies names of typed methods that directly return a Boolean li
 The same scan now recognizes typed methods returning literal protocol labels and flags comparisons of their results. It identified a Responses route converted to a string and compared; authentication now dispatches on the route. Two remaining matches test membership in user-selected tool names.
 
 The keyword-value pass also checks typed Boolean predicates passed to calls. It found request and execution result types converted to Booleans and then reconstructed; both now pass the types directly. The remaining new matches include protocol serialization and unrelated functions sharing predicate names.
+
+The constructor pass now checks cancellation and truncation flags in shell messages. RPC shell results retain the selected output and pass its extent and outcome as types; the conversion to protocol Booleans happens when messages are serialized.
 
 The remaining candidates are not all equivalent. Input validation, file-edit safety, numerical and collection checks, and compatibility accessors still require decisions at their boundaries. The agent loops still check cancellation, completion, and configuration status at a few points. Some provider and worker protocol decoders still branch on tags; these can be refactored further. The baseline records these candidates; it is not an assertion that every one is an acceptable exception.
 
@@ -41,6 +43,8 @@ Queue modes and model completion add six net branch entries for revision, queue,
 Saved-provider startup routing adds no branch or dispatch entries; it selects behavior using the resolved provider and credential values.
 
 Before-tool hooks add two branch entries for the hook error boundary and an empty block reason, with no new dispatch candidates; hook selection uses a registration lookup.
+
+Listeners group hooks by event when created. Delivery and tool interception use the matching group while preserving registration order and failure handling.
 
 Durable replay dispatches on decoded records and rejection outcomes. The `Val` check also recognizes Boolean constants and annotations; compaction uses enabled and disabled policy types. Tool selection added 19 branch entries and removed one. Skill prompt visibility dispatches on invocation type.
 
@@ -74,6 +78,8 @@ Restoring prompt history adds five branch entries for deduplication, session rep
 
 Markdown rendering in conversation exports adds six branch entries and no dispatch candidates.
 
+JSON and HTML history exports dispatch on the first iterator result while retaining single-pass streaming and empty-history output.
+
 The ChatGPT adapter and conversation export add 142 branch entries and no dispatch candidates relative to their integrated base.
 
 Chat streaming now dispatches missing deltas, reasoning values, and text values. Empty strings remain ordinary protocol-content checks.
@@ -106,7 +112,11 @@ The CLI-option pass recognizes comparisons against long and short option names, 
 
 Search pattern construction maps literal and case options to concrete pattern behavior at the input boundary.
 
+Glob construction selects path scope and case handling at its input boundary, retaining smart-case matching for uppercase patterns.
+
 Ignore-file parsing produces include, ignore, and directory-only patterns carrying their regular expressions. Matching dispatches on those patterns while preserving rule order and nested repository boundaries.
+
+Ignore-file precedence now applies Git rules before file-ignore rules across directory levels; its matching change adds no branch or dispatch entries.
 
 SQLite history opening now dispatches on initialization outcomes and closes the database unless ownership transfers to an open history.
 
@@ -126,7 +136,19 @@ The flag-comparison rule now catches common named behavioral flags in equality c
 
 Shell cancellation now dispatches on its active-run registry, and shell cleanup dispatches on actual retained output files. Cancellation, process-group cleanup, and streaming still have dedicated race and Pi checks.
 
+Shell output selection returns whole lines, byte-limited lines, or a partial line as distinct results. Notice formatting dispatches on the selected output.
+
 MCP tool discovery decodes pages, definitions, task support, descriptions, and cursors through typed methods. Collision and repeated-cursor checks remain as data validation, and failures keep their protocol precedence.
+
+The RPC and shared JSON stream changes add 25 branch entries and remove two, bringing the inventory from 1,308 to 1,331. The additions include iteration over history entries and protocol records, input validation, and protection for the active session file. They add no dispatch candidates.
+
+Unconfigured RPC startup adds two collection checks and no dispatch candidates, bringing the inventory to 1,333.
+
+After integrating the newer terminal and skill work, the combined inventory is 1,453 versus 1,429 on that main branch: 26 entries added and two removed. The dispatch inventory is unchanged relative to that branch.
+
+RPC command discovery adds five data and file-search checks, bringing the inventory to 1,458 without adding dispatch candidates.
+
+RPC shell execution adds 22 branch entries for process output, escape decoding, iteration, and revision checks, bringing the inventory to 1,480 with no new dispatch candidates. Context inclusion, cancellation, and truncation are represented by types.
 
 The discriminator rule now includes labels. It identified an unused result-label alternative in find output; the implementation now formats find results directly. Glob character classes dispatch on the matched closing position.
 
@@ -142,7 +164,11 @@ OpenRouter persistence adds 11 branch entries for credential paths, filesystem s
 
 The OpenRouter callback validates requests before dispatching success, denial, and invalid responses. Its pending channel is consumed once under the callback lock, so concurrent replays are rejected.
 
+OpenRouter key responses dispatch on decoded value types and reject empty or non-string keys.
+
 OpenAI request construction selects buffered or streamed configuration at the call site; the Boolean keyword remains a boundary adapter.
+
+Provider usage decoding maps the external bring-your-own-key field to its cost calculation, preserving ordinary and signed-zero costs.
 
 CodeMode event processing now dispatches on received outcomes and uses channel closure to end the loop. The channel-open check remains an inventory candidate; it represents the event stream lifecycle.
 
@@ -172,6 +198,10 @@ Directory entry limits now return a limited entry collection when there are furt
 
 MCP call response validation dispatches on field presence and decoded field types, preserving the distinction between absent and invalid values.
 
+The RPC and current main integration has 1,519 branch entries, with none added beyond the parents' multiset union and 33 retired.
+
+The later RPC integration adds 70 net inventory entries. The review retained protocol validation, content and collection checks, file overwrite protection, shell sanitization, and queue coordination.
+
 MCP initialization maps supported protocol versions once and validates capabilities and server identity through typed methods.
 
 Markdown export adds six branch entries for list numbering and rendering iteration; it adds no dispatch candidates.
@@ -179,6 +209,8 @@ Markdown export adds six branch entries for list numbering and rendering iterati
 Terminal completion adds 22 branch entries for fuzzy scoring, matching, list iteration, and viewport layout; it adds no dispatch candidates.
 
 MCP JSON-RPC routing dispatches on message fields, request IDs, and error values; Boolean IDs and error codes remain invalid.
+
+RPC session-entry inspection adds ten branch entries for history traversal, entry matching, serialization, and revision checks, bringing the inventory from 1,496 to 1,506.
 
 MCP resource-content validation dispatches on URI, text, and blob values; the remaining predicate checks whether all decoded contents are valid.
 
@@ -193,3 +225,13 @@ Durable log opening selects the appropriate sync operation at the filesystem bou
 Terminal Markdown rendering adds 50 branch entries for parsing, wrapping, table and list layout, and live redraw; it adds no dispatch candidates.
 
 SQLite open mode is selected at the keyword boundary; existing-only and create paths use separate initialization and retain file safety checks.
+
+Integrating queue modes with RPC session records yields 1,573 branch entries. The combined inventory adds two repeated revision checks beyond the parents' multiset union and retires 17 entries.
+
+RPC queue-mode commands dispatch to the shared queue policies and add no branch or dispatch entries.
+
+RPC thinking controls add nine branch entries, from 1,572 to 1,581, for mapped-level collection, clamping, cycling, and restoration. Provider and history alternatives dispatch on their concrete types.
+
+After reconciling upstream changes, authorization filtering adds one loop, bringing the inventory from 1,577 to 1,578.
+
+Merging upstream shell, history, and extension refactors adds 14 inventory entries and retires 15, for 1,577 total.

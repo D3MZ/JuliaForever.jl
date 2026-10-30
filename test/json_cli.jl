@@ -29,14 +29,14 @@ end
         end
         empty = json_cli(dir, "text")
         @test empty.status == 0 && length(empty.records) == 1 && only(empty.records).type == "session"
-        invalid = json_cli(dir, "text", "--mode", "rpc", "hello")
+        invalid = json_cli(dir, "text", "--mode", "invalid", "hello")
         @test invalid.status == 2 && isempty(invalid.records) && occursin("--mode requires text or json", invalid.diagnostics)
         repeated = json_cli(dir, "text", "--mode", "invalid", "--mode", "json", "hello")
         @test repeated.status == 2 && isempty(repeated.records)
         piped = json_cli(dir, "noisy", "first", "second"; input="piped ")
         @test piped.status == 0 && piped.records !== nothing
         if piped.records !== nothing
-            users = [record.message.content for record in piped.records if record.type == "message_end" && record.message.role == "user"]
+            users = [record.message.content[1].text for record in piped.records if record.type == "message_end" && record.message.role == "user"]
             @test users == ["pipedfirst", "second"]
             @test count(record -> record.type == "session", piped.records) == 1
             @test count(record -> record.type == "agent_settled", piped.records) == 2
@@ -50,7 +50,7 @@ end
         resumed = json_cli(dir, "text", "second"; session=["--session-dir", sessions, "--continue"])
         @test first.status == 0 && resumed.status == 0
         @test first.records[1].id == resumed.records[1].id
-        @test only(record.message.content for record in resumed.records if record.type == "message_end" && record.message.role == "user") == "second"
+        @test only(record.message.content[1].text for record in resumed.records if record.type == "message_end" && record.message.role == "user") == "second"
         gif = "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
         write(joinpath(dir, "picture.gif"), base64decode(gif))
         pictured = json_cli(dir, "text", "@picture.gif", "inspect")
@@ -75,7 +75,7 @@ end
             records = observed.records
             @test first(records).type == "session"
             @test first(records).version == 3 && realpath(first(records).cwd) == realpath(dir)
-            types = [record.type for record in records[2:end]]
+            types = [record.type for record in records[2:end] if !(haskey(record, :message) && get(record.message, :role, "") == "system")]
             reference = if haskey(ENV, "PI_SOURCE")
                 pi = ENV["PI_SOURCE"]
                 @test readchomp(`git -C $pi rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
@@ -88,8 +88,8 @@ end
             @test [update.type for update in updates] == ["text_start", "text_delta", "text_end"]
             @test updates[2].delta == "reply:hello" && updates[3].content == "reply:hello"
             @test all(!haskey(record, :message) && !haskey(record.assistantMessageEvent, :partial) for record in records if record.type == "message_update")
-            messages = [record.message for record in records if record.type == "message_end"]
-            @test messages[1].role == "user" && messages[1].content == "hello"
+            messages = [record.message for record in records if record.type == "message_end" && record.message.role != "system"]
+            @test messages[1].role == "user" && messages[1].content[1].text == "hello"
             @test messages[2].role == "assistant" && messages[2].content[1].text == "reply:hello"
             @test messages[2].model == "fixture" && messages[2].usage.totalTokens == 5 && messages[2].stopReason == "stop"
             @test records[end-1].willRetry == false && records[end].aborted == false
@@ -108,7 +108,7 @@ end
             if haskey(ENV, "PI_SOURCE")
                 pi = ENV["PI_SOURCE"]
                 reference = JSON3.read(read(`node $(joinpath(@__DIR__, "json_cli_pi.mjs")) $pi tool`, String))
-                @test [record.type for record in records[2:end]] == [record.type for record in reference]
+                @test [record.type for record in records[2:end] if !(haskey(record, :message) && get(record.message, :role, "") == "system")] == [record.type for record in reference]
                 @test [record.assistantMessageEvent.type for record in records if record.type == "message_update"] == [record.assistantMessageEvent.type for record in reference if record.type == "message_update"]
             end
             updates = [record.assistantMessageEvent for record in records if record.type == "message_update"]

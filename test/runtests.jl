@@ -143,6 +143,7 @@ include("model_alias_cli.jl")
 include("model_validation.jl")
 
 if haskey(ENV, "PI_SOURCE")
+    include("headless_differential.jl")
     include("estimates_differential.jl")
     include("prompt_differential.jl")
     include("model_catalog_differential.jl")
