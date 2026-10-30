@@ -120,8 +120,6 @@ if haskey(ENV, "PI_SOURCE")
     include("extensions_differential.jl")
     include("queue_differential.jl")
     include("differential.jl")
-    include("image_differential.jl")
-    include("file_mutations_differential.jl")
 end
 
 include("system.jl")

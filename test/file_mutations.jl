@@ -1,3 +1,5 @@
+using JSON3
+
 struct GatedEdits{T} <: AbstractVector{T}
     edits::Vector{T}
     started::Channel{Nothing}
@@ -108,10 +110,21 @@ function filemutationcase(dir, kind)
 end
 
 @testset "file mutations" begin
-    for (kind, expected) in ((:edit, "ALPHA\nBETA\n"), (:write, "replacement\n"))
+    reference = if haskey(ENV, "PI_SOURCE")
+        source = ENV["PI_SOURCE"]
+        @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
+        JSON3.read(read(`node $(joinpath(@__DIR__, "file_mutations_reference.mjs")) $source`, String))
+    else
+        nothing
+    end
+    for (index, (kind, expected)) in enumerate(((:edit, "ALPHA\nBETA\n"), (:write, "replacement\n")))
         mktempdir() do dir
             result = filemutationcase(dir, kind)
             @test result == (; file=expected, other="independent\n")
+            if !isnothing(reference)
+                @test result.file == reference[index].file
+                @test result.other == reference[index].other
+            end
             @test isempty(JuliaForever.mutations)
         end
     end
