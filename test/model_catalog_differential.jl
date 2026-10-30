@@ -61,6 +61,10 @@ using Test, JuliaForever, JSON3, HTTP
         output, diagnostics = joinpath(dir, "output"), joinpath(dir, "diagnostics")
         process = run(pipeline(ignorestatus(cmd); stdout=output, stderr=diagnostics))
         @test (process.exitcode, read(output, String), read(diagnostics, String)) == (0, expected, "")
+        jsoncmd = `$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode json --list-models $listing`
+        jsoncmd = addenv(jsoncmd, "PI_CODING_AGENT_DIR" => dir, "ANTHROPIC_API_KEY" => "fixture", "OPENAI_API_KEY" => nothing, "OPENROUTER_API_KEY" => nothing, "GEMINI_API_KEY" => nothing)
+        process = run(pipeline(ignorestatus(jsoncmd); stdout=output, stderr=diagnostics))
+        @test (process.exitcode, read(output, String), read(diagnostics, String)) == (0, expected, "")
     end
 
     router = filter(model -> model.provider == "openrouter", catalog)
