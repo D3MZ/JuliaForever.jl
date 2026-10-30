@@ -42,6 +42,10 @@ include("dispatch_checks.jl")
     @test length(dispatchchecks(Meta.parse("f(x) = typeof(x) === String"))) == 1
     @test length(dispatchchecks(Meta.parse("f(x) = Base.typeof(x) != Int"))) == 1
     @test isempty(dispatchchecks(Meta.parse("f(x) = typeof(x)")))
+    predicate = Meta.parseall("selected(::Nothing) = false\nselected(::String) = true\nf(x) = selected(x) ? 1 : 0")
+    @test length(dispatchchecks(predicate)) == 1
+    @test length(dispatchchecks(Meta.parseall("function selected(::Nothing); return false; end\nf(x) = selected(x) ? 1 : 0"))) == 1
+    @test isempty(dispatchchecks(Meta.parseall("selected(x) = x > 0\nf(x) = selected(x) ? 1 : 0")))
     @test length(dispatchchecks(Meta.parse("f(flag) = handle(Val(flag))"))) == 1
     @test length(dispatchchecks(Meta.parse("f(x) = handle(Val(x == 0))"))) == 1
     @test isempty(dispatchchecks(Meta.parse("f() = handle(Val(1))")))
@@ -61,6 +65,11 @@ include("dispatch_checks.jl")
         mkpath(joinpath(root, "nested"))
         write(joinpath(root, "nested", "example.jl"), "f(x) = x.iserror ? 1 : 0")
         @test only(dispatchbaseline(root)) == joinpath("nested", "example.jl") * "\t" * only(dispatchchecks(Meta.parse("f(x) = x.iserror ? 1 : 0")))
+    end
+    mktempdir() do root
+        write(joinpath(root, "predicate.jl"), "selected(::Nothing) = false\nselected(::String) = true")
+        write(joinpath(root, "consumer.jl"), "f(x) = selected(x) ? 1 : 0")
+        @test only(dispatchbaseline(root)) == "consumer.jl\t:(selected(x))"
     end
 
     actual = dispatchbaseline(joinpath(@__DIR__, "..", "src"))

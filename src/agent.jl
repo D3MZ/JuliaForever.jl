@@ -409,8 +409,10 @@ function toolobserve!(agent, effect, result, messages, on_agent_event)
     transition
 end
 
-parallel(::Conversation.ToolRequest) = true
-parallel(effect) = false
+toolmode(mode::Sequential, effect) = mode
+toolmode(mode::Parallel, ::Conversation.ToolRequest) = mode
+toolmode(::Parallel, effect) = Sequential()
+batchmode(effects) = foldl((mode, effect) -> toolmode(mode, effect.effect), effects; init=Parallel())
 
 runtools!(agent, effects, messages, on_agent_event; tool_execution=:sequential) = runtools!(agent, effects, messages, on_agent_event, toolmode(tool_execution))
 
@@ -426,8 +428,9 @@ function runtools!(agent, effects, messages, on_agent_event, ::Union{Sequential,
     results
 end
 
-function runtools!(agent, effects, messages, on_agent_event, ::Parallel)
-    all(effect -> parallel(effect.effect), effects) || return runtools!(agent, effects, messages, on_agent_event, Sequential())
+runtools!(agent, effects, messages, on_agent_event, ::Parallel) = runtoolsparallel!(agent, effects, messages, on_agent_event, batchmode(effects))
+runtoolsparallel!(agent, effects, messages, on_agent_event, mode::Sequential) = runtools!(agent, effects, messages, on_agent_event, mode)
+function runtoolsparallel!(agent, effects, messages, on_agent_event, ::Parallel)
     calls = [convert(Dict{String, Any}, effect.effect.call) for effect in effects]
     foreach(call -> toolstart(call, on_agent_event), calls)
     completed = Vector{ToolResult}(undef, length(calls))

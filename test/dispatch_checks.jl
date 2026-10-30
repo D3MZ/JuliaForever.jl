@@ -77,8 +77,34 @@ function dispatchcheck(expression, direct)
     callee in (:get, :getfield, :getproperty) && QuoteNode(:iserror) in expression.args
 end
 
-function dispatchchecks!(checks, expression, condition=false, direct=true)
-    if (condition && dispatchcheck(expression, direct)) || (!condition && (dispatchstatuscheck(expression) || dispatchprobe(expression)))
+function dispatchbools!(names, expression)
+    expression isa Expr || return names
+    expression.head in (:quote, :inert) && return names
+    if expression.head in (:(=), :function) && length(expression.args) == 2
+        signature, body = expression.args
+        while signature isa Expr && signature.head in (:where, :(::))
+            signature = first(signature.args)
+        end
+        while body isa Expr && body.head == :block
+            values = filter(value -> !(value isa LineNumberNode), body.args)
+            isempty(values) && break
+            body = last(values)
+        end
+        if body isa Expr && body.head == :return && length(body.args) == 1
+            body = only(body.args)
+        end
+        if signature isa Expr && signature.head == :call && body isa Bool && any(arg -> arg isa Expr && arg.head == :(::), signature.args[2:end])
+            name = dispatchcallee(first(signature.args))
+            name isa Symbol && push!(names, name)
+        end
+    end
+    foreach(arg -> dispatchbools!(names, arg), expression.args)
+    names
+end
+
+function dispatchchecks!(checks, expression, condition=false, direct=true, predicates=Set{Symbol}())
+    boolcall = condition && expression isa Expr && expression.head == :call && dispatchcallee(first(expression.args)) in predicates
+    if boolcall || (condition && dispatchcheck(expression, direct)) || (!condition && (dispatchstatuscheck(expression) || dispatchprobe(expression)))
         value = expression isa Expr ? Base.remove_linenums!(deepcopy(expression)) : expression
         push!(checks, replace(sprint(show, value), '\n' => ' '))
         return checks
@@ -86,36 +112,36 @@ function dispatchchecks!(checks, expression, condition=false, direct=true)
     expression isa Expr || return checks
     expression.head in (:quote, :inert) && return checks
     if condition && expression.head == :block
-        foreach(arg -> dispatchchecks!(checks, arg), expression.args[1:end-1])
-        dispatchchecks!(checks, last(expression.args), true, direct)
+        foreach(arg -> dispatchchecks!(checks, arg, false, true, predicates), expression.args[1:end-1])
+        dispatchchecks!(checks, last(expression.args), true, direct, predicates)
     elseif expression.head in (:if, :while, :elseif, :filter)
-        dispatchchecks!(checks, first(expression.args), true)
-        foreach(arg -> dispatchchecks!(checks, arg), expression.args[2:end])
+        dispatchchecks!(checks, first(expression.args), true, true, predicates)
+        foreach(arg -> dispatchchecks!(checks, arg, false, true, predicates), expression.args[2:end])
     elseif expression.head in (:&&, :||)
-        dispatchchecks!(checks, first(expression.args), true)
-        dispatchchecks!(checks, last(expression.args), condition)
+        dispatchchecks!(checks, first(expression.args), true, true, predicates)
+        dispatchchecks!(checks, last(expression.args), condition, true, predicates)
     elseif expression.head == :call && first(expression.args) === :!
-        dispatchchecks!(checks, expression.args[2], condition, direct)
+        dispatchchecks!(checks, expression.args[2], condition, direct, predicates)
     elseif expression.head == :call && dispatchcallee(first(expression.args)) === :ifelse
-        dispatchchecks!(checks, expression.args[2], true)
-        foreach(arg -> dispatchchecks!(checks, arg), expression.args[3:end])
+        dispatchchecks!(checks, expression.args[2], true, true, predicates)
+        foreach(arg -> dispatchchecks!(checks, arg, false, true, predicates), expression.args[3:end])
     elseif expression.head == :call && dispatchcallee(first(expression.args)) in (:filter, :filter!, :findfirst, :findlast, :findall, :findnext, :findprev, :any, :all, :count, :takewhile, :dropwhile) && length(expression.args) >= 3
         predicate = expression.args[2]
         if predicate isa Expr && predicate.head == :->
-            dispatchchecks!(checks, predicate.args[2], true)
+            dispatchchecks!(checks, predicate.args[2], true, true, predicates)
         elseif dispatchpredicate(predicate)
             push!(checks, sprint(show, predicate))
         else
-            dispatchchecks!(checks, predicate, true, false)
+            dispatchchecks!(checks, predicate, true, false, predicates)
         end
-        foreach(arg -> dispatchchecks!(checks, arg), expression.args[3:end])
+        foreach(arg -> dispatchchecks!(checks, arg, false, true, predicates), expression.args[3:end])
     else
-        foreach(arg -> dispatchchecks!(checks, arg, condition, false), expression.args)
+        foreach(arg -> dispatchchecks!(checks, arg, condition, false, predicates), expression.args)
     end
     checks
 end
 
-dispatchchecks(expression) = dispatchchecks!(String[], expression)
+dispatchchecks(expression) = dispatchchecks!(String[], expression, false, true, dispatchbools!(Set{Symbol}(), expression))
 
 function dispatchdifference(actual, expected)
     remaining = Dict{String, Int}()
@@ -135,14 +161,20 @@ function dispatchdifference(actual, expected)
 end
 
 function dispatchbaseline(root)
-    entries = String[]
+    sources = Pair{String, Expr}[]
     for (dir, _, files) in walkdir(root)
         for name in files
             endswith(name, ".jl") || continue
             file = joinpath(dir, name)
-            for check in dispatchchecks(Meta.parseall(read(file, String)))
-                push!(entries, relpath(file, root) * "\t" * check)
-            end
+            push!(sources, relpath(file, root) => Meta.parseall(read(file, String)))
+        end
+    end
+    predicates = Set{Symbol}()
+    foreach(source -> dispatchbools!(predicates, source.second), sources)
+    entries = String[]
+    for (file, expression) in sources
+        for check in dispatchchecks!(String[], expression, false, true, predicates)
+            push!(entries, file * "\t" * check)
         end
     end
     sort!(entries)
