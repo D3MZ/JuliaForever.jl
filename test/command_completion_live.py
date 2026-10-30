@@ -43,7 +43,8 @@ def paste(text):
     run("send-keys", "-t", "completion", "-H", *(f"{byte:02x}" for byte in data))
 
 def ready(value):
-    return " | ready" in value if mode == "fullscreen" else "> " in value
+    prompt = " | ready" in value if mode == "fullscreen" else value.rstrip().endswith("\n>")
+    return prompt and raw()
 
 def messages(path):
     try:
@@ -84,7 +85,7 @@ try:
         terminal = run("display-message", "-p", "-t", "completion", "#{pane_tty}").stdout.strip()
         terminal_fd = os.open(terminal, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
         raw = lambda: not termios.tcgetattr(terminal_fd)[3] & termios.ICANON
-        wait_for(lambda s: ready(s) and "> " in s and raw(), "startup", 90)
+        wait_for(lambda s: ready(s) and "> " in s, "startup", 90)
 
         send("/rev")
         wait_for(lambda s: "/review" in s and "/revise" in s and "/skill:reviewer" in s, "template and skill suggestions")
@@ -216,6 +217,10 @@ try:
         command = shlex.join(["env", *settings, julia, "--startup-file=no", "--compiled-modules=existing", f"--project={project}", str(project / "test/terminal_process.jl"), "--tui-mode", mode, "--no-session", "--model", "vendor/alpha"])
         run("new-session", "-d", "-s", "completion", "-x", "100", "-y", "30", "-c", str(root), command, env=env)
         run("set-option", "-t", "completion", "remain-on-exit", "on")
+        os.close(terminal_fd)
+        terminal_fd = None
+        terminal = run("display-message", "-p", "-t", "completion", "#{pane_tty}").stdout.strip()
+        terminal_fd = os.open(terminal, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
         wait_for(lambda s: ready(s) and "> " in s, "custom provider startup", 90)
         send("/model beta")
         wait_for(lambda s: "→ vendor/beta" in s, "custom model suggestion")

@@ -10,7 +10,7 @@ function receive!(channel, predicate)
     end
 end
 
-function exchange(cmd, env; modelchange=false, initialonly=false)
+function exchange(cmd, env; modelchange=false, initialonly=false, roundtrip=false)
     mktempdir() do dir
         diagnostics = joinpath(dir, "error")
         process = open(pipeline(addenv(cmd, env...); stderr=diagnostics), "r+")
@@ -41,6 +41,19 @@ function exchange(cmd, env; modelchange=false, initialonly=false)
             else
                 nothing
             end
+            round = if roundtrip
+                prompt("switched-prompt", "switched")
+                send((; id="back", type="set_model", provider="google", modelId="gemini-2.5-flash-lite"))
+                back = response("back")
+                send((; id="clamp", type="set_thinking_level", level="xhigh"))
+                clamp = response("clamp")
+                send((; id="clamped-state", type="get_state"))
+                clamped = response("clamped-state")
+                prompt("back-prompt", "back")
+                (; back, clamp, clamped)
+            else
+                nothing
+            end
             send((; id="new", type="new_session"))
             new = response("new")
             send((; id="newstate", type="get_state"))
@@ -50,7 +63,7 @@ function exchange(cmd, env; modelchange=false, initialonly=false)
             send((; id="restored", type="get_state"))
             restored = response("restored")
             prompt("third", "third")
-            (; state, levels, low, recorded, rejected, new, newstate, switched, restored, observed, diagnostics=read(diagnostics, String))
+            (; state, levels, low, recorded, rejected, round, new, newstate, switched, restored, observed, diagnostics=read(diagnostics, String))
         finally
             close(process.in)
             timedwait(() -> process_exited(process), 5) == :ok || kill(process)
@@ -145,6 +158,71 @@ end
                 @test resumed.state["data"]["model"]["id"] == piresumed.state["data"]["model"]["id"] == "gemini-3.1-pro-preview"
             end
 
+            budgetid = "gemini-2.5-flash-lite"
+            budgetcmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $(joinpath(workspace, "budget-sessions")) --model google/$budgetid`; dir=workspace)
+            before = length(requests)
+            budget = exchange(budgetcmd, environment(workspace, jfagent, base); modelchange=true)
+            budgetrequests = requests[before+1:end]
+            @test budget.state["data"]["thinkingLevel"] == "medium"
+            @test budget.levels["data"]["levels"] == ["off", "minimal", "low", "medium", "high"]
+            @test budget.restored["data"]["thinkingLevel"] == "low" && budget.rejected["success"]
+            @test [r.body["generationConfig"]["thinkingConfig"] for r in budgetrequests] == [Dict("includeThoughts" => true, "thinkingBudget" => n) for n in (8192, 2048, 2048)]
+            @test budgetrequests[3].body["contents"][2]["parts"][1]["thoughtSignature"] == "c2ln"
+            if haskey(ENV, "PI_SOURCE")
+                source = ENV["PI_SOURCE"]
+                pi = Cmd(`node $(joinpath(@__DIR__, "headless_reference.mjs")) $source --mode rpc --session-dir $(joinpath(workspace, "pi-budget-sessions")) --model google/$budgetid --approve`; dir=workspace)
+                reference = exchange(pi, environment(workspace, joinpath(workspace, "pi-agent"), base))
+                picaptured = requests[before+length(budgetrequests)+1:end]
+                @test [r.body["generationConfig"]["thinkingConfig"] for r in budgetrequests] == [r.body["generationConfig"]["thinkingConfig"] for r in picaptured]
+                @test [r.body["contents"] for r in budgetrequests] == [r.body["contents"] for r in picaptured]
+                @test budget.levels["data"]["levels"] == reference.levels["data"]["levels"]
+                @test budget.restored["data"]["thinkingLevel"] == reference.restored["data"]["thinkingLevel"]
+            end
+
+            before = length(requests)
+            round = exchange(budgetcmd, environment(workspace, jfagent, base); modelchange=true, roundtrip=true)
+            roundrequests = requests[before+1:end]
+            @test round.rejected["success"] && round.round.back["success"] && round.round.clamp["success"]
+            @test round.round.clamped["data"]["thinkingLevel"] == round.restored["data"]["thinkingLevel"] == "high"
+            @test [r.body["generationConfig"]["thinkingConfig"] for r in roundrequests] == [Dict("includeThoughts" => true, "thinkingBudget" => 8192), Dict("includeThoughts" => true, "thinkingBudget" => 2048), Dict("includeThoughts" => true, "thinkingLevel" => "LOW"), Dict("includeThoughts" => true, "thinkingBudget" => 24576), Dict("includeThoughts" => true, "thinkingBudget" => 24576)]
+            @test all(r -> r.key == "synthetic-google-rpc-key" && isempty(r.authorization), roundrequests)
+            if haskey(ENV, "PI_SOURCE")
+                pi = Cmd(`node $(joinpath(@__DIR__, "headless_reference.mjs")) $(ENV["PI_SOURCE"]) --mode rpc --session-dir $(joinpath(workspace, "pi-round-sessions")) --model google/$budgetid --approve`; dir=workspace)
+                reference = exchange(pi, environment(workspace, joinpath(workspace, "pi-agent"), base); modelchange=true, roundtrip=true)
+                pirequests = requests[before+length(roundrequests)+1:end]
+                @test reference.rejected["success"] && reference.round.back["success"]
+                @test round.round.clamped["data"]["thinkingLevel"] == reference.round.clamped["data"]["thinkingLevel"]
+                @test [r.target for r in roundrequests] == [r.target for r in pirequests]
+                @test [r.body["generationConfig"]["thinkingConfig"] for r in roundrequests] == [r.body["generationConfig"]["thinkingConfig"] for r in pirequests]
+                @test [r.body["contents"] for r in roundrequests] == [r.body["contents"] for r in pirequests]
+            end
+
+            if haskey(ENV, "PI_SOURCE")
+                piagent = joinpath(workspace, "pi-budget-auto")
+                mkpath(piagent)
+                write(joinpath(piagent, "models.json"), JSON3.write((; providers=(; google=(; baseUrl=base)))))
+                write(joinpath(piagent, "settings.json"), JSON3.write((; defaultProvider="google", defaultModel=budgetid)))
+                autoenv(agentdir) = [filter(pair -> first(pair) != "OPENAI_API_KEY", environment(workspace, agentdir, base)); "OPENAI_API_KEY" => nothing; "GEMINI_MODEL" => budgetid]
+                jfauto = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --session-dir $(joinpath(workspace, "jf-budget-auto"))`; dir=workspace)
+                piauto = Cmd(`node $(joinpath(@__DIR__, "headless_reference.mjs")) $(ENV["PI_SOURCE"]) --mode rpc --session-dir $(joinpath(workspace, "pi-budget-auto-sessions")) --approve`; dir=workspace)
+                actualauto = exchange(jfauto, autoenv(joinpath(workspace, "jf-budget-auto-agent")); modelchange=true)
+                referenceauto = exchange(piauto, autoenv(piagent); modelchange=true)
+                @test actualauto.rejected["success"] == referenceauto.rejected["success"] == true
+                @test actualauto.restored["data"]["model"]["id"] == referenceauto.restored["data"]["model"]["id"] == "gemini-3.1-pro-preview"
+                @test actualauto.restored["data"]["thinkingLevel"] == referenceauto.restored["data"]["thinkingLevel"] == "low"
+            end
+
+            offcmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --no-session --model google/$budgetid:off`; dir=workspace)
+            offstate = exchange(offcmd, environment(workspace, jfagent, base); initialonly=true)
+            @test offstate.state["data"]["thinkingLevel"] == "off"
+            @test requests[end].body["generationConfig"]["thinkingConfig"] == Dict("thinkingBudget" => 0)
+            if haskey(ENV, "PI_SOURCE")
+                pi = Cmd(`node $(joinpath(@__DIR__, "headless_reference.mjs")) $(ENV["PI_SOURCE"]) --mode rpc --no-session --model google/$budgetid:off --approve`; dir=workspace)
+                reference = exchange(pi, environment(workspace, joinpath(workspace, "pi-agent"), base); initialonly=true)
+                @test reference.state["data"]["thinkingLevel"] == "off"
+                @test requests[end-1].body["generationConfig"]["thinkingConfig"] == requests[end].body["generationConfig"]["thinkingConfig"]
+            end
+
             for (suffix, level, wire) in (("high", "high", "HIGH"), ("off", "minimal", "MINIMAL"))
                 selected = "google/$id:$suffix"
                 startup = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --no-session --model $selected`; dir=workspace)
@@ -190,7 +268,7 @@ end
             base = "http://$(HTTP.server_addr(server))"
             agentdir = joinpath(workspace, "agent")
             mkpath(agentdir)
-            models = [(; id="gemini-3-flash-preview", reasoning=true, baseUrl=base * "/a", headers=Dict("x-model-route" => "route-a")), (; id="gemini-3.1-pro-preview", reasoning=true, baseUrl=base * "/b", headers=Dict("x-model-route" => "route-b"))]
+            models = [(; id="gemini-3-flash-preview", reasoning=true, baseUrl=base * "/a", headers=Dict("x-model-route" => "route-a")), (; id="gemini-3.1-pro-preview", reasoning=true, baseUrl=base * "/b", headers=Dict("x-model-route" => "route-b")), (; id="gemini-2.5-flash-lite", reasoning=true, baseUrl=base * "/budget", headers=Dict("x-model-route" => "route-budget"))]
             config = JSON3.write((; providers=(; fixture=(; api="google-generative-ai", baseUrl=base * "/unused", apiKey="synthetic-config-key", models))))
             write(joinpath(agentdir, "models.json"), config)
             project = dirname(@__DIR__)
@@ -221,6 +299,21 @@ end
                 @test all(r -> r.target == "/a/models/gemini-3-flash-preview:streamGenerateContent?alt=sse" && r.key == "synthetic-config-key" && r.route == "route-a" && isempty(r.authorization), picaptured)
                 @test [r.body["generationConfig"]["thinkingConfig"]["thinkingLevel"] for r in picaptured] == ["MEDIUM", "LOW", "LOW"]
                 @test "low" in reference.levels["data"]["levels"]
+            end
+
+            budgetmodel = "fixture/gemini-2.5-flash-lite"
+            budgetcli = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project -m JuliaForever --mode rpc --no-session --model $budgetmodel`; dir=workspace)
+            configuredbudget = exchange(budgetcli, env; initialonly=true)
+            @test configuredbudget.levels["data"]["levels"] == ["off"]
+            @test requests[end].target == "/budget/models/gemini-2.5-flash-lite:streamGenerateContent?alt=sse"
+            @test requests[end].key == "synthetic-config-key" && requests[end].route == "route-budget" && isempty(requests[end].authorization)
+            @test !haskey(get(requests[end].body, "generationConfig", Dict()), "thinkingConfig")
+            if haskey(ENV, "PI_SOURCE")
+                pi = Cmd(`node $(joinpath(@__DIR__, "headless_reference.mjs")) $(ENV["PI_SOURCE"]) --mode rpc --no-session --model $budgetmodel --approve`; dir=workspace)
+                reference = exchange(pi, environment(workspace, joinpath(workspace, "pi-agent"), base * "/unrelated"); initialonly=true)
+                @test "medium" in reference.levels["data"]["levels"]
+                @test requests[end].body["generationConfig"]["thinkingConfig"] == Dict("includeThoughts" => true, "thinkingBudget" => 8192)
+                @test requests[end].key == "synthetic-config-key" && requests[end].route == "route-budget" && isempty(requests[end].authorization)
             end
 
             before = length(requests)

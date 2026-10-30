@@ -147,7 +147,7 @@ function payload(provider::Google, input, tools, parameters; streaming=false)
     end
     flush!(transcript)
     data = Dict{String, Any}(string(key) => value for (key, value) in pairs(parameters))
-    thinking!(data, provider.thinking)
+    thinking!(data, provider.thinking, provider.model)
     data["contents"] = transcript.contents
     isempty(transcript.system) || (data["systemInstruction"] = Dict("parts" => [Dict("text" => join(transcript.system, "\n\n"))]))
     delete!(data, "tools")
@@ -157,13 +157,23 @@ function payload(provider::Google, input, tools, parameters; streaming=false)
     JSON3.write(data)
 end
 
-thinking!(data, ::Nothing) = nothing
-function thinking!(data, level::AbstractString)
+thinking!(data, ::Nothing, model) = nothing
+function thinking!(data, level::AbstractString, model)
     generation = Dict{String, Any}(string(key) => value for (key, value) in pairs(get(data, "generationConfig", NamedTuple())))
-    generation["thinkingConfig"] = thinkingconfig(level)
+    generation["thinkingConfig"] = thinkingconfig(model, level)
     data["generationConfig"] = generation
 end
-thinkingconfig(level) = Dict("includeThoughts" => true, "thinkingLevel" => uppercase(level))
+const budgets = Dict(
+    "gemini-2.5-pro" => Dict("minimal" => 128, "low" => 2048, "medium" => 8192, "high" => 32768),
+    "gemini-2.5-flash" => Dict("minimal" => 128, "low" => 2048, "medium" => 8192, "high" => 24576),
+    "gemini-2.5-flash-lite" => Dict("minimal" => 512, "low" => 2048, "medium" => 8192, "high" => 24576),
+    "gemini-2.5-computer-use-preview-10-2025" => Dict(level => -1 for level in ("minimal", "low", "medium", "high")),
+)
+thinkingconfig(model, level) = thinkingconfig(level, get(budgets, model, nothing))
+thinkingconfig(level, ::Nothing) = Dict("includeThoughts" => true, "thinkingLevel" => uppercase(level))
+thinkingconfig(level, budgets::AbstractDict) = budgetconfig(get(budgets, level, nothing))
+budgetconfig(::Nothing) = Dict("thinkingBudget" => 0)
+budgetconfig(budget::Int) = Dict("includeThoughts" => true, "thinkingBudget" => budget)
 
 function usage(data::AbstractDict)
     input = something(get(data, "promptTokenCount", nothing), 0)

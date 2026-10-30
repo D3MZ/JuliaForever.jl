@@ -65,6 +65,9 @@ const googlelevels = Dict(
     "gemini-3-flash-preview" => Dict("off" => "minimal", "minimal" => "minimal", "low" => "low", "medium" => "medium", "high" => "high"),
     "gemini-3.1-pro-preview" => Dict("off" => "low", "low" => "low", "medium" => "medium", "high" => "high"),
 )
+const googlebudgetmodels = Set(["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-computer-use-preview-10-2025"])
+const googlebudgetlevels = Dict("off" => "off", "minimal" => "minimal", "low" => "low", "medium" => "medium", "high" => "high")
+merge!(googlelevels, Dict("gemini-2.5-pro" => googlebudgetlevels, "gemini-2.5-flash" => googlebudgetlevels, "gemini-2.5-flash-lite" => googlebudgetlevels, "gemini-2.5-computer-use-preview-10-2025" => googlebudgetlevels))
 const thinkingcatalogs = Dict(("openai", "openai-responses") => responselevels, ("google", "google-generative-ai") => googlelevels)
 const anthropicbudgets = Dict("off" => 0, "minimal" => 1024, "low" => 2048, "medium" => 8192, "high" => 16384, "xhigh" => 16384, "max" => 16384)
 const anthropicbudgetmodels = Set(["claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-opus-4-5", "claude-opus-4-5-20251101", "claude-sonnet-4-5", "claude-sonnet-4-5-20250929"])

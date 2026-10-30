@@ -23,7 +23,10 @@ addeffort!(entries, level, effort::AbstractString, ::J.Models.InvalidConfig) = n
 addeffort!(entries, level, effort::AbstractString, ::J.Models.ValidConfig) = (push!(entries, level => String(effort)); nothing)
 
 const responsechoices = Dict{String, Union{FixedThinking, ReasoningChoices}}(name => reasoningchoices(levels) for (name, levels) in J.responselevels)
-const googlechoices = Dict{String, Union{FixedThinking, ReasoningChoices}}(name => reasoningchoices(delete!(copy(levels), "off")) for (name, levels) in J.googlelevels)
+googlechoicelevels(name, levels) = googlechoicelevels(levels, J.Models.check(name in J.googlebudgetmodels))
+googlechoicelevels(levels, ::J.Models.ValidConfig) = levels
+googlechoicelevels(levels, ::J.Models.InvalidConfig) = delete!(copy(levels), "off")
+const googlechoices = Dict{String, Union{FixedThinking, ReasoningChoices}}(name => reasoningchoices(googlechoicelevels(name, levels)) for (name, levels) in J.googlelevels)
 const emptychoices = Dict{String, Union{FixedThinking, ReasoningChoices}}()
 const thinkingcatalogs = Dict("openai" => responsechoices, "google" => googlechoices)
 thinkingchoices(provider) = FixedThinking()
