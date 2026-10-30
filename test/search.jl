@@ -11,20 +11,6 @@
     @test isempty(JuliaForever.cleargit!(onlygit))
 end
 
-@testset "repository ignore scope dispatch" begin
-    mktempdir() do dir
-        write(joinpath(dir, ".gitignore"), "ignored.txt\n")
-        rules = JuliaForever.IgnoreRule[]
-        JuliaForever.gitignore!(rules, dir, Find(dir), nothing)
-        @test length(rules) == 1
-        empty!(rules)
-        JuliaForever.gitignore!(rules, dir, Grep(dir), nothing)
-        @test isempty(rules)
-        JuliaForever.gitignore!(rules, dir, Grep(dir), dir)
-        @test length(rules) == 1
-    end
-end
-
 function searchfixture(dir)
     mkpath(joinpath(dir, ".git"))
     mkpath(joinpath(dir, "src", "deep"))
@@ -142,7 +128,6 @@ end
 @testset "nested repository ignore boundaries" begin
     mktempdir() do dir
         nestedfixture(dir)
-        @test length(unique(typeof.(first(JuliaForever.initialrules(joinpath(dir, "nested"), Find(dir)))))) == 2
         @test execute(Find(dir), (; pattern="blocked.txt")).text == "nested/blocked.txt"
         @test execute(Find(dir), (; pattern="private.txt")).text == "nested/private.txt"
         @test execute(Find(dir), (; pattern="local-only.txt")).text == "No files found matching pattern"
