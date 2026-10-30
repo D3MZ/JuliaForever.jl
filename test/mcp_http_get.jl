@@ -135,7 +135,7 @@ end
 end
 
 @testset "GET unavailability leaves POST usable" begin
-    for getresponse in (HTTP.Response(405), HTTP.Response(200, ["Content-Type" => "text/event-stream"], ": end\n\n"), HTTP.Response(200, ["Content-Type" => "text/plain"], "no"))
+    for getresponse in (HTTP.Response(405), HTTP.Response(200, ["Content-Type" => "text/plain"], "no"))
         gets = Channel{Nothing}(4)
         server = HTTP.serve!("127.0.0.1", 0; listenany=true) do req
             req.method == "GET" && (put!(gets, nothing); return getresponse)

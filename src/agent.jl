@@ -47,6 +47,12 @@ end
 Agent(provider, tools; history=nothing) = Agent(provider, Dict{String, Tool}(name(tool) => tool for tool in tools), Dict{String, Any}[]; history)
 Agent(provider, tools::ToolSet; history=nothing) = Agent(provider, tools, Dict{String, Any}[]; history)
 
+function withprovider(agent::Agent, provider)
+    lock(agent.lock) do
+        Agent(provider, agent.tools, agent.messages, agent.initial, agent.state, getfield(agent, :events), agent.lock, agent.turn, agent.shell, agent.handle, agent.history, agent.history_revision, agent.fault)
+    end
+end
+
 function Base.getproperty(agent::Agent, name::Symbol)
     name === :running && return running(getfield(agent, :turn))
     name === :cancelled && return cancelled(getfield(agent, :turn))

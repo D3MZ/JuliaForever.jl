@@ -172,9 +172,10 @@ struct Failure <: Reply
 end
 Success() = Success(NamedTuple())
 
-mutable struct Session{A, T, E, S, P, L, R, M}
-    agent::A
+mutable struct Session{T, E, S, P, L, R, M, V}
+    agent::J.Agent
     initialprovider::M
+    initialname::String
     terminal::T
     extensions::E
     store::S
@@ -186,6 +187,7 @@ mutable struct Session{A, T, E, S, P, L, R, M}
     id::String
     name::Union{Nothing, String}
     stream::L
+    settings::V
     thinking::String
     lastcontent::Union{Nothing, String}
     steering::Vector{String}
@@ -206,9 +208,11 @@ end
 function Session(terminal, agent, extensions, store, templates, directory)
     stream = LiveJSON.Stream(terminal, agent, terminal.mode)
     registry = modelregistry(agent.provider)
-    session = Session(agent, agent.provider, terminal, extensions, store, templates, registry, directory, ReentrantLock(), Dict{String, Any}[], LiveJSON.id(store[]), sessionname(J.SessionCatalog.sessionname(store[])), stream, "off", nothing, String[], String[], nothing, Base.Event(), OpenOutput(), AvailableStatistics(), CompactionIdle(), ActiveRun(), J.ShellCancellation(), Set{Task}(), J.Conversation.BashMessage[], J.Conversation.SessionRecordValue[], nothing)
+    settings = J.terminalsettings(ENV, pwd())
+    session = Session(agent, agent.provider, terminal.mode.provider, terminal, extensions, store, templates, registry, directory, ReentrantLock(), Dict{String, Any}[], LiveJSON.id(store[]), sessionname(J.SessionCatalog.sessionname(store[])), stream, settings, "off", nothing, String[], String[], nothing, Base.Event(), OpenOutput(), AvailableStatistics(), CompactionIdle(), ActiveRun(), J.ShellCancellation(), Set{Task}(), J.Conversation.BashMessage[], J.Conversation.SessionRecordValue[], nothing)
     startupmodel!(session, agent, terminal.mode.model, ResumeBinding())
-    session.thinking = initialthinking!(agent, terminal.mode.thinking)
+    agent = session.agent
+    session.thinking = initialthinking!(agent, startupthinking(session, agent, terminal.mode.thinking))
     session.stream = LiveJSON.Stream(terminal, agent, terminal.mode)
     restoreentries!(session)
     restore!(session, agent)
@@ -360,7 +364,8 @@ function rebind!(session, agent, history, binding::SessionBinding)
         copyqueuemodes!(session.agent, agent)
         session.agent = agent
         startupmodel!(session, agent, session.terminal.mode.model, binding)
-        session.thinking = initialthinking!(agent, session.terminal.mode.thinking)
+        agent = session.agent
+        session.thinking = initialthinking!(agent, startupthinking(session, agent, session.terminal.mode.thinking))
         session.store[] = history
         session.id = J.LiveJSON.id(history)
         session.name = sessionname(J.SessionCatalog.sessionname(history))
@@ -384,9 +389,14 @@ startupmodel!(session, agent, ::Nothing, ::ResumeBinding) = restoremodel!(sessio
 startupmodel!(session, agent, ::Nothing, ::NewBinding) = resetmodel!(session, agent)
 startupmodel!(session, agent, ::String, binding::SessionBinding) = resetmodel!(session, agent)
 function resetmodel!(session, agent)
-    lock(agent.lock) do
-        agent.provider = session.initialprovider
-    end
+    session.agent = J.withprovider(agent, session.initialprovider)
+    providername!(session, session.initialname)
+    nothing
+end
+
+function providername!(session, name)
+    mode = session.terminal.mode
+    session.terminal.mode = J.RPCMode(name, mode.thinking, mode.model)
     nothing
 end
 
@@ -447,6 +457,12 @@ targetready!(session, selected, state, ::Nothing) = J.checkqueues!(session.termi
 switchtarget!(session, pending, blocked::Union{J.PendingInputs, J.History.Rejected}) = switchchecked!(session, pending, blocked)
 switchtarget!(session, pending, failure::J.ToolFailure) = Failure(J.redact(session.terminal, failure.text))
 function switchtarget!(session, pending, ::Nothing)
+    checked = J.attempt(() -> targetmodel(session, pending[], session.terminal.mode.model))
+    switchtargetmodel!(session, pending, checked)
+end
+switchtargetmodel!(session, pending, failure::Failure) = failure
+switchtargetmodel!(session, pending, failure::J.ToolFailure) = Failure(J.redact(session.terminal, failure.text))
+function switchtargetmodel!(session, pending, ::Nothing)
     selected = pending[]
     path = J.SessionCatalog.path(selected)
     pending[] = nothing
@@ -458,6 +474,12 @@ function switchtarget!(session, pending, ::Nothing)
     switch!(session, selectsession(session, path))
 end
 function switchresume!(session, pending)
+    checked = J.attempt(() -> targetmodel(session, pending[], session.terminal.mode.model))
+    switchresumeready!(session, pending, checked)
+end
+switchresumeready!(session, pending, failure::Failure) = failure
+switchresumeready!(session, pending, failure::J.ToolFailure) = Failure(J.redact(session.terminal, failure.text))
+function switchresumeready!(session, pending, ::Nothing)
     selected = pending[]
     pending[] = nothing
     agent, history, status = J.resume!(session.terminal, session.agent, session.store[], selected, session.templates)

@@ -9,6 +9,7 @@ include("skill_resume.jl")
 include("skill_resume_race.jl")
 include("skill_resume_rpc.jl")
 include("rpc_switch_active.jl")
+include("rpc_cross_provider.jl")
 include("skill_resume_user.jl")
 include("skill_resume_terminal.jl")
 include("branch_audit.jl")
@@ -243,6 +244,9 @@ include("mcp_http_sse.jl")
 end
 module MCPHTTPGETTests
 include("mcp_http_get.jl")
+end
+module MCPReconnectTests
+include("mcp_reconnect.jl")
 end
 module MCPHTTPLifecycleTests
 include("mcp_http_lifecycle.jl")

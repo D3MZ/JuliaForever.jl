@@ -83,6 +83,7 @@ materialize!(history, store::H.Memory, saved::Integer, node::H.TreeNode) = lengt
 materialize!(history, store::H.Memory, saved::Integer, ::C.SessionName) = saved
 materialize!(history, store::H.Memory, saved::Integer, ::C.BashOutput) = saved
 materialize!(history, store::H.Memory, saved::Integer, ::C.SessionRecord) = saved
+materialize!(history, store::H.Memory, saved::Integer, ::C.ModelSelection) = saved
 materialize!(history, store::H.Memory, saved::Integer, ::Union{C.SteeringMode, C.FollowupMode}) = saved
 materialize!(history, store::H.Memory, saved::Integer, event) = materialize!(history, store, H.snapshot(store))
 

@@ -281,7 +281,7 @@ end
             @test actual.state["data"]["model"]["id"] == "gemini-3-flash-preview"
             @test actual.levels["data"]["levels"] == ["off"]
             @test actual.low["success"] && actual.restored["data"]["thinkingLevel"] == "off"
-            @test !actual.rejected["success"]
+            @test actual.rejected["success"] && actual.rejected["data"]["provider"] == "google"
             @test all(r -> r.target == "/a/models/gemini-3-flash-preview:streamGenerateContent?alt=sse" && r.key == "synthetic-config-key" && r.route == "route-a" && isempty(r.authorization), captured)
             @test all(r -> !haskey(get(r.body, "generationConfig", Dict()), "thinkingConfig"), captured)
             @test all(secret -> all(line -> !occursin(secret, line), actual.observed), ("synthetic-config-key", "synthetic-google-rpc-key", "synthetic-unrelated-openai"))

@@ -12,6 +12,7 @@ function Recorder(agent)
 end
 collectrecord!(entries, event) = nothing
 collectrecord!(entries, event::J.Conversation.SessionRecord) = (push!(entries, event); nothing)
+collectrecord!(entries, event::J.Conversation.ModelSelection) = (push!(entries, event.model, event.thinking); nothing)
 
 abstract type RecordPresence end
 struct NoRecordedMessages <: RecordPresence end

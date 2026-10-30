@@ -35,6 +35,7 @@ modelregistry(::J.DirectRoute) = J.modelconfig(ENV)
 modelregistry(route::J.CatalogRoute) = route.registry
 
 lookupmodelwire(registry::J.Models.Registry, provider, id) = lookupmodelwire(registry, provider, id, modelwire(registry, J.Models.findmodel(model -> model.provider == provider && model.id == id, registry.models)))
+lookupmodelwire(::J.Models.InvalidConfig, provider, id) = nothing
 lookupmodelwire(registry, provider, id, model::ModelWire) = model
 lookupmodelwire(registry, provider, id, ::Nothing) = builtinwire(registry, get(catalog().index, (provider, id), nothing))
 builtinwire(registry, ::Nothing) = nothing
@@ -128,7 +129,13 @@ function handle!(session, command::SetModel)
     end
 end
 setrequest!(session, command, task::Task) = Failure("Model switching while streaming is not supported")
-setrequest!(session, command, ::Nothing) = setrequest!(session, command, availablewires(session))
+function setrequest!(session, command, ::Nothing)
+    lock(session.agent.lock) do
+        setrequest!(session, command, session.agent.turn)
+    end
+end
+setrequest!(session, command, ::Union{J.Running, J.Cancelled}) = Failure("Model switching while streaming is not supported")
+setrequest!(session, command, ::J.Idle) = setrequest!(session, command, availablewires(session))
 setrequest!(session, command, failure::Failure) = failure
 function setrequest!(session, command, models::Vector)
     index = findfirst(model -> model.provider == command.provider && model.id == command.model, models)
@@ -138,75 +145,139 @@ foundmodel!(session, command, models, ::Nothing) = Failure("Model not found: $(c
 foundmodel!(session, command, models, index::Int) = setmodel!(session, models[index])
 
 function setmodel!(session, model::RPCModel)
-    current = LiveJSON.providername(session.terminal.mode, session.agent.provider)
-    model.provider == current || return Failure("Model switching across providers is not supported")
     selectapi!(session, model, get(J.modelapis, model.api, nothing))
 end
 selectapi!(session, model, api) = Failure("Model switching across APIs is not supported")
-selectapi!(session::Session{<:J.Agent{P}}, model, ::Type{P}) where {P<:NativeModelProvider} = setmodel!(session, model, selectedmodel(session.agent.provider, model))
+function selectapi!(session, model, ::Type{P}) where {P<:NativeModelProvider}
+    selected = selectprovider(session, model, session.agent.provider, P)
+    selectedprovider!(session, model, P, selected)
+end
+function selectprovider(session, model, provider::P, ::Type{P}) where {P<:NativeModelProvider}
+    current = LiveJSON.providername(session.terminal.mode, provider)
+    model.provider == current && return selectedmodel(provider, model)
+    targetprovider(session, model, P)
+end
+selectprovider(session, model, provider, ::Type{P}) where {P<:NativeModelProvider} = targetprovider(session, model, P)
+targetprovider(session, model, ::Type{P}) where {P<:NativeModelProvider} = providerfrom(model, J.configuredinfo(session.registry, model.provider, model.id, ENV, model.provider), P)
+providerfrom(model, info::J.ConfiguredProvider, ::Type{P}) where {P<:NativeModelProvider} = J.acquire(J.APIKeyAuth(), info, model.id)
+providerfrom(model, info::NamedTuple, ::Type{P}) where {P<:NativeModelProvider} = providerfrom(model, info, P, J.keyvalue(ENV, info))
+providerfrom(model, info, type) = nothing
+providerfrom(model, info, type, key) = nothing
+providerfrom(model, info, ::Type{P}, key::AbstractString) where {P<:NativeModelProvider} = builtinkey(model, P, J.envvalue(key))
+builtinkey(model, type, ::Nothing) = nothing
+builtinkey(model, ::Type{P}, key::String) where {P<:NativeModelProvider} = P(modelbase(model), model.id, key)
+modelbase(model::ModelWire) = model.baseUrl
+modelbase(model::BuiltinModel) = String(model.data["baseUrl"])
+selectedprovider!(session, model, type, selected) = Failure("Model switching is not available for this provider")
+selectedprovider!(session, model, ::Type{P}, selected::P) where {P<:NativeModelProvider} = setmodel!(session, model, selected)
 selectedmodel(provider, model) = nothing
 selectedmodel(provider::NativeModelProvider, model) = selectedmodel(provider, model, provider.route)
 selectedmodel(provider, model, route) = J.modelchange(provider, model.id, route)
 selectedmodel(provider::J.OpenAIResponses, model, ::J.DirectRoute) = J.responselevel(provider, model.id, nothing)
 
 restoremodel!(session, agent) = nothing
-function restoremodel!(session, agent::J.Agent{P}) where {P<:NativeModelProvider}
+function restoremodel!(session, agent::J.Agent{P}) where {P<:Union{NativeModelProvider, J.UnconfiguredProvider}}
     entry = foldl(recordedmodel, getfield(agent, :events); init=nothing)::RecordedModel
     restoremodel!(session, agent, entry)
 end
 recordedmodel(current, event) = current
 recordedmodel(current, event::J.Conversation.SessionRecord{J.Conversation.ModelEntry}) = event.entry
+recordedmodel(current, event::J.Conversation.ModelSelection) = event.model.entry
 recordedmodel(current, event::J.Conversation.SessionRecord{J.Conversation.MessageEntry})::RecordedModel = recordedmodel(current, event.entry.message, LiveJSON.role(event.entry.message))
 recordedmodel(current, message, role::LiveJSON.Role) = current
 recordedmodel(current, message, ::LiveJSON.AssistantRole) = recordedmodel(current, get(message, "provider", nothing), get(message, "model", nothing))
 recordedmodel(current, provider::String, model::String) = J.Conversation.ModelEntry(provider, model)
 recordedmodel(current, provider, model) = current
+
+targetmodel(session, selected, requested::String) = nothing
+targetmodel(session, selected, ::Nothing) = targetmodelsnapshot(session, J.History.snapshot(selected))
+targetmodelsnapshot(session, rejected::J.History.Rejected) = Failure(string(rejected.reason))
+targetmodelsnapshot(session, snapshot::J.History.Snapshot) = targetselection(session, foldl(targetentry, Iterators.drop(snapshot.batches, 1); init=nothing))
+targetentry(rejected::J.History.Rejected, batch::Vector) = rejected
+targetentry(current, batch::Vector) = targetentry(current, J.History.treeevent(batch))
+targetentry(current, rejected::J.History.Rejected) = rejected
+targetentry(current, event::J.Kernel.Event) = recordedmodel(current, event)
+targetselection(session, ::Nothing) = nothing
+targetselection(session, rejected::J.History.Rejected) = Failure(string(rejected.reason))
+function targetselection(session, entry::J.Conversation.ModelEntry)
+    provider = session.agent.provider
+    current = LiveJSON.providername(session.terminal.mode, provider)
+    (entry.provider, entry.model) == (current, provider.model) && return nothing
+    targetwire(session, lookupmodelwire(session.registry, entry.provider, entry.model))
+end
+targetwire(session, ::Nothing) = Failure("Saved model is unavailable")
+targetwire(session, model::RPCModel) = targetapi(session, model, get(J.modelapis, model.api, nothing))
+targetapi(session, model, api) = Failure("Saved model is unavailable")
+function targetapi(session, model, ::Type{P}) where {P<:NativeModelProvider}
+    targetselected(session, P, selectprovider(session, model, session.agent.provider, P))
+end
+targetselected(session, type, selected) = Failure("Saved model is unavailable")
+function targetselected(session, ::Type{P}, selected::P) where {P<:NativeModelProvider}
+    append!(session.terminal.secrets, [selected.key; last.(selected.extra)])
+    nothing
+end
+
 restoremodel!(session, agent, ::Nothing) = nothing
 function restoremodel!(session, agent, entry::J.Conversation.ModelEntry)
     current = LiveJSON.providername(session.terminal.mode, agent.provider)
-    valid = J.Models.combine(J.Models.check(entry.provider == current), J.Models.check(entry.model != agent.provider.model))
-    restoremodel!(session, agent, entry, valid)
-end
-restoremodel!(session, agent, entry, ::J.Models.InvalidConfig) = nothing
-function restoremodel!(session, agent, entry, ::J.Models.ValidConfig)
+    (entry.provider, entry.model) == (current, agent.provider.model) && return nothing
     model = lookupmodelwire(session.registry, entry.provider, entry.model)
-    restoremodel!(agent, model)
+    restoremodel!(session, agent, entry, model)
 end
-restoremodel!(agent, ::Nothing) = nothing
-restoremodel!(agent, model::RPCModel) = restoreapi!(agent, model, get(J.modelapis, model.api, nothing))
-restoreapi!(agent, model, api) = nothing
-restoreapi!(agent::J.Agent{P}, model, ::Type{P}) where {P<:NativeModelProvider} = restoreselected!(agent, selectedmodel(agent.provider, model))
-restoreselected!(agent, selected) = nothing
-function restoreselected!(agent::J.Agent{P}, selected::P) where {P<:NativeModelProvider}
-    lock(agent.lock) do
-        agent.provider = selected
-    end
+restoremodel!(session, agent, entry, ::Nothing) = restoremissing!(session, agent, entry.provider)
+restoremodel!(session, agent, entry, model::RPCModel) = restoreapi!(session, agent, entry, model, get(J.modelapis, model.api, nothing))
+restoreapi!(session, agent, entry, model, api) = restoremissing!(session, agent, entry.provider)
+function restoreapi!(session, agent, entry, model, ::Type{P}) where {P<:NativeModelProvider}
+    selected = selectprovider(session, model, agent.provider, P)
+    restoreselected!(session, agent, entry, P, selected)
+end
+restoreselected!(session, agent, entry, type, selected) = restoremissing!(session, agent, entry.provider)
+function restoreselected!(session, agent, entry, ::Type{P}, selected::P) where {P<:NativeModelProvider}
+    append!(session.terminal.secrets, [selected.key; last.(selected.extra)])
+    session.agent = J.withprovider(agent, selected)
+    providername!(session, entry.provider)
+    nothing
+end
+function restoremissing!(session, agent, name)
+    session.agent = J.withprovider(agent, J.UnconfiguredProvider())
+    providername!(session, name)
     nothing
 end
 
 setmodel!(session, model, ::Nothing) = Failure("Model switching is not available for this provider")
 setmodel!(session, model, status::Integer) = Failure("Model selection failed")
 setmodel!(session, model, selected) = Failure("Model switching across APIs is not supported")
-function setmodel!(session::Session{<:J.Agent{P}}, model, selected::P) where {P<:NativeModelProvider}
-    saved = recordentry!(session, J.Conversation.ModelEntry(model.provider, model.id))
-    modelrecorded!(session, model, selected, saved)
-end
-modelrecorded!(session, model, selected, rejected::J.History.Rejected) = Failure(string(rejected.reason))
-function modelrecorded!(session, model, selected, ::Nothing)
-    lock(session.agent.lock) do
-        session.agent.provider = selected
-    end
+function setmodel!(session, model, selected::NativeModelProvider)
     append!(session.terminal.secrets, [selected.key; last.(selected.extra)])
+    choices = thinkingchoices(selected)
+    level = clampthinking(modelthinking(session.settings, model.provider, model.id, session.thinking), levels(choices))
+    adjusted = selectionthinking(selected, choices, level)
+    saveselection!(session, model, adjusted, level)
+end
+selectionthinking(selected, ::FixedThinking, level) = selected
+selectionthinking(selected, choices::ReasoningChoices, level) = J.applythinking(selected, choices.efforts[level])
+saveselection!(session, model, selected, level) = Failure("Model selection failed")
+function saveselection!(session, model, selected::NativeModelProvider, level)
+    entry = J.Conversation.ModelEntry(model.provider, model.id)
+    saved = level == session.thinking ? recordentry!(session, entry) : recordselection!(session, entry, J.Conversation.ThinkingEntry(level))
+    modelrecorded!(session, model, selected, level, saved)
+end
+modelrecorded!(session, model, selected, level, rejected::J.History.Rejected) = Failure(string(rejected.reason))
+function modelrecorded!(session, model, selected, level, ::Nothing)
+    session.agent = J.withprovider(session.agent, selected)
+    providername!(session, model.provider)
     session.stream.api = LiveJSON.api(selected)
     session.stream.provider = LiveJSON.providername(session.terminal.mode, selected)
     session.stream.model = selected.model
-    choices = thinkingchoices(selected)
-    level = clampthinking(session.thinking, levels(choices))
-    applylevel!(session.agent, choices, level)
-    modelresult(setthinking!(session, session.thinking), model)
+    session.thinking = level
+    selectionevent!(session, last(getfield(session.agent, :events)))
+    Success((; data=model))
 end
-modelresult(failure::Failure, model) = failure
-modelresult(::Success, model) = Success((; data=model))
+selectionevent!(session, ::J.Conversation.SessionRecord) = nothing
+function selectionevent!(session, event::J.Conversation.ModelSelection)
+    write!(session, (; type="thinking_level_changed", level=event.thinking.entry.level))
+    nothing
+end
 
 function handle!(session, ::CycleModel)
     lock(session.lock) do
@@ -214,7 +285,13 @@ function handle!(session, ::CycleModel)
     end
 end
 cyclemodel!(session, task::Task) = Failure("Model switching while streaming is not supported")
-cyclemodel!(session, ::Nothing) = cyclemodels!(session, availablewires(session))
+function cyclemodel!(session, ::Nothing)
+    lock(session.agent.lock) do
+        cyclemodel!(session, session.agent.turn)
+    end
+end
+cyclemodel!(session, ::Union{J.Running, J.Cancelled}) = Failure("Model switching while streaming is not supported")
+cyclemodel!(session, ::J.Idle) = cyclemodels!(session, availablewires(session))
 cyclemodels!(session, failure::Failure) = failure
 function cyclemodels!(session, models::Vector)
     length(models) <= 1 && return Success((; data=nothing))
