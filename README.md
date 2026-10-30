@@ -40,3 +40,5 @@ rejection or cancellation) is reported as an `:auto_compaction_end` agent event.
 History-backed agents persist the checkpoint for replay. Missing usage, disabled
 settings, and cancelled or failed turns do not trigger compaction. This threshold
 path does not implement Pi's overflow retry or pre-prompt recovery.
+
+Julia Forever can read literal API keys from Pi's `auth.json` in `PI_CODING_AGENT_DIR` (default `~/.pi/agent`); a stored key takes precedence over the provider's environment variable. Reading does not change the file or its permissions. Malformed or missing files fall back to the environment. Credential commands, environment templates, OAuth credentials and refresh, and writing or removing stored credentials are not supported by this lookup. OpenRouter login remains session-only.

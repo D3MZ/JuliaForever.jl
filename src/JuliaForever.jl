@@ -52,9 +52,12 @@ function reportmissing(missing)
     false
 end
 
+missingkey!(missing, ::Nothing, info) = push!(missing, info.key)
+missingkey!(missing, key::AbstractString, info) = isempty(key) && push!(missing, info.key)
+
 function configured(env, info, model)
     missing = missingmodel(env, info, model)
-    isempty(get(env, info.key, "")) && push!(missing, info.key)
+    missingkey!(missing, keyvalue(env, info), info)
     reportmissing(missing)
 end
 

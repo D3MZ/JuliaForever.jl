@@ -99,8 +99,31 @@ providerinfo(selected) = get(providerinfos, selected, nothing)
 modelvalue(env, name, ::Nothing) = env[name]
 modelvalue(env, name, model::AbstractString) = model
 
+const credentialproviders = Dict("OPENAI_API_KEY" => "openai", "OPENROUTER_API_KEY" => "openrouter", "ANTHROPIC_API_KEY" => "anthropic", "GEMINI_API_KEY" => "google")
+
+function storedcredentials(env)
+    path = joinpath(get(env, "PI_CODING_AGENT_DIR", joinpath(homedir(), ".pi", "agent")), "auth.json")
+    try
+        JSON3.read(replace(read(path, String), r"^\ufeff" => ""), Dict{String, Any})
+    catch
+        Dict{String, Any}()
+    end
+end
+
+credentialkey(::Nothing, env, info) = get(env, info.key, "")
+credentialkey(value, env, info) = nothing
+credentialkey(value::AbstractDict, env, info) = credentialkey(get(Dict("api_key" => Val(:api_key)), get(value, "type", ""), Val(:unsupported)), value, env, info)
+credentialkey(::Val, value, env, info) = nothing
+credentialkey(::Val{:api_key}, value, env, info) = literalkey(get(value, "key", nothing), env, info)
+literalkey(::Nothing, env, info) = get(env, info.key, "")
+literalkey(value, env, info) = nothing
+literalkey(value::AbstractString, env, info) = isempty(value) ? get(env, info.key, "") : (occursin(r"[\$]", value) || startswith(value, "!") ? nothing : value)
+keyvalue(env, info) = credentialkey(get(storedcredentials(env), credentialproviders[info.key], nothing), env, info)
+
 provider(::Nothing, env, model) = nothing
-provider(info::NamedTuple, env, model) = info.factory(get(env, info.base, info.url), modelvalue(env, info.model, model), env[info.key])
+provider(info::NamedTuple, env, model) = provider(info, env, model, keyvalue(env, info))
+provider(info::NamedTuple, env, model, ::Nothing) = nothing
+provider(info::NamedTuple, env, model, key::AbstractString) = info.factory(get(env, info.base, info.url), modelvalue(env, info.model, model), key)
 provider(env=ENV) = provider(providerinfo(get(env, "JF_PROVIDER", "openai")), env, nothing)
 
 struct OpenRouterLogin
