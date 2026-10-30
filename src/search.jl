@@ -448,6 +448,80 @@ function searchcontent(bytes, root, nul::Int)
     original, String(bytes)
 end
 
+abstract type SearchEncoding end
+struct SearchUTF8 <: SearchEncoding end
+struct SearchUTF8BOM <: SearchEncoding end
+struct SearchUTF16LE <: SearchEncoding end
+struct SearchUTF16BE <: SearchEncoding end
+
+function searchencoding(bytes)
+    length(bytes) >= 2 || return SearchUTF8()
+    bytes[1] == 0xff && bytes[2] == 0xfe && return SearchUTF16LE()
+    bytes[1] == 0xfe && bytes[2] == 0xff && return SearchUTF16BE()
+    length(bytes) >= 3 && bytes[1] == 0xef && bytes[2] == 0xbb && bytes[3] == 0xbf && return SearchUTF8BOM()
+    SearchUTF8()
+end
+
+littleunit(a, b) = UInt16(a) | UInt16(b) << 8
+bigunit(a, b) = UInt16(a) << 8 | UInt16(b)
+
+function utf16text(bytes, unitvalue)
+    out = IOBuffer()
+    i = 3
+    while i < length(bytes)
+        unit = unitvalue(bytes[i], bytes[i + 1])
+        if 0xd800 <= unit <= 0xdbff && i + 3 <= length(bytes) && 0xdc00 <= unitvalue(bytes[i + 2], bytes[i + 3]) <= 0xdfff
+            next = unitvalue(bytes[i + 2], bytes[i + 3])
+            print(out, Char(0x10000 + (UInt32(unit) - 0xd800) * 0x400 + (UInt32(next) - 0xdc00)))
+            i += 2
+        elseif 0xd800 <= unit <= 0xdbff && i + 2 == length(bytes)
+            # A trailing partial code unit belongs to the unmatched high surrogate.
+            print(out, '�')
+            i += 1
+        elseif 0xd800 <= unit <= 0xdfff
+            print(out, '�')
+        else
+            print(out, Char(unit))
+        end
+        i += 2
+    end
+    i <= length(bytes) && print(out, '�')
+    String(take!(out))
+end
+
+searchcontent(bytes, root) = searchcontent(bytes, root, searchencoding(bytes))
+function searchcontent(bytes, root, ::SearchUTF8)
+    original, raw = searchcontent(bytes, root, findfirst(==(0x00), bytes))
+    raw, original
+end
+function searchcontent(bytes, root, ::SearchUTF8BOM)
+    original = String(bytes)
+    searchtext(chopprefix(original, "\ufeff"), root, original)
+end
+searchcontent(bytes, root, ::SearchUTF16LE) = searchutf16(bytes, root, littleunit)
+searchcontent(bytes, root, ::SearchUTF16BE) = searchutf16(bytes, root, bigunit)
+function searchutf16(bytes, root, unitvalue)
+    text = utf16text(bytes, unitvalue)
+    original = String(bytes)
+    searchtext(text, root, original)
+end
+searchtext(raw, root, original) = searchtext(raw, root, original, findfirst(==(0x00), codeunits(raw)))
+searchtext(raw, root, original, ::Nothing) = raw, original
+function searchtext(raw, root, original, nul::Integer)
+    bytes = Vector{UInt8}(codeunits(raw))
+    binarycontent!(bytes, root, nul)
+    String(bytes), original
+end
+
+# Ripgrep matches the carriage return in CRLF; strip it only for display.
+searchlines(raw::AbstractString) = split(raw, '\n'; keepempty=true)
+function searchlines(raw::SubString{String})
+    # This substring is the original UTF-8 file without its BOM.
+    lines = searchlines(parent(raw))
+    lines[1] = chopprefix(lines[1], "\ufeff")
+    lines
+end
+
 function execute(tool::Grep, args)
     root = searchpath(tool, get(args, :path, "."))
     ispath(root) || return ToolFailure("Path not found: $root")
@@ -473,10 +547,9 @@ function execute(tool::Grep, args)
         isfile(target) || return true
         relative = searchrelative(rootentry, target)
         selectglob(filter, target) || return true
-        bytes = read(target)
-        originalraw, raw = searchcontent(bytes, rootentry, findfirst(==(0x00), bytes))
+        raw, originalraw = searchcontent(read(target), rootentry)
         isempty(raw) && return true
-        rawlines = split(replace(raw, "\r\n" => "\n"), '\n'; keepempty=true)
+        rawlines = searchlines(raw)
         original_lines = Ref{Union{Nothing,Vector{SubString{String}}}}(nothing)
         lastmatch = length(rawlines) - endswith(raw, '\n')
         for number in 1:lastmatch
@@ -497,7 +570,7 @@ function execute(tool::Grep, args)
     end
     whitelist = target -> whitelistglob(filter, target)
     visitroot(visit, rootentry, tool, whitelist)
-    isempty(output) && return ToolResult("No matches found")
+    count == 0 && return ToolResult("No matches found")
     # Match limits count matches, not context rows.
     bounded = head(output)
     notices = String[]
