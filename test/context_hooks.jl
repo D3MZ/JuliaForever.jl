@@ -262,4 +262,43 @@ end
     end
 end
 
+mutable struct CancelProvider
+    calls::Int
+end
+function J.complete(provider::CancelProvider, messages, tools)
+    provider.calls += 1
+    Dict("role" => "assistant", "content" => "unexpected")
+end
+function J.stream(provider::CancelProvider, messages, tools; parameters=Dict(), on_event=identity)
+    provider.calls += 1
+    J.Completion(Dict{String, Any}("role" => "assistant", "content" => "unexpected"), nothing, "stop", J.Finished(), nothing)
+end
+
+@testset "cancellation during a context hook stops provider dispatch" begin
+    for mode in (:direct, :recorded, :executor), event_type in (:context, :context_with_system), streaming in (false, true)
+        mode == :executor && streaming && continue
+        provider = CancelProvider(0)
+        history = mode == :recorded ? J.History.Memory() : nothing
+        agent = Agent(mode == :executor ? nothing : provider, []; history)
+        registry = E.Registry()
+        E.register!(registry, :fixture, E.Plugin(; hooks=(event_type => event -> (J.cancel!(agent); nothing),)))
+        listener = E.listen(E.snapshot(registry))
+        if mode == :executor
+            id = "context-hook-cancellation"
+            @test J.Execution.install!(id, provider, [])
+            pool = J.Execution.Executor(Distributed.myid())
+            try
+                result = respond!(agent, "hello"; executor=pool, context=id, on_agent_event=listener)
+                @test result.value == :cancelled
+            finally
+                close(pool)
+                J.Execution.uninstall!(id)
+            end
+        else
+            @test respond!(agent, "hello"; on_event=streaming ? identity : nothing, on_agent_event=listener) == :cancelled
+        end
+        @test provider.calls == 0
+    end
+end
+
 end

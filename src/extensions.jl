@@ -335,12 +335,15 @@ Base.isempty(tools::NativeAnthropicTools) = isempty(tools.items)
 struct ToolDeclaration <: Tool
     data::Dict{String, Any}
 end
+struct CatalogDeclaration <: Tool
+    data::Dict{String, Any}
+end
 abstract type ContextStrict end
 struct ContextStrictSupported <: ContextStrict end
 struct ContextStrictUnsupported <: ContextStrict end
-name(tool::ToolDeclaration) = tool.data["name"]
-description(tool::ToolDeclaration) = tool.data["description"]
-schema(tool::ToolDeclaration) = tool.data["parameters"]
+name(tool::Union{ToolDeclaration, CatalogDeclaration}) = tool.data["name"]
+description(tool::Union{ToolDeclaration, CatalogDeclaration}) = tool.data["description"]
+schema(tool::Union{ToolDeclaration, CatalogDeclaration}) = tool.data["parameters"]
 
 requestview(callback, messages, tools, provider) = RequestView(modelmessages(messages), tools)
 requestview(sink::EventSink, messages, tools, provider) = lock(() -> requestview(sink.callback, messages, tools, provider), sink.lock)

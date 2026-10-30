@@ -1,6 +1,6 @@
 module ContextProviderCases
 
-using Test, JuliaForever, HTTP, JSON3, OrderedCollections
+using Test, JuliaForever, HTTP, JSON3, OrderedCollections, Distributed
 const J = JuliaForever
 const E = J.Extensions
 
@@ -174,6 +174,70 @@ end
                 end
             end
         end
+    finally
+        close(server)
+        wait(server)
+    end
+end
+
+
+struct ReferencedSchemaTool <: J.Tool end
+J.name(::ReferencedSchemaTool) = "schema_ref"
+J.description(::ReferencedSchemaTool) = "A tool with referenced input types"
+J.schema(::ReferencedSchemaTool) = Dict("type" => "object", "properties" => Dict("selection" => Dict("\$ref" => "#/\$defs/Selection")), "\$defs" => Dict("Selection" => Dict("type" => "string", "enum" => ["a", "b"])), "additionalProperties" => false)
+
+mutable struct ChangingCatalogTool <: J.Tool
+    calls::Int
+end
+J.name(::ChangingCatalogTool) = "changing_schema"
+J.description(::ChangingCatalogTool) = "A changing catalog entry"
+function J.schema(tool::ChangingCatalogTool)
+    tool.calls += 1
+    field = tool.calls <= 2 ? "approved" : "changed_after_validation"
+    Dict("type" => "object", "properties" => Dict(field => Dict("type" => "string")))
+end
+
+@testset "unchanged tool schemas survive context hooks" begin
+    requests = Any[]
+    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
+        push!(requests, JSON3.read(String(request.body)))
+        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(response(request.target)))
+    end
+    try
+        registry = E.Registry()
+        E.register!(registry, :noop, E.Plugin(; hooks=(:context => event -> nothing, :context_with_system => event -> nothing)))
+        listener = E.listen(E.snapshot(registry))
+        for model in ("claude-fixture", "claude-opus-5")
+            provider = Anthropic("http://$(HTTP.server_addr(server))", model, "synthetic-key"; eager_tool_streaming=false)
+            tool = ReferencedSchemaTool()
+            @test respond!(Agent(provider, [tool]), "hello") == "done"
+            before = only(filter(item -> item.name == "schema_ref", last(requests).tools)).input_schema
+            @test before == JSON3.read(JSON3.write(J.schema(tool)))
+            @test respond!(Agent(provider, [tool]), "hello"; on_agent_event=listener) == "done"
+            local_schema = only(filter(item -> item.name == "schema_ref", last(requests).tools)).input_schema
+            @test local_schema == before
+            id = "context-schema-" * model
+            @test J.Execution.install!(id, provider, [tool])
+            pool = J.Execution.Executor(myid())
+            try
+                result = respond!(Agent(nothing, []), "hello"; executor=pool, context=id, on_agent_event=listener)
+                @test result.value == "done"
+                worker_schema = only(filter(item -> item.name == "schema_ref", last(requests).tools)).input_schema
+                @test worker_schema == before
+            finally
+                close(pool)
+                J.Execution.uninstall!(id)
+            end
+        end
+        seen = Any[]
+        registry = E.Registry()
+        E.register!(registry, :check, E.Plugin(; hooks=(:context_with_system => event -> begin
+            push!(seen, deepcopy(only(event.messages[1]["toolsAdded"])["parameters"]))
+            nothing
+        end,)))
+        provider = Anthropic("http://$(HTTP.server_addr(server))", "claude-fixture", "synthetic-key"; eager_tool_streaming=false)
+        @test respond!(Agent(provider, [ChangingCatalogTool(0)]), "hello"; on_agent_event=E.listen(E.snapshot(registry))) == "done"
+        @test only(last(requests).tools).input_schema == JSON3.read(JSON3.write(only(seen)))
     finally
         close(server)
         wait(server)

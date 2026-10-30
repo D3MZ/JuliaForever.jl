@@ -232,6 +232,10 @@ execution_catalog!(run, effect, catalog, ::Cancelled) = execution_step!(run, eff
 function execution_catalog!(run, effect, catalog::Vector{ToolDeclaration}, ::Union{Idle, Running})
     tools = OrderedDict{String, Tool}(name(tool) => tool for tool in catalog)
     request = requesteffect(run.callback, effect, tools, catalog)
+    execution_request!(run, effect, request, turnstate(run.agent))
+end
+execution_request!(run, effect, request, ::Cancelled) = execution_step!(run, effect, Cancelled())
+function execution_request!(run, effect, request, ::Union{Idle, Running})
     outcome = submitted(run.agent, run.executor, request, run.context)
     execution_outcome!(run, effect, outcome)
 end
@@ -366,7 +370,7 @@ function Execution.perform(work::Execution.Work{ContextModel}, cancellation::Exe
         messages = modelmessages(work.effect.messages)
         available = Execution.worktools(capabilities.tools, work.exposed)
         catalogentries(workcatalog(available)) == catalogentries(work.effect.catalog) || return Execution.result(Conversation.ModelFailure("request context tool catalog changed"), work.result)
-        baseline = OrderedDict{String, Tool}(name(tool) => tool for tool in work.effect.catalog)
+        baseline = OrderedDict{String, Tool}(name(tool) => CatalogDeclaration(tool.data) for tool in work.effect.catalog)
         tools = applychanges(baseline, work.effect.tools)
         request = contextrequest(capabilities.provider, messages, currentsystem(messages), tools)
         performcontext(work, capabilities, request)

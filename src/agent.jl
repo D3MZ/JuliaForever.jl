@@ -725,17 +725,24 @@ function modelresponse(agent, effect, parameters, on_event, on_agent_event)
     answer = nothing
     try
         request = requestview(on_agent_event, effect.effect.messages, agent.tools, agent.provider)
-        received = withcontext(effect.effect.messages) do
-            response(agent, request, parameters, on_event, on_agent_event)
-        end
-        rememberusage!(received.result)
+        received = modelresponse(agent, effect, request, parameters, on_event, on_agent_event, turnstate(agent))
+        remembermodel!(received)
         answer = received
     finally
         modelreturned!(agent, effect, answer)
     end
 end
 
+modelresponse(agent, effect, request, parameters, on_event, on_agent_event, ::Cancelled) = Cancelled()
+function modelresponse(agent, effect, request, parameters, on_event, on_agent_event, ::Union{Idle, Running})
+    withcontext(effect.effect.messages) do
+        response(agent, request, parameters, on_event, on_agent_event)
+    end
+end
+remembermodel!(::Cancelled) = nothing
+remembermodel!(answer::NamedTuple) = rememberusage!(answer.result)
 modelreturned!(agent, effect, ::NamedTuple) = nothing
+modelreturned!(agent, effect, ::Cancelled) = nothing
 modelreturned!(agent, effect, ::Nothing) = transition!(revision -> Kernel.Observe(revision, effect.id, Conversation.ModelFailure("provider did not return")), agent)
 
 interrupt!(agent::Agent, ::Conversation.Phase) = nothing
@@ -838,6 +845,10 @@ end
 
 function direct_step!(run, effect, ::Union{Idle, Running})
     answer = modelresponse(run.agent, effect, run.parameters, run.on_event, run.callback)
+    direct_answer!(run, effect, answer)
+end
+direct_answer!(run, effect, ::Cancelled) = direct_step!(run, effect, Cancelled())
+function direct_answer!(run, effect, answer)
     outcome = conversation_reply(answer)
     result, added = transition!(revision -> Kernel.Observe(revision, effect.id, outcome), run.agent)
     direct_result!(run, answer, result, added, answer.result)

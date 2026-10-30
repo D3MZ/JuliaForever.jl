@@ -280,6 +280,10 @@ end
 
 function recorded_step!(run, effect, ::Union{Idle, Running})
     request = requestview(run.callback, effect.effect.messages, run.agent.tools, run.agent.provider)
+    recorded_request!(run, effect, request, turnstate(run.agent))
+end
+recorded_request!(run, effect, request, ::Cancelled) = recorded_step!(run, effect, Cancelled())
+function recorded_request!(run, effect, request, ::Union{Idle, Running})
     answer = withcontext(effect.effect.messages) do
         response(run.agent, request, run.parameters, run.on_event, run.callback)
     end

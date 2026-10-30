@@ -69,6 +69,20 @@ const X = J.Execution
                     finally
                         remotecall_wait(X.uninstall!, pid, "context-remote-accounting")
                     end
+                    resource = J.MCP.ReadResource(Dict{String, J.MCP.Client}())
+                    @test remotecall_fetch(X.install!, pid, "context-remote-schema", anthropic, [resource])
+                    try
+                        hooks = E.Registry()
+                        E.register!(hooks, :fixture, E.Plugin(; hooks=(:context => event -> nothing,)))
+                        agent = Agent(nothing, [])
+                        @test respond!(agent, "hi"; executor=pool, context="context-remote-schema").value == "answer"
+                        baseline = only(last(requests).tools).input_schema
+                        agent = Agent(nothing, [])
+                        @test respond!(agent, "hi"; executor=pool, context="context-remote-schema", on_agent_event=E.listen(E.snapshot(hooks))).value == "answer"
+                        @test only(last(requests).tools).input_schema == baseline == JSON3.read(JSON3.write(J.schema(resource)))
+                    finally
+                        remotecall_wait(X.uninstall!, pid, "context-remote-schema")
+                    end
                 finally
                     close(pool)
                     remotecall_wait(X.uninstall!, pid, "context-remote")

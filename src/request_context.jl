@@ -41,7 +41,14 @@ contextinstruction(provider) = instructionroles[(contextreasoning(provider), con
 
 providercontext(::Union{OpenAI, OpenAIResponses, Anthropic, Google, ChatGPT.Plan, ManagedChatGPT}, messages, system) = collapsedcontext(messages, system)
 contextdeclarations(tools) = OrderedDict{String, Tool}(String(key) => declaration(tool) for (key, tool) in pairs(tools))
+catalogtools(::Nothing, tools) = OrderedDict{String, Tool}()
+catalogtools(system, tools) = OrderedDict{String, Tool}(catalogitem(item, tools) for item in get(system, "toolsAdded", []))
+catalogitem(item, tools) = String(item["name"]) => catalogtool(requesttool(get(tools, String(item["name"]), nothing), item), item)
+catalogtool(tool::ToolDeclaration, item) = tool
+catalogtool(tool::Tool, item) = CatalogDeclaration(Dict{String, Any}(string(key) => deepcopy(value) for (key, value) in pairs(item)))
+providerrequest(provider::Anthropic, messages, system, tools) = contextrequest(provider, messages, system, catalogtools(system, tools))
 providerprepared(provider::Union{OpenAI, OpenAIResponses, Anthropic}, messages, system, tools) = providerprepared(contextpolicy(provider), provider, messages, system, contextdeclarations(tools))
+providerprepared(provider::Anthropic, messages, system, tools) = providerprepared(contextpolicy(provider), provider, messages, system, tools)
 providerprepared(provider::Google, messages, system, tools) = RequestView(collapsedcontext(messages, system), contextdeclarations(tools))
 providerprepared(::CollapsedContext, provider, messages, system, tools) = RequestView(collapsedcontext(messages, system), tools)
 function providerprepared(::CollapsedContext, provider::Union{OpenAI, OpenAIResponses}, messages, system, tools)
