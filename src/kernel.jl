@@ -55,17 +55,17 @@ function same(a::T, b::T, seen) where {T <: AbstractDict}
     length(a) == length(b) || return false
     seen!(seen, a, b) && return true
     for (key, value) in a
-        found = false
-        for (other, result) in b
-            if same(key, other)
-                same(value, result, seen) || return false
-                found = true
-                break
-            end
-        end
-        found || return false
+        sameentry(key, value, b, seen) || return false
     end
     true
+end
+
+function sameentry(key, value, entries, seen)
+    for (other, result) in entries
+        same(key, other) || continue
+        return same(value, result, seen)
+    end
+    false
 end
 
 function same(a::T, b::T, seen) where {T <: Tuple}

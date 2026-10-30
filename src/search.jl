@@ -383,8 +383,7 @@ function execute(tool::Grep, args)
         lastmatch = length(lines) - endswith(text, '\n')
         for number in 1:lastmatch
             line = lines[number]
-            matched = occursin(regex, line)
-            matched || continue
+            occursin(regex, line) || continue
             count += 1
             for n in max(1, number - context):min(length(lines), number + context)
                 shown = shortline(replace(lines[n], '\r' => ""))

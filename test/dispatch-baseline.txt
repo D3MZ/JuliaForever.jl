@@ -50,10 +50,8 @@ kernel.jl	:(name === :observations)
 kernel.jl	:(name === :pending)
 kernel.jl	:(same(getfield(a, field), getfield(b, field), seen))
 kernel.jl	:(same(key, other))
-kernel.jl	:(same(value, result, seen))
 kernel.jl	:(same(x, y, seen))
 kernel.jl	:(same(x, y, seen))
-kernel.jl	:found
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :shutting)
 mcp.jl	:(name === :state)
@@ -83,7 +81,6 @@ search.jl	:(selectglob(filter, target))
 search.jl	:(visit(item))
 search.jl	:(walkentry(walk, item, ruleset, inside))
 search.jl	:anchored
-search.jl	:matched
 session_terminal.jl	:(Kernel.same(agent.messages, plan.original))
 session_terminal.jl	:(Kernel.same(original, message.value))
 session_terminal.jl	:(Kernel.same(projected, agent.messages))
