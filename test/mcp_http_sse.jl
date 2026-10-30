@@ -2,6 +2,7 @@ using Test, HTTP, JSON3, JuliaForever
 const MCP = JuliaForever.MCP
 seen = Channel{Any}(32)
 server = HTTP.serve!("127.0.0.1", 0; listenany=true) do req
+    req.method == "GET" && return HTTP.Response(405)
     req.method == "DELETE" && (put!(seen, "DELETE"); return HTTP.Response(204))
     body = JSON3.read(String(req.body), Dict{String, Any})
     method = get(body, "method", "response")
@@ -30,6 +31,11 @@ started = Channel{String}(4)
 release = Channel{Nothing}(4)
 server = HTTP.listen!("127.0.0.1", 0; listenany=true) do io
     request = HTTP.startread(io)
+    if request.method == "GET"
+        HTTP.setstatus(io, 405)
+        HTTP.startwrite(io)
+        return
+    end
     if request.method == "DELETE"
         HTTP.setstatus(io, 204)
         HTTP.startwrite(io)

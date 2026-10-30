@@ -5,6 +5,8 @@ const pending = Dict{Int, Bool}()
 const concurrent = Dict{Int, Int}()
 const blocked_sent = Channel{Nothing}(1)
 const overflow_sent = Channel{Nothing}(1)
+const flood_sent = Channel{Nothing}(1)
+const serverpings = Dict{String, Int}()
 function send(message)
     lock(writer) do
         println(stdout, JSON3.write(message))
@@ -25,7 +27,16 @@ for line in eachline(stdin)
     method = get(message, "method", "")
     params = get(message, "params", Dict())
     id = get(message, "id", 0)
-    if method == "initialize"
+    if haskey(serverpings, string(id)) && haskey(message, "result")
+        requestid = pop!(serverpings, string(id))
+        isempty(serverpings) && reply(requestid, Dict("count" => 300))
+    elseif method == "server-pings"
+        for index in 1:300
+            serverid = "ping-$index"
+            serverpings[serverid] = id
+            send(Dict("jsonrpc" => "2.0", "id" => serverid, "method" => "ping"))
+        end
+    elseif method == "initialize"
         reply(id, Dict("protocolVersion" => "2025-11-25", "capabilities" => Dict("tools" => Dict()), "serverInfo" => Dict("name" => "progress", "version" => "1")))
     elseif method == "notifications/cancelled"
         requestid = params["requestId"]
@@ -68,12 +79,27 @@ for line in eachline(stdin)
             take!(blocked_sent)
             reply(id, Dict("done" => true))
         end
+    elseif method == "flood-barrier"
+        @async begin
+            take!(flood_sent)
+            reply(id, Dict("done" => true))
+        end
     elseif method == "blocked-eof"
         later(() -> progress(id, 1), 0.02)
         later(0.1) do
             progress(id, 2)
             reply(id, Dict("done" => true))
             exit(0)
+        end
+    elseif method == "flood"
+        @async begin
+            progress(id, 1)
+            sleep(0.2)
+            for index in 2:300
+                progress(id, index)
+            end
+            reply(id, Dict("done" => true))
+            put!(flood_sent, nothing)
         end
     elseif method == "overflow"
         pending[id] = true
