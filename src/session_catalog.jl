@@ -123,12 +123,24 @@ end
 materialize!(history, rejected::H.Rejected, snapshot) = rejected
 
 function materialize!(history, store::H.SQLite, snapshot::H.Snapshot)
-    history.store = store
-    savecwd!(store, history.cwd)
-    foldl(snapshot.batches; init=0) do revision, batch
-        appendbatch!(store, revision, batch)
+    completed = nothing
+    try
+        SQLite.execute(store.db, "BEGIN IMMEDIATE")
+        savecwd!(store, history.cwd)
+        revision = foldl(snapshot.batches; init=0) do revision, batch
+            SH.write!(store.db, revision, batch)
+        end
+        SQLite.execute(store.db, "COMMIT")
+        history.store = store
+        completed = Some(revision)
+        revision
+    finally
+        finishmaterialize!(store, completed)
     end
 end
+
+finishmaterialize!(store, ::Some) = nothing
+finishmaterialize!(store, ::Nothing) = close(store)
 
 savecwd!(store, ::Nothing) = nothing
 function savecwd!(store, cwd::String)
