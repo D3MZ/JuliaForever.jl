@@ -13,8 +13,8 @@ function models_process(base, workspace, args; provider="openrouter", openai_mod
     end
 end
 
-if haskey(ENV, "PI_SOURCE")
-    @testset "CLI provider and model selection against Pi" begin
+@testset "CLI provider and model selection against Pi" begin
+    if haskey(ENV, "PI_SOURCE")
         requests = Any[]
         server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
             push!(requests, JSON3.read(String(request.body)))

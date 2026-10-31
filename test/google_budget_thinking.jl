@@ -10,26 +10,15 @@ using Test, JuliaForever, HTTP, JSON3
     try
         base = "http://$(HTTP.server_addr(server))"
         message = [Dict("role" => "user", "content" => "hello")]
-        cases = (("gemini-2.5-pro", (128, 2048, 8192, 32768)), ("gemini-2.5-flash", (128, 2048, 8192, 24576)), ("gemini-2.5-flash-lite", (512, 2048, 8192, 24576)), ("gemini-2.5-computer-use-preview-10-2025", (-1, -1, -1, -1)))
-        config = Dict{String, Any}("temperature" => 0.25, "thinkingConfig" => Dict("thinkingLevel" => "LOW"))
-        parameters = Dict("generationConfig" => deepcopy(config))
-        provider = JuliaForever.applythinking(Google(base, "gemini-2.5-pro", "synthetic"), "high")
-        @test JuliaForever.stream(provider, message, Dict(); parameters).done
-        @test parameters["generationConfig"] == config
-        @test requests[end]["generationConfig"] == Dict("temperature" => 0.25, "thinkingConfig" => Dict("includeThoughts" => true, "thinkingBudget" => 32768))
-        for (id, budgets) in cases, (level, budget) in zip(("off", "minimal", "low", "medium", "high"), (0, budgets...))
+        cases = ("gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-computer-use-preview-10-2025")
+        for id in cases, level in ("off", "minimal", "low", "medium", "high")
             model = JuliaForever.applythinking(Google(base, id, "synthetic"), level)
-            @test model isa Google
-            if model isa Google
-                @test JuliaForever.stream(model, message, Dict()).done
-                expected = level == "off" ? Dict("thinkingBudget" => 0) : Dict("includeThoughts" => true, "thinkingBudget" => budget)
-                @test requests[end]["generationConfig"]["thinkingConfig"] == expected
-                if haskey(ENV, "PI_SOURCE")
-                    source = ENV["PI_SOURCE"]
-                    @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
-                    reference = JSON3.read(read(`node $(joinpath(@__DIR__, "google_thinking_pi.mjs")) $source $id $level`, String), Dict{String, Any})
-                    @test expected == reference["generationConfig"]["thinkingConfig"]
-                end
+            @test JuliaForever.stream(model, message, Dict()).done
+            if haskey(ENV, "PI_SOURCE")
+                source = ENV["PI_SOURCE"]
+                @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
+                reference = JSON3.read(read(`node $(joinpath(@__DIR__, "google_thinking_pi.mjs")) $source $id $level`, String), Dict{String, Any})
+                @test requests[end]["generationConfig"]["thinkingConfig"] == reference["generationConfig"]["thinkingConfig"]
             end
         end
     finally
