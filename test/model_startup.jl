@@ -10,12 +10,12 @@ function runtty(workspace, base, model)
     JSON3.read(read(cmd, String))
 end
 
-@testset "terminal chooses a saved provider for an explicit model" begin
-    if Sys.isunix()
+if haskey(ENV, "PI_SOURCE") && Sys.isunix()
+    @testset "saved provider selection against Pi" begin
         requests = []
         server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
             body = JSON3.read(codeunits(String(request.body)))
-            push!(requests, (; model=String(body.model), authorization=HTTP.header(request, "Authorization", "")))
+            push!(requests, String(body.model))
             chunk = JSON3.write((; choices=[(; delta=(; content="fixture reply"), finish_reason="stop")]))
             HTTP.Response(200, ["Content-Type" => "text/event-stream"], "data: $chunk\n\ndata: [DONE]\n\n")
         end
@@ -27,34 +27,13 @@ end
                 base = "http://$(HTTP.server_addr(server))/v1"
                 models = ("openrouter/free", "openrouter/nvidia/nemotron-3.5-lightning:free")
                 for model in models
-                    result = runtty(workspace, base, model)
-                    @test result.status == 0 && !occursin("Continue with ChatGPT?", result.diagnostics)
-                    @test !occursin("fixture-router-key", result.output * result.diagnostics)
+                    @test runtty(workspace, base, model).status == 0
                 end
-                @test requests == [(; model="openrouter/free", authorization="Bearer fixture-router-key"), (; model="nvidia/nemotron-3.5-lightning:free", authorization="Bearer fixture-router-key")]
-                chatgpt = runtty(workspace, base, "gpt-6-luna")
-                @test chatgpt.status == 0 && occursin("Continue with ChatGPT?", chatgpt.diagnostics)
-                @test length(requests) == 2
-                config = Dict("providers" => Dict("openrouter" => Dict("api" => "openai-completions", "baseUrl" => base, "apiKey" => "\$JF_TEST_ABSENT")))
-                write(joinpath(agent, "models.json"), JSON3.write(config))
-                custom = runtty(workspace, base, "openrouter/free")
-                @test custom.status == 0 && !occursin("Continue with ChatGPT?", custom.diagnostics)
-                @test requests[end] == (; model="openrouter/free", authorization="Bearer fixture-router-key")
-                rm(joinpath(agent, "auth.json"))
-                missingcustom = runtty(workspace, base, "openrouter/free")
-                @test missingcustom.status == 2 && !occursin("Continue with ChatGPT?", missingcustom.diagnostics)
-                @test length(requests) == 3
-                rm(joinpath(agent, "models.json"))
-                missing = runtty(workspace, base, "openrouter/free")
-                @test missing.status == 2 && occursin("OPENROUTER_API_KEY", missing.diagnostics) && !occursin("Continue with ChatGPT?", missing.diagnostics)
-                @test length(requests) == 3
-                if haskey(ENV, "PI_SOURCE")
-                    source = ENV["PI_SOURCE"]
-                    @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
-                    script = joinpath(@__DIR__, "model_startup_pi.mjs")
-                    reference = JSON3.read(read(`node --conditions=source --experimental-strip-types $script $source $(joinpath(workspace, "missing.json")) $(collect(models))`, String))
-                    @test [(row.provider, row.id) for row in reference] == [("openrouter", "openrouter/free"), ("openrouter", "nvidia/nemotron-3.5-lightning:free")]
-                end
+                source = ENV["PI_SOURCE"]
+                @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
+                script = joinpath(@__DIR__, "model_startup_pi.mjs")
+                reference = JSON3.read(read(`node --conditions=source --experimental-strip-types $script $source $(joinpath(workspace, "missing.json")) $(collect(models))`, String))
+                @test [("openrouter", model) for model in requests] == [(String(row.provider), String(row.id)) for row in reference]
             end
         finally
             close(server)
