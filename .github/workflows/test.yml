@@ -112,3 +112,62 @@ jobs:
             coverage/baseline.json
             src/**/*.cov
           if-no-files-found: error
+
+  interactive-differential:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      PI_SOURCE: ${{ runner.temp }}/pi-source
+      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pi-browser
+      JULIA_NUM_THREADS: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '25'
+      - name: Install search tools
+        run: |
+          python scripts/install_search_tools.py "$RUNNER_TEMP/search-tools" "$RUNNER_OS" "$RUNNER_ARCH"
+          echo "$RUNNER_TEMP/search-tools" >> "$GITHUB_PATH"
+      - name: Install terminal and screenshot tools
+        run: |
+          if ! command -v tmux >/dev/null; then
+            if [ "$RUNNER_OS" = macOS ]; then brew install tmux; else sudo apt-get update && sudo apt-get install -y tmux; fi
+          fi
+          if [ "$RUNNER_OS" = Linux ]; then
+            npx --yes playwright@1.56.1 install --with-deps chromium
+          else
+            npx --yes playwright@1.56.1 install chromium
+          fi
+          browser=$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f \( -name chrome-headless-shell -o -name headless_shell \) -print -quit)
+          test -n "$browser"
+          echo "JF_UI_CHROMIUM=$browser" >> "$GITHUB_ENV"
+      - name: Prepare pinned Pi reference
+        run: |
+          git clone --filter=blob:none https://github.com/earendil-works/pi.git "$PI_SOURCE"
+          git -C "$PI_SOURCE" checkout --detach e7a0df27c09d11bf4161d3605246cbf57a129cb2
+          npm install --prefix "$RUNNER_TEMP/pi-deps" --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.4.0
+          node -e "require('fs').symlinkSync(process.argv[1], process.argv[2], 'junction')" "$RUNNER_TEMP/pi-deps/node_modules" "$PI_SOURCE/node_modules"
+      - name: Prepare Julia dependencies
+        run: julia --startup-file=no --project=. -e 'using Pkg; Pkg.instantiate()'
+      - name: Test terminal comparison
+        run: python3 -B -m unittest discover -s test -p interactive_differential_test.py
+      - name: Compare interactive Pi and JuliaForever
+        run: python3 -B test/interactive_differential.py --project "$GITHUB_WORKSPACE" --source "$PI_SOURCE" --julia "$(command -v julia)" --output "$RUNNER_TEMP/interactive-differential"
+      - name: Upload interactive comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interactive-differential-${{ runner.os }}
+          path: ${{ runner.temp }}/interactive-differential
+          if-no-files-found: warn
