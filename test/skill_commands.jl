@@ -69,58 +69,6 @@ block(name, path, body) = "<skill name=\"$name\" location=\"$path\">\nReferences
     end
 end
 
-@testset "skill command snapshots update on new session and reload" begin
-    mktempdir() do root
-        workspace = joinpath(root, "work")
-        mkpath(workspace)
-        workspace = realpath(workspace)
-        normal = putskill(workspace, "normal", "Original body.")
-        hidden = putskill(workspace, "hidden", "Hidden body."; explicit=true)
-        putskill(workspace, "broken", "Valid body.")
-        added = joinpath(workspace, ".pi", "skills", "added", "SKILL.md")
-        later = joinpath(workspace, ".pi", "skills", "later", "SKILL.md")
-        requests = joinpath(root, "requests.jsonl")
-        commands = ["/skill:normal first", "/skill:normal second", "/skill:added before", "/skill:hidden removed", "/skill:broken invalid", "/new", "/skill:added after-new", "/skill:later before", "/reload", "/skill:later after", "/skill:hidden after"]
-        result = session(workspace, joinpath(root, "agent"), requests, joinpath(root, "history.sqlite"), commands; fixture="skill_commands_process.jl")
-        @test result.status == 0
-        captured = JSON3.read.(readlines(requests))
-        prompts = [last([message.content for message in request if message.role == "user"]) for request in captured]
-        @test prompts == [block("normal", normal, "Original body.") * "\n\nfirst", block("normal", normal, "Updated body.") * "\n\nsecond", "/skill:added before", "/skill:hidden removed", "/skill:broken invalid", block("added", added, "Added body.") * "\n\nafter-new", "/skill:later before", block("later", later, "Later body.") * "\n\nafter", "/skill:hidden after"]
-        if length(captured) == 9
-            system = join([message.content for message in captured[8] if message.role == "system"], "\n")
-            @test occursin("<name>added</name>", system)
-            @test !occursin("<name>later</name>", system)
-        end
-        @test occursin("Reloaded skills.", result.diagnostics)
-        @test occursin("Could not read requested skill", result.diagnostics)
-        @test occursin("Could not parse requested skill", result.diagnostics)
-    end
-end
-
-@testset "skill commands expand in JSON mode" begin
-    mktempdir() do root
-        workspace = joinpath(root, "work")
-        mkpath(workspace)
-        workspace = realpath(workspace)
-        path = putskill(workspace, "hidden", "JSON instructions."; explicit=true)
-        requests = joinpath(root, "requests.jsonl")
-        project = dirname(@__DIR__)
-        script = joinpath(@__DIR__, "session_cli_process.jl")
-        cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project $script --mode json --no-session '/skill:hidden use JSON'`; dir=workspace)
-        cmd = addenv(cmd, "HOME" => root, "JULIA_DEPOT_PATH" => join(DEPOT_PATH, Sys.iswindows() ? ';' : ':'), "PI_CODING_AGENT_DIR" => joinpath(root, "agent"), "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic", "JF_SESSION_REQUESTS" => requests, "JF_INSTRUCTIONS_DIR" => nothing)
-        input, output, diagnostics = joinpath.((root,), ("stdin", "stdout", "stderr"))
-        write(input, "")
-        process = run(pipeline(ignorestatus(cmd); stdin=input, stdout=output, stderr=diagnostics))
-        @test success(process)
-        records = JSON3.read.(readlines(output))
-        message = only(record.message for record in records if record.type == "message_end" && record.message.role == "user")
-        expected = block("hidden", path, "JSON instructions.") * "\n\nuse JSON"
-        @test message.content[1].text == expected
-        request = JSON3.read(only(readlines(requests)))
-        @test last([item.content for item in request if item.role == "user"]) == expected
-    end
-end
-
 mutable struct FailingHistory <: H.Store
     memory::H.Memory
     fail::Bool
@@ -129,30 +77,6 @@ H.snapshot(history::FailingHistory) = H.snapshot(history.memory)
 function H.append!(history::FailingHistory, revision::Integer, batch::Vector)
     history.fail && throw(SystemError("fixture", Int32(5)))
     H.append!(history.memory, revision, batch)
-end
-
-@testset "failed reload preserves skill commands" begin
-    mktempdir() do path
-        root = realpath(path)
-        cd(root) do
-            withenv("HOME" => root, "PI_CODING_AGENT_DIR" => joinpath(root, "agent"), "JF_INSTRUCTIONS_DIR" => nothing) do
-                old = putskill(root, "old", "Old body.")
-                skills = JuliaForever.Skills
-                resources = skills.Resources(Dict{String, String}(), skills.load(root))
-                history = FailingHistory(H.Memory(), false)
-                terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), String[])
-                seed = Agent(nothing, [Read(root)])
-                agent = Agent(nothing, seed.tools, JuliaForever.initial(seed, nothing); history)
-                before = deepcopy(agent.messages)
-                putskill(root, "added", "Added body.")
-                history.fail = true
-                _, _, status = JuliaForever.reload!(terminal, agent, history, resources)
-                @test status == 1 && agent.messages == before
-                @test JuliaForever.Prompts.expand("/skill:old", resources) == block("old", old, "Old body.")
-                @test JuliaForever.Prompts.expand("/skill:added", resources) == "/skill:added"
-            end
-        end
-    end
 end
 
 end

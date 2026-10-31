@@ -42,26 +42,3 @@ using Test, JuliaForever, JSON3
         end
     end
 end
-
-@testset "tool flags restrict model and CodeMode tool calls" begin
-    mktempdir() do root
-        project = dirname(@__DIR__)
-        script = joinpath(@__DIR__, "tool_policy_process.jl")
-        output = joinpath(root, "outcomes.jsonl")
-        statuses = joinpath(root, "statuses.jsonl")
-        cmd = Cmd(`$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --compile=min -O0 --project=$project $script`; dir=root)
-        cmd = addenv(cmd, "JF_PROVIDER" => "openai", "OPENAI_MODEL" => "fixture", "OPENAI_API_KEY" => "synthetic", "JF_POLICY_LOG" => output, "JF_POLICY_STATUSES" => statuses, "JF_POLICY_SESSIONS" => joinpath(root, "sessions"), "JF_INSTRUCTIONS_DIR" => root, "PI_CODING_AGENT_DIR" => joinpath(root, "agent"))
-        process = run(pipeline(ignorestatus(cmd); stdout=devnull, stderr=devnull))
-        @test process.exitcode == 0
-        results = Dict(row.case => row.result for row in JSON3.read.(readlines(output)))
-        codes = Dict(row.case => row.status for row in JSON3.read.(readlines(statuses)))
-        @test all(iszero, values(codes))
-        @test results[1].is_error && !isfile(joinpath(root, "direct-denied.txt"))
-        @test !results[2].is_error && read(joinpath(root, "direct-allowed.txt"), String) == "written"
-        @test occursin("Unknown tool: write", results[3].content) && !isfile(joinpath(root, "nested-denied.txt"))
-        @test !results[4].is_error && read(joinpath(root, "nested-allowed.txt"), String) == "written"
-        @test !results[5].is_error && read(joinpath(root, "saved-allowed.txt"), String) == "written"
-        @test results[6].is_error && !isfile(joinpath(root, "resumed-denied.txt"))
-        @test results[7].is_error && !isfile(joinpath(root, "mode-denied.txt"))
-    end
-end

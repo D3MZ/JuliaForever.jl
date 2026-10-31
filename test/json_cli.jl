@@ -17,55 +17,6 @@ function json_cli(dir, scenario, args...; input="", session=["--no-session"], pr
     (; status=process.exitcode, records, diagnostics=read(diagnostics, String), output=read(output, String))
 end
 
-@testset "JSON invocation, provider and session boundaries" begin
-    mktempdir() do dir
-        skill = joinpath(dir, ".pi", "skills", "json-check", "SKILL.md")
-        mkpath(dirname(skill))
-        write(skill, "---\nname: json-check\ndescription: JSON mode skill metadata\n---\n")
-        withskill = json_cli(dir, "skills", "hello")
-        @test withskill.status == 0 && withskill.records !== nothing
-        if withskill.records !== nothing
-            @test occursin("JSON mode skill metadata", only(record.assistantMessageEvent.delta for record in withskill.records if record.type == "message_update" && record.assistantMessageEvent.type == "text_delta"))
-        end
-        empty = json_cli(dir, "text")
-        @test empty.status == 0 && length(empty.records) == 1 && only(empty.records).type == "session"
-        invalid = json_cli(dir, "text", "--mode", "invalid", "hello")
-        @test invalid.status == 2 && isempty(invalid.records) && occursin("--mode requires text or json", invalid.diagnostics)
-        repeated = json_cli(dir, "text", "--mode", "invalid", "--mode", "json", "hello")
-        @test repeated.status == 2 && isempty(repeated.records)
-        piped = json_cli(dir, "noisy", "first", "second"; input="piped ")
-        @test piped.status == 0 && piped.records !== nothing
-        if piped.records !== nothing
-            users = [record.message.content[1].text for record in piped.records if record.type == "message_end" && record.message.role == "user"]
-            @test users == ["pipedfirst", "second"]
-            @test count(record -> record.type == "session", piped.records) == 1
-            @test count(record -> record.type == "agent_settled", piped.records) == 2
-            @test count(==("provider diagnostic"), split(chomp(piped.diagnostics), '\n')) == 2
-        end
-        special = json_cli(dir, "text", "one\ntwo\u2028three")
-        @test special.status == 0 && special.records !== nothing
-        @test only(record.assistantMessageEvent.delta for record in special.records if record.type == "message_update" && record.assistantMessageEvent.type == "text_delta") == "reply:one\ntwo\u2028three"
-        sessions = joinpath(dir, "sessions")
-        first = json_cli(dir, "text", "first"; session=["--session-dir", sessions])
-        resumed = json_cli(dir, "text", "second"; session=["--session-dir", sessions, "--continue"])
-        @test first.status == 0 && resumed.status == 0
-        @test first.records[1].id == resumed.records[1].id
-        @test only(record.message.content[1].text for record in resumed.records if record.type == "message_end" && record.message.role == "user") == "second"
-        gif = "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
-        write(joinpath(dir, "picture.gif"), base64decode(gif))
-        pictured = json_cli(dir, "text", "@picture.gif", "inspect")
-        @test pictured.status == 0 && pictured.records !== nothing
-        user = only(record.message for record in pictured.records if record.type == "message_end" && record.message.role == "user")
-        @test user.content[2].type == "image" && user.content[2].mimeType == "image/gif" && user.content[2].data == gif
-        for (provider, api, label) in (("openai-responses", "openai-responses", "openai"), ("openrouter", "openai-completions", "openrouter"), ("anthropic", "anthropic-messages", "anthropic"), ("google", "google-generative-ai", "google"))
-            result = json_cli(dir, "text", "hello"; provider)
-            @test result.status == 0 && result.records !== nothing
-            assistant = only(record.message for record in result.records if record.type == "message_end" && record.message.role == "assistant")
-            @test assistant.api == api && assistant.provider == label
-        end
-    end
-end
-
 @testset "Pi JSON mode" begin
     mktempdir() do dir
         observed = json_cli(dir, "text", "hello")

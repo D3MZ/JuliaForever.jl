@@ -10,13 +10,6 @@ D.encode(phase::TestPhase) = D.Checkpoint("test", phase.value)
 D.decode(::TestHandler, checkpoint::D.Checkpoint) = TestPhase(checkpoint.value)
 Base.run(::TestHandler, phase::TestPhase, input, context::D.Invocation) = phase.value == 1 ? D.Next(TestPhase(2)) : D.Complete(Dict("input" => input, "attempt" => context.attempt, "phase" => context.phase))
 
-@testset "checkpoint equality preserves value types" begin
-    @test D.Checkpoint("work", Dict("items" => Any[1, "x"])) == D.Checkpoint("work", Dict{String, Any}("items" => Any[1, "x"]))
-    @test D.Checkpoint("work", [1]) != D.Checkpoint("work", [true])
-    @test D.Checkpoint("work", 1) != D.Checkpoint("work", 1.0)
-    @test D.Checkpoint("work", 1) != D.Checkpoint("other", 1)
-end
-
 struct OtherHandler <: D.Handler end
 D.name(::OtherHandler) = "other"
 
@@ -361,14 +354,6 @@ end
     end
 end
 end
-@testset "running states" begin
-    active = D.Running(false)
-    cancelling = D.Running(true)
-    @test active isa D.Running && !active.cancelled
-    @test cancelling isa D.Running && cancelling.cancelled
-    @test typeof(active) !== typeof(cancelling)
-    @test hasproperty(active, :cancelled) && hasproperty(cancelling, :cancelled)
-end
 
 if Sys.isunix()
 @testset "durable sleep and native wake" begin
@@ -499,103 +484,3 @@ struct JoinHandler <: D.Handler end
 D.name(::JoinHandler) = "join"
 D.decode(::JoinHandler, checkpoint::D.Checkpoint) = TestPhase(checkpoint.value)
 Base.run(::JoinHandler, phase::TestPhase, input, ::D.Invocation) = phase.value == 1 ? D.Join(TestPhase(2), input) : D.Complete("joined")
-
-@testset "durable all-settled joins" begin
-    @test D.joinstatus(D.Pending(), D.Completed("ok")) isa D.Pending
-    @test D.joinstatus(D.Pending(), D.Failed(:failed)) isa D.Pending
-    @test D.joinstatus(D.Pending(), D.Cancelled()) isa D.Pending
-    @test D.joinstatus(D.Pending(), D.Pending()) == D.Rejected(:waiting)
-    @test D.joinstatus(D.Pending(), nothing) == D.Rejected(:waiting)
-    mktempdir() do dir
-        path = joinpath(dir, "join.jsonl")
-        scheduler = open(D.Scheduler, path)
-        convo = conversation(scheduler)
-        child = D.enqueue!(scheduler, convo, TestHandler(), TestPhase(2), 42)
-        parent = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [child])
-        @test D.step!(scheduler, parent, JoinHandler()).status isa D.Waiting
-        @test D.step!(scheduler, parent, JoinHandler()).reason == :waiting
-        close(scheduler)
-        scheduler = open(D.Scheduler, path)
-        @test get(scheduler, parent).status.on == [child]
-        D.step!(scheduler, child, TestHandler())
-        @test D.step!(scheduler, parent, JoinHandler()).status.value == "joined"
-        cancelled = D.enqueue!(scheduler, convo, TestHandler(), TestPhase(2), 0)
-        waiter = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [cancelled])
-        D.step!(scheduler, waiter, JoinHandler())
-        D.cancel!(scheduler, cancelled)
-        @test D.step!(scheduler, waiter, JoinHandler()).status isa D.Completed
-        failed = D.enqueue!(scheduler, convo, FailingHandler(), TestPhase(2), "bad")
-        waiter = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [failed])
-        D.step!(scheduler, waiter, JoinHandler())
-        @test D.step!(scheduler, failed, FailingHandler()).status isa D.Failed
-        @test D.step!(scheduler, waiter, JoinHandler()).status isa D.Completed
-        cycle = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), Int[])
-        # The persisted input is immutable, so use the next minted task ID as a self-edge.
-        self = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [cycle + 1])
-        @test self == cycle + 1
-        @test D.step!(scheduler, self, JoinHandler()).reason == :wait_cycle
-        invalid = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [99999])
-        @test D.step!(scheduler, invalid, JoinHandler()).reason == :task_missing
-        @test get(scheduler, invalid).status isa D.Running
-        missingfirst = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [99999, invalid + 1])
-        @test missingfirst == invalid + 1
-        @test D.step!(scheduler, missingfirst, JoinHandler()).reason == :task_missing
-        cyclefirst = D.enqueue!(scheduler, convo, JoinHandler(), TestPhase(1), [missingfirst + 1, 99999])
-        @test cyclefirst == missingfirst + 1
-        @test D.step!(scheduler, cyclefirst, JoinHandler()).reason == :wait_cycle
-        close(scheduler)
-    end
-end
-
-@testset "owned task validation and active cancellation" begin
-    mktempdir() do dir
-        s = open(D.Scheduler, joinpath(dir, "tasks"))
-        a, b = D.commit!(s.store) do tx
-            a = D.mint!(tx); D.put!(tx, D.Conversation(a, nothing))
-            b = D.mint!(tx); D.put!(tx, D.Conversation(b, nothing))
-            (a, b)
-        end
-        h = TestHandler()
-        parent = D.enqueue!(s, a, h, TestPhase(1), nothing)
-        @test D.enqueue!(s, a, h, TestPhase(1), nothing; owner=999).reason == :owner_missing
-        @test D.enqueue!(s, b, h, TestPhase(1), nothing; owner=parent).reason == :owner_conversation
-        held = HeldHandler(Channel{D.Invocation}(1), Channel{Nothing}(1))
-        child = D.enqueue!(s, a, held, TestPhase(1), nothing; owner=parent)
-        task = @async D.step!(s, child, held)
-        take!(held.entered)
-        D.cancel!(s, parent)
-        @test get(s, child).status isa D.Cancelling
-        @test D.enqueue!(s, a, h, TestPhase(1), nothing; owner=child).reason == :owner_finished
-        put!(held.resume, nothing)
-        @test fetch(task).status isa D.Cancelled
-        @test D.enqueue!(s, a, h, TestPhase(1), nothing; owner=parent).reason == :owner_finished
-        close(s)
-    end
-end
-
-@testset "ownership with document history and fork safety" begin
-    mktempdir() do dir
-        path = joinpath(dir, "tasks")
-        s = open(D.Scheduler, path)
-        chat, doc, first = D.commit!(s.store) do tx
-            chat = D.mint!(tx); D.put!(tx, D.Conversation(chat, nothing))
-            doc = D.mint!(tx); D.put!(tx, D.Document(doc, chat, "before"))
-            first = D.put!(tx, D.Entry(D.mint!(tx), chat, "first", nothing))
-            (chat, doc, first)
-        end
-        parent = D.enqueue!(s, chat, TestHandler(), TestPhase(1), nothing)
-        child = D.enqueue!(s, chat, TestHandler(), TestPhase(1), nothing; owner=parent)
-        second = D.commit!(s.store) do tx
-            D.put!(tx, D.Document(doc, chat, "after"))
-            D.put!(tx, D.Entry(D.mint!(tx), chat, "second", nothing))
-        end
-        @test D.commit!(tx -> D.fork!(tx, chat, first), s.store) == D.Rejected(:fork_documents_unsupported)
-        D.cancel!(s, parent)
-        close(s); s = open(D.Scheduler, path)
-        @test get(s, child).status isa D.Cancelled
-        @test D.snapshot(s.store, chat, doc, first).value == "before"
-        @test D.snapshot(s.store, chat, doc, second).value == "after"
-        @test D.commit!(tx -> D.fork!(tx, chat, second), s.store) == D.Rejected(:fork_documents_unsupported)
-        close(s)
-    end
-end

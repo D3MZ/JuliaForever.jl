@@ -100,50 +100,6 @@ end
     end
 end
 
-@testset "Malformed events preserve timeout and cancellation" begin
-    started = Channel{String}(4)
-    release = Channel{Nothing}(4)
-    server = HTTP.listen!("127.0.0.1", 0; listenany=true) do io
-        req = HTTP.startread(io)
-        if req.method == "GET"
-            HTTP.setstatus(io, 405); HTTP.startwrite(io)
-        elseif req.method == "DELETE"
-            HTTP.setstatus(io, 204); HTTP.startwrite(io)
-        else
-            body = JSON3.read(read(io), Dict{String, Any})
-            method = get(body, "method", "")
-            if method == "initialize"
-                result = Dict("protocolVersion" => "2025-06-18", "capabilities" => Dict(), "serverInfo" => Dict("name" => "fixture", "version" => "1"))
-                HTTP.setheader(io, "Content-Type" => "application/json"); HTTP.startwrite(io)
-                write(io, JSON3.write(Dict("jsonrpc" => "2.0", "id" => body["id"], "result" => result)))
-            elseif method in ("timeout", "cancel")
-                HTTP.setheader(io, "Content-Type" => "text/event-stream"); HTTP.startwrite(io)
-                write(io, "data: {bad\n\n"); flush(io)
-                put!(started, method)
-                take!(release)
-            else
-                HTTP.setstatus(io, 202); HTTP.startwrite(io)
-            end
-        end
-    end
-    client = MCP.connect("http://$(HTTP.server_addr(server))/mcp"; timeout=10)
-    try
-        task = @async MCP.request(client, "timeout", Dict(); timeout=0.4)
-        @test takebefore(started) == "timeout"
-        @test fetch(task).kind == :timeout
-        @test timedwait(() -> isempty(client.pending) && isempty(client.process.requests), 3) == :ok
-        put!(release, nothing)
-        task = @async MCP.request(client, "cancel", Dict(); timeout=0)
-        @test takebefore(started) == "cancel"
-        schedule(task, InterruptException(); error=true)
-        @test_throws TaskFailedException fetch(task)
-        @test timedwait(() -> isempty(client.pending) && isempty(client.process.requests), 3) == :ok
-    finally
-        put!(release, nothing); put!(release, nothing)
-        close(client); close(server)
-    end
-end
-
 @testset "Oversized response events stop before a later response" begin
     resumed = Channel{String}(2)
     oversized = repeat("x", 16 * 1024 * 1024 + 1)

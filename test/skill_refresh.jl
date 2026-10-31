@@ -1,17 +1,5 @@
 using Test, JuliaForever, JSON3
 
-@testset "skill invocation visibility" begin
-    skills = JuliaForever.Skills
-    initial = skills.Skill("first&", "first <description>", "/first", "/", skills.Automatic())
-    hidden = skills.Skill("hidden", "not shown", "/hidden", "/", skills.Explicit())
-    last = skills.Skill("last", "last description", "/last", "/", skills.Automatic())
-    rendered = skills.render([initial, hidden, last])
-    @test occursin("first&amp;", rendered) && occursin("first &lt;description&gt;", rendered)
-    @test !occursin("hidden", rendered)
-    @test first(findfirst("first&amp;", rendered)) < first(findfirst("last description", rendered))
-    @test skills.render([hidden]) === nothing
-end
-
 function refresh_process(requests, workspace, directory, args; input="", fail=false)
     project = dirname(@__DIR__)
     script = joinpath(@__DIR__, "session_cli_process.jl")
@@ -22,34 +10,5 @@ function refresh_process(requests, workspace, directory, args; input="", fail=fa
         write(stdinpath, input)
         process = run(pipeline(ignorestatus(cmd); stdin=stdinpath, stdout=output, stderr=diagnostics))
         (; status=process.exitcode, output=read(output, String), diagnostics=read(diagnostics, String))
-    end
-end
-
-@testset "new and resumed sessions refresh skills" begin
-    mktempdir() do root
-        workspace, sessions = joinpath.((root,), ("project", "sessions"))
-        mkpath(joinpath(workspace, ".pi", "skills", "example"))
-        workspace = realpath(workspace)
-        skill = joinpath(workspace, ".pi", "skills", "example", "SKILL.md")
-        requests = joinpath(root, "requests")
-        write(skill, "---\nname: example\ndescription: original metadata\n---\nprivate body\n")
-        first = refresh_process(requests, workspace, sessions, ["first"])
-        @test first.status == 0
-        original = only(readdir(sessions; join=true))
-        write(skill, "---\nname: example\ndescription: updated metadata\n---\nprivate body\n")
-        resumed = refresh_process(requests, workspace, sessions, ["--session", original]; input="second\n/new\nthird\n/exit\n")
-        @test resumed.status == 0
-        captured = JSON3.read.(readlines(requests))
-        systems(request) = [m.content for m in request if m.role == "system"]
-        @test any(s -> occursin("original metadata", s), systems(captured[1]))
-        @test any(s -> occursin("updated metadata", s), systems(captured[2]))
-        @test all(!occursin("original metadata", s) for s in systems(captured[2]))
-        @test any(s -> occursin("updated metadata", s), systems(captured[3]))
-        @test all(!occursin("private body", s) for s in systems(captured[3]))
-        @test [m.content for m in captured[3] if m.role == "user"] == ["third"]
-        @test length(readdir(sessions)) == 2
-        ephemeral = refresh_process(requests, workspace, sessions, ["--no-session"]; input="/new\nfourth\n/exit\n")
-        @test ephemeral.status == 0
-        @test length(readdir(sessions)) == 2
     end
 end

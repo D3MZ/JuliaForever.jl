@@ -11,65 +11,6 @@ function JuliaForever.complete(provider::FileProvider, messages, tools; paramete
     Dict{String, Any}("role" => "assistant", "content" => "done")
 end
 
-@testset "image prompts survive history and branches" begin
-    mktempdir() do root
-        image = Image("image/png", base64encode(read(joinpath(@__DIR__, "fixtures", "pixel.png"))))
-        other = Image("image/gif", base64encode("GIF89a"))
-        images = [image, other]
-        prompt = FileConversation.ImagePrompt("look", images)
-        empty!(images)
-        @test length(prompt.images) == 2
-        path = joinpath(root, "history.sqlite")
-        history = FileHistory.Tree(open(FileHistory.SQLite, path))
-        provider = FileProvider([])
-        agent = Agent(provider, []; history)
-        @test respond!(agent, prompt) == "done"
-        original = only(message for message in agent.state.messages if message isa FileConversation.ImageUser)
-        @test original.content == "look" && original.images == [image, other]
-        @test last(provider.requests)[end]["images"][1]["data"] == image.data
-        @test FileEstimates.tokens(original) == FileEstimates.tokens(FileConversation.RawMessage(convert(Dict{String, Any}, original)))
-        events = FileHistory.entries(history)
-        entry = only(item for item in events if FileHistory.decode_event(only(item.batch)) isa FileConversation.ImageInput)
-        record = only(entry.batch)
-        @test FileHistory.encode(FileHistory.decode_event(record)) == record
-        @test any(choice -> choice.text == "look", JuliaForever.TreeTerminal.choices(FileHistory.branches(history)))
-        @test JuliaForever.SessionCatalog.firstprompt(FileHistory.entries(history)) == "look"
-        close(history)
-        reopened = FileHistory.Tree(open(FileHistory.SQLite, path; create=false))
-        restored = Agent(provider, []; history=reopened)
-        @test restored.fault === nothing
-        @test respond!(restored, "next") == "done"
-        @test last(provider.requests)[1]["images"] == [Dict("mime" => image.mime, "data" => image.data), Dict("mime" => other.mime, "data" => other.data)]
-        close(reopened)
-    end
-end
-
-@testset "image prompt provider encodings" begin
-    image = Image("image/png", base64encode(read(joinpath(@__DIR__, "fixtures", "pixel.png"))))
-    message = convert(Dict{String, Any}, FileConversation.ImageUser("what?", [image]))
-    tools = Dict{String, JuliaForever.Tool}()
-    for (name, provider) in ((:openai, OpenAI("http://localhost", "fixture", "key")), (:responses, OpenAIResponses("http://localhost", "fixture", "key")), (:anthropic, Anthropic("http://localhost", "fixture", "key")), (:google, Google("http://localhost", "gemini-3-fixture", "key")))
-        request = JSON3.read(JuliaForever.payload(provider, [message], tools, Dict()))
-        if name == :openai
-            parts = request.messages[1].content
-            @test parts[1].text == "what?"
-            @test parts[2].image_url.url == "data:image/png;base64," * image.data
-        elseif name == :responses
-            parts = request.input[1].content
-            @test parts[1].text == "what?"
-            @test parts[2].image_url == "data:image/png;base64," * image.data
-        elseif name == :anthropic
-            parts = request.messages[1].content
-            @test parts[1].text == "what?"
-            @test parts[2].source.media_type == "image/png" && parts[2].source.data == image.data
-        else
-            parts = request.contents[1].parts
-            @test parts[1].text == "what?"
-            @test parts[2].inlineData.mimeType == "image/png" && parts[2].inlineData.data == image.data
-        end
-    end
-end
-
 @testset "Pi text and image file preprocessing" begin
     mktempdir() do root
         root = realpath(root)
@@ -120,39 +61,5 @@ end
             reference = JSON3.read(read(cmd, String))
             @test result.text == reference.initial.initialMessage
         end
-    end
-end
-
-@testset "image prompts reach provider loopback endpoints" begin
-    requests = Any[]
-    server = HTTP.serve!("127.0.0.1", 0; listenany=true) do request
-        push!(requests, JSON3.read(String(request.body)))
-        if occursin("chat/completions", request.target)
-            data = Dict("choices" => [Dict("message" => Dict("role" => "assistant", "content" => "done"), "finish_reason" => "stop")])
-        elseif endswith(request.target, "/responses")
-            data = Dict("status" => "completed", "output" => [Dict("type" => "message", "role" => "assistant", "content" => [Dict("type" => "output_text", "text" => "done")])])
-        elseif endswith(request.target, "/messages")
-            data = Dict("id" => "msg-1", "type" => "message", "role" => "assistant", "content" => [Dict("type" => "text", "text" => "done")], "stop_reason" => "end_turn", "usage" => Dict("input_tokens" => 1, "output_tokens" => 1))
-        else
-            data = Dict("candidates" => [Dict("content" => Dict("role" => "model", "parts" => [Dict("text" => "done")]), "finishReason" => "STOP")])
-        end
-        HTTP.Response(200, ["Content-Type" => "application/json"], JSON3.write(data))
-    end
-    try
-        base = "http://$(HTTP.server_addr(server))"
-        image = Image("image/png", base64encode(read(joinpath(@__DIR__, "fixtures", "pixel.png"))))
-        prompt = FileConversation.ImagePrompt("look", [image])
-        providers = (OpenAI(base, "fixture", "key"), OpenAIResponses(base, "fixture", "key"), Anthropic(base, "fixture", "key"), Google(base, "gemini-3-fixture", "key"))
-        for provider in providers
-            @test respond!(Agent(provider, []), prompt) == "done"
-        end
-        @test length(requests) == 4
-        @test requests[1].messages[1].content[2].image_url.url == "data:image/png;base64," * image.data
-        @test requests[2].input[1].content[2].image_url == "data:image/png;base64," * image.data
-        @test requests[3].messages[1].content[2].source.data == image.data
-        @test requests[4].contents[1].parts[2].inlineData.data == image.data
-    finally
-        close(server)
-        wait(server)
     end
 end

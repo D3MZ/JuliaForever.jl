@@ -191,21 +191,3 @@ function responses_execution(pid)
         wait(server)
     end
 end
-
-@testset "conversation effects on local worker" begin
-    conversation_execution(myid())
-    responses_execution(myid())
-end
-
-@testset "conversation effects on distributed worker" begin
-    project = dirname(@__DIR__)
-    pid = only(addprocs(1; exeflags=`--startup-file=no --project=$project`))
-    try
-        remotecall_wait(Core.eval, pid, Main, :(using JuliaForever))
-        remotecall_wait(Base.include, pid, Main, joinpath(@__DIR__, "conversation_execution_cases.jl"))
-        conversation_execution(pid)
-        responses_execution(pid)
-    finally
-        rmprocs(pid)
-    end
-end

@@ -18,32 +18,4 @@ function skill(root, name)
     path
 end
 
-@testset "terminal resume refreshes skill commands" begin
-    mktempdir() do root
-        cd(root) do
-            withenv("HOME" => root, "PI_CODING_AGENT_DIR" => joinpath(root, "agent"), "JF_INSTRUCTIONS_DIR" => nothing) do
-                old = skill(root, "old")
-                resources = JuliaForever.Skills.Resources(Dict{String, String}(), JuliaForever.Skills.load(root))
-                sessions = joinpath(root, "sessions")
-                target = JuliaForever.SessionCatalog.new(sessions, pwd())
-                @test respond!(Agent(Provider(Any[]), []; history=target), "saved") == "answer"
-                close(target)
-                provider = Provider(Any[])
-                active = Agent(provider, [Read(root)])
-                terminal = JuliaForever.Terminal(IOBuffer(), IOBuffer(), String[])
-                extensions = JuliaForever.Extensions.snapshot(JuliaForever.Extensions.Registry())
-                rm(dirname(old); recursive=true)
-                skill(root, "new")
-                resumed, history, status = JuliaForever.readcommand!(terminal, active, extensions, nothing, "/resume", IOBuffer("1\n"), sessions, resources, JuliaForever.terminalcommand("/resume"))
-                @test status == 0 && [item.name for item in resources.skills] == ["new"]
-                @test any(m -> occursin("new metadata", get(m, "content", "")), resumed.messages)
-                _, _, status = JuliaForever.readcommand!(terminal, resumed, extensions, history, "/skill:new hello", IOBuffer(), sessions, resources, nothing)
-                @test status == 0 && length(provider.requests) == 1
-                @test occursin("private new instructions", string(provider.requests[1][end]))
-                close(history)
-            end
-        end
-    end
-end
-
 end

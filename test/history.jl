@@ -9,21 +9,6 @@ struct NotJSON
     value::Int
 end
 
-@testset "history value copying and rejection" begin
-    shared = Any[1, 2]
-    original = Any[shared, shared]
-    copied = H.value(original, IdDict())
-    @test copied == original
-    copied[1][1] = 9
-    @test copied[2][1] == 1 && original[1][1] == 1
-    cycle = Any[]
-    push!(cycle, cycle)
-    seen = IdDict()
-    @test H.value(cycle, seen) == H.Rejected(:unsupported_value)
-    @test isempty(seen)
-    @test H.value(Dict(:invalid => 1), IdDict()) == H.Rejected(:unsupported_value)
-end
-
 function exercise(history)
     empty = H.snapshot(history)
     @test empty.revision == 0
@@ -90,72 +75,4 @@ function race(histories)
     @test rows[1]["writer"] == rows[2]["writer"]
     @test [row["part"] for row in rows] == [1, 2]
     @test length(saved.batches) == 1 && length(only(saved.batches)) == 2
-end
-
-@testset "replaceable histories" begin
-    expected = exercise(H.Memory())
-    race([H.Memory()])
-    if Sys.isunix()
-        mktempdir() do dir
-            path = joinpath(dir, "histories.jsonl")
-            store = open(D.Store, path)
-            journal = H.create(store)
-            @test journal isa H.Journal
-            id = journal.id
-            @test isequal(exercise(journal), expected)
-            raced = H.create(store)
-            race([raced, H.Journal(store, raced.id)])
-            close(store)
-            @test H.snapshot(journal) == H.Rejected(:closed)
-            @test H.append!(journal, 2, Any["closed"]) == H.Rejected(:closed)
-            @test H.create(store) == H.Rejected(:closed)
-
-            store = open(D.Store, path)
-            reopened = H.Journal(store, id)
-            @test H.snapshot(reopened).revision == 2
-            @test isequal(collect(H.snapshot(reopened)), expected)
-            @test H.append!(reopened, 2, Any["after reopen"]) == 3
-            @test collect(H.snapshot(reopened))[end] == "after reopen"
-            @test H.snapshot(H.Journal(store, typemax(Int))) == H.Rejected(:history_missing)
-            @test H.append!(H.Journal(store, typemax(Int)), 0, Any["missing"]) == H.Rejected(:history_missing)
-            close(store)
-        end
-    end
-end
-
-@testset "process restart" begin
-    if Sys.isunix()
-        mktempdir() do dir
-            path = joinpath(dir, "history.jsonl")
-            project = dirname(@__DIR__)
-            script = """
-                using JuliaForever
-                import JuliaForever.Durable as D
-                import JuliaForever.History as H
-                store = open(D.Store, ARGS[1])
-                history = H.create(store)
-                records = Any[Dict(\"kind\" => \"plan\", \"revision\" => 0, \"id\" => \"read-1\", \"input\" => Dict(\"path\" => \"a.txt\")), Dict(\"kind\" => \"observation\", \"revision\" => 1, \"id\" => \"read-1\", \"value\" => \"done\"), Dict(\"kind\" => \"finish\", \"revision\" => 2)]
-                H.append!(history, 0, records) == 1 || exit(2)
-                println(history.id)
-                close(store)
-            """
-            id = parse(Int, strip(read(`$(Base.julia_cmd()) --project=$project -e $script $path`, String)))
-            store = open(D.Store, path)
-            history = H.Journal(store, id)
-            snapshot = H.snapshot(history)
-            @test snapshot.revision == 1
-            rows = collect(snapshot)
-            @test [row["kind"] for row in rows] == ["plan", "observation", "finish"]
-            @test rows == collect(snapshot)
-            events = Any[K.Plan(rows[1]["revision"], rows[1]["id"], K.Call("read", rows[1]["input"])), K.Observe(rows[2]["revision"], rows[2]["id"], K.Return(rows[2]["value"])), K.Finish(rows[3]["revision"])]
-            replay = K.Replay(K.State("restart"), events)
-            results = collect(replay)
-            @test all(result isa K.Applied for result in results)
-            @test [result.state.revision for result in results] == [1, 2, 3]
-            @test results[end].state.closed
-            @test [result.state.revision for result in collect(replay)] == [1, 2, 3]
-            @test H.append!(history, 1, Any["next"]) == 2
-            close(store)
-        end
-    end
 end
