@@ -1,6 +1,0 @@
-name = "FollowPlugin"
-uuid = "c500e2c6-2e99-4b91-872d-9e7d61265549"
-version = "0.1.0"
-
-[deps]
-JuliaForever = "2b71f2a2-b786-4fd0-b9cc-80b6322c5084"
