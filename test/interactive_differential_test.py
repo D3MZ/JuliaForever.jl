@@ -2,7 +2,7 @@ import os
 import unittest
 from types import SimpleNamespace
 
-from interactive_differential import compare, completion_present, cursor_differs, depot_path, pad, page, parse, report, screenshots, selected, setting
+from interactive_differential import compare, compilation_free, completion_present, cursor_differs, depot_path, fixture_response, pad, page, parse, report, response_trial, screenshots, selected, setting
 
 
 class InteractiveComparison(unittest.TestCase):
@@ -43,6 +43,37 @@ class InteractiveComparison(unittest.TestCase):
     def test_isolated_home_retains_julia_depot(self):
         self.assertEqual(depot_path({'HOME': '/original'}), os.path.join('/original', '.julia') + os.pathsep)
         self.assertEqual(depot_path({'JULIA_DEPOT_PATH': '/custom'}), '/custom')
+
+    def test_compilation_invalidates_a_latency_sample(self):
+        self.assertTrue(compilation_free((100, 10), (100, 10)))
+        self.assertFalse(compilation_free((100, 10), (101, 10)))
+        self.assertFalse(compilation_free((100, 10), (100, 11)))
+        self.assertEqual(fixture_response('latency-1'), ('fixture-1-first', True, False))
+        self.assertEqual(fixture_response('stream-check'), ('fixture-check-first', True, True))
+
+        class Terminal:
+            def __init__(self, counters): self.counters = iter(counters)
+            def compilation(self): return next(self.counters)
+            def type(self, *args): pass
+            def key(self, *args): pass
+            def capture(self, *args): return 'fixture-1-first-complete'
+            def settle(self, *args): pass
+            def editor_ready(self): pass
+
+        def sample(counters):
+            cases = []
+            results = SimpleNamespace(timings={'pi': {}, 'jf': {}}, add=lambda *args, **kwargs: cases.append(args[0]))
+            accepted = response_trial(Terminal(counters), results, 1, True)
+            return accepted, results.timings, cases
+
+        accepted, timings, cases = sample([(100, 10), (101, 10)])
+        self.assertFalse(accepted)
+        self.assertEqual(timings, {'pi': {}, 'jf': {}})
+        self.assertEqual(cases, [])
+        accepted, timings, cases = sample([(100, 10), (100, 10)])
+        self.assertTrue(accepted)
+        self.assertEqual(timings['jf']['compilation_ns'], 0)
+        self.assertEqual(cases, ['first response', 'first response complete'])
 
 
 if __name__ == '__main__':

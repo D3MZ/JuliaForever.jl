@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -230,6 +231,18 @@ def depot_path(env):
     return env.get('JULIA_DEPOT_PATH', str(Path(env.get('HOME', str(Path.home()))) / '.julia') + os.pathsep)
 
 
+def compilation_free(before, after):
+    return before == after
+
+
+def fixture_response(content):
+    if isinstance(content, str):
+        for prefix, paused in (('latency-', False), ('stream-', True)):
+            if content.startswith(prefix):
+                return 'fixture-' + content.removeprefix(prefix) + '-first', True, paused
+    return 'reply:' + str(content), False, False
+
+
 class Fixture(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
@@ -239,8 +252,7 @@ class Fixture(BaseHTTPRequestHandler):
         content = request.get('messages', [{}])[-1].get('content', '')
         if isinstance(content, list):
             content = ''.join(part.get('text', '') for part in content if isinstance(part, dict))
-        streaming = content == 'hello'
-        reply = 'fixture-first' if streaming else 'reply:' + str(content)
+        reply, streaming, paused = fixture_response(content)
         chunks = [({'role': 'assistant', 'content': reply}, None)]
         if streaming: chunks.append(({'content': '-complete'}, None))
         chunks.append(({}, 'stop'))
@@ -253,7 +265,7 @@ class Fixture(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payloads[0])
         self.wfile.flush()
-        if streaming: self.server.stream_gate.wait(timeout=45)
+        if paused: self.server.stream_gate.wait(timeout=45)
         for payload in payloads[1:]: self.wfile.write(payload)
 
 
@@ -269,7 +281,6 @@ class Terminals:
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), Fixture)
         self.server.stream_gate = threading.Event()
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.started = {}
         self.timings = {}
 
     def tmux(self, *args, check=True):
@@ -294,9 +305,10 @@ class Terminals:
         if name == 'pi':
             process = ['node', str(self.project / 'test/headless_reference.mjs'), str(self.source), '--offline', '--no-extensions', '--no-mcp', '--no-context-files', '--approve', '--provider', 'openai', '--model', 'fixture', '--tui-mode', 'fullscreen', '--session-dir', str(apphome / 'sessions')]
         else:
-            process = [self.julia, '--startup-file=no', '--compiled-modules=existing', f'--project={self.project}', '-m', 'JuliaForever', '--tui-mode', 'fullscreen', '--provider', 'openai', '--model', 'fixture', '--session-dir', str(apphome / 'sessions')]
+            env['JULIA_NUM_THREADS'] = '1'
+            env['JF_UI_COMPILE_PORT'] = str(apphome / 'compile-port')
+            process = [self.julia, '--startup-file=no', '--compiled-modules=existing', f'--project={self.project}', str(self.project / 'test/interactive_compile_clock.jl'), '--tui-mode', 'fullscreen', '--provider', 'openai', '--model', 'fixture', '--session-dir', str(apphome / 'sessions')]
         command = ['env', '-i', *(f'{key}={value}' for key, value in env.items()), *process]
-        self.started[name] = time.monotonic()
         self.tmux('new-session', '-d', '-s', name, '-x', '100', '-y', '30', '-c', str(self.work), shlex.join(command))
         self.tmux('set-option', '-t', name, 'remain-on-exit', 'on')
         self.tmux('set-option', '-g', 'extended-keys', 'on')
@@ -325,10 +337,18 @@ class Terminals:
                     history = self.tmux('capture-pane', '-p', '-S', '-200', '-t', name)
                     raise RuntimeError(f'{name} exited during startup:\n{history}')
                 if ('fixture' in screen and (name == 'pi' or 'fixture | ready' in screen)):
-                    self.timings[name] = {'startup_seconds': time.monotonic() - self.started[name]}
+                    self.timings[name] = {}
                     pending.remove(name)
             time.sleep(.05)
         if pending: raise RuntimeError('startup timed out: ' + ', '.join(sorted(pending)))
+
+    def compilation(self):
+        port = int((self.directory / 'jf' / 'compile-port').read_text())
+        with socket.create_connection(('127.0.0.1', port), timeout=10) as connection:
+            with connection.makefile() as reader:
+                values = tuple(map(int, reader.readline().split()))
+        if len(values) != 2: raise RuntimeError('JF compilation counter did not respond')
+        return values
 
     def key(self, name, *keys):
         self.tmux('send-keys', '-t', name, *keys)
@@ -427,7 +447,7 @@ class Results:
         return result
 
     def finish(self):
-        coverage = {'tested': ['startup and terminal resizing', 'first fixture response and streamed output', 'all pinned Pi built-in command completions', 'model selector', 'settings and their direct submenus', 'thinking, model scope, authentication, trust, session, tree, fork, and resume screens'], 'not_tested': ['every provider or model response', 'extension and authentication flows', 'external sharing, browser, and clipboard actions', 'all nested menu actions or terminal dimensions', 'physical terminal font, ligature, and pixel rendering']}
+        coverage = {'tested': ['startup and terminal resizing', 'first fixture response after warm-up and streamed output', 'all pinned Pi built-in command completions', 'model selector', 'settings and their direct submenus', 'thinking, model scope, authentication, trust, session, tree, fork, and resume screens'], 'not_tested': ['compilation-free process startup time', 'V8 compilation during the Pi response', 'every provider or model response', 'extension and authentication flows', 'external sharing, browser, and clipboard actions', 'all nested menu actions or terminal dimensions', 'physical terminal font, ligature, and pixel rendering']}
         result = {'cases': self.cases, 'errors': self.errors, 'timings': self.timings, 'font': self.font, 'coverage': coverage}
         (self.output / 'report.json').write_text(json.dumps(result, indent=2, ensure_ascii=False))
         lines = []
@@ -439,7 +459,7 @@ class Results:
         errors = ''.join('<li>' + html.escape(error) + '</li>' for error in self.errors)
         timing = html.escape(json.dumps(self.timings, indent=2))
         exclusions = ''.join('<li>' + html.escape(item) + '</li>' for item in coverage['not_tested'])
-        document = f'''<!doctype html><meta charset="utf-8"><title>Pi / JF terminal comparison</title><style>body{{font:15px system-ui;max-width:1100px;margin:2em auto;padding:0 1em}}li{{margin:.6em 0}}strong{{color:#b22}}pre{{background:#eee;padding:1em}}</style><h1>Pi / JF terminal comparison</h1><p>{len(self.cases)} captured states; {sum(not case['match'] for case in self.cases)} differ.</p><p>Both panes are reconstructed from terminal cells and ANSI styles using the same font; these are not screenshots of the operating system terminal. The first streaming fixture holds its final chunk until both apps show the first chunk or 1.5 seconds have passed. Timing is one local measurement, not a benchmark.</p><pre>{timing}</pre><ul>{errors}</ul><h2>Not covered</h2><ul>{exclusions}</ul><h2>Captured states</h2><ol>{''.join(lines)}</ol>'''
+        document = f'''<!doctype html><meta charset="utf-8"><title>Pi / JF terminal comparison</title><style>body{{font:15px system-ui;max-width:1100px;margin:2em auto;padding:0 1em}}li{{margin:.6em 0}}strong{{color:#b22}}pre{{background:#eee;padding:1em}}</style><h1>Pi / JF terminal comparison</h1><p>{len(self.cases)} captured states; {sum(not case['match'] for case in self.cases)} differ.</p><p>Both panes are reconstructed from terminal cells and ANSI styles using the same font; these are not screenshots of the operating system terminal. Response timing follows warm-up and is reported only when Julia's compilation counters do not change during the measured response; Julia runs with one thread. The timed fixture emits its chunks without a deliberate delay. Pi is also warmed up, but V8 compilation is not measured. Startup screens are compared without reporting compilation-inclusive startup times. A separate streaming check holds its final chunk until both apps show the first chunk or 1.5 seconds have passed. Timing is one local measurement, not a benchmark.</p><pre>{timing}</pre><ul>{errors}</ul><h2>Not covered</h2><ul>{exclusions}</ul><h2>Captured states</h2><ol>{''.join(lines)}</ol>'''
         (self.output / 'index.html').write_text(document)
 
 
@@ -608,45 +628,80 @@ def walk_login(terminals, results):
         terminals.settle(.3)
 
 
-def first_response(terminals, results):
+def response_trial(terminals, results, attempt, measure):
+    prompt = f'latency-{attempt}'
+    marker = f'fixture-{attempt}-first'
+    for name in ('pi', 'jf'): terminals.type(name, prompt)
+    before = terminals.compilation()
     sent = {}
-    for name in ('pi', 'jf'): terminals.type(name, 'hello')
     for name in ('pi', 'jf'):
         sent[name] = time.monotonic()
         terminals.key(name, 'Enter')
     pending = {'pi', 'jf'}
-    try:
-        deadline = time.monotonic() + 1.5
-        while pending and time.monotonic() < deadline:
-            for name in tuple(pending):
-                screen = terminals.capture(name, False)
-                if 'fixture-first' in screen:
-                    results.timings[name]['first_response_seconds'] = time.monotonic() - sent[name]
-                    results.timings[name]['first_response_stage'] = 'complete' if 'fixture-first-complete' in screen else 'partial'
-                    pending.remove(name)
-            if pending: terminals.settle(.05)
-        results.add('first streamed response', terminals, required='fixture-first')
-    finally:
-        terminals.server.stream_gate.set()
+    timings = {}
+    after = None
     deadline = time.monotonic() + 90
     while pending and time.monotonic() < deadline:
         for name in tuple(pending):
             screen = terminals.capture(name, False)
-            if 'fixture-first' in screen:
-                results.timings[name]['first_response_seconds'] = time.monotonic() - sent[name]
-                results.timings[name]['first_response_stage'] = 'complete' if 'fixture-first-complete' in screen else 'partial'
+            if marker in screen:
+                timings[name] = {'first_response_seconds': time.monotonic() - sent[name], 'first_response_stage': 'complete' if marker + '-complete' in screen else 'partial'}
+                if name == 'jf': after = terminals.compilation()
                 pending.remove(name)
-        if pending: terminals.settle(.05)
-    for name in pending:
-        results.errors.append(f'{name} did not display the fixture response')
+        if pending: terminals.settle(.01)
+    if pending: raise RuntimeError('first response timed out: ' + ', '.join(sorted(pending)))
+    valid = measure and compilation_free(before, after)
+    if valid: results.add('first response', terminals, required=marker)
     for name in ('pi', 'jf'):
-        try:
-            wait_text(terminals, name, 'fixture-first-complete', timeout=10)
-        except RuntimeError as error:
-            results.errors.append(str(error))
+        wait_text(terminals, name, marker + '-complete', timeout=20)
     terminals.settle(.3)
-    results.add('first response complete', terminals, required='fixture-first-complete')
+    if valid:
+        results.add('first response complete', terminals, required=marker + '-complete')
+        results.timings.update(timings)
+        results.timings['jf']['compilation_ns'] = 0
+        results.timings['warmup_requests'] = attempt
     terminals.editor_ready()
+    return valid
+
+
+def new_session(terminals):
+    terminals.send('/new')
+    terminals.settle(.4)
+    terminals.editor_ready()
+
+
+def stream_response(terminals, results):
+    new_session(terminals)
+    marker = 'fixture-check-first'
+    terminals.server.stream_gate.clear()
+    try:
+        for name in ('pi', 'jf'): terminals.type(name, 'stream-check')
+        for name in ('pi', 'jf'): terminals.key(name, 'Enter')
+        pending = {'pi', 'jf'}
+        deadline = time.monotonic() + 1.5
+        while pending and time.monotonic() < deadline:
+            pending = {name for name in pending if marker not in terminals.capture(name, False)}
+            if pending: terminals.settle(.05)
+        results.add('streamed response while paused', terminals, required=marker)
+    finally:
+        terminals.server.stream_gate.set()
+    for name in ('pi', 'jf'): wait_text(terminals, name, marker + '-complete', timeout=20)
+    terminals.settle(.3)
+    results.add('streamed response complete', terminals, required=marker + '-complete')
+    terminals.editor_ready()
+
+
+def first_response(terminals, results):
+    for _ in range(3): terminals.compilation()
+    found = False
+    for attempt in range(10):
+        if attempt: new_session(terminals)
+        if response_trial(terminals, results, attempt, measure=attempt > 0):
+            found = True
+            break
+        print(f'Warming response path ({attempt + 1} requests)', flush=True)
+    if not found: results.errors.append('could not obtain a response timing without Julia compilation')
+    stream_response(terminals, results)
 
 
 def exercise(terminals, results):
