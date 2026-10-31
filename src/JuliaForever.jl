@@ -2,7 +2,7 @@ module JuliaForever
 
 using HTTP, JSON3, StructTypes, Unicode, Base64, Random, SHA, REPL
 using Giflib_jll: libgif
-using libwebp_jll: libwebp
+using libwebp_jll: libwebp, libwebpdemux
 using OrderedCollections: OrderedDict
 
 export Execution, ContextEstimates
