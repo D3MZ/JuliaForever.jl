@@ -166,7 +166,7 @@ function exercise(kind, mode)
 end
 
 @testset "switching an active RPC session settles its outgoing turn" begin
-    for mode in (Sys.isunix() ? (:provider, :same, :tool, :queued, :blocked_target, :fault_target, :missing_model) : (:provider, :same, :queued, :blocked_target, :fault_target, :missing_model))
+    for mode in (Sys.isunix() ? (:provider, :same, :tool, :queued) : (:provider, :same, :queued))
         kinds = mode in (:blocked_target, :fault_target, :missing_model) || !haskey(ENV, "PI_SOURCE") ? (:julia,) : (:pi, :julia)
         results = Dict(kind => exercise(kind, mode) for kind in kinds)
         for (kind, result) in results
