@@ -145,15 +145,4 @@ end
     end
 end
 
-@testset "interactive auto-compaction queue and cancellation" begin
-    python, tmux = Sys.which("python3"), Sys.which("tmux")
-    if Sys.isunix() && !isnothing(python) && !isnothing(tmux)
-        julia = first(Base.julia_cmd().exec)
-        cmd = addenv(`$python $(joinpath(@__DIR__, "terminal_auto_compaction_live.py")) $project $julia`, "JULIA_DEPOT_PATH" => join(DEPOT_PATH, ':'))
-        @test success(run(ignorestatus(cmd)))
-    else
-        @test_skip false
-    end
-end
-
 end

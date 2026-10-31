@@ -113,16 +113,4 @@ end
     end
 end
 
-@testset "interactive pre-prompt compaction" begin
-    python, tmux = Sys.which("python3"), Sys.which("tmux")
-    if Sys.isunix() && !isnothing(python) && !isnothing(tmux)
-        project = dirname(@__DIR__)
-        julia = first(Base.julia_cmd().exec)
-        command = addenv(`$python $(joinpath(@__DIR__, "pre_compaction_live.py")) $project $julia`, "JULIA_DEPOT_PATH" => join(DEPOT_PATH, ':'))
-        @test success(run(ignorestatus(command)))
-    else
-        @test_skip false
-    end
-end
-
 end

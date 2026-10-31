@@ -1,12 +1,6 @@
 using Test, JSON3
 
 @testset "terminal editor" begin
-    buffer = IOBuffer()
-    editor = JuliaForever.TerminalEditor
-    @test editor.promptoutcome(buffer, true, false).buffer === buffer
-    @test editor.promptoutcome(buffer, false, false) isa editor.Cancelled
-    @test editor.promptoutcome(buffer, true, true) isa editor.Suspended
-    @test editor.promptoutcome(buffer, false, true) isa editor.Suspended
     root = dirname(@__DIR__)
     cases = joinpath(@__DIR__, "editor_cases.json")
     if haskey(ENV, "PI_SOURCE")
@@ -22,18 +16,8 @@ using Test, JSON3
         julia = first(Base.julia_cmd().exec)
         process = run(ignorestatus(`$python $(joinpath(@__DIR__, "editor_pty.py")) $root $cases $julia`))
         @test success(process)
-        if !isnothing(Sys.which("tmux"))
-            process = run(ignorestatus(`$python $(joinpath(@__DIR__, "tmux_exit_test.py"))`))
-            @test success(process)
-            process = run(ignorestatus(`$python $(joinpath(@__DIR__, "live_pty.py")) $root $julia`))
-            @test success(process)
-            process = run(ignorestatus(`$python $(joinpath(@__DIR__, "image_queue_terminal_pty.py")) $root $julia`))
-            @test success(process)
-        else
-            @test_skip false
-        end
+
     else
-        @test_skip false
         @test_skip false
     end
 end

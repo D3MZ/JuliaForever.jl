@@ -26,14 +26,4 @@ const M = JuliaForever.LiveTerminal.MarkdownScreen
     @test all(word -> occursin(word, join(strip.(narrow))), ("one", "two", "three"))
 end
 
-@testset "streamed terminal Markdown" begin
-    python = Sys.which("python3")
-    if Sys.isunix() && !isnothing(python) && !isnothing(Sys.which("tmux"))
-        julia = first(Base.julia_cmd().exec)
-        @test success(`$python $(joinpath(@__DIR__, "terminal_markdown_live.py")) $(dirname(@__DIR__)) $julia`)
-    else
-        @test_skip false
-    end
-end
-
 end

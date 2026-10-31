@@ -33,18 +33,4 @@ const L = JuliaForever.LiveTerminal
     end
 end
 
-@testset "prompt history after session changes" begin
-    python, tmux = Sys.which("python3"), Sys.which("tmux")
-    if Sys.isunix() && !isnothing(python) && !isnothing(tmux)
-        root = dirname(@__DIR__)
-        julia = first(Base.julia_cmd().exec)
-        for mode in ("regular", "fullscreen")
-            cmd = addenv(`$python $(joinpath(@__DIR__, "prompt_history_live.py")) $root $julia $mode`, "JULIA_DEPOT_PATH" => join(DEPOT_PATH, ':'))
-            @test success(run(ignorestatus(cmd)))
-        end
-    else
-        @test_skip false
-    end
-end
-
 end

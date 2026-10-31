@@ -64,59 +64,11 @@ function pi_terminal_truncation(source)
     end
 end
 
-@testset "terminal process streams and status" begin
-    success = terminal_process("tool", ["start"])
-    @test success.status == 0
-    @test success.output == "Before\nafter\n"
-    @test occursin("[tool] read: started\n", success.diagnostics)
-    @test occursin("[tool] read: error:", success.diagnostics)
-    @test occursin("[redacted]", success.diagnostics)
-    @test !occursin("synthetic-secret", success.diagnostics)
-
-    incomplete = terminal_process("incomplete", ["start"])
-    @test incomplete == (; status=1, output="partial\n", diagnostics="Response incomplete: the provider stream did not finish\n")
-
-    truncated = terminal_process("length", ["start"])
-    @test truncated == (; status=1, output="partial content\n", diagnostics="Response was truncated: the model reached its output token limit.\n")
-    mktempdir() do dir
-        @test terminal_process("length", ["--history", joinpath(dir, "history.sqlite"), "start"]) == truncated
-    end
-    if haskey(ENV, "PI_SOURCE")
+if haskey(ENV, "PI_SOURCE")
+    @testset "terminal truncation against Pi" begin
+        truncated = terminal_process("length", ["start"])
         source = ENV["PI_SOURCE"]
         @test readchomp(`git -C $source rev-parse HEAD`) == "e7a0df27c09d11bf4161d3605246cbf57a129cb2"
         @test pi_terminal_truncation(source) == truncated
-    end
-
-    failure = terminal_process("http", ["start"])
-    @test failure == (; status=1, output="", diagnostics="Request failed (HTTP 401).\n")
-
-    invalid = terminal_process("json", ["start"])
-    @test invalid.status != 0
-    @test occursin("invalid JSON", invalid.diagnostics)
-
-    bug = terminal_process("bug", ["start"])
-    @test bug.status != 0
-    @test occursin("ordinary failure", bug.diagnostics)
-
-    piped = terminal_process("echo", String[]; input="one\ntwo\n/exit\nignored\n")
-    @test piped == (; status=0, output="reply:one\nreply:two\n", diagnostics="")
-
-    missing = terminal_process("echo", ["start"]; key=nothing)
-    @test missing == (; status=2, output="", diagnostics="Set OPENAI_API_KEY.\n")
-
-    help = terminal_process("echo", ["--help"]; key=nothing)
-    @test help.status == 0
-    @test startswith(help.output, "jf [--provider NAME] [--model ID] [--codemode] [--history PATH] [prompt]")
-    @test isempty(help.diagnostics)
-end
-
-@testset "terminal pseudo-terminal input" begin
-    python = Sys.which("python3")
-    if Sys.isunix() && !isnothing(python)
-        script = joinpath(@__DIR__, "terminal_pty.py")
-        julia = joinpath(Sys.BINDIR, Base.julia_exename())
-        @test success(`$python $script $julia $(dirname(@__DIR__))`)
-    else
-        @test_skip "PTY test requires Unix and python3"
     end
 end

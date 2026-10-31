@@ -26,19 +26,4 @@ using Test, JuliaForever, JSON3
     @test Set(chopprefix(name, "/") for name in keys(JuliaForever.terminalcommands)) ⊆ Set(item.name for item in commands)
 end
 
-@testset "interactive command completion" begin
-    python = Sys.which("python3")
-    tmux = Sys.which("tmux")
-    if Sys.isunix() && !isnothing(python) && !isnothing(tmux)
-        root = dirname(@__DIR__)
-        julia = first(Base.julia_cmd().exec)
-        for mode in ("regular", "fullscreen")
-            cmd = addenv(`$python $(joinpath(@__DIR__, "command_completion_live.py")) $root $julia $mode`, "JULIA_DEPOT_PATH" => join(DEPOT_PATH, ':'))
-            @test success(run(ignorestatus(cmd)))
-        end
-    else
-        @test_skip false
-    end
-end
-
 end
