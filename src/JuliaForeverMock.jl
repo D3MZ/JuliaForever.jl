@@ -3,12 +3,6 @@ module JuliaForeverMock
 using Tachikoma
 @tachikoma_app
 
-const BACKGROUND = ColorRGB(41, 44, 51)
-const ACCENT = ColorRGB(164, 153, 211)
-const TEXT = ColorRGB(222, 224, 225)
-const MUTED = ColorRGB(158, 165, 169)
-const HINT = ColorRGB(128, 136, 141)
-
 const TITLE = "Select authentication method:"
 const OPTIONS = ("Sign in with an account", "Sign in with an API key")
 const FOOTER = "↑↓ navigate  enter select  escape/ctrl+c cancel"
@@ -16,58 +10,37 @@ const MENU_WIDTH = max(textwidth(TITLE), textwidth(FOOTER), 2 + maximum(textwidt
 const MENU_HEIGHT = length(OPTIONS) + 4
 
 @kwdef mutable struct Menu <: Model
-    selected::Int = 1
+    choices::SelectableList = SelectableList(collect(OPTIONS); focused=true)
     feedback::String = ""
     quit::Bool = false
-    left::Int = 1
-    top::Int = 1
 end
 
 should_quit(menu::Menu) = menu.quit
 
 function update!(menu::Menu, event::KeyEvent)
-    if event.key == :up
-        menu.selected = mod1(menu.selected - 1, length(OPTIONS))
-        menu.feedback = ""
-    elseif event.key == :down
-        menu.selected = mod1(menu.selected + 1, length(OPTIONS))
-        menu.feedback = ""
-    elseif event.key == :enter
+    if event.key == :enter
         menu.feedback = "Sign-in is not implemented."
     elseif event.key == :escape || event.key == :ctrl_c || (event.key == :ctrl && event.char == 'c')
         menu.quit = true
+    elseif handle_key!(menu.choices, event)
+        menu.feedback = ""
     end
 end
 
 function update!(menu::Menu, event::MouseEvent)
-    if event.button == mouse_left && event.action == mouse_press &&
-       menu.left <= event.x < menu.left + MENU_WIDTH && menu.top + 2 <= event.y <= menu.top + 1 + length(OPTIONS)
-        menu.selected = event.y - menu.top - 1
-        menu.feedback = ""
-    end
+    handle_mouse!(menu.choices, event) && (menu.feedback = "")
 end
 
 function view(menu::Menu, frame::Frame)
     area, buffer = frame.area, frame.buffer
-    background = Style(bg=BACKGROUND)
-    for y in area.y:bottom(area), x in area.x:right(area)
-        set_char!(buffer, x, y, ' ', background)
-    end
-
-    menu.left = area.x + max(0, (area.width - MENU_WIDTH) ÷ 2)
-    menu.top = area.y + max(0, (area.height - MENU_HEIGHT) ÷ 2)
-    left, top = menu.left, menu.top
+    left = area.x + max(0, (area.width - MENU_WIDTH) ÷ 2)
+    top = area.y + max(0, (area.height - MENU_HEIGHT) ÷ 2)
     bound = right(area)
 
-    set_string!(buffer, left, top, TITLE, Style(fg=ACCENT, bold=true); max_x=bound)
-    for (i, label) in enumerate(OPTIONS)
-        y = top + i + 1
-        selected = i == menu.selected
-        selected && set_string!(buffer, left, y, "→", Style(fg=ACCENT); max_x=bound)
-        set_string!(buffer, left + 2, y, label, Style(fg=selected ? ACCENT : TEXT); max_x=bound)
-    end
-    isempty(menu.feedback) || set_string!(buffer, left, top + length(OPTIONS) + 2, menu.feedback, Style(fg=MUTED); max_x=bound)
-    set_string!(buffer, left, top + MENU_HEIGHT - 1, FOOTER, Style(fg=HINT); max_x=bound)
+    set_string!(buffer, left, top, TITLE, tstyle(:title, bold=true); max_x=bound)
+    render(menu.choices, Rect(left, top + 2, min(MENU_WIDTH, area.width), length(OPTIONS)), buffer)
+    isempty(menu.feedback) || set_string!(buffer, left, top + length(OPTIONS) + 2, menu.feedback, tstyle(:text_dim); max_x=bound)
+    set_string!(buffer, left, top + MENU_HEIGHT - 1, FOOTER, tstyle(:text_dim); max_x=bound)
 end
 
 function main()
