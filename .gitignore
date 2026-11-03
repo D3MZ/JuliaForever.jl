@@ -1,0 +1,5 @@
+# Local agent instructions are deliberately not published.
+/AGENTS.md
+
+# Julia-local state
+/LocalPreferences.toml
