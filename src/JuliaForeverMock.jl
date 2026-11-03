@@ -10,9 +10,10 @@ const MUTED = ColorRGB(158, 165, 169)
 const HINT = ColorRGB(128, 136, 141)
 
 const TITLE = "Select authentication method:"
-const OPTIONS = ("Sign in with an account", "Sign in with an API key", "Sign in with Radius")
+const OPTIONS = ("Sign in with an account", "Sign in with an API key")
 const FOOTER = "↑↓ navigate  enter select  escape/ctrl+c cancel"
-const MENU_WIDTH = max(textwidth(TITLE), textwidth(FOOTER), 2 + textwidth(OPTIONS[3] * " • not configured"))
+const MENU_WIDTH = max(textwidth(TITLE), textwidth(FOOTER), 2 + maximum(textwidth, OPTIONS))
+const MENU_HEIGHT = length(OPTIONS) + 4
 
 @kwdef mutable struct Menu <: Model
     selected::Int = 1
@@ -32,7 +33,7 @@ function update!(menu::Menu, event::KeyEvent)
         menu.selected = mod1(menu.selected + 1, length(OPTIONS))
         menu.feedback = ""
     elseif event.key == :enter
-        menu.feedback = menu.selected == 3 ? "Radius is not configured." : "Sign-in is not implemented."
+        menu.feedback = "Sign-in is not implemented."
     elseif event.key == :escape || event.key == :ctrl_c || (event.key == :ctrl && event.char == 'c')
         menu.quit = true
     end
@@ -40,7 +41,7 @@ end
 
 function update!(menu::Menu, event::MouseEvent)
     if event.button == mouse_left && event.action == mouse_press &&
-       menu.left <= event.x < menu.left + MENU_WIDTH && menu.top + 2 <= event.y <= menu.top + 4
+       menu.left <= event.x < menu.left + MENU_WIDTH && menu.top + 2 <= event.y <= menu.top + 1 + length(OPTIONS)
         menu.selected = event.y - menu.top - 1
         menu.feedback = ""
     end
@@ -54,7 +55,7 @@ function view(menu::Menu, frame::Frame)
     end
 
     menu.left = area.x + max(0, (area.width - MENU_WIDTH) ÷ 2)
-    menu.top = area.y + max(0, (area.height - 7) ÷ 2)
+    menu.top = area.y + max(0, (area.height - MENU_HEIGHT) ÷ 2)
     left, top = menu.left, menu.top
     bound = right(area)
 
@@ -64,12 +65,9 @@ function view(menu::Menu, frame::Frame)
         selected = i == menu.selected
         selected && set_string!(buffer, left, y, "→", Style(fg=ACCENT); max_x=bound)
         set_string!(buffer, left + 2, y, label, Style(fg=selected ? ACCENT : TEXT); max_x=bound)
-        if i == 3
-            set_string!(buffer, left + 2 + textwidth(label), y, " • not configured", Style(fg=MUTED); max_x=bound)
-        end
     end
-    isempty(menu.feedback) || set_string!(buffer, left, top + 5, menu.feedback, Style(fg=MUTED); max_x=bound)
-    set_string!(buffer, left, top + 6, FOOTER, Style(fg=HINT); max_x=bound)
+    isempty(menu.feedback) || set_string!(buffer, left, top + length(OPTIONS) + 2, menu.feedback, Style(fg=MUTED); max_x=bound)
+    set_string!(buffer, left, top + MENU_HEIGHT - 1, FOOTER, Style(fg=HINT); max_x=bound)
 end
 
 function main()
