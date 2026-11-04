@@ -225,7 +225,7 @@ function run_tool(session::Session, name::AbstractString, args)
         return "Edited $path"
     elseif name == "command"
         output = IOBuffer()
-        command = Cmd(["/bin/sh", "-c", String(args["command"])]; dir=session.cwd)
+        command = Cmd(Cmd(["/bin/sh", "-c", String(args["command"])]); dir=session.cwd)
         process = run(pipeline(ignorestatus(command); stdout=output, stderr=output))
         return String(take!(output)) * "\nExit status: $(process.exitcode)"
     end
