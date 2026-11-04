@@ -223,6 +223,40 @@ function start_login()
     flow
 end
 
+function access_token()
+    data = saved_registration()
+    data === nothing && throw(LoginError("Sign in to ChatGPT first."))
+    PLAN_SCOPE in split(String(get(data, "scope", ""))) ||
+        throw(LoginError("ChatGPT plan access was not granted. Sign in again to enable it."))
+    saved = try Dates.datetime2unix(DateTime(data["saved_at"])) catch; 0.0 end
+    lifetime = get(data, "expires_in", 0)
+    lifetime isa Real || (lifetime = 0)
+    if saved + lifetime > time() + 60
+        return String(data["access_token"])
+    end
+    body = HTTP.escapeuri(["grant_type" => "refresh_token", "client_id" => String(data["client_id"]),
+                           "refresh_token" => String(data["refresh_token"]), "resource" => RESOURCE])
+    response = try
+        HTTP.post(TOKEN, ["Content-Type" => "application/x-www-form-urlencoded", "Accept" => "application/json"],
+                  body; status_exception=false, redirect=false, retry=false, request_timeout=30)
+    catch
+        throw(LoginError("Could not refresh the ChatGPT sign-in. Try again later."))
+    end
+    response.status == 200 || throw(LoginError("Could not refresh the ChatGPT sign-in (HTTP $(response.status))."))
+    tokens = try JSON.parse(String(response.body)) catch; nothing end
+    tokens isa AbstractDict || throw(LoginError("OpenAI returned an invalid refresh response."))
+    token = get(tokens, "access_token", nothing)
+    token isa AbstractString && !isempty(token) || throw(LoginError("OpenAI did not return an access token."))
+    for key in ("access_token", "refresh_token", "id_token", "token_type", "expires_in", "scope")
+        haskey(tokens, key) && (data[key] = tokens[key])
+    end
+    data["saved_at"] = string(Dates.now(Dates.UTC))
+    save_json("chatgpt.json", data)
+    PLAN_SCOPE in split(String(get(data, "scope", ""))) ||
+        throw(LoginError("ChatGPT plan access is no longer granted. Sign in again."))
+    String(token)
+end
+
 function cancel!(flow::Login)
     flow.cancelled[] = true
     if Threads.atomic_cas!(flow.claimed, false, true) == false
