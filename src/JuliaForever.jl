@@ -5,29 +5,31 @@ using Tachikoma
 
 include("ChatGPTAuth.jl")
 include("NativeAgent.jl")
+include("CharmStyle.jl")
 import .ChatGPTAuth
 import .NativeAgent
+import .CharmStyle
 
 const AUTH_OPTIONS = ["Sign in with an account", "Sign in with an API key"]
 account_options() = ChatGPTAuth.saved_registration() === nothing ?
     ["ChatGPT", "Anthropic", "Google", "Other provider"] :
     ["ChatGPT", "ChatGPT (sign in again)", "Anthropic", "Google", "Other provider"]
 
-list(items) = SelectableList(collect(items); focused=true)
+list(items) = SelectableList(collect(items); focused=true, highlight_style=CharmStyle.ACTIVE_STYLE, marker='>')
 
 @kwdef mutable struct Menu <: Model
     page::Symbol = :auth
     choices::SelectableList = list(AUTH_OPTIONS)
     picks::Dict{Symbol,Int} = Dict{Symbol,Int}()
-    button::Button = Button("Continue")
+    button::Button = CharmStyle.button("Continue")
     focus::Symbol = :content
     notice::String = ""
     flow::Union{Nothing,ChatGPTAuth.Login} = nothing
     catalog::Vector{NamedTuple{(:id, :name, :window),Tuple{String,String,Int}}} = []
     filtered::Vector{Int} = Int[]
     selected_model::Int = 0
-    search::TextInput = TextInput(; focused=true)
-    prompt::TextInput = TextInput(; focused=true)
+    search::TextInput = CharmStyle.text_input()
+    prompt::TextInput = CharmStyle.text_input()
     pending::Union{Nothing,Channel{Any}} = nothing
     session::Union{Nothing,NativeAgent.Session} = nothing
     transcript::Vector{String} = String[]
@@ -49,8 +51,8 @@ function set_focus!(menu::Menu, focus::Symbol)
     menu.button.focused = !active
     menu.choices.focused = active
     menu.search.focused = active
-    menu.choices.marker = active ? MARKER : ' '
-    menu.choices.highlight_style = active ? tstyle(:accent, bold=true) : tstyle(:text)
+    menu.choices.marker = active ? '>' : ' '
+    menu.choices.highlight_style = active ? CharmStyle.ACTIVE_STYLE : CharmStyle.TEXT_STYLE
 end
 
 function show_page!(menu::Menu, page::Symbol, options=String[])
@@ -70,10 +72,13 @@ end
 
 function refresh_choices!(menu::Menu)
     picked = menu.page == :models ? findfirst(==(menu.selected_model), menu.filtered) : get(menu.picks, menu.page, 0)
-    menu.choices.items = [ListItem(item.content, tstyle(:text);
-                                  prefix=i == picked ? "● " : "○ ",
-                                  prefix_style=tstyle(i == picked ? :success : :text_dim))
+    menu.choices.items = [ListItem(item.content, i == picked ? CharmStyle.ACTIVE_STYLE : CharmStyle.TEXT_STYLE;
+                                  prefix=i == picked ? "✓ " : "• ",
+                                  prefix_style=i == picked ? CharmStyle.ACTIVE_STYLE : CharmStyle.DIM_STYLE)
                           for (i, item) in enumerate(menu.choices.items)]
+    if menu.focus != :content
+        menu.choices.highlight_style = menu.choices.selected == picked ? CharmStyle.ACTIVE_STYLE : CharmStyle.TEXT_STYLE
+    end
 end
 
 function select_choice!(menu::Menu)
@@ -300,10 +305,18 @@ function put!(buffer::Buffer, area::Rect, x::Int, y::Int, message::AbstractStrin
     set_string!(buffer, x, y, message, style; max_x=right(area))
 end
 
+function choices_view!(menu::Menu, rect::Rect, buffer::Buffer)
+    render(menu.choices, rect, buffer)
+    row = menu.choices.selected - menu.choices.offset - 1
+    if menu.focus == :content && !isempty(menu.choices.items) && 0 <= row < rect.height && rect.width > 0
+        set_char!(buffer, rect.x, rect.y + row, '>', CharmStyle.POINTER_STYLE)
+    end
+end
+
 function button_view!(menu::Menu, frame::Frame, left::Int, top::Int, width::Int)
     menu.button.last_area = Rect()
     frame.area.y <= top <= bottom(frame.area) || return
-    put!(frame.buffer, frame.area, left, top, menu.focus == :continue ? "▸ " : "  ", tstyle(:accent))
+    put!(frame.buffer, frame.area, left, top, menu.focus == :continue ? "> " : "  ", CharmStyle.POINTER_STYLE)
     button_width = min(textwidth(menu.button.label) + 4, max(0, width - 2))
     render(menu.button, Rect(left + 2, top, button_width, 1), frame.buffer)
 end
@@ -317,12 +330,12 @@ function choice_view!(menu::Menu, frame::Frame)
     width = max(textwidth(title), textwidth(footer), textwidth(menu.notice),
                 maximum((textwidth(item.content) + 6 for item in menu.choices.items); init=0))
     left, top, width = position(area, width, rows + 6)
-    put!(buffer, area, left, top, title, tstyle(:title, bold=true))
+    put!(buffer, area, left, top, title, CharmStyle.TITLE_STYLE)
     menu.choices.offset = clamp(menu.choices.offset, 0, max(0, length(menu.choices.items) - rows))
-    render(menu.choices, Rect(left, top + 2, width, rows), buffer)
-    isempty(menu.notice) || put!(buffer, area, left, top + rows + 2, menu.notice, tstyle(:error))
+    choices_view!(menu, Rect(left, top + 2, width, rows), buffer)
+    isempty(menu.notice) || put!(buffer, area, left, top + rows + 2, menu.notice, CharmStyle.ERROR_STYLE)
     button_view!(menu, frame, left, top + rows + 4, width)
-    put!(buffer, area, left, top + rows + 6, footer, tstyle(:text_dim))
+    put!(buffer, area, left, top + rows + 6, footer, CharmStyle.DIM_STYLE)
 end
 
 function poll_login!(menu::Menu)
@@ -348,20 +361,20 @@ function status_view!(menu::Menu, frame::Frame)
         lines = ["$(spinner) Continue with ChatGPT in your browser.", "esc cancel"]
         width = maximum(textwidth, lines)
         left, top, _ = position(area, width, 3)
-        put!(buffer, area, left, top, lines[1], tstyle(:title, bold=true))
-        put!(buffer, area, left, top + 2, lines[2], tstyle(:text_dim))
+        put!(buffer, area, left, top, lines[1], CharmStyle.TITLE_STYLE)
+        put!(buffer, area, left, top + 2, lines[2], CharmStyle.DIM_STYLE)
         return
     end
     title = menu.page == :connected ? "Signed in to ChatGPT." : "ChatGPT sign-in needs attention."
     lines = [menu.notice, "Credentials are stored locally."]
     width = max(textwidth(title), maximum(textwidth, lines), textwidth("enter activate  esc exit"))
     left, top, width = position(area, width, 7)
-    put!(buffer, area, left, top, title, tstyle(:title, bold=true))
+    put!(buffer, area, left, top, title, CharmStyle.TITLE_STYLE)
     for (i, line) in enumerate(lines)
-        put!(buffer, area, left, top + i, line, tstyle(:text_dim))
+        put!(buffer, area, left, top + i, line, CharmStyle.DIM_STYLE)
     end
     button_view!(menu, frame, left, top + 5, width)
-    put!(buffer, area, left, top + 7, "enter activate  esc exit", tstyle(:text_dim))
+    put!(buffer, area, left, top + 7, "enter activate  esc exit", CharmStyle.DIM_STYLE)
 end
 
 function poll_pending!(menu::Menu)
@@ -405,16 +418,16 @@ end
 function model_view!(menu::Menu, frame::Frame)
     refresh_choices!(menu)
     area, buffer = frame.area, frame.buffer
-    rows = min(10, max(1, area.height - 9))
+    rows = min(10, max(1, length(menu.choices.items)), max(1, area.height - 9))
     width = min(72, area.width)
     left, top, width = position(area, width, rows + 8)
-    put!(buffer, area, left, top, "Select a model:", tstyle(:title, bold=true))
-    put!(buffer, area, left, top + 2, "Search:", tstyle(:text_dim))
+    put!(buffer, area, left, top, "Select a model:", CharmStyle.TITLE_STYLE)
+    put!(buffer, area, left, top + 2, "Search:", CharmStyle.POINTER_STYLE)
     render(menu.search, Rect(left + 8, top + 2, max(0, width - 8), 1), buffer)
-    render(menu.choices, Rect(left, top + 3, width, rows), buffer)
-    isempty(menu.notice) || put!(buffer, area, left, top + rows + 3, menu.notice, tstyle(:error))
+    choices_view!(menu, Rect(left, top + 3, width, rows), buffer)
+    isempty(menu.notice) || put!(buffer, area, left, top + rows + 3, menu.notice, CharmStyle.ERROR_STYLE)
     button_view!(menu, frame, left, top + rows + 5, width)
-    put!(buffer, area, left, top + rows + 7, "type to search  ↑↓ move  enter select  tab focus  esc back", tstyle(:text_dim))
+    put!(buffer, area, left, top + rows + 7, "type to search  ↑↓ move  enter select  tab focus  esc back", CharmStyle.DIM_STYLE)
 end
 
 function wrap_text(text::AbstractString, width::Int)
@@ -467,7 +480,7 @@ function chat_view!(menu::Menu, frame::Frame)
     height = min(24, area.height)
     left, top, width = position(area, width, height)
     model = menu.session.model
-    put!(buffer, area, left, top, "JuliaForever · " * model, tstyle(:title, bold=true))
+    put!(buffer, area, left, top, "JuliaForever · " * model, CharmStyle.TITLE_STYLE)
     entries = [menu.transcript; (isempty(menu.streaming) ? String[] : ["Agent: " * menu.streaming])]
     available = max(0, height - 5)
     paragraph = Paragraph(wrap_text(join(entries, "\n"), width); show_scrollbar=false)
@@ -480,11 +493,11 @@ function chat_view!(menu::Menu, frame::Frame)
     menu.chat_area = Rect(left, top + 2, width, available)
     render(paragraph, menu.chat_area, buffer)
     prompt_y = top + height - 3
-    put!(buffer, area, left, prompt_y, menu.busy ? "…" : "❯", tstyle(:accent))
+    put!(buffer, area, left, prompt_y, menu.busy ? "…" : "❯", CharmStyle.POINTER_STYLE)
     render(menu.prompt, Rect(left + 2, prompt_y, max(0, width - 2), 1), buffer)
     footer = menu.busy ? "Agent working · ↑↓ scroll · ctrl+c exit" : "enter send  ↑↓ scroll  esc models  /restart"
     isempty(menu.notice) || (footer = menu.notice)
-    put!(buffer, area, left, top + height - 1, footer, tstyle(:text_dim))
+    put!(buffer, area, left, top + height - 1, footer, CharmStyle.DIM_STYLE)
 end
 
 function view(menu::Menu, frame::Frame)
@@ -497,8 +510,11 @@ function view(menu::Menu, frame::Frame)
     elseif menu.page == :chat
         chat_view!(menu, frame)
     elseif menu.page == :loading
-        left, top, _ = position(frame.area, 18, 1)
-        put!(frame.buffer, frame.area, left, top, "Loading models…", tstyle(:title, bold=true))
+        left, top, width = position(frame.area, 36, 3)
+        put!(frame.buffer, frame.area, left, top, "Loading models…", CharmStyle.TITLE_STYLE)
+        if frame.area.y <= top + 2 <= bottom(frame.area)
+            render(CharmStyle.Progress(nothing), Rect(left, top + 2, width, 1), frame.buffer)
+        end
     else
         status_view!(menu, frame)
     end
