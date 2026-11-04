@@ -38,6 +38,7 @@ list(items) = SelectableList(collect(items); focused=true)
 @kwdef mutable struct Menu <: Model
     page::Symbol = :auth
     choices::SelectableList = list(AUTH_OPTIONS)
+    choice_picks::Dict{Symbol,Int} = Dict{Symbol,Int}()
     models::SelectableList = list(String[])
     features::SelectableList = list([recipe.name for recipe in RECIPES])
     input::TextInput = TextInput(; focused=true)
@@ -47,6 +48,7 @@ list(items) = SelectableList(collect(items); focused=true)
     model_matches::Vector{Int} = Int[]
     model_provider::String = ""
     model_defaults::Dict{String,String} = Dict{String,String}()
+    model_pick::Union{Nothing,String} = nothing
     matches::Vector{Int} = collect(eachindex(RECIPES))
     started::Vector{Float64} = zeros(length(RECIPES))
     styles::Vector{Int} = ones(Int, length(RECIPES))
@@ -55,6 +57,9 @@ list(items) = SelectableList(collect(items); focused=true)
     via_format::Bool = false
     model::String = ""
     harness_name::String = ""
+    continue_button::Button = Button("Continue")
+    focus::Symbol = :content
+    notice::String = ""
     quit::Bool = false
 end
 
@@ -62,14 +67,52 @@ should_quit(menu::Menu) = menu.quit
 selected_count(menu::Menu) = count(!iszero, menu.started)
 running_count(menu::Menu) = count(t -> t > 0 && time() - t < BUILD_SECONDS, menu.started)
 
+function set_focus!(menu::Menu, focus::Symbol)
+    menu.focus = focus
+    active = focus == :content
+    menu.continue_button.focused = !active
+    menu.input.focused = active
+    menu.search.focused = active
+    menu.model_search.focused = active
+    for widget in (menu.choices, menu.models, menu.features)
+        widget.focused = active
+        widget.marker = active ? MARKER : ' '
+        widget.highlight_style = active ? tstyle(:accent, bold=true) : tstyle(:text)
+    end
+end
+
+function prepare_page!(menu::Menu)
+    menu.notice = ""
+    menu.continue_button.label = menu.page == :saved ? "Features" : "Continue"
+    menu.continue_button.flash_remaining = 0
+    menu.continue_button.last_area = Rect()
+    set_focus!(menu, :content)
+end
+
 function show_choices!(menu::Menu, page::Symbol, options)
     menu.page = page
     menu.choices = list(options)
+    menu.choices.selected = get(menu.choice_picks, page, 1)
+    prepare_page!(menu)
 end
 
 function show_input!(menu::Menu, page::Symbol, initial::String)
     menu.page = page
     menu.input = TextInput(; text=initial, focused=true)
+    prepare_page!(menu)
+end
+
+function refresh_choices!(menu::Menu)
+    picked = get(menu.choice_picks, menu.page, 0)
+    menu.choices.items = [ListItem(item.content, tstyle(:text);
+                                  prefix=i == picked ? "● " : "○ ",
+                                  prefix_style=tstyle(i == picked ? :success : :text_dim))
+                          for (i, item) in enumerate(menu.choices.items)]
+end
+
+function select_choice!(menu::Menu)
+    menu.choice_picks[menu.page] = menu.choices.selected
+    menu.notice = ""
 end
 
 function show_models!(menu::Menu)
@@ -89,13 +132,18 @@ function show_models!(menu::Menu)
     else
         "other", [ModelChoice("example-model", "Example model", "other")]
     end
-    menu.model_provider != provider && set_text!(menu.model_search, "")
+    if menu.model_provider != provider
+        set_text!(menu.model_search, "")
+        menu.model_pick = nothing
+        menu.model = ""
+    end
     menu.model_provider = provider
     menu.model_catalog = catalog
     get!(menu.model_defaults, provider, first(catalog).id)
     menu.page = :models
+    prepare_page!(menu)
     refresh_models!(menu)
-    chosen = findfirst(choice -> choice.id == menu.model, catalog)
+    chosen = findfirst(choice -> choice.id == menu.model_pick, catalog)
     menu.models.selected = chosen === nothing ? 1 : something(findfirst(==(chosen), menu.model_matches), 1)
 end
 
@@ -121,37 +169,38 @@ function refresh_models!(menu::Menu)
     query = text(menu.model_search)
     matches = [i for i in eachindex(menu.model_catalog) if
                matches_query(query, menu.model_catalog[i].id, menu.model_catalog[i].name, menu.model_catalog[i].provider)]
-    # Offer a custom model when browsing the full list or when nothing matches.
-    (isempty(strip(query)) || isempty(matches)) && push!(matches, 0)
+    # An unmatched search can also be used as a custom model ID.
+    !isempty(strip(query)) && isempty(matches) && push!(matches, 0)
     if matches != menu.model_matches
         menu.model_matches = matches
         menu.models.selected = 1
         menu.models.offset = 0
     end
     default = menu.model_defaults[menu.model_provider]
-    menu.models.items = [if i == 0
-        label = isempty(strip(query)) ? "Enter a model name…" : "Use \"$(strip(query))\" as model"
-        ListItem(label, tstyle(:text_dim))
-    else
-        choice = menu.model_catalog[i]
-        is_default = choice.id == default
-        label = "$(choice.id) [$(choice.provider)]" * (is_default ? " · mock default" : "")
-        ListItem(label, tstyle(:text); prefix=is_default ? "✓ " : "  ", prefix_style=tstyle(:success))
+    menu.models.items = [begin
+        candidate = i == 0 ? strip(query) : menu.model_catalog[i].id
+        picked = menu.model_pick !== nothing && menu.model_pick == candidate
+        label = if i == 0
+            "Use \"$(candidate)\" as model"
+        else
+            choice = menu.model_catalog[i]
+            "$(choice.id) [$(choice.provider)]" * (choice.id == default ? " · mock default" : "")
+        end
+        ListItem(label, tstyle(:text); prefix=picked ? "● " : "○ ",
+                 prefix_style=tstyle(picked ? :success : :text_dim))
     end for i in matches]
 end
 
-function activate_model!(menu::Menu)
+function select_model!(menu::Menu)
     i = menu.model_matches[menu.models.selected]
-    if i == 0 && isempty(strip(text(menu.model_search)))
-        show_input!(menu, :model_name, isempty(menu.model) ? "my-model" : menu.model)
-    else
-        menu.model = i == 0 ? strip(text(menu.model_search)) : menu.model_catalog[i].id
-        show_features!(menu)
-    end
+    menu.model_pick = i == 0 ? strip(text(menu.model_search)) : menu.model_catalog[i].id
+    menu.notice = ""
+    refresh_models!(menu)
 end
 
 function show_features!(menu::Menu)
     menu.page = :features
+    prepare_page!(menu)
     refresh_features!(menu)
 end
 
@@ -184,6 +233,7 @@ function toggle_feature!(menu::Menu)
     isempty(menu.matches) && return
     i = menu.matches[menu.features.selected]
     menu.started[i] = menu.started[i] == 0 ? time() : 0.0
+    menu.notice = ""
     refresh_features!(menu)
 end
 
@@ -218,12 +268,10 @@ function submit_input!(menu::Menu)
         menu.source = :endpoint
         menu.via_format = true
         show_choices!(menu, :format, FORMATS)
-    elseif menu.page == :model_name
-        menu.model = value
-        show_features!(menu)
     elseif menu.page == :harness_name
         menu.harness_name = value
         menu.page = :saved
+        prepare_page!(menu)
     end
 end
 
@@ -263,7 +311,7 @@ function go_back!(menu::Menu)
         else
             show_input!(menu, :key, "sk-demo-key")
         end
-    elseif menu.page == :model_name || menu.page == :features
+    elseif menu.page == :features
         show_models!(menu)
     elseif menu.page == :harness_name
         show_features!(menu)
@@ -272,32 +320,73 @@ function go_back!(menu::Menu)
     end
 end
 
+function continue_page!(menu::Menu)
+    menu.notice = ""
+    if menu.page in (:auth, :accounts, :api, :format)
+        picked = get(menu.choice_picks, menu.page, 0)
+        if picked == 0
+            menu.notice = "Select an option to continue."
+        else
+            menu.choices.selected = picked
+            activate_choice!(menu)
+        end
+    elseif menu.page == :models
+        if menu.model_pick === nothing
+            menu.notice = "Select a model to continue."
+        else
+            menu.model = menu.model_pick
+            show_features!(menu)
+        end
+    elseif menu.page == :features
+        show_harness_name!(menu)
+    elseif menu.page in (:key, :endpoint, :harness_name)
+        if isempty(strip(text(menu.input)))
+            menu.notice = "Enter a value to continue."
+        else
+            submit_input!(menu)
+        end
+    elseif menu.page == :saved
+        show_features!(menu)
+    end
+end
+
 function update!(menu::Menu, event::KeyEvent)
     if event.key == :ctrl_c || (event.key == :ctrl && event.char == 'c')
         menu.quit = true
         return
+    elseif event.key == :escape
+        if menu.page == :models && !isempty(text(menu.model_search))
+            set_text!(menu.model_search, "")
+            refresh_models!(menu)
+            set_focus!(menu, :content)
+        elseif menu.page == :features && !isempty(text(menu.search))
+            set_text!(menu.search, "")
+            refresh_features!(menu)
+            set_focus!(menu, :content)
+        else
+            go_back!(menu)
+        end
+        return
+    elseif event.key in (:tab, :backtab)
+        set_focus!(menu, menu.focus == :content ? :continue : :content)
+        return
+    elseif menu.focus == :continue
+        handle_key!(menu.continue_button, event) && continue_page!(menu)
+        return
     end
 
-    if menu.page in (:key, :endpoint, :model_name, :harness_name)
+    if menu.page in (:key, :endpoint, :harness_name)
         if event.key == :enter
-            submit_input!(menu)
-        elseif event.key == :escape
-            go_back!(menu)
+            set_focus!(menu, :continue)
         elseif event.key == :ctrl && event.char == 'u'
             set_text!(menu.input, "")
-        else
-            handle_key!(menu.input, event)
+            menu.notice = ""
+        elseif handle_key!(menu.input, event)
+            menu.notice = ""
         end
     elseif menu.page == :models
-        if event.key == :escape
-            if isempty(text(menu.model_search))
-                go_back!(menu)
-            else
-                set_text!(menu.model_search, "")
-                refresh_models!(menu)
-            end
-        elseif event.key == :enter
-            activate_model!(menu)
+        if event.key == :enter
+            select_model!(menu)
         elseif event.key == :ctrl && event.char == 's'
             i = menu.model_matches[menu.models.selected]
             if i != 0
@@ -314,16 +403,7 @@ function update!(menu::Menu, event::KeyEvent)
             refresh_models!(menu)
         end
     elseif menu.page == :features
-        if event.key == :escape
-            if isempty(text(menu.search))
-                go_back!(menu)
-            else
-                set_text!(menu.search, "")
-                refresh_features!(menu)
-            end
-        elseif event.key == :tab
-            show_harness_name!(menu)
-        elseif event.key == :enter || (event.key == :char && event.char == ' ' && isempty(text(menu.search)))
+        if event.key == :enter || (event.key == :char && event.char == ' ' && isempty(text(menu.search)))
             toggle_feature!(menu)
         elseif event.key == :ctrl && event.char == 'u'
             set_text!(menu.search, "")
@@ -338,34 +418,42 @@ function update!(menu::Menu, event::KeyEvent)
             refresh_features!(menu)
         end
     elseif menu.page == :saved
-        event.key == :escape && go_back!(menu)
-        event.key == :tab && show_features!(menu)
-    elseif event.key == :escape
-        go_back!(menu)
-    elseif event.key == :enter
-        activate_choice!(menu)
+        event.key == :enter && set_focus!(menu, :continue)
+    elseif event.key == :enter || (event.key == :char && event.char == ' ')
+        select_choice!(menu)
     else
         handle_key!(menu.choices, event)
     end
 end
 
 function update!(menu::Menu, event::MouseEvent)
+    if handle_mouse!(menu.continue_button, event)
+        set_focus!(menu, :continue)
+        continue_page!(menu)
+        return
+    end
+    click = event.button == mouse_left && event.action == mouse_press
     if menu.page == :models
         if handle_mouse!(menu.model_search, event)
-            return
-        elseif handle_mouse!(menu.models, event) && event.button == mouse_left && event.action == mouse_press
-            activate_model!(menu)
+            set_focus!(menu, :content)
+        elseif handle_mouse!(menu.models, event) && click
+            set_focus!(menu, :content)
+            select_model!(menu)
         end
     elseif menu.page == :features
         if handle_mouse!(menu.search, event)
-            return
-        elseif handle_mouse!(menu.features, event) && event.button == mouse_left && event.action == mouse_press
+            set_focus!(menu, :content)
+        elseif handle_mouse!(menu.features, event) && click
+            set_focus!(menu, :content)
             toggle_feature!(menu)
         end
     elseif menu.page in (:auth, :accounts, :api, :format)
-        handle_mouse!(menu.choices, event)
-    elseif menu.page in (:endpoint, :model_name, :harness_name)
-        handle_mouse!(menu.input, event)
+        if handle_mouse!(menu.choices, event) && click
+            set_focus!(menu, :content)
+            select_choice!(menu)
+        end
+    elseif menu.page in (:key, :endpoint, :harness_name)
+        handle_mouse!(menu.input, event) && set_focus!(menu, :content)
     end
 end
 
@@ -381,23 +469,54 @@ function put!(buffer::Buffer, area::Rect, x::Int, y::Int, message::AbstractStrin
     set_string!(buffer, x, y, message, style; max_x=right(area))
 end
 
-function list_view!(frame::Frame, title::String, subtitle::String, choices::SelectableList, footer::String; note::String="")
+function footer_lines(area::Rect, parts::String...)
+    lines = String[]
+    for part in parts
+        if !isempty(lines) && textwidth(lines[end] * "  " * part) <= area.width
+            lines[end] *= "  " * part
+        else
+            push!(lines, part)
+        end
+    end
+    lines
+end
+
+function button_view!(menu::Menu, frame::Frame, left::Int, y::Int, width::Int)
     area, buffer = frame.area, frame.buffer
-    rows = min(max(1, area.height - 5), max(1, length(choices.items)))
-    width = max(textwidth(title), textwidth(subtitle), textwidth(footer), textwidth(note),
+    menu.continue_button.last_area = Rect()
+    area.y <= y <= bottom(area) || return
+    put!(buffer, area, left, y, menu.focus == :continue ? "▸ " : "  ", tstyle(:accent))
+    button_width = min(textwidth(menu.continue_button.label) + 4, max(0, width - 2))
+    render(menu.continue_button, Rect(left + 2, y, button_width, 1), buffer)
+end
+
+function footer_view!(frame::Frame, left::Int, y::Int, lines::Vector{String})
+    for (i, line) in enumerate(lines)
+        put!(frame.buffer, frame.area, left, y + i - 1, line, tstyle(:text_dim))
+    end
+end
+
+function list_view!(menu::Menu, frame::Frame, title::String, subtitle::String)
+    refresh_choices!(menu)
+    area, buffer = frame.area, frame.buffer
+    choices = menu.choices
+    footers = footer_lines(area, "↑↓ move", "enter select/continue", "tab focus", "esc back")
+    rows = min(max(1, area.height - 6 - length(footers)), max(1, length(choices.items)))
+    width = max(textwidth(title), textwidth(subtitle), textwidth(menu.notice), maximum(textwidth, footers),
                 maximum((textwidth(item.content) + textwidth(item.prefix) + 2 for item in choices.items); init=0))
-    left, top, width = position(area, width, rows + 5)
+    left, top, width = position(area, width, rows + 6 + length(footers))
     put!(buffer, area, left, top, title, tstyle(:title, bold=true))
     isempty(subtitle) || put!(buffer, area, left, top + 1, subtitle, tstyle(:text_dim))
     choices.offset = clamp(choices.offset, 0, max(0, length(choices.items) - rows))
     render(choices, Rect(left, top + 2, width, rows), buffer)
-    isempty(note) || put!(buffer, area, left, top + rows + 2, note, tstyle(:text_dim))
-    put!(buffer, area, left, top + rows + 4, footer, tstyle(:text_dim))
+    isempty(menu.notice) || put!(buffer, area, left, top + rows + 2, menu.notice, tstyle(:error))
+    button_view!(menu, frame, left, top + rows + 4, width)
+    footer_view!(frame, left, top + rows + 6, footers)
 end
 
 function input_view!(menu::Menu, frame::Frame)
     area, buffer = frame.area, frame.buffer
-    footer = "enter continue  ctrl+u clear  escape back"
+    footers = footer_lines(area, "tab focus", "enter focus/activate", "ctrl+u clear", "esc back")
     if menu.page == :harness_name
         title = "Name your harness (mock):"
         explanation = ["Once implemented, the name will be registered in",
@@ -405,8 +524,9 @@ function input_view!(menu::Menu, frame::Frame)
                        "Type the name to start the harness.",
                        "Mock only; nothing is registered or reloaded."]
         status = "$(selected_count(menu)) selected · $(running_count(menu)) building (mock)"
-        width = max(textwidth(title), textwidth(footer), textwidth(status), maximum(textwidth, explanation))
-        left, top, width = position(area, width, 11)
+        width = max(textwidth(title), maximum(textwidth, footers), textwidth(status),
+                    textwidth(menu.notice), maximum(textwidth, explanation))
+        left, top, width = position(area, width, 13 + length(footers))
         put!(buffer, area, left, top, title, tstyle(:title, bold=true))
         for (i, line) in enumerate(explanation)
             put!(buffer, area, left, top + i, line, tstyle(:text_dim))
@@ -414,26 +534,29 @@ function input_view!(menu::Menu, frame::Frame)
         put!(buffer, area, left, top + 6, status, tstyle(:text_dim))
         put!(buffer, area, left, top + 8, "› ", tstyle(:accent))
         render(menu.input, Rect(left + 2, top + 8, max(0, width - 2), 1), buffer)
-        put!(buffer, area, left, top + 10, footer, tstyle(:text_dim))
+        isempty(menu.notice) || put!(buffer, area, left, top + 9, menu.notice, tstyle(:error))
+        button_view!(menu, frame, left, top + 11, width)
+        footer_view!(frame, left, top + 13, footers)
         return
     end
 
-    title = menu.page == :key ? "Enter a sample API key:" :
-            menu.page == :endpoint ? "Enter a custom endpoint:" : "Enter a model name:"
-    subtitle = menu.page == :key ? "Mock only; never enter a real key." :
-               menu.page == :endpoint ? "Mock only; no request is sent." : "Mock only; no model is loaded."
-    width = max(textwidth(title), textwidth(subtitle), textwidth(footer), 36)
-    left, top, width = position(area, width, 6)
+    title = menu.page == :key ? "Enter a sample API key:" : "Enter a custom endpoint:"
+    subtitle = menu.page == :key ? "Mock only; never enter a real key." : "Mock only; no request is sent."
+    width = max(textwidth(title), textwidth(subtitle), maximum(textwidth, footers), textwidth(menu.notice), 36)
+    left, top, width = position(area, width, 8 + length(footers))
     put!(buffer, area, left, top, title, tstyle(:title, bold=true))
     put!(buffer, area, left, top + 1, subtitle, tstyle(:text_dim))
     if menu.page == :key
         masked = repeat("•", min(length(text(menu.input)), max(0, width - 3)))
-        put!(buffer, area, left, top + 3, "› " * masked * "_", tstyle(:accent))
+        put!(buffer, area, left, top + 3, "› " * masked * (menu.input.focused ? "_" : ""), tstyle(:accent))
+        menu.input.last_area = Rect(left + 2, top + 3, max(0, width - 2), 1)
     else
         put!(buffer, area, left, top + 3, "› ", tstyle(:accent))
         render(menu.input, Rect(left + 2, top + 3, max(0, width - 2), 1), buffer)
     end
-    put!(buffer, area, left, top + 5, footer, tstyle(:text_dim))
+    isempty(menu.notice) || put!(buffer, area, left, top + 4, menu.notice, tstyle(:error))
+    button_view!(menu, frame, left, top + 6, width)
+    footer_view!(frame, left, top + 8, footers)
 end
 
 function search_view!(search::TextInput, frame::Frame, left::Int, top::Int, width::Int)
@@ -451,13 +574,13 @@ function models_view!(menu::Menu, frame::Frame)
     i = menu.model_matches[menu.models.selected]
     detail = i == 0 ? "Model: custom" : "Model: " * menu.model_catalog[i].name
     position_text = i == 0 ? "" : "($(menu.models.selected)/$(count(!iszero, menu.model_matches)))"
-    footer = "↑↓ move  enter select  ctrl+s default"
-    footer_extra = "ctrl+u clear  esc clear/back"
-    footers = textwidth(footer * "  " * footer_extra) <= area.width ? [footer * "  " * footer_extra] : [footer, footer_extra]
-    rows = min(10, max(1, area.height - 8 - length(footers)), length(menu.model_catalog) + 1)
-    width = max(textwidth(title), textwidth(subtitle), textwidth(detail), maximum(textwidth, footers),
+    selected = menu.model_pick === nothing ? "" : "Selected: " * menu.model_pick
+    footers = footer_lines(area, "↑↓ move", "enter select/continue", "tab focus", "ctrl+s default", "ctrl+u clear", "esc clear/back")
+    rows = min(10, max(1, area.height - 11 - length(footers)), max(1, length(menu.model_catalog)))
+    width = max(textwidth(title), textwidth(subtitle), textwidth(detail), textwidth(selected), textwidth(menu.notice),
+                maximum(textwidth, footers),
                 maximum((textwidth(item.content) + textwidth(item.prefix) + 2 for item in menu.models.items); init=0))
-    left, top, width = position(area, width, rows + 8 + length(footers))
+    left, top, width = position(area, width, rows + 11 + length(footers))
     put!(buffer, area, left, top, title, tstyle(:title, bold=true))
     put!(buffer, area, left, top + 1, subtitle, tstyle(:text_dim))
     search_view!(menu.model_search, frame, left, top + 3, width)
@@ -465,9 +588,10 @@ function models_view!(menu::Menu, frame::Frame)
     render(menu.models, Rect(left, top + 5, width, rows), buffer)
     put!(buffer, area, left, top + rows + 5, position_text, tstyle(:text_dim))
     put!(buffer, area, left, top + rows + 6, detail, tstyle(:text_dim))
-    for (i, line) in enumerate(footers)
-        put!(buffer, area, left, top + rows + 7 + i, line, tstyle(:text_dim))
-    end
+    put!(buffer, area, left, top + rows + 7, isempty(menu.notice) ? selected : menu.notice,
+         tstyle(isempty(menu.notice) ? :text_dim : :error))
+    button_view!(menu, frame, left, top + rows + 9, width)
+    footer_view!(frame, left, top + rows + 11, footers)
 end
 
 function features_view!(menu::Menu, frame::Frame)
@@ -478,14 +602,12 @@ function features_view!(menu::Menu, frame::Frame)
            !isempty(recipe.styles) && isempty(query) ? "←→ change style" : recipe.detail
     status = "$(selected_count(menu)) selected · $(running_count(menu)) building (mock)" *
              (isempty(query) ? "" : " · $(length(menu.matches)) matches")
-    footer = "↑↓ move  enter toggle  tab next"
-    footer_extra = "ctrl+u clear  esc clear/back"
     area, buffer = frame.area, frame.buffer
-    footers = textwidth(footer * "  " * footer_extra) <= area.width ? [footer * "  " * footer_extra] : [footer, footer_extra]
-    rows = min(max(1, area.height - 5 - length(footers)), length(RECIPES))
+    footers = footer_lines(area, "↑↓ move", "enter toggle/continue", "tab focus", "ctrl+u clear", "esc clear/back")
+    rows = min(max(1, area.height - 7 - length(footers)), length(RECIPES))
     width = max(textwidth("Build your features (mock):"), maximum(textwidth, footers), textwidth(note), textwidth(status),
                 maximum((textwidth(item.content) + textwidth(item.prefix) + 2 for item in menu.features.items); init=0))
-    left, top, width = position(area, width, rows + 5 + length(footers))
+    left, top, width = position(area, width, rows + 7 + length(footers))
     put!(buffer, area, left, top, "Build your features (mock):", tstyle(:title, bold=true))
     search_view!(menu.search, frame, left, top + 1, width)
     menu.features.offset = clamp(menu.features.offset, 0, max(0, length(menu.features.items) - rows))
@@ -493,9 +615,8 @@ function features_view!(menu::Menu, frame::Frame)
     isempty(menu.matches) && put!(buffer, area, left, top + 2, "No matching features.", tstyle(:text_dim))
     isempty(note) || put!(buffer, area, left, top + rows + 2, note, tstyle(:text_dim))
     put!(buffer, area, left, top + rows + 3, status, tstyle(:text_dim))
-    for (i, line) in enumerate(footers)
-        put!(buffer, area, left, top + rows + 4 + i, line, tstyle(:text_dim))
-    end
+    button_view!(menu, frame, left, top + rows + 5, width)
+    footer_view!(frame, left, top + rows + 7, footers)
 end
 
 function saved_view!(menu::Menu, frame::Frame)
@@ -504,33 +625,31 @@ function saved_view!(menu::Menu, frame::Frame)
     model = "Model: " * menu.model
     status = "$(selected_count(menu)) selected · $(running_count(menu)) building (mock)"
     warning = "Nothing registered or reloaded."
-    footer = "tab features  escape back"
-    width = max(textwidth(title), textwidth(menu.harness_name), textwidth(model), textwidth(status), textwidth(warning), textwidth(footer))
-    left, top, width = position(area, width, 8)
+    footers = footer_lines(area, "tab focus", "enter focus/activate", "esc back")
+    width = max(textwidth(title), textwidth(menu.harness_name), textwidth(model), textwidth(status),
+                textwidth(warning), maximum(textwidth, footers))
+    left, top, width = position(area, width, 9 + length(footers))
     put!(buffer, area, left, top, title, tstyle(:title, bold=true))
     put!(buffer, area, left, top + 2, menu.harness_name, tstyle(:accent))
     put!(buffer, area, left, top + 3, model, tstyle(:text))
     put!(buffer, area, left, top + 4, status, tstyle(:text_dim))
     put!(buffer, area, left, top + 5, warning, tstyle(:text_dim))
-    put!(buffer, area, left, top + 7, footer, tstyle(:text_dim))
+    button_view!(menu, frame, left, top + 7, width)
+    footer_view!(frame, left, top + 9, footers)
 end
 
 function view(menu::Menu, frame::Frame)
     if menu.page == :auth
-        list_view!(frame, "Select authentication method:", "", menu.choices,
-                   "↑↓ navigate  enter select  escape/ctrl+c cancel")
+        list_view!(menu, frame, "Select authentication method:", "")
     elseif menu.page == :accounts
-        list_view!(frame, "Select an account:", "Mock only; no account is connected.", menu.choices,
-                   "↑↓ navigate  enter select  escape back")
+        list_view!(menu, frame, "Select an account:", "Mock only; no account is connected.")
     elseif menu.page == :api
-        list_view!(frame, "Select API connection:", "", menu.choices,
-                   "↑↓ navigate  enter select  escape back")
+        list_view!(menu, frame, "Select API connection:", "")
     elseif menu.page == :format
-        list_view!(frame, "Select a compatible format:", "Mock only; no request is sent.", menu.choices,
-                   "↑↓ navigate  enter select  escape back")
+        list_view!(menu, frame, "Select a compatible format:", "Mock only; no request is sent.")
     elseif menu.page == :models
         models_view!(menu, frame)
-    elseif menu.page in (:key, :endpoint, :model_name, :harness_name)
+    elseif menu.page in (:key, :endpoint, :harness_name)
         input_view!(menu, frame)
     elseif menu.page == :features
         features_view!(menu, frame)
