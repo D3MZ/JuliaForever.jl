@@ -476,13 +476,17 @@ end
 
 function chat_view!(menu::Menu, frame::Frame)
     area, buffer = frame.area, frame.buffer
-    width = min(100, area.width)
-    height = min(24, area.height)
-    left, top, width = position(area, width, height)
+    if area.width < 6 || area.height < 6
+        menu.chat_area = Rect()
+        area.width > 0 && area.height > 0 &&
+            put!(buffer, area, area.x, area.y, "Resize terminal", CharmStyle.DIM_STYLE)
+        return
+    end
+    left, top, width, height = area.x, area.y, area.width, area.height
     model = menu.session.model
     put!(buffer, area, left, top, "JuliaForever · " * model, CharmStyle.TITLE_STYLE)
     entries = [menu.transcript; (isempty(menu.streaming) ? String[] : ["Agent: " * menu.streaming])]
-    available = max(0, height - 5)
+    available = height - 6
     paragraph = Paragraph(wrap_text(join(entries, "\n"), width); show_scrollbar=false)
     total = paragraph_line_count(paragraph, width)
     maximum_scroll = max(0, total - available)
