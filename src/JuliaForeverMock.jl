@@ -376,9 +376,7 @@ function update!(menu::Menu, event::KeyEvent)
     end
 
     if menu.page in (:key, :endpoint, :harness_name)
-        if event.key == :enter
-            set_focus!(menu, :continue)
-        elseif event.key == :ctrl && event.char == 'u'
+        if event.key == :ctrl && event.char == 'u'
             set_text!(menu.input, "")
             menu.notice = ""
         elseif handle_key!(menu.input, event)
@@ -418,7 +416,7 @@ function update!(menu::Menu, event::KeyEvent)
             refresh_features!(menu)
         end
     elseif menu.page == :saved
-        event.key == :enter && set_focus!(menu, :continue)
+        nothing
     elseif event.key == :enter || (event.key == :char && event.char == ' ')
         select_choice!(menu)
     else
@@ -516,7 +514,7 @@ end
 
 function input_view!(menu::Menu, frame::Frame)
     area, buffer = frame.area, frame.buffer
-    footers = footer_lines(area, "tab focus", "enter focus/activate", "ctrl+u clear", "esc back")
+    footers = footer_lines(area, "tab focus", "enter activate", "ctrl+u clear", "esc back")
     if menu.page == :harness_name
         title = "Name your harness (mock):"
         explanation = ["Once implemented, the name will be registered in",
@@ -625,7 +623,7 @@ function saved_view!(menu::Menu, frame::Frame)
     model = "Model: " * menu.model
     status = "$(selected_count(menu)) selected · $(running_count(menu)) building (mock)"
     warning = "Nothing registered or reloaded."
-    footers = footer_lines(area, "tab focus", "enter focus/activate", "esc back")
+    footers = footer_lines(area, "tab focus", "enter activate", "esc back")
     width = max(textwidth(title), textwidth(menu.harness_name), textwidth(model), textwidth(status),
                 textwidth(warning), maximum(textwidth, footers))
     left, top, width = position(area, width, 9 + length(footers))
