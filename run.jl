@@ -1,2 +1,2 @@
-include(joinpath(@__DIR__, "src", "JuliaForeverMock.jl"))
-JuliaForeverMock.main()
+include(joinpath(@__DIR__, "src", "JuliaForever.jl"))
+JuliaForever.main()
