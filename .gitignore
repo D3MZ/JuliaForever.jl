@@ -6,3 +6,6 @@
 
 # Local credentials and session history
 /.juliaforever/
+
+# Local visual references
+/design-references/
