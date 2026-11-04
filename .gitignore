@@ -3,3 +3,6 @@
 
 # Julia-local state
 /LocalPreferences.toml
+
+# Local credentials and session history
+/.juliaforever/
