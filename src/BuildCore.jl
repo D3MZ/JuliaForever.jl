@@ -95,9 +95,12 @@ Host interface available through App (the JuliaForever module):
   directories with mode=0o700 and files with mode=0o600. App.ChatGPTAuth.Base64 has
   base64encode(bytes) and base64decode(text).
 - App.NativeAgent.HTTP is the HTTP package; App.JSON is JSON.
-- HTTP.sse_callback receives events whose .data is a String. Use status_exception=false,
-  redirect=false, retry=false, proxy=HTTP.ProxyConfig(), and wrap requests in
-  Base.CoreLogging.with_logger(Base.CoreLogging.NullLogger()) so headers are never logged.
+- Stream server-sent events by passing sse_callback=callback to HTTP.request; the callback receives
+  an event whose .data is a String. Do not call HTTP.sse_callback or pass response_stream. Use
+  status_exception=false, redirect=false, retry=false, proxy=HTTP.ProxyConfig(), and wrap requests in
+  Base.CoreLogging.with_logger(Base.CoreLogging.NullLogger()) so headers are never logged. Use
+  read_idle_timeout, not the deprecated readtimeout. Max SSE line size defaults to 1 MiB; when a
+  response carries image data, pass max_sse_line_bytes=33554432 and max_sse_event_bytes=67108864.
 - Tool results are strings shown to the model. Return a short success message, or a string starting
   with "Error: " that never contains tokens, account ids, headers, data URLs, or raw request bodies.
 - tool_schemas() returns a Vector of flat tool records: Dict("type" => "function", "name" =>
@@ -167,8 +170,8 @@ generate_image:
   base64, and a complete PNG (signature plus IEND trailer).
 - Publish through a private temporary file in the destination directory and a hard link so an
   existing file is never overwritten, removing the temporary file in all cases.
-- Success returns "Saved PNG: " * path. Use connect timeout 15, request timeout 300 and read idle
-  timeout 180 seconds.
+- Success returns "Saved PNG: " * path. Use connect_timeout 15, request_timeout 300,
+  read_idle_timeout 180, max_sse_line_bytes 33554432 and max_sse_event_bytes 67108864.
 
 describe_image:
 - Read at most 20 MiB and require a PNG, JPEG, GIF or WebP signature.
@@ -178,7 +181,8 @@ describe_image:
   when it is null or blank) and an input_image item whose image_url is a data URL built from the
   detected MIME type and the base64 bytes.
 - Accumulate response.output_text.delta text. If the stream completes with no deltas, take the
-  output_text parts from response.output instead. Return the description text. Request timeout 240.
+  output_text parts from response.output instead. Return the description text. Use connect_timeout
+  15, request_timeout 240 and read_idle_timeout 120.
 
 on_key!, on_frame!, footer and shutdown! must be defined no-ops returning false, nothing, "" and
 nothing: this feature has no keyboard or footer behavior.
@@ -197,7 +201,8 @@ Transcription request:
 - Require a regular file larger than 44 bytes and at most 25 MiB.
 - POST multipart to "https://chatgpt.com/backend-api/transcribe" with header field name "file" and a
   neutral filename derived from the extension, an audio MIME type for wav, mp3, mp4, m4a, mpeg,
-  mpga, webm, ogg, flac or aiff, and otherwise application/octet-stream. Headers: Authorization
+  mpga, webm, ogg or flac, and otherwise application/octet-stream. The service rejects aiff, so
+  report "Error: Unsupported audio format." for it rather than uploading. Headers: Authorization
   Bearer, "originator" => "Codex Desktop", Accept application/json, plus ChatGPT-Account-ID when the
   credential has one. Prefer the Codex credential in joinpath(homedir(), ".codex", "auth.json"),
   else App.ChatGPTAuth.access_token(); never print tokens or account ids.

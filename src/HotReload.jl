@@ -109,7 +109,7 @@ function reload!(manager::Manager, sources::Vector{Pair{String,String}}; announc
         else
             :shutdown!
         end
-        Base.invokelatest(getfield(mod, hook), state)
+        Base.invokelatest(Base.invokelatest(getfield, mod, hook), state)
     end
 
     lock(manager.lock) do
@@ -186,7 +186,7 @@ function run_tool(generation::Generation, session, name, args)
     state = lock(manager.lock) do
         get!(manager.states, path, Dict{Symbol,Any}())
     end
-    Base.invokelatest(getfield(mod, :run_tool), session, name, args, state)
+    Base.invokelatest(Base.invokelatest(getfield, mod, :run_tool), session, name, args, state)
 end
 
 function invoke_ui(name::Symbol, fallback, args...)
@@ -201,7 +201,7 @@ function invoke_ui(name::Symbol, fallback, args...)
         end
         state === nothing && continue
         try
-            value = Base.invokelatest(getfield(mod, name), args..., state)
+            value = Base.invokelatest(Base.invokelatest(getfield, mod, name), args..., state)
             name == :on_key! && value === true && return true
             name == :footer && value isa AbstractString && !isempty(value) && push!(results, String(value))
         catch error
