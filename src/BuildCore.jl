@@ -237,7 +237,9 @@ failed state while keeping the saved audio path.
   waiting more than about 4 seconds total.
 
 State is the persistent Dict{Symbol,Any} passed to every hook: keep the microphone phase, job, saved
-path and last notice there so an active recording survives a feature reload.
+path and last notice there so an active recording survives a feature reload. on_reload!
+must preserve compatible active recording/upload workers and release only generation-specific
+resources. shutdown! still cancels workers on removal or exit.
 """
 end
 
@@ -247,11 +249,16 @@ function build_prompt(selected::Recipe)
     "no tests, documentation, or code comments. There is no reference implementation to copy and no " *
     "other feature source to read. " *
     "The file is included into a fresh module with a constant App referring to JuliaForever. " *
-    "It must define six top-level functions: tool_schemas(), run_tool(session,name,args,state), " *
-    "on_key!(menu,event,state), on_frame!(menu,state), footer(menu,state) and shutdown!(state), " *
+    "It must define seven top-level functions: tool_schemas(), run_tool(session,name,args,state), " *
+    "on_key!(menu,event,state), on_frame!(menu,state), footer(menu,state), shutdown!(state), " *
+    "and on_reload!(state), " *
     "including no-ops the contract does not otherwise use. Hooks may use App, Base, and packages " *
     "accessible through App. state is a persistent Dict{Symbol,Any} unique to this feature that " *
-    "survives reloads; only Base and host values belong in it. Return false from unhandled on_key! " *
+    "survives reloads; only Base and host values belong in it. on_reload! runs on the retiring " *
+    "module before changed code becomes active: release only version-owned resources and preserve " *
+    "compatible ongoing work, especially microphone recording and uploads. shutdown! stops all " *
+    "work when a feature is removed or the harness exits. Without on_reload!, replacement calls " *
+    "the old shutdown! for safety. Return false from unhandled on_key! " *
     "and an empty string from footer when no footer is needed. A feature file is self-contained: " *
     "helper files are not installed. Do not edit files outside this working directory. " *
     "This is an integration task: write feature.jl directly. Do not inspect unrelated files, search " *

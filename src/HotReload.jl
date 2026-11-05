@@ -4,6 +4,7 @@ struct Generation
     sources::Vector{Pair{String,Module}}
     schemas::Vector{Any}
     names::Dict{String,Module}
+    contents::Dict{String,String}
 end
 
 mutable struct Manager
@@ -34,15 +35,29 @@ function sources_at(path::String)
     Pair{String,String}[p => read(p, String) for p in paths]
 end
 
-function candidate(manager::Manager, sources::Vector{Pair{String,String}})
+function candidate(manager::Manager, sources::Vector{Pair{String,String}},
+                   previous::Union{Nothing,Generation}=nothing)
     modules, schemas, names = Pair{String,Module}[], Any[], Dict{String,Module}()
+    contents = Dict{String,String}()
+    prior = previous === nothing ? Dict{String,Module}() : Dict(previous.sources)
     for (path, source) in sources
-        mod = Module(gensym(:JuliaForeverFeature))
-        Core.eval(mod, :(const App = $(QuoteNode(manager.host))))
-        Base.include_string(mod, source, path)
+        haskey(contents, path) && error("Duplicate live feature path: $path")
+        contents[path] = source
+        mod = if previous !== nothing && get(previous.contents, path, nothing) == source
+            prior[path]
+        else
+            fresh = Module(gensym(:JuliaForeverFeature))
+            Core.eval(fresh, :(const App = $(QuoteNode(manager.host))))
+            Base.include_string(fresh, source, path)
+            fresh
+        end
         for name in (:tool_schemas, :run_tool, :on_key!, :on_frame!, :footer, :shutdown!)
             Base.invokelatest(isdefined, mod, name) || error("$(basename(path)) is missing $name")
             Base.invokelatest(getfield, mod, name) isa Function || error("$(basename(path)): $name must be a function")
+        end
+        if Base.invokelatest(isdefined, mod, :on_reload!)
+            Base.invokelatest(getfield, mod, :on_reload!) isa Function ||
+                error("$(basename(path)): on_reload! must be a function")
         end
         raw = Base.invokelatest(Base.invokelatest(getfield, mod, :tool_schemas))
         raw isa AbstractVector || error("$(basename(path)): tool_schemas must return a vector")
@@ -58,7 +73,7 @@ function candidate(manager::Manager, sources::Vector{Pair{String,String}})
         end
         push!(modules, path => mod)
     end
-    Generation(modules, schemas, names)
+    Generation(modules, schemas, names, contents)
 end
 
 function set_notice!(manager::Manager, message::String)
@@ -68,17 +83,39 @@ function set_notice!(manager::Manager, message::String)
 end
 
 function reload!(manager::Manager, sources::Vector{Pair{String,String}}; announce::Bool=true)
-    generation = candidate(manager, sources)
-    removed = Pair{Module,Dict{Symbol,Any}}[]
+    previous = lock(manager.lock) do
+        manager.generation
+    end
+    generation = candidate(manager, sources, previous)
+    current = Dict(generation.sources)
+    retired = Tuple{Module,Dict{Symbol,Any},Bool}[]
     lock(manager.lock) do
-        old = manager.generation
-        newpaths = Set(first.(generation.sources))
-        if old !== nothing
-            for (path, mod) in old.sources
-                if !(path in newpaths) && haskey(manager.states, path)
-                    push!(removed, mod => pop!(manager.states, path))
+        manager.generation === previous || error("Concurrent live reload")
+        if previous !== nothing
+            for (path, mod) in previous.sources
+                replacing = haskey(current, path)
+                if (!replacing || current[path] !== mod) && haskey(manager.states, path)
+                    push!(retired, (mod, manager.states[path], replacing))
                 end
             end
+        end
+    end
+
+    # Retire old code before publishing its replacement. Persistent state stays
+    # attached to the path; unchanged modules are reused without lifecycle calls.
+    for (mod, state, replacing) in retired
+        hook = if replacing && Base.invokelatest(isdefined, mod, :on_reload!)
+            :on_reload!
+        else
+            :shutdown!
+        end
+        Base.invokelatest(getfield(mod, hook), state)
+    end
+
+    lock(manager.lock) do
+        manager.generation === previous || error("Concurrent live reload")
+        for path in collect(keys(manager.states))
+            haskey(current, path) || delete!(manager.states, path)
         end
         for (path, _) in generation.sources
             get!(manager.states, path, Dict{Symbol,Any}())
@@ -86,9 +123,6 @@ function reload!(manager::Manager, sources::Vector{Pair{String,String}}; announc
         manager.generation = generation
         empty!(manager.disabled)
         announce && (manager.notice = "Live features reloaded.")
-    end
-    for (mod, state) in removed
-        try Base.invokelatest(getfield(mod, :shutdown!), state) catch end
     end
     generation
 end
