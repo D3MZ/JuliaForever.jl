@@ -223,7 +223,10 @@ function start_login()
     flow
 end
 
-function access_token()
+const TOKEN_LOCK = ReentrantLock()
+access_token() = lock(_access_token, TOKEN_LOCK)
+
+function _access_token()
     data = saved_registration()
     data === nothing && throw(LoginError("Sign in to ChatGPT first."))
     PLAN_SCOPE in split(String(get(data, "scope", ""))) ||

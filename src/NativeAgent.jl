@@ -5,6 +5,7 @@ using HTTP
 using JSON
 using UUIDs
 import ..ChatGPTAuth
+import ..HotReload
 
 const API = "https://api.openai.com/v1"
 const DEFAULT_WINDOW = 272_000
@@ -232,14 +233,16 @@ function run_tool(session::Session, name::AbstractString, args)
     "Unknown tool: $name"
 end
 
-function inference(session::Session, emit::Function)
+function inference(session::Session, emit::Function, generation)
     token = ChatGPTAuth.access_token()
     instructions = "You are a Julia-native local coding agent. Work in $(session.cwd). " *
                    "Use the local tools to inspect and change files and run commands. " *
                    "Read relevant AGENTS.md and skill instructions when applicable. " *
-                   "Your changes to the running application take effect after it is restarted."
+                   "src/LiveFeatures.jl is a live-reloaded Julia feature module: its hooks and tool schemas " *
+                   "can be changed without restarting; see its source and src/HotReload.jl for the interface. " *
+                   "Changes to the core runtime, existing types, or other files require a restart."
     body = Dict("model" => session.model, "instructions" => instructions, "input" => session.input,
-                "tools" => TOOLS, "store" => false, "stream" => true,
+                "tools" => Any[TOOLS...; HotReload.tool_schemas(generation)...], "store" => false, "stream" => true,
                 "include" => ["reasoning.encrypted_content"])
     session.model == "gpt-6.1-terra" && (body["reasoning"] = Dict("effort" => "max"))
     complete = Ref{Any}(nothing)
@@ -276,8 +279,9 @@ function run_turn!(session::Session, prompt::String, emit::Function)
     append_entry!(session, "message", item)
     overflow_recovered = false
     while true
+        generation = HotReload.snapshot()
         result = try
-            inference(session, emit)
+            inference(session, emit, generation)
         catch error
             if error isa ProviderError && occursin("context_length_exceeded", error.message) && !overflow_recovered
                 rollover!(session)
@@ -297,16 +301,19 @@ function run_turn!(session::Session, prompt::String, emit::Function)
         calls = filter(x -> get(x, "type", "") == "function_call", output)
         for call in calls
             name = String(call["name"])
-            emit(:tool, name)
+            emit(:tool, call)
+            yield()
             output_text = try
                 args = JSON.parse(String(call["arguments"]))
-                run_tool(session, name, args)
+                HotReload.has_tool(generation, name) ?
+                    string(HotReload.run_tool(generation, session, name, args)) : run_tool(session, name, args)
             catch error
                 "Error: " * sprint(showerror, error)
             end
             result_item = Dict("type" => "function_call_output", "call_id" => call["call_id"], "output" => output_text)
             push!(session.input, result_item)
             append_entry!(session, "tool_result", result_item)
+            emit(:tool_result, result_item)
             session.tokens += cld(ncodeunits(output_text), 2)
         end
         usage_record = Dict{String,Any}(String(k) => v for (k, v) in pairs(usage))

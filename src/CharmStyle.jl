@@ -22,6 +22,16 @@ const POINTER_STYLE = Style(fg=PINK)
 const RAIL_STYLE = Style(fg=RAIL)
 const ERROR_STYLE = Style(fg=ColorRGB(0xff, 0x46, 0x72))
 
+# Conversation roles use both shape and spacing, with quiet surfaces as a secondary cue.
+const USER_SURFACE = Style(bg=ColorRGB(0x37, 0x30, 0x43))
+const TOOL_SURFACE = Style(bg=ColorRGB(0x2a, 0x35, 0x35))
+const USER_MARK = Style(fg=PINK, bold=true)
+const AGENT_MARK = Style(fg=INDIGO, bold=true)
+const TOOL_MARK = Style(fg=GREEN, bold=true)
+const TOOL_TEXT = Style(fg=ColorRGB(0xc4, 0xd6, 0xd1))
+const TOOL_DIM = Style(fg=ColorRGB(0xa8, 0xba, 0xb5))
+const TOOL_ERROR = Style(fg=ColorRGB(0xff, 0x7d, 0x91))
+
 function text_input()
     TextInput(; focused=true, style=TEXT_STYLE, cursor_style=Style(fg=DARK, bg=GREEN))
 end

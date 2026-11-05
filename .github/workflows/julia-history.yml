@@ -1,0 +1,88 @@
+name: Julia code history
+
+on:
+  push:
+  workflow_dispatch:
+
+# The generated branch is separate from working branches; GITHUB_TOKEN pushes
+# do not trigger another workflow. The job is skipped if the repository is private.
+permissions:
+  contents: write
+
+concurrency:
+  group: julia-code-history
+  queue: max
+
+jobs:
+  history:
+    if: ${{ !github.event.repository.private && !github.event.deleted && github.ref != 'refs/heads/generated/julia-history' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GOMAXPROCS: '4'
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
+        with:
+          version: '1.10'
+      - name: Install Hercules
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 'https://github.com/src-d/hercules/releases/download/v10.7.2/hercules.linux_amd64.gz' -o "$RUNNER_TEMP/hercules.gz"
+          echo 'ead7afbe72deb87cfd9a5481ef43c74e17f18259c417de6fd1272ef997ad0c44  '"$RUNNER_TEMP/hercules.gz" | sha256sum -c -
+          gzip -dc "$RUNNER_TEMP/hercules.gz" > "$RUNNER_TEMP/hercules"
+          chmod +x "$RUNNER_TEMP/hercules"
+      - name: Render hourly Julia cohorts
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/hercules" --burndown --first-parent --tick-size 1 --granularity 1 --sampling 1 --whitelist '\.jl$' "$GITHUB_WORKSPACE" > "$RUNNER_TEMP/history.yaml"
+          julia --startup-file=no scripts/render_history.jl "$RUNNER_TEMP/history.yaml" "$RUNNER_TEMP/history.svg"
+      - name: Publish the chart without changing source branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha=$(git rev-parse HEAD)
+          if [[ "$GITHUB_REF_TYPE" == branch ]]; then
+            remote_ref=$(git ls-remote origin "$GITHUB_REF")
+            remote_sha=${remote_ref%%$'\t'*}
+            if [[ "$remote_sha" != "$source_sha" ]]; then
+              echo 'A newer push is already available; its run will publish the latest chart.' | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
+          if [[ "$GITHUB_REF" == "refs/heads/$DEFAULT_BRANCH" ]]; then
+            chart_path='charts/default.svg'
+          else
+            ref_hash=$(printf '%s' "$GITHUB_REF" | sha256sum | cut -d' ' -f1)
+            chart_path="charts/$ref_hash.svg"
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          published_ref=$(git ls-remote --heads origin refs/heads/generated/julia-history)
+          if [[ -n "$published_ref" ]]; then
+            git fetch --no-tags --depth=1 origin refs/heads/generated/julia-history
+            git checkout --detach FETCH_HEAD
+          else
+            git checkout --orphan "julia-history-publish-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            git rm -rfq --ignore-unmatch .
+          fi
+          mkdir -p charts
+          cp "$RUNNER_TEMP/history.svg" "$chart_path"
+          git add -- "$chart_path"
+          if ! git diff --cached --quiet; then
+            git commit -m 'Update Julia code history'
+            git push origin HEAD:refs/heads/generated/julia-history
+          fi
+          published=$(git rev-parse HEAD)
+          {
+            echo '## Julia code history'
+            echo
+            echo "![Hourly Julia line cohorts](https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$published/$chart_path)"
+            echo
+            echo "[Open the chart](https://github.com/$GITHUB_REPOSITORY/blob/$published/$chart_path) · Source: \`$source_sha\`"
+          } >> "$GITHUB_STEP_SUMMARY"

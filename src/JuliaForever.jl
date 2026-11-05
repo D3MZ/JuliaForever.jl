@@ -1,11 +1,14 @@
 module JuliaForever
 
 using Tachikoma
+using JSON
 @tachikoma_app
 
 include("ChatGPTAuth.jl")
+include("HotReload.jl")
 include("NativeAgent.jl")
 include("CharmStyle.jl")
+include("Editor.jl")
 import .ChatGPTAuth
 import .NativeAgent
 import .CharmStyle
@@ -16,6 +19,32 @@ account_options() = ChatGPTAuth.saved_registration() === nothing ?
     ["ChatGPT", "ChatGPT (sign in again)", "Anthropic", "Google", "Other provider"]
 
 list(items) = SelectableList(collect(items); focused=true, highlight_style=CharmStyle.ACTIVE_STYLE, marker='>')
+
+@kwdef mutable struct ChatEntry
+    kind::Symbol
+    text::String = ""
+    call_id::String = ""
+    name::String = ""
+    arguments::String = ""
+    output::Union{Nothing,String} = nothing
+    status::Symbol = :done
+end
+
+struct ChatLine
+    spans::Vector{Span}
+    surface::Symbol
+    inset::Int
+end
+
+@kwdef mutable struct ChatLayout
+    width::Int = 0
+    lines::Vector{ChatLine} = ChatLine[]
+    ends::Vector{Int} = Int[]
+    streaming::String = ""
+    streaming_lines::Vector{ChatLine} = ChatLine[]
+    streaming_separator::Bool = false
+    stream_task::Union{Nothing,Task} = nothing
+end
 
 @kwdef mutable struct Menu <: Model
     page::Symbol = :auth
@@ -28,13 +57,18 @@ list(items) = SelectableList(collect(items); focused=true, highlight_style=Charm
     catalog::Vector{NamedTuple{(:id, :name, :window),Tuple{String,String,Int}}} = []
     filtered::Vector{Int} = Int[]
     selected_model::Int = 0
+    styled_pick::Int = -1
     search::TextInput = CharmStyle.text_input()
     prompt::TextInput = CharmStyle.text_input()
+    search_editor::EditorState = EditorState()
+    prompt_editor::EditorState = EditorState()
     pending::Union{Nothing,Channel{Any}} = nothing
     session::Union{Nothing,NativeAgent.Session} = nothing
-    transcript::Vector{String} = String[]
+    transcript::Vector{ChatEntry} = ChatEntry[]
+    tool_indices::Dict{String,Int} = Dict{String,Int}()
+    layout::ChatLayout = ChatLayout()
     streaming::String = ""
-    tool_run::Int = 0
+    expanded_tools::Bool = false
     scroll::Int = 0
     max_scroll::Int = 0
     chat_area::Rect = Rect()
@@ -63,6 +97,7 @@ function show_page!(menu::Menu, page::Symbol, options=String[])
     menu.button.last_area = Rect()
     if page in (:auth, :accounts, :models)
         menu.choices = list(options)
+        menu.styled_pick = -1
         menu.choices.selected = clamp(get(menu.picks, page, 1), 1, max(1, length(options)))
         set_focus!(menu, :content)
     else
@@ -71,11 +106,14 @@ function show_page!(menu::Menu, page::Symbol, options=String[])
 end
 
 function refresh_choices!(menu::Menu)
-    picked = menu.page == :models ? findfirst(==(menu.selected_model), menu.filtered) : get(menu.picks, menu.page, 0)
-    menu.choices.items = [ListItem(item.content, i == picked ? CharmStyle.ACTIVE_STYLE : CharmStyle.TEXT_STYLE;
-                                  prefix=i == picked ? "✓ " : "• ",
-                                  prefix_style=i == picked ? CharmStyle.ACTIVE_STYLE : CharmStyle.DIM_STYLE)
-                          for (i, item) in enumerate(menu.choices.items)]
+    picked = menu.page == :models ? something(findfirst(==(menu.selected_model), menu.filtered), 0) : get(menu.picks, menu.page, 0)
+    if menu.styled_pick != picked
+        menu.choices.items = [ListItem(item.content, i == picked ? CharmStyle.ACTIVE_STYLE : CharmStyle.TEXT_STYLE;
+                                      prefix=i == picked ? "✓ " : "• ",
+                                      prefix_style=i == picked ? CharmStyle.ACTIVE_STYLE : CharmStyle.DIM_STYLE)
+                              for (i, item) in enumerate(menu.choices.items)]
+        menu.styled_pick = picked
+    end
     if menu.focus != :content
         menu.choices.highlight_style = menu.choices.selected == picked ? CharmStyle.ACTIVE_STYLE : CharmStyle.TEXT_STYLE
     end
@@ -95,7 +133,7 @@ function start_models!(menu::Menu)
     events = Channel{Any}(1)
     menu.pending = events
     show_page!(menu, :loading)
-    @async begin
+    Threads.@spawn begin
         try
             Base.put!(events, (:models, NativeAgent.models()))
         catch error
@@ -111,39 +149,53 @@ function filter_models!(menu::Menu)
     menu.filtered = [i for (i, model) in enumerate(menu.catalog) if
                      occursin(query, lowercase(model.name)) || occursin(query, lowercase(model.id))]
     menu.choices = list([menu.catalog[i].name for i in menu.filtered])
+    menu.styled_pick = -1
     set_focus!(menu, menu.focus)
 end
 
-function record_tool!(menu::Menu, name::AbstractString)
-    if !isempty(menu.transcript) && startswith(menu.transcript[end], "→ ")
-        menu.tool_run += 1
-        menu.transcript[end] = "→ $(menu.tool_run) tool calls · $name"
-    else
-        menu.tool_run = 1
-        push!(menu.transcript, "→ " * name)
-    end
+function record_tool!(menu::Menu, call)
+    id = string(get(call, "call_id", ""))
+    push!(menu.transcript, ChatEntry(kind=:tool, call_id=id, name=string(get(call, "name", "tool")),
+                                    arguments=string(get(call, "arguments", "")), status=:running))
+    isempty(id) || (menu.tool_indices[id] = length(menu.transcript))
+end
+
+function record_tool_result!(menu::Menu, result)
+    index = get(menu.tool_indices, string(get(result, "call_id", "")), 0)
+    index == 0 && return
+    entry = menu.transcript[index]
+    entry.output = string(get(result, "output", ""))
+    exit_status = match(r"\nExit status: (-?\d+)\s*$", entry.output)
+    failed = startswith(entry.output, "Error: ") || startswith(entry.output, "Tool execution was interrupted") ||
+             (exit_status !== nothing && exit_status.captures[1] != "0")
+    entry.status = failed ? :error : :done
+    invalidate_chat!(menu, index)
 end
 
 function show_chat!(menu::Menu, session::NativeAgent.Session)
     menu.session = session
     empty!(menu.transcript)
-    menu.tool_run = 0
+    empty!(menu.tool_indices)
+    invalidate_chat!(menu)
     for item in session.input
         role, kind = get(item, "role", ""), get(item, "type", "")
         if role == "user" && get(item, "content", nothing) isa AbstractString
-            push!(menu.transcript, "You: " * item["content"])
+            push!(menu.transcript, ChatEntry(kind=:user, text=item["content"]))
         elseif role == "assistant"
             for part in get(item, "content", [])
-                get(part, "type", "") == "output_text" && push!(menu.transcript, "Agent: " * part["text"])
+                get(part, "type", "") == "output_text" && push!(menu.transcript, ChatEntry(kind=:agent, text=part["text"]))
             end
         elseif kind == "function_call"
-            record_tool!(menu, item["name"])
+            record_tool!(menu, item)
+        elseif kind == "function_call_output"
+            record_tool_result!(menu, item)
         end
     end
     menu.streaming = ""
     menu.scroll = 0
     menu.max_scroll = 0
     Tachikoma.clear!(menu.prompt)
+    reset_editor!(menu.prompt_editor)
     menu.pending = Channel{Any}(2048)
     show_page!(menu, :chat)
 end
@@ -158,6 +210,7 @@ function send_prompt!(menu::Menu)
     prompt = String(strip(Tachikoma.text(menu.prompt)))
     isempty(prompt) && return
     Tachikoma.clear!(menu.prompt)
+    reset_editor!(menu.prompt_editor)
     if prompt == "/restart"
         NativeAgent.remember_session!(menu.session)
         menu.restart = true
@@ -165,11 +218,11 @@ function send_prompt!(menu::Menu)
         return
     end
     menu.scroll = 0
-    push!(menu.transcript, "You: " * prompt)
+    push!(menu.transcript, ChatEntry(kind=:user, text=prompt))
     menu.streaming = ""
     menu.busy = true
     events, session = menu.pending, menu.session
-    @async begin
+    Threads.@spawn begin
         try
             NativeAgent.run_turn!(session, prompt, (kind, text) -> Base.put!(events, (kind, text)))
             Base.put!(events, (:done, ""))
@@ -238,11 +291,16 @@ function go_back!(menu::Menu)
 end
 
 function update!(menu::Menu, event::KeyEvent)
-    if event.key == :ctrl_c || (event.key == :ctrl && event.char == 'c')
+    menu.page == :chat && HotReload.on_key!(menu, event) && return
+    command = menu.page == :chat || (menu.page == :models && menu.focus == :content) ? editor_command(event) : nothing
+    if command === :ignore
+        return
+    elseif event.key == :ctrl_c || (event.key == :ctrl && event.char == 'c')
         menu.quit = true
-    elseif event.key == :escape
+    elseif event.key == :escape && command === nothing
         if menu.page == :models && !isempty(Tachikoma.text(menu.search))
             Tachikoma.clear!(menu.search)
+            reset_editor!(menu.search_editor)
             filter_models!(menu)
         else
             go_back!(menu)
@@ -250,24 +308,37 @@ function update!(menu::Menu, event::KeyEvent)
     elseif menu.page in (:waiting, :loading)
         return
     elseif menu.page == :chat
-        if event.key in (:up, :pageup)
-            menu.scroll += event.key == :up ? 1 : 10
+        if event.key == :ctrl && event.char == 'o'
+            menu.expanded_tools = !menu.expanded_tools
+            invalidate_chat!(menu)
+        elseif command === :scroll_top
+            menu.scroll = menu.max_scroll
+        elseif command === :scroll_bottom
+            menu.scroll = 0
+        elseif command !== nothing
+            edit_input!(menu.prompt, menu.prompt_editor, event, command)
+        elseif event.key in (:up, :pageup)
+            menu.scroll += event.key == :up ? 1 : max(1, menu.chat_area.height - 1)
         elseif event.key in (:down, :pagedown)
-            menu.scroll = max(0, menu.scroll - (event.key == :down ? 1 : 10))
+            menu.scroll = max(0, menu.scroll - (event.key == :down ? 1 : max(1, menu.chat_area.height - 1)))
         elseif event.key == :enter
             send_prompt!(menu)
-        elseif !menu.busy
-            handle_key!(menu.prompt, event)
+        else
+            edit_input!(menu.prompt, menu.prompt_editor, event, command)
         end
     elseif event.key in (:tab, :backtab) && menu.page in (:auth, :accounts, :models)
         set_focus!(menu, menu.focus == :content ? :continue : :content)
     elseif menu.focus == :continue
         handle_key!(menu.button, event) && continue_page!(menu)
+    elseif menu.page == :models && command !== nothing && !(command in (:scroll_top, :scroll_bottom))
+        before = Tachikoma.text(menu.search)
+        edit_input!(menu.search, menu.search_editor, event, command)
+        before == Tachikoma.text(menu.search) || filter_models!(menu)
     elseif event.key == :enter || (menu.page != :models && event.key == :char && event.char == ' ')
         select_choice!(menu)
     elseif menu.page == :models && !(event.key in (:up, :down, :home, :end_key, :pageup, :pagedown))
         before = Tachikoma.text(menu.search)
-        handle_key!(menu.search, event)
+        edit_input!(menu.search, menu.search_editor, event, command)
         before == Tachikoma.text(menu.search) || filter_models!(menu)
     else
         handle_key!(menu.choices, event)
@@ -379,8 +450,11 @@ end
 
 function poll_pending!(menu::Menu)
     events = menu.pending
-    events === nothing && return
-    while isready(events)
+    (events === nothing || !isready(events)) && return
+    # Bound each batch so a fast producer cannot monopolize the input loop.
+    deltas = IOBuffer()
+    for _ in 1:256
+        isready(events) || break
         kind, value = take!(events)
         if menu.page == :loading
             menu.pending = nothing
@@ -389,6 +463,7 @@ function poll_pending!(menu::Menu)
                 menu.filtered = collect(eachindex(menu.catalog))
                 menu.selected_model = 0
                 Tachikoma.clear!(menu.search)
+                reset_editor!(menu.search_editor)
                 show_page!(menu, :models, [model.name for model in menu.catalog])
             else
                 show_page!(menu, :accounts, account_options())
@@ -397,22 +472,28 @@ function poll_pending!(menu::Menu)
             return
         elseif menu.page == :chat
             if kind == :delta
-                menu.streaming *= value
-            elseif kind == :tool
-                isempty(menu.streaming) || push!(menu.transcript, "Agent: " * menu.streaming)
+                print(deltas, value)
+                continue
+            end
+            menu.streaming *= String(take!(deltas))
+            if kind == :tool
+                isempty(menu.streaming) || push!(menu.transcript, ChatEntry(kind=:agent, text=menu.streaming))
                 menu.streaming = ""
                 record_tool!(menu, value)
+            elseif kind == :tool_result
+                record_tool_result!(menu, value)
             elseif kind == :rollover
-                push!(menu.transcript, value)
+                push!(menu.transcript, ChatEntry(kind=:notice, text=value))
             elseif kind == :done || kind == :error
-                isempty(menu.streaming) || push!(menu.transcript, "Agent: " * menu.streaming)
+                isempty(menu.streaming) || push!(menu.transcript, ChatEntry(kind=:agent, text=menu.streaming))
                 menu.streaming = ""
-                kind == :error && push!(menu.transcript, value)
+                kind == :error && push!(menu.transcript, ChatEntry(kind=:error, text=value))
                 menu.busy = false
                 menu.notice = ""
             end
         end
     end
+    menu.streaming *= String(take!(deltas))
 end
 
 function model_view!(menu::Menu, frame::Frame)
@@ -430,48 +511,230 @@ function model_view!(menu::Menu, frame::Frame)
     put!(buffer, area, left, top + rows + 7, "type to search  ↑↓ move  enter select  tab focus  esc back", CharmStyle.DIM_STYLE)
 end
 
-function wrap_text(text::AbstractString, width::Int)
-    width < 1 && return String(text)
+function wrap_lines(text::AbstractString, width::Int)
+    width < 1 && return [String(text)]
     lines = String[]
-    for line in split(text, '\n'; keepempty=true)
-        expanded = IOBuffer()
-        column = 0
-        for char in Base.Unicode.graphemes(line)
-            if char == "\t"
-                spaces = 4 - mod(column, 4)
-                print(expanded, " "^spaces)
-                column += spaces
-            else
-                print(expanded, char)
-                column += textwidth(char)
+    for original in split(text, '\n'; keepempty=true)
+        line = if occursin('\t', original)
+            expanded = IOBuffer()
+            column = 0
+            for glyph in Base.Unicode.graphemes(original)
+                if glyph == "\t"
+                    spaces = 4 - mod(column, 4)
+                    print(expanded, " "^spaces)
+                    column += spaces
+                else
+                    print(expanded, glyph)
+                    column += textwidth(glyph)
+                end
             end
+            String(take!(expanded))
+        else
+            original
         end
-        chars = collect(Base.Unicode.graphemes(String(take!(expanded))))
-        if isempty(chars)
+        if isempty(line)
             push!(lines, "")
             continue
         end
-        start = 1
-        while start <= length(chars)
-            stop = start - 1
-            last_space = 0
-            columns = 0
-            for i in start:length(chars)
-                next_width = textwidth(chars[i])
-                columns + next_width > width && break
-                columns += next_width
-                stop = i
-                chars[i] == " " && (last_space = i)
+        start, limit = firstindex(line), ncodeunits(line) + 1
+        if all(b -> 0x20 <= b <= 0x7e, codeunits(line))
+            # Printable ASCII has one column per byte; avoid grapheme allocations.
+            while start < limit
+                stop = min(start + width, limit)
+                if stop < limit
+                    last_space, seen_nonspace = 0, false
+                    for i in start:stop-1
+                        if codeunit(line, i) == 0x20
+                            seen_nonspace && (last_space = i + 1)
+                        else
+                            seen_nonspace = true
+                        end
+                    end
+                    last_space != 0 && (stop = last_space)
+                end
+                push!(lines, String(SubString(line, start, stop - 1)))
+                start = stop
             end
-            stop < start && (stop = start)
-            if stop < length(chars) && last_space >= start && any(!=(" "), chars[start:last_space])
-                stop = last_space
+            continue
+        end
+        while start < limit
+            stop, next, last_space, columns = start, start, 0, 0
+            seen_nonspace = false
+            for glyph in Base.Unicode.graphemes(SubString(line, start))
+                next += ncodeunits(glyph)
+                glyph_width = textwidth(glyph)
+                columns + glyph_width > width && break
+                columns += glyph_width
+                stop = next
+                if glyph == " "
+                    seen_nonspace && (last_space = stop)
+                else
+                    seen_nonspace = true
+                end
             end
-            push!(lines, join(chars[start:stop]))
-            start = stop + 1
+            stop == start && (stop = next)
+            stop < limit && last_space != 0 && (stop = last_space)
+            push!(lines, String(SubString(line, start, prevind(line, stop))))
+            start = stop
         end
     end
-    join(lines, '\n')
+    lines
+end
+
+wrap_text(text::AbstractString, width::Int) = join(wrap_lines(text, width), '\n')
+
+function invalidate_chat!(menu::Menu, from::Int=1)
+    layout = menu.layout
+    keep = clamp(from - 1, 0, length(layout.ends))
+    resize!(layout.lines, keep == 0 ? 0 : layout.ends[keep])
+    resize!(layout.ends, keep)
+end
+
+function tool_summary(entry::ChatEntry)
+    args = try JSON.parse(entry.arguments) catch; nothing end
+    args isa AbstractDict || return entry.arguments
+    path = string(get(args, "path", ""))
+    if entry.name == "command"
+        return string(get(args, "command", ""))
+    elseif entry.name == "search"
+        query = string(get(args, "query", ""))
+        return isempty(path) ? repr(query) : repr(query) * " · " * path
+    elseif entry.name == "read" && haskey(args, "offset")
+        return path * ":" * string(args["offset"])
+    end
+    path
+end
+
+function wrapped_lines(text::AbstractString, width::Int)
+    wrap_lines(chomp(text), max(1, width))
+end
+
+# Bound collapsed previews before wrapping, including a single very long line.
+function output_preview(text::String, width::Int, limit::Int)
+    lines = String[]
+    more = false
+    for line in eachline(IOBuffer(text))
+        isempty(strip(line)) && continue
+        if length(lines) >= limit
+            more = true
+            break
+        end
+        sample = first(line, max(128, width * (limit + 1)))
+        more |= ncodeunits(sample) < ncodeunits(line)
+        append!(lines, wrapped_lines(sample, width))
+        length(lines) > limit && (more = true; break)
+    end
+    resize!(lines, min(length(lines), limit))
+    lines, more
+end
+
+function chat_entry_lines(entry::ChatEntry, width::Int, expanded::Bool)
+    inset = width >= 24 ? (entry.kind == :tool ? 3 : 1) : 0
+    surface = entry.kind == :user ? :user : entry.kind == :tool ? :tool : :none
+    # One cell of padding and two cells for the marker on each line.
+    body_width = max(1, width - 2 * inset - 3)
+    rows = ChatLine[]
+    function add_lines(text, marker, marker_style, text_style)
+        for (i, line) in enumerate(wrapped_lines(text, body_width))
+            lead = i == 1 ? marker : "  "
+            push!(rows, ChatLine([Span(lead, marker_style), Span(String(line), text_style)], surface, inset))
+        end
+    end
+    if entry.kind == :tool
+        state = entry.status == :running ? "…" : entry.status == :error ? "!" : "✓"
+        summary = tool_summary(entry)
+        header = entry.name * "  " * state * (isempty(summary) ? "" : "  " * summary)
+        header_lines, header_more = output_preview(header, body_width, 2)
+        for line in header_lines
+            push!(rows, ChatLine([Span("  ", CharmStyle.TOOL_DIM), Span(String(line), CharmStyle.TOOL_TEXT)], surface, inset))
+        end
+        header_more && push!(rows, ChatLine([Span("  …", CharmStyle.TOOL_DIM)], surface, inset))
+        if expanded && !isempty(entry.arguments)
+            args = try JSON.json(JSON.parse(entry.arguments); pretty=2) catch; entry.arguments end
+            add_lines(args, "  ", CharmStyle.TOOL_DIM, CharmStyle.TOOL_DIM)
+        end
+        if entry.output !== nothing && !isempty(entry.output)
+            if expanded
+                isempty(entry.arguments) || push!(rows, ChatLine(Span[], surface, inset))
+                add_lines(entry.output, "  ", CharmStyle.TOOL_DIM,
+                          entry.status == :error ? CharmStyle.TOOL_ERROR : CharmStyle.TOOL_DIM)
+            else
+                preview, more = output_preview(entry.output, body_width, 2)
+                for line in preview
+                    push!(rows, ChatLine([Span("  ", CharmStyle.TOOL_DIM),
+                                          Span(String(line), entry.status == :error ? CharmStyle.TOOL_ERROR : CharmStyle.TOOL_DIM)], surface, inset))
+                end
+                more && push!(rows, ChatLine([Span("  …", CharmStyle.TOOL_DIM)], surface, inset))
+            end
+        end
+    elseif entry.kind == :user
+        add_lines(entry.text, "❯ ", CharmStyle.USER_MARK, CharmStyle.TEXT_STYLE)
+    elseif entry.kind == :agent
+        add_lines(entry.text, "✦ ", CharmStyle.AGENT_MARK, CharmStyle.TEXT_STYLE)
+    else
+        style = entry.kind == :error ? CharmStyle.ERROR_STYLE : CharmStyle.DIM_STYLE
+        add_lines(entry.text, entry.kind == :error ? "! " : "· ", style, style)
+    end
+    rows
+end
+
+function streaming_rows(text::String, width::Int, separator::Bool)
+    rows = chat_entry_lines(ChatEntry(kind=:agent, text=text), width, false)
+    separator && pushfirst!(rows, ChatLine(Span[], :none, 0))
+    rows
+end
+
+function chat_layout!(menu::Menu, width::Int)
+    layout = menu.layout
+    if layout.width != width || length(layout.ends) > length(menu.transcript)
+        invalidate_chat!(menu)
+        layout.width = width
+        layout.streaming = ""
+        empty!(layout.streaming_lines)
+        layout.stream_task = nothing
+    end
+    blank = ChatLine(Span[], :none, 0)
+    for i in length(layout.ends)+1:length(menu.transcript)
+        i > 1 && push!(layout.lines, blank)
+        append!(layout.lines, chat_entry_lines(menu.transcript[i], width, menu.expanded_tools))
+        push!(layout.ends, length(layout.lines))
+    end
+    text = menu.streaming
+    separator = !isempty(menu.transcript)
+    if isempty(text)
+        layout.streaming = ""
+        empty!(layout.streaming_lines)
+        layout.stream_task = nothing
+        return layout
+    end
+    task = layout.stream_task
+    failed = false
+    if task !== nothing && istaskdone(task)
+        layout.stream_task = nothing
+        result = try fetch(task) catch; failed = true; nothing end
+        if result !== nothing
+            old_text, old_width, old_separator, rows = result
+            if old_width == width && old_separator == separator && startswith(text, old_text)
+                layout.streaming = old_text
+                layout.streaming_separator = old_separator
+                layout.streaming_lines = rows
+            end
+        end
+    end
+    if layout.streaming !== text || layout.streaming_separator != separator
+        if !failed && ncodeunits(text) >= 64_000 && Threads.nthreads() > 1
+            if layout.stream_task === nothing
+                # Large responses are laid out off the input thread. Keep the last
+                # completed view visible and coalesce newer deltas into the next job.
+                layout.stream_task = Threads.@spawn (text, width, separator, streaming_rows(text, width, separator))
+            end
+        else
+            layout.streaming = text
+            layout.streaming_separator = separator
+            layout.streaming_lines = streaming_rows(text, width, separator)
+        end
+    end
+    layout
 end
 
 function chat_view!(menu::Menu, frame::Frame)
@@ -485,26 +748,49 @@ function chat_view!(menu::Menu, frame::Frame)
     left, top, width, height = area.x, area.y, area.width, area.height
     model = menu.session.model
     put!(buffer, area, left, top, "JuliaForever · " * model, CharmStyle.TITLE_STYLE)
-    entries = [menu.transcript; (isempty(menu.streaming) ? String[] : ["Agent: " * menu.streaming])]
     available = height - 6
-    paragraph = Paragraph(wrap_text(join(entries, "\n"), width); show_scrollbar=false)
-    total = paragraph_line_count(paragraph, width)
+    layout = chat_layout!(menu, width)
+    fixed = length(layout.lines)
+    total = fixed + length(layout.streaming_lines)
     maximum_scroll = max(0, total - available)
     menu.scroll > 0 && (menu.scroll += maximum_scroll - menu.max_scroll)
     menu.scroll = clamp(menu.scroll, 0, maximum_scroll)
     menu.max_scroll = maximum_scroll
-    paragraph.scroll_offset = maximum_scroll - menu.scroll
+    first_line = maximum_scroll - menu.scroll + 1
+    last_line = min(total, first_line + available - 1)
     menu.chat_area = Rect(left, top + 2, width, available)
-    render(paragraph, menu.chat_area, buffer)
+    if first_line <= last_line
+        for (row, i) in enumerate(first_line:last_line)
+            line = i <= fixed ? layout.lines[i] : layout.streaming_lines[i - fixed]
+            y = menu.chat_area.y + row - 1
+            if line.surface != :none
+                style = line.surface == :user ? CharmStyle.USER_SURFACE : CharmStyle.TOOL_SURFACE
+                set_style!(buffer, Rect(left + line.inset, y, width - 2 * line.inset, 1), style)
+            end
+            x = left + line.inset + 1
+            for span in line.spans
+                x = set_string!(buffer, x, y, span.content, span.style; max_x=right(menu.chat_area) - line.inset)
+            end
+        end
+    end
+    if maximum_scroll > 0
+        indicator = (menu.scroll < maximum_scroll ? "↑" : "") * (menu.scroll > 0 ? " ↓" : "")
+        put!(buffer, area, max(left, left + width - textwidth(indicator)), top, indicator, CharmStyle.DIM_STYLE)
+    end
     prompt_y = top + height - 3
     put!(buffer, area, left, prompt_y, menu.busy ? "…" : "❯", CharmStyle.POINTER_STYLE)
     render(menu.prompt, Rect(left + 2, prompt_y, max(0, width - 2), 1), buffer)
-    footer = menu.busy ? "Agent working · ↑↓ scroll · ctrl+c exit" : "enter send  ↑↓ scroll  esc models  /restart"
+    footer = menu.busy ? "…  ↑↓ scroll  ctrl+o tools" : "enter send  ↑↓ scroll  ctrl+o tools  esc models"
+    feature_footer = HotReload.footer(menu)
+    feature_footer isa AbstractString && !isempty(feature_footer) && (footer = String(feature_footer))
     isempty(menu.notice) || (footer = menu.notice)
     put!(buffer, area, left, top + height - 1, footer, CharmStyle.DIM_STYLE)
 end
 
 function view(menu::Menu, frame::Frame)
+    reload_notice = HotReload.take_notice!()
+    isempty(reload_notice) || (menu.notice = reload_notice)
+    menu.page == :chat && HotReload.on_frame!(menu)
     menu.page == :waiting && poll_login!(menu)
     menu.page in (:loading, :chat) && poll_pending!(menu)
     if menu.page in (:auth, :accounts)
@@ -524,19 +810,41 @@ function view(menu::Menu, frame::Frame)
     end
 end
 
+# Live features are loaded into a fresh module at runtime, so package
+# precompilation cannot compile their input callback. Compile its actual method
+# without invoking it, before the first real keystroke reaches the UI.
+function warm_live_editor!(menu::Menu)
+    generation = HotReload.snapshot()
+    generation === nothing && return
+    try
+        callback = Base.invokelatest(getfield, generation.source, :on_key!)
+        Base.invokelatest(precompile, callback, (typeof(menu), KeyEvent, Dict{Symbol,Any}))
+    catch
+        # A custom feature's errors are reported by the normal hook on use.
+    end
+end
+
 function main()
+    HotReload.start!(@__MODULE__)
     menu = Menu()
+    warm_live_editor!(menu)
     previous = NativeAgent.restore_session()
     previous === nothing || show_chat!(menu, previous)
+    capturing = Tachikoma.raw_capture_enabled()
+    Tachikoma.enable_raw_capture!()
     try
-        app(menu; fps=10, default_bindings=false)
+        app(menu; fps=120, default_bindings=false)
     finally
+        capturing || Tachikoma.disable_raw_capture!()
         menu.flow === nothing || ChatGPTAuth.cancel!(menu.flow)
+        HotReload.stop!()
     end
     if menu.restart
         project = dirname(@__DIR__)
         run(`$(Base.julia_cmd()) --project=$project $(joinpath(project, "run.jl"))`)
     end
 end
+
+include("Precompile.jl")
 
 end
