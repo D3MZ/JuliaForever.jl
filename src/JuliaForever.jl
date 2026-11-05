@@ -7,10 +7,12 @@ using JSON
 include("ChatGPTAuth.jl")
 include("HotReload.jl")
 include("NativeAgent.jl")
+include("BuildCore.jl")
 include("CharmStyle.jl")
 include("Editor.jl")
 import .ChatGPTAuth
 import .NativeAgent
+import .BuildCore
 import .CharmStyle
 
 const AUTH_OPTIONS = ["Sign in with an account", "Sign in with an API key"]
@@ -59,9 +61,16 @@ end
     selected_model::Int = 0
     styled_pick::Int = -1
     search::TextInput = CharmStyle.text_input()
+    feature_search::TextInput = CharmStyle.text_input()
+    harness_name::TextInput = CharmStyle.text_input()
     prompt::TextInput = CharmStyle.text_input()
     search_editor::EditorState = EditorState()
+    feature_editor::EditorState = EditorState()
+    name_editor::EditorState = EditorState()
     prompt_editor::EditorState = EditorState()
+    builder::Union{Nothing,BuildCore.BuildSession} = nothing
+    feature_filtered::Vector{Int} = collect(eachindex(BuildCore.RECIPES))
+    feature_signature::String = ""
     pending::Union{Nothing,Channel{Any}} = nothing
     session::Union{Nothing,NativeAgent.Session} = nothing
     transcript::Vector{ChatEntry} = ChatEntry[]
@@ -73,6 +82,7 @@ end
     max_scroll::Int = 0
     chat_area::Rect = Rect()
     busy::Bool = false
+    control::Union{Nothing,NativeAgent.TurnControl} = nothing
     restart::Bool = false
     quit::Bool = false
 end
@@ -85,6 +95,8 @@ function set_focus!(menu::Menu, focus::Symbol)
     menu.button.focused = !active
     menu.choices.focused = active
     menu.search.focused = active
+    menu.feature_search.focused = active
+    menu.harness_name.focused = active
     menu.choices.marker = active ? '>' : ' '
     menu.choices.highlight_style = active ? CharmStyle.ACTIVE_STYLE : CharmStyle.TEXT_STYLE
 end
@@ -95,7 +107,7 @@ function show_page!(menu::Menu, page::Symbol, options=String[])
     menu.button.label = page == :limited ? "Done" : "Continue"
     menu.button.flash_remaining = 0
     menu.button.last_area = Rect()
-    if page in (:auth, :accounts, :models)
+    if page in (:auth, :accounts, :models, :features, :name)
         menu.choices = list(options)
         menu.styled_pick = -1
         menu.choices.selected = clamp(get(menu.picks, page, 1), 1, max(1, length(options)))
@@ -168,7 +180,7 @@ function record_tool_result!(menu::Menu, result)
     exit_status = match(r"\nExit status: (-?\d+)\s*$", entry.output)
     failed = startswith(entry.output, "Error: ") || startswith(entry.output, "Tool execution was interrupted") ||
              (exit_status !== nothing && exit_status.captures[1] != "0")
-    entry.status = failed ? :error : :done
+    entry.status = failed ? :error : startswith(entry.output, "Skipped because the user steered") ? :skipped : :done
     invalidate_chat!(menu, index)
 end
 
@@ -200,9 +212,56 @@ function show_chat!(menu::Menu, session::NativeAgent.Session)
     show_page!(menu, :chat)
 end
 
-function begin_chat!(menu::Menu)
+function show_features!(menu::Menu)
     model = menu.catalog[menu.selected_model]
-    show_chat!(menu, NativeAgent.Session(model.id, model.window, pwd()))
+    if menu.builder === nothing || menu.builder.model != model.id
+        old = menu.builder
+        old === nothing || Threads.@spawn BuildCore.cleanup!(old)
+        menu.builder = BuildCore.BuildSession(model.id, model.window)
+        Tachikoma.clear!(menu.feature_search)
+        reset_editor!(menu.feature_editor)
+        menu.feature_filtered = collect(eachindex(BuildCore.RECIPES))
+    end
+    menu.feature_signature = ""
+    show_page!(menu, :features, [BuildCore.RECIPES[i].name for i in menu.feature_filtered])
+end
+
+function filter_features!(menu::Menu)
+    words = split(lowercase(strip(Tachikoma.text(menu.feature_search))))
+    menu.feature_filtered = [i for (i, recipe) in enumerate(BuildCore.RECIPES) if
+                             all(word -> occursin(word, lowercase(recipe.name * " " * recipe.description)), words)]
+    menu.choices = list([BuildCore.RECIPES[i].name for i in menu.feature_filtered])
+    menu.feature_signature = ""
+    set_focus!(menu, menu.focus)
+end
+
+function toggle_feature!(menu::Menu)
+    isempty(menu.feature_filtered) && return
+    recipe = BuildCore.RECIPES[menu.feature_filtered[menu.choices.selected]]
+    state = BuildCore.snapshot(menu.builder)
+    if haskey(state.jobs, recipe.id)
+        BuildCore.remove_feature!(menu.builder, recipe.id)
+    else
+        BuildCore.start_feature!(menu.builder, recipe.id)
+    end
+    menu.feature_signature = ""
+    menu.notice = ""
+end
+
+function open_built_harness!(menu::Menu, install_dir::String)
+    events, builder = Channel{Any}(1), menu.builder
+    menu.pending = events
+    show_page!(menu, :opening)
+    Threads.@spawn begin
+        try
+            HotReload.stop!()
+            ENV["JULIAFOREVER_PROFILE"] = install_dir
+            HotReload.start!(@__MODULE__, joinpath(install_dir, "features"))
+            Base.put!(events, (:opened, (builder.model, builder.window)))
+        catch error
+            Base.put!(events, (:error, "Could not open the harness: " * sprint(showerror, error)))
+        end
+    end
 end
 
 function send_prompt!(menu::Menu)
@@ -221,10 +280,13 @@ function send_prompt!(menu::Menu)
     push!(menu.transcript, ChatEntry(kind=:user, text=prompt))
     menu.streaming = ""
     menu.busy = true
+    menu.notice = ""
     events, session = menu.pending, menu.session
+    control = NativeAgent.TurnControl()
+    menu.control = control
     Threads.@spawn begin
         try
-            NativeAgent.run_turn!(session, prompt, (kind, text) -> Base.put!(events, (kind, text)))
+            NativeAgent.run_turn!(session, prompt, (kind, text) -> Base.put!(events, (kind, text)); control=control)
             Base.put!(events, (:done, ""))
         catch error
             message = error isa NativeAgent.ProviderError || error isa ChatGPTAuth.LoginError ?
@@ -232,6 +294,25 @@ function send_prompt!(menu::Menu)
             Base.put!(events, (:error, message))
         end
     end
+end
+
+function queue_prompt!(menu::Menu, mode::Symbol)
+    menu.busy || return false
+    control = menu.control
+    control === nothing && return false
+    prompt = String(strip(Tachikoma.text(menu.prompt)))
+    isempty(prompt) && return true
+    if !NativeAgent.enqueue!(control, prompt, mode)
+        menu.notice = "The agent is finishing; send again in a moment."
+        return true
+    end
+    Tachikoma.clear!(menu.prompt)
+    reset_editor!(menu.prompt_editor)
+    push!(menu.transcript, ChatEntry(kind=:user, text=prompt))
+    invalidate_chat!(menu)
+    menu.scroll = 0
+    menu.notice = mode == :steer ? "Steering after the current operation." : "Follow-up queued."
+    true
 end
 
 function continue_page!(menu::Menu)
@@ -261,7 +342,18 @@ function continue_page!(menu::Menu)
     elseif menu.page == :connected
         start_models!(menu)
     elseif menu.page == :models
-        menu.selected_model == 0 ? (menu.notice = "Select a model to continue.") : begin_chat!(menu)
+        menu.selected_model == 0 ? (menu.notice = "Select a model to continue.") : show_features!(menu)
+    elseif menu.page == :features
+        show_page!(menu, :name)
+    elseif menu.page == :name
+        name = String(strip(Tachikoma.text(menu.harness_name)))
+        try
+            BuildCore.validate_name(name)
+            BuildCore.start_finalize!(menu.builder, name)
+            show_page!(menu, :building)
+        catch error
+            menu.notice = sprint(showerror, error)
+        end
     elseif menu.page == :limited
         menu.quit = true
     end
@@ -279,6 +371,13 @@ function go_back!(menu::Menu)
     elseif menu.page == :models || menu.page == :loading
         menu.pending = nothing
         show_page!(menu, :accounts, account_options())
+    elseif menu.page == :features
+        show_page!(menu, :models, [menu.catalog[i].name for i in menu.filtered])
+    elseif menu.page == :name
+        show_features!(menu)
+    elseif menu.page == :building
+        BuildCore.cancel_finalize!(menu.builder)
+        show_page!(menu, :name)
     elseif menu.page == :chat
         if menu.busy
             menu.notice = "The agent is working."
@@ -292,7 +391,17 @@ end
 
 function update!(menu::Menu, event::KeyEvent)
     menu.page == :chat && HotReload.on_key!(menu, event) && return
-    command = menu.page == :chat || (menu.page == :models && menu.focus == :content) ? editor_command(event) : nothing
+    # Keep the core delivery shortcuts available if a generated adapter misses
+    # Tachikoma's concrete key encoding. Only the selected feature enables them.
+    if menu.page == :chat && menu.busy && event.action != Tachikoma.key_release &&
+       (event.key == :enter || (event.key == :ctrl && event.char == 'g'))
+        generation = HotReload.snapshot()
+        if generation !== nothing && any(pair -> basename(first(pair)) == "steer-queue.jl", generation.sources)
+            queue_prompt!(menu, event.key == :enter ? :steer : :queue)
+            return
+        end
+    end
+    command = menu.page == :chat || (menu.page in (:models, :features, :name) && menu.focus == :content) ? editor_command(event) : nothing
     if command === :ignore
         return
     elseif event.key == :ctrl_c || (event.key == :ctrl && event.char == 'c')
@@ -302,10 +411,14 @@ function update!(menu::Menu, event::KeyEvent)
             Tachikoma.clear!(menu.search)
             reset_editor!(menu.search_editor)
             filter_models!(menu)
+        elseif menu.page == :features && !isempty(Tachikoma.text(menu.feature_search))
+            Tachikoma.clear!(menu.feature_search)
+            reset_editor!(menu.feature_editor)
+            filter_features!(menu)
         else
             go_back!(menu)
         end
-    elseif menu.page in (:waiting, :loading)
+    elseif menu.page in (:waiting, :loading, :opening, :building)
         return
     elseif menu.page == :chat
         if event.key == :ctrl && event.char == 'o'
@@ -326,7 +439,7 @@ function update!(menu::Menu, event::KeyEvent)
         else
             edit_input!(menu.prompt, menu.prompt_editor, event, command)
         end
-    elseif event.key in (:tab, :backtab) && menu.page in (:auth, :accounts, :models)
+    elseif event.key in (:tab, :backtab) && menu.page in (:auth, :accounts, :models, :features, :name)
         set_focus!(menu, menu.focus == :content ? :continue : :content)
     elseif menu.focus == :continue
         handle_key!(menu.button, event) && continue_page!(menu)
@@ -334,6 +447,18 @@ function update!(menu::Menu, event::KeyEvent)
         before = Tachikoma.text(menu.search)
         edit_input!(menu.search, menu.search_editor, event, command)
         before == Tachikoma.text(menu.search) || filter_models!(menu)
+    elseif menu.page == :name
+        event.key == :enter || edit_input!(menu.harness_name, menu.name_editor, event, command)
+    elseif menu.page == :features && command !== nothing && !(command in (:scroll_top, :scroll_bottom))
+        before = Tachikoma.text(menu.feature_search)
+        edit_input!(menu.feature_search, menu.feature_editor, event, command)
+        before == Tachikoma.text(menu.feature_search) || filter_features!(menu)
+    elseif menu.page == :features && event.key == :enter
+        toggle_feature!(menu)
+    elseif menu.page == :features && !(event.key in (:up, :down, :home, :end_key, :pageup, :pagedown))
+        before = Tachikoma.text(menu.feature_search)
+        edit_input!(menu.feature_search, menu.feature_editor, event, command)
+        before == Tachikoma.text(menu.feature_search) || filter_features!(menu)
     elseif event.key == :enter || (menu.page != :models && event.key == :char && event.char == ' ')
         select_choice!(menu)
     elseif menu.page == :models && !(event.key in (:up, :down, :home, :end_key, :pageup, :pagedown))
@@ -353,16 +478,16 @@ function update!(menu::Menu, event::MouseEvent)
         end
         return
     end
-    menu.page in (:waiting, :loading) && return
+    menu.page in (:waiting, :loading, :opening, :building) && return
     if handle_mouse!(menu.button, event)
         set_focus!(menu, :continue)
         continue_page!(menu)
         return
     end
     click = event.button == mouse_left && event.action == mouse_press
-    if menu.page in (:auth, :accounts, :models) && handle_mouse!(menu.choices, event) && click
+    if menu.page in (:auth, :accounts, :models, :features) && handle_mouse!(menu.choices, event) && click
         set_focus!(menu, :content)
-        select_choice!(menu)
+        menu.page == :features ? toggle_feature!(menu) : select_choice!(menu)
     end
 end
 
@@ -456,7 +581,21 @@ function poll_pending!(menu::Menu)
     for _ in 1:256
         isready(events) || break
         kind, value = take!(events)
-        if menu.page == :loading
+        if menu.page == :opening
+            menu.pending = nothing
+            if kind == :opened
+                model, window = value
+                builder = menu.builder
+                menu.builder = nothing
+                builder === nothing || Threads.@spawn BuildCore.cleanup!(builder)
+                show_chat!(menu, NativeAgent.Session(model, window, pwd()))
+                menu.notice = "Harness installed and ready."
+            else
+                show_page!(menu, :name)
+                menu.notice = value
+            end
+            return
+        elseif menu.page == :loading
             menu.pending = nothing
             if kind == :models
                 menu.catalog = value
@@ -484,6 +623,9 @@ function poll_pending!(menu::Menu)
                 record_tool_result!(menu, value)
             elseif kind == :rollover
                 push!(menu.transcript, ChatEntry(kind=:notice, text=value))
+            elseif kind == :boundary
+                isempty(menu.streaming) || push!(menu.transcript, ChatEntry(kind=:agent, text=menu.streaming))
+                menu.streaming = ""
             elseif kind == :done || kind == :error
                 isempty(menu.streaming) || push!(menu.transcript, ChatEntry(kind=:agent, text=menu.streaming))
                 menu.streaming = ""
@@ -509,6 +651,75 @@ function model_view!(menu::Menu, frame::Frame)
     isempty(menu.notice) || put!(buffer, area, left, top + rows + 3, menu.notice, CharmStyle.ERROR_STYLE)
     button_view!(menu, frame, left, top + rows + 5, width)
     put!(buffer, area, left, top + rows + 7, "type to search  ↑↓ move  enter select  tab focus  esc back", CharmStyle.DIM_STYLE)
+end
+
+function feature_view!(menu::Menu, frame::Frame)
+    state = BuildCore.snapshot(menu.builder)
+    signature = join([string(i, ':', haskey(state.jobs, BuildCore.RECIPES[i].id) ?
+                            state.jobs[BuildCore.RECIPES[i].id].state : :off) for i in menu.feature_filtered], ',')
+    if signature != menu.feature_signature
+        menu.choices.items = [begin
+            recipe = BuildCore.RECIPES[i]
+            job = get(state.jobs, recipe.id, nothing)
+            marker = job === nothing ? "• " : job.state == :done ? "✓ " : job.state == :failed ? "! " : "… "
+            style = job === nothing ? CharmStyle.DIM_STYLE : job.state == :failed ? CharmStyle.ERROR_STYLE : CharmStyle.ACTIVE_STYLE
+            suffix = job === nothing ? "" : job.state == :running ? "  building" : job.state == :failed ? "  failed" : "  ready"
+            ListItem(recipe.name * suffix, CharmStyle.TEXT_STYLE; prefix=marker, prefix_style=style)
+        end for i in menu.feature_filtered]
+        menu.feature_signature = signature
+    end
+    area, buffer = frame.area, frame.buffer
+    rows = min(10, max(1, length(menu.choices.items)), max(1, area.height - 9))
+    width = min(72, area.width)
+    left, top, width = position(area, width, rows + 8)
+    put!(buffer, area, left, top, "Build your features:", CharmStyle.TITLE_STYLE)
+    put!(buffer, area, left, top + 2, "Search:", CharmStyle.POINTER_STYLE)
+    render(menu.feature_search, Rect(left + 8, top + 2, max(0, width - 8), 1), buffer)
+    choices_view!(menu, Rect(left, top + 3, width, rows), buffer)
+    if !isempty(menu.feature_filtered)
+        recipe = BuildCore.RECIPES[menu.feature_filtered[menu.choices.selected]]
+        job = get(state.jobs, recipe.id, nothing)
+        message = job !== nothing && job.state == :failed ? job.error : menu.notice
+        isempty(message) || put!(buffer, area, left, top + rows + 3, message, CharmStyle.ERROR_STYLE)
+    end
+    button_view!(menu, frame, left, top + rows + 5, width)
+    put!(buffer, area, left, top + rows + 7, "type to search  ↑↓ move  enter toggle  tab focus  esc back", CharmStyle.DIM_STYLE)
+end
+
+function name_view!(menu::Menu, frame::Frame)
+    area, buffer = frame.area, frame.buffer
+    width = min(72, area.width)
+    left, top, width = position(area, width, 9)
+    put!(buffer, area, left, top, "Name your harness:", CharmStyle.TITLE_STYLE)
+    render(menu.harness_name, Rect(left, top + 2, max(0, width), 1), buffer)
+    put!(buffer, area, left, top + 4, "Use this name as a command in your terminal.", CharmStyle.DIM_STYLE)
+    isempty(menu.notice) || put!(buffer, area, left, top + 5, menu.notice, CharmStyle.ERROR_STYLE)
+    button_view!(menu, frame, left, top + 7, width)
+    put!(buffer, area, left, top + 9, "tab focus  enter activate  esc back", CharmStyle.DIM_STYLE)
+end
+
+function building_view!(menu::Menu, frame::Frame)
+    state = BuildCore.snapshot(menu.builder)
+    if state.state == :done
+        open_built_harness!(menu, state.install_dir)
+        return
+    end
+    area, buffer = frame.area, frame.buffer
+    width = min(72, area.width)
+    left, top, width = position(area, width, 9)
+    title = state.state == :failed ? "Build needs attention" : "Building your harness…"
+    put!(buffer, area, left, top, title, state.state == :failed ? CharmStyle.ERROR_STYLE : CharmStyle.TITLE_STYLE)
+    done = count(j -> j.state == :done, values(state.jobs)) + Int(state.build_done) + Int(state.alias_done)
+    total = length(state.jobs) + 2
+    render(CharmStyle.Progress(done / total), Rect(left, top + 2, width, 1), buffer)
+    if state.state == :failed
+        put!(buffer, area, left, top + 4, state.error, CharmStyle.ERROR_STYLE)
+    else
+        seconds = BuildCore.estimate(menu.builder)
+        estimate = seconds === nothing ? "Estimating time…" : "About $(ceil(Int, seconds))s remaining"
+        put!(buffer, area, left, top + 4, "$done / $total complete  ·  $estimate", CharmStyle.DIM_STYLE)
+    end
+    put!(buffer, area, left, top + 7, "esc back", CharmStyle.DIM_STYLE)
 end
 
 function wrap_lines(text::AbstractString, width::Int)
@@ -641,7 +852,7 @@ function chat_entry_lines(entry::ChatEntry, width::Int, expanded::Bool)
         end
     end
     if entry.kind == :tool
-        state = entry.status == :running ? "…" : entry.status == :error ? "!" : "✓"
+        state = entry.status == :running ? "…" : entry.status == :error ? "!" : entry.status == :skipped ? "–" : "✓"
         summary = tool_summary(entry)
         header = entry.name * "  " * state * (isempty(summary) ? "" : "  " * summary)
         header_lines, header_more = output_preview(header, body_width, 2)
@@ -792,16 +1003,22 @@ function view(menu::Menu, frame::Frame)
     isempty(reload_notice) || (menu.notice = reload_notice)
     menu.page == :chat && HotReload.on_frame!(menu)
     menu.page == :waiting && poll_login!(menu)
-    menu.page in (:loading, :chat) && poll_pending!(menu)
+    menu.page in (:loading, :opening, :chat) && poll_pending!(menu)
     if menu.page in (:auth, :accounts)
         choice_view!(menu, frame)
     elseif menu.page == :models
         model_view!(menu, frame)
+    elseif menu.page == :features
+        feature_view!(menu, frame)
+    elseif menu.page == :name
+        name_view!(menu, frame)
+    elseif menu.page == :building
+        building_view!(menu, frame)
     elseif menu.page == :chat
         chat_view!(menu, frame)
-    elseif menu.page == :loading
+    elseif menu.page in (:loading, :opening)
         left, top, width = position(frame.area, 36, 3)
-        put!(frame.buffer, frame.area, left, top, "Loading models…", CharmStyle.TITLE_STYLE)
+        put!(frame.buffer, frame.area, left, top, menu.page == :opening ? "Opening harness…" : "Loading models…", CharmStyle.TITLE_STYLE)
         if frame.area.y <= top + 2 <= bottom(frame.area)
             render(CharmStyle.Progress(nothing), Rect(left, top + 2, width, 1), frame.buffer)
         end
@@ -816,20 +1033,30 @@ end
 function warm_live_editor!(menu::Menu)
     generation = HotReload.snapshot()
     generation === nothing && return
-    try
-        callback = Base.invokelatest(getfield, generation.source, :on_key!)
-        Base.invokelatest(precompile, callback, (typeof(menu), KeyEvent, Dict{Symbol,Any}))
-    catch
-        # A custom feature's errors are reported by the normal hook on use.
+    for (_, source) in generation.sources
+        try
+            callback = Base.invokelatest(getfield, source, :on_key!)
+            Base.invokelatest(precompile, callback, (typeof(menu), KeyEvent, Dict{Symbol,Any}))
+        catch
+            # A custom feature's errors are reported by the normal hook on use.
+        end
     end
 end
 
 function main()
-    HotReload.start!(@__MODULE__)
+    profile = get(ENV, "JULIAFOREVER_PROFILE", "")
+    feature_path = isempty(profile) ? joinpath(@__DIR__, "LiveFeatures.jl") : joinpath(profile, "features")
+    !isempty(profile) && !isdir(feature_path) && error("Harness feature directory not found: $feature_path")
+    HotReload.start!(@__MODULE__, feature_path)
     menu = Menu()
     warm_live_editor!(menu)
     previous = NativeAgent.restore_session()
-    previous === nothing || show_chat!(menu, previous)
+    if previous !== nothing
+        show_chat!(menu, previous)
+    elseif !isempty(profile)
+        data = JSON.parsefile(joinpath(profile, "profile.json"))
+        show_chat!(menu, NativeAgent.Session(String(data["model"]), Int(data["window"]), pwd()))
+    end
     capturing = Tachikoma.raw_capture_enabled()
     Tachikoma.enable_raw_capture!()
     try
@@ -837,6 +1064,7 @@ function main()
     finally
         capturing || Tachikoma.disable_raw_capture!()
         menu.flow === nothing || ChatGPTAuth.cancel!(menu.flow)
+        menu.builder === nothing || BuildCore.cleanup!(menu.builder)
         HotReload.stop!()
     end
     if menu.restart

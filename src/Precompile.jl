@@ -53,7 +53,7 @@ using PrecompileTools: @setup_workload, @compile_workload
         session = NativeAgent.Session("profile-model", 272_000, "/tmp", "", String[], nothing,
             Any[Dict("role" => "user", "content" => "A short prompt"),
                 Dict("role" => "assistant", "content" => [Dict("type" => "output_text",
-                    "text" => "A short response with café and wide text 漢字.")])], 0)
+                    "text" => "A short response with café and wide text 漢字.")])], 0, true)
         show_chat!(menu, session)
         view(menu, frame)
         Tachikoma.dispatch_event!(terminal, overlay, menu, Tachikoma._track_key_state!(KeyEvent('p')), false)
