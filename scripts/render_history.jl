@@ -1,8 +1,6 @@
 using Dates
 using Printf
 
-# Read the small, fixed part of the YAML format emitted by the pinned Hercules
-# release. The project block is a rectangular matrix, not general YAML.
 function read_history(path)
     section = ""
     fields = Dict{String,Int}()
@@ -15,7 +13,7 @@ function read_history(path)
                     values = split(strip(line))
                     isempty(values) && continue
                     row = [parse(Int, value) for value in values]
-                    any(<(0), row) && error("Negative Hercules line count")
+                    any(value -> value < 0, row) && error("Negative Hercules line count")
                     isempty(rows) || length(row) == length(first(rows)) || error("Non-rectangular Hercules matrix")
                     push!(rows, row)
                     continue
@@ -96,8 +94,6 @@ function chart(io, origin, rows)
         println(io, "<text x=\"92\" y=\"$yy\" text-anchor=\"end\" dominant-baseline=\"middle\" fill=\"#a6abb8\" font-size=\"13\">$(commas(value))</text>")
     end
 
-    # Each row represents the final state for an hour and occupies that full hour.
-    # Drop flat steps, but preserve each surviving cohort as a separate band.
     lower = zeros(Int, count)
     for cohort in 1:cohorts
         values = [row[cohort] for row in rows]

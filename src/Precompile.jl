@@ -1,7 +1,5 @@
 using PrecompileTools: @setup_workload, @compile_workload
 
-# Compile the interactive paths ahead of time, without reading credentials,
-# starting a server, or contacting a provider.
 @setup_workload begin
     menu = Menu()
     output = IOBuffer()
@@ -50,10 +48,10 @@ using PrecompileTools: @setup_workload, @compile_workload
         Tachikoma.dispatch_event!(terminal, overlay, menu,
             MouseEvent(area.x, area.y, mouse_left, mouse_press, false, false, false), false)
 
-        session = NativeAgent.Session("profile-model", 272_000, "/tmp", "", String[], nothing,
-            Any[Dict("role" => "user", "content" => "A short prompt"),
-                Dict("role" => "assistant", "content" => [Dict("type" => "output_text",
-                    "text" => "A short response with café and wide text 漢字.")])], 0, true)
+        session = NativeAgent.Session(model="profile-model", cwd="/tmp",
+            input=Any[Dict("role" => "user", "content" => "A short prompt"),
+                      Dict("role" => "assistant", "content" => [Dict("type" => "output_text",
+                          "text" => "A short response with café and wide text 漢字.")])])
         show_chat!(menu, session)
         view(menu, frame)
         Tachikoma.dispatch_event!(terminal, overlay, menu, Tachikoma._track_key_state!(KeyEvent('p')), false)
@@ -82,9 +80,8 @@ using PrecompileTools: @setup_workload, @compile_workload
             view(menu, rendered)
         end
         Tachikoma.reset_key_state!()
-        # Exercise the event loop with an in-memory terminal, never the user's TTY.
         menu.quit = false
-        show_page!(menu, :auth, AUTH_OPTIONS)
+        show_page!(menu, :auth, auth_options())
         Tachikoma.enable_raw_capture!()
         try
             Tachikoma.app(menu; fps=120, default_bindings=false, io=IOBuffer(),

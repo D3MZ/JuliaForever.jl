@@ -2,46 +2,43 @@ module CharmStyle
 
 using Tachikoma
 
-# Charm's dark form palette and Bubbles' purple-to-pink progress blend.
-const INDIGO = ColorRGB(0x75, 0x71, 0xf9)
-const PINK = ColorRGB(0xf7, 0x80, 0xe2)
-const GREEN = ColorRGB(0x02, 0xcf, 0x92)
-const PROGRESS_START = ColorRGB(0x5a, 0x56, 0xe0)
-const PROGRESS_END = ColorRGB(0xee, 0x6f, 0xf8)
-const TEXT = Color256(252)
-const DIM = Color256(245)
-const RAIL = Color256(238)
-const EMPTY = ColorRGB(0x60, 0x60, 0x60)
-const DARK = ColorRGB(0x1a, 0x1a, 0x1a)
+@kwdef struct Theme
+    indigo::ColorRGB = ColorRGB(0x75, 0x71, 0xf9)
+    pink::ColorRGB = ColorRGB(0xf7, 0x80, 0xe2)
+    green::ColorRGB = ColorRGB(0x02, 0xcf, 0x92)
+    progress_start::ColorRGB = ColorRGB(0x5a, 0x56, 0xe0)
+    progress_end::ColorRGB = ColorRGB(0xee, 0x6f, 0xf8)
+    text_color::Color256 = Color256(252)
+    dim_color::Color256 = Color256(245)
+    empty_color::ColorRGB = ColorRGB(0x60, 0x60, 0x60)
+    dark_color::ColorRGB = ColorRGB(0x1a, 0x1a, 0x1a)
 
-const TITLE_STYLE = Style(fg=INDIGO, bold=true)
-const TEXT_STYLE = Style(fg=TEXT)
-const DIM_STYLE = Style(fg=DIM)
-const ACTIVE_STYLE = Style(fg=GREEN)
-const POINTER_STYLE = Style(fg=PINK)
-const RAIL_STYLE = Style(fg=RAIL)
-const ERROR_STYLE = Style(fg=ColorRGB(0xff, 0x46, 0x72))
-
-# Conversation roles use both shape and spacing, with quiet surfaces as a secondary cue.
-const USER_SURFACE = Style(bg=ColorRGB(0x37, 0x30, 0x43))
-const TOOL_SURFACE = Style(bg=ColorRGB(0x2a, 0x35, 0x35))
-const USER_MARK = Style(fg=PINK, bold=true)
-const AGENT_MARK = Style(fg=INDIGO, bold=true)
-const TOOL_MARK = Style(fg=GREEN, bold=true)
-const TOOL_TEXT = Style(fg=ColorRGB(0xc4, 0xd6, 0xd1))
-const TOOL_DIM = Style(fg=ColorRGB(0xa8, 0xba, 0xb5))
-const TOOL_ERROR = Style(fg=ColorRGB(0xff, 0x7d, 0x91))
-
-function text_input()
-    TextInput(; focused=true, style=TEXT_STYLE, cursor_style=Style(fg=DARK, bg=GREEN))
+    title::Style = Style(fg=indigo, bold=true)
+    text::Style = Style(fg=text_color)
+    dim::Style = Style(fg=dim_color)
+    active::Style = Style(fg=green)
+    pointer::Style = Style(fg=pink)
+    error::Style = Style(fg=ColorRGB(0xff, 0x46, 0x72))
+    user_surface::Style = Style(bg=ColorRGB(0x37, 0x30, 0x43))
+    tool_surface::Style = Style(bg=ColorRGB(0x2a, 0x35, 0x35))
+    user_mark::Style = Style(fg=pink, bold=true)
+    agent_mark::Style = Style(fg=indigo, bold=true)
+    tool_text::Style = Style(fg=ColorRGB(0xc4, 0xd6, 0xd1))
+    tool_dim::Style = Style(fg=ColorRGB(0xa8, 0xba, 0xb5))
+    tool_error::Style = Style(fg=ColorRGB(0xff, 0x7d, 0x91))
 end
 
-function button(label::String)
-    style = ButtonStyle(; normal=TEXT_STYLE, focused=Style(fg=DARK, bg=PINK, bold=true))
+const THEME = Theme()
+
+function text_input(theme::Theme=THEME)
+    TextInput(; focused=true, style=theme.text, cursor_style=Style(fg=theme.dark_color, bg=theme.green))
+end
+
+function button(label::String, theme::Theme=THEME)
+    style = ButtonStyle(; normal=theme.text, focused=Style(fg=theme.dark_color, bg=theme.pink, bold=true))
     Button(label; button_style=style, flash_frames=0)
 end
 
-"""A real ratio draws a percentage; `nothing` draws an indeterminate loading bar."""
 struct Progress
     ratio::Union{Nothing,Float64}
     Progress(ratio::Union{Nothing,Real}) = new(ratio === nothing ? nothing : clamp(Float64(ratio), 0, 1))
@@ -60,12 +57,13 @@ function Tachikoma.render(progress::Progress, rect::Rect, buffer::Buffer)
         active = determinate ? col < filled : start <= col < start + segment
         if active
             t = bar_width <= 1 ? 0.0 : col / (bar_width - 1)
-            set_char!(buffer, rect.x + col, rect.y, '█', Style(fg=color_lerp(PROGRESS_START, PROGRESS_END, t)))
+            color = color_lerp(THEME.progress_start, THEME.progress_end, t)
+            set_char!(buffer, rect.x + col, rect.y, '█', Style(fg=color))
         else
-            set_char!(buffer, rect.x + col, rect.y, '░', Style(fg=EMPTY))
+            set_char!(buffer, rect.x + col, rect.y, '░', Style(fg=THEME.empty_color))
         end
     end
-    isempty(label) || set_string!(buffer, rect.x + bar_width, rect.y, label, DIM_STYLE; max_x=right(rect))
+    isempty(label) || set_string!(buffer, rect.x + bar_width, rect.y, label, THEME.dim; max_x=right(rect))
 end
 
 end

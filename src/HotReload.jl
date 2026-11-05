@@ -1,7 +1,5 @@
 module HotReload
 
-# Each request keeps the generation whose tool schemas it received. State is
-# keyed by file, so replacing a feature does not discard ongoing work.
 struct Generation
     sources::Vector{Pair{String,Module}}
     schemas::Vector{Any}
@@ -23,8 +21,16 @@ end
 const CURRENT = Ref{Union{Nothing,Manager}}(nothing)
 
 function sources_at(path::String)
-    paths = isdir(path) ? sort!([joinpath(path, name) for name in readdir(path)
-                                  if endswith(name, ".jl") && isfile(joinpath(path, name))]) : [path]
+    paths = if isempty(path)
+        String[]
+    elseif isdir(path)
+        sort!([joinpath(path, name) for name in readdir(path)
+               if endswith(name, ".jl") && isfile(joinpath(path, name))])
+    elseif isfile(path)
+        [path]
+    else
+        String[]
+    end
     Pair{String,String}[p => read(p, String) for p in paths]
 end
 
@@ -87,7 +93,7 @@ function reload!(manager::Manager, sources::Vector{Pair{String,String}}; announc
     generation
 end
 
-function start!(host::Module, path::String=joinpath(@__DIR__, "LiveFeatures.jl"))
+function start!(host::Module, path::String)
     CURRENT[] === nothing || return CURRENT[]
     manager = Manager(path, host, ReentrantLock(), nothing, Dict{String,Dict{Symbol,Any}}(), "",
                       Set{Tuple{String,Symbol}}(), Threads.Atomic{Bool}(false), nothing)

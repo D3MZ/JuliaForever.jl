@@ -1,0 +1,11 @@
+[provider]
+issuer = "https://auth.openai.com"
+resource = "https://api.openai.com/v1"
+scopes = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
+plan_scope = "chatgpt.tokens.use.direct"
+
+[agent]
+api = "https://api.openai.com/v1"
+window = 272000
+tool_output_chars = 24000
+command_output_bytes = 100000

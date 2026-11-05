@@ -4,13 +4,25 @@ using Dates
 using HTTP
 using JSON
 using UUIDs
+import ..Settings
 import ..ChatGPTAuth
 import ..HotReload
 
-const API = "https://api.openai.com/v1"
-const DEFAULT_WINDOW = 272_000
-const TOOL_OUTPUT_CHARS = 24_000
-const COMMAND_OUTPUT_BYTES = 100_000
+@kwdef struct Config
+    api::String
+    window::Int
+    tool_output_chars::Int
+    command_output_bytes::Int
+end
+
+function agent_config()
+    data = Settings.table("agent")
+    Config(api=Settings.text(data, "api"), window=Settings.count(data, "window"),
+           tool_output_chars=Settings.count(data, "tool_output_chars"),
+           command_output_bytes=Settings.count(data, "command_output_bytes"))
+end
+
+const ModelInfo = @NamedTuple{id::String, name::String, window::Int}
 
 struct ProviderError <: Exception
     message::String
@@ -37,7 +49,6 @@ function cancel!(control::TurnControl)
     end
     context === nothing || try HTTP.cancel!(context) catch end
     if process !== nothing
-        # Commands run in their own session; terminate their children as well.
         try ccall(:kill, Cint, (Cint, Cint), -getpid(process), Base.SIGTERM) catch end
         try kill(process, Base.SIGTERM) catch end
     end
@@ -87,21 +98,21 @@ function response_error(response)
     ProviderError("OpenAI HTTP $(response.status): $(strip(detail))$suffix")
 end
 
-function models()
+function models(config::Config=agent_config())
     token = ChatGPTAuth.access_token()
-    response = HTTP.get(API * "/models", ["Authorization" => "Bearer " * token];
+    response = HTTP.get(config.api * "/models", ["Authorization" => "Bearer " * token];
                         status_exception=false, redirect=false, retry=false, request_timeout=30)
     response.status == 200 || throw(response_error(response))
     body = JSON.parse(String(response.body))
-    result = NamedTuple{(:id, :name, :window),Tuple{String,String,Int}}[]
+    result = ModelInfo[]
     for item in get(body, "models", [])
         get(item, "visibility", "") == "list" || continue
         slug = get(item, "slug", nothing)
         slug isa AbstractString && !isempty(slug) || continue
         name = get(item, "display_name", slug)
-        window = get(item, "context_window", DEFAULT_WINDOW)
-        window isa Integer && window > 0 || (window = DEFAULT_WINDOW)
-        push!(result, (id=String(slug), name=String(name), window=Int(window)))
+        window = get(item, "context_window", config.window)
+        window isa Integer && window > 0 || (window = config.window)
+        push!(result, ModelInfo((id=String(slug), name=String(name), window=Int(window))))
     end
     isempty(result) && throw(ProviderError("The account returned no selectable models."))
     result
@@ -113,34 +124,40 @@ function tool(name, description, properties, required)
                               "required" => required, "additionalProperties" => false))
 end
 
-const STRING = Dict("type" => "string")
-const INTEGER = Dict("type" => "integer")
-const TOOLS = [Dict("type" => "namespace", "name" => "local", "description" => "Work with local files and commands.",
-    "tools" => [
-        tool("list", "List a directory. Paths may be relative to the working directory.",
-             Dict("path" => STRING), ["path"]),
-        tool("search", "Search files recursively for a literal string. Returns matching lines.",
-             Dict("path" => STRING, "query" => STRING, "limit" => INTEGER), ["path", "query", "limit"]),
-        tool("read", "Read UTF-8 text, starting at the 1-based line offset, for at most limit lines.",
-             Dict("path" => STRING, "offset" => INTEGER, "limit" => INTEGER), ["path", "offset", "limit"]),
-        tool("write", "Create or overwrite a UTF-8 file with the given content.",
-             Dict("path" => STRING, "content" => STRING), ["path", "content"]),
-        tool("edit", "Replace one unique exact occurrence of old_text with new_text in a file.",
-             Dict("path" => STRING, "old_text" => STRING, "new_text" => STRING), ["path", "old_text", "new_text"]),
-        tool("command", "Run a shell command in the working directory; return its output and exit status.",
-             Dict("command" => STRING), ["command"]),
-    ])]
+json_schema(kind::String) = Dict("type" => kind)
 
-mutable struct Session
+function local_tools()
+    Dict("type" => "namespace", "name" => "local", "description" => "Work with local files and commands.",
+         "tools" => [
+             tool("list", "List a directory. Paths may be relative to the working directory.",
+                  Dict("path" => json_schema("string")), ["path"]),
+             tool("search", "Search files recursively for a literal string. Returns matching lines.",
+                  Dict("path" => json_schema("string"), "query" => json_schema("string"),
+                       "limit" => json_schema("integer")), ["path", "query", "limit"]),
+             tool("read", "Read UTF-8 text, starting at the 1-based line offset, for at most limit lines.",
+                  Dict("path" => json_schema("string"), "offset" => json_schema("integer"),
+                       "limit" => json_schema("integer")), ["path", "offset", "limit"]),
+             tool("write", "Create or overwrite a UTF-8 file with the given content.",
+                  Dict("path" => json_schema("string"), "content" => json_schema("string")), ["path", "content"]),
+             tool("edit", "Replace one unique exact occurrence of old_text with new_text in a file.",
+                  Dict("path" => json_schema("string"), "old_text" => json_schema("string"),
+                       "new_text" => json_schema("string")), ["path", "old_text", "new_text"]),
+             tool("command", "Run a shell command in the working directory; return its output and exit status.",
+                  Dict("command" => json_schema("string")), ["command"]),
+         ])
+end
+
+@kwdef mutable struct Session
     model::String
-    window::Int
     cwd::String
-    path::String
-    paths::Vector{String}
-    parent::Union{Nothing,String}
-    input::Vector{Any}
-    tokens::Int
-    remember::Bool
+    config::Config = agent_config()
+    window::Int = config.window
+    path::String = ""
+    paths::Vector{String} = String[]
+    parent::Union{Nothing,String} = nothing
+    input::Vector{Any} = Any[]
+    tokens::Int = 0
+    remember::Bool = true
 end
 
 function timestamp()
@@ -167,21 +184,26 @@ function remember_session!(session::Session)
     ChatGPTAuth.save_json(resume_file(), Dict("path" => session.path, "window" => session.window))
 end
 
-function new_log(cwd, model, previous, window; remember=true)
-    dir = joinpath(ChatGPTAuth.ensure_dir(), "sessions")
+function new_log(cwd, model, previous, window; remember=true, config::Config=agent_config())
+    dir = if remember
+        joinpath(ChatGPTAuth.ensure_dir(), "sessions")
+    else
+        cwd
+    end
     mkpath(dir; mode=0o700)
     chmod(dir, 0o700)
     path = joinpath(dir, string(uuid4()) * ".jsonl")
-    open(path, "w") do io end
+    touch(path)
     chmod(path, 0o600)
-    session = Session(model, window, cwd, path, copy(previous), nothing, Any[], 0, remember)
+    session = Session(model=model, cwd=cwd, config=config, window=min(config.window, window),
+                      path=path, paths=copy(previous), remember=remember)
     append_entry!(session, "session", Dict("version" => 1, "cwd" => cwd, "model" => model,
-                                          "window" => window, "previousSessions" => previous))
+                                          "window" => session.window, "previousSessions" => previous))
     session
 end
 
-function Session(model::String, window::Int, cwd::String; remember=true)
-    session = new_log(abspath(cwd), model, String[], min(DEFAULT_WINDOW, window); remember=remember)
+function Session(model::String, window::Int, cwd::String; remember=true, config::Config=agent_config())
+    session = new_log(abspath(cwd), model, String[], min(config.window, window); remember=remember, config=config)
     remember_session!(session)
     session
 end
@@ -197,9 +219,10 @@ function restore_session()
         end
         isempty(entries) && return nothing
         header = entries[1]["data"]
-        session = Session(String(header["model"]), Int(get(header, "window", DEFAULT_WINDOW)),
-                          String(header["cwd"]), String(path), String.(get(header, "previousSessions", [])),
-                          nothing, Any[], 0, true)
+        config = agent_config()
+        session = Session(model=String(header["model"]), window=Int(get(header, "window", config.window)),
+                          cwd=String(header["cwd"]), path=String(path),
+                          paths=String.(get(header, "previousSessions", [])), config=config)
         pending = Dict{String,Any}()
         for entry in entries
             session.parent = String(entry["id"])
@@ -230,7 +253,8 @@ end
 
 function rollover!(session::Session)
     previous = [session.paths; session.path]
-    next = new_log(session.cwd, session.model, previous, session.window; remember=session.remember)
+    next = new_log(session.cwd, session.model, previous, session.window;
+                   remember=session.remember, config=session.config)
     session.path, session.paths, session.parent = next.path, next.paths, next.parent
     empty!(session.input)
     session.tokens = 0
@@ -244,19 +268,20 @@ function path_in(session::Session, path::AbstractString)
     isabspath(path) ? normpath(path) : normpath(joinpath(session.cwd, path))
 end
 
-function limit_output(text::AbstractString)
-    length(text) <= TOOL_OUTPUT_CHARS && return String(text)
-    first(text, TOOL_OUTPUT_CHARS) * "\n[Output truncated; request a smaller range.]"
+function limit_output(session::Session, text::AbstractString)
+    limit = session.config.tool_output_chars
+    length(text) <= limit && return String(text)
+    first(text, limit) * "\n[Output truncated; request a smaller range.]"
 end
 
-function command_output(path::String)
+function command_output(session::Session, path::String)
+    limit = session.config.command_output_bytes
     bytes, truncated = open(path, "r") do io
-        data = read(io, COMMAND_OUTPUT_BYTES + 1)
-        (data[1:min(end, COMMAND_OUTPUT_BYTES)], length(data) > COMMAND_OUTPUT_BYTES)
+        data = read(io, limit + 1)
+        (data[1:min(end, limit)], length(data) > limit)
     end
     text = String(copy(bytes))
     if !isvalid(text)
-        # A byte limit can split the final UTF-8 codepoint.
         for trim in 1:min(3, length(bytes))
             candidate = String(bytes[1:end-trim])
             if isvalid(candidate)
@@ -266,7 +291,7 @@ function command_output(path::String)
         end
     end
     isvalid(text) || return "[Non-UTF-8 command output omitted.]"
-    limit_output(text) * (truncated ? "\n[Command output truncated.]" : "")
+    limit_output(session, text) * (truncated ? "\n[Command output truncated.]" : "")
 end
 
 function run_tool(session::Session, name::AbstractString, args, control::TurnControl=TurnControl())
@@ -283,15 +308,16 @@ function run_tool(session::Session, name::AbstractString, args, control::TurnCon
             for (i, line) in enumerate(eachline(io))
                 i < offset && continue
                 i >= offset + limit && break
-                remaining = max(0, TOOL_OUTPUT_CHARS - characters)
+                max_chars = session.config.tool_output_chars
+                remaining = max(0, max_chars - characters)
                 remaining == 0 && break
                 part = length(line) > remaining ? first(line, remaining) * " [line truncated]" : line
                 push!(lines, "$i: $part")
                 characters += length(part)
-                characters >= TOOL_OUTPUT_CHARS && break
+                characters >= max_chars && break
             end
         end
-        return isempty(lines) ? "(no lines)" : limit_output(join(lines, '\n'))
+        return isempty(lines) ? "(no lines)" : limit_output(session, join(lines, '\n'))
     elseif name == "search"
         path = path_in(session, args["path"])
         query, limit = String(args["query"]), max(1, Int(args["limit"]))
@@ -340,7 +366,7 @@ function run_tool(session::Session, name::AbstractString, args, control::TurnCon
             wait(process)
             flush(output)
             control.cancelled[] && throw(Cancelled())
-            return command_output(path) * "\nExit status: $(process.exitcode)"
+            return command_output(session, path) * "\nExit status: $(process.exitcode)"
         finally
             lock(control.lock) do
                 control.process === process && (control.process = nothing)
@@ -357,37 +383,41 @@ function inference(session::Session, emit::Function, generation, control::TurnCo
     token = ChatGPTAuth.access_token()
     instructions = if !session.remember
         "You are a Julia-native feature builder. Work in $(session.cwd). Follow the user's feature contract " *
-        "and use local tools to write the requested artifact. Avoid unrelated repository discovery and " *
-        "large tool output; do not inspect session logs unless continuing after a context rollover."
+        "and use local tools to write the requested artifact. Write idiomatic Julia without code comments. " *
+        "Avoid unrelated repository discovery and large tool output; do not inspect session logs unless " *
+        "continuing after a context rollover."
     else
         "You are a Julia-native local coding agent. Work in $(session.cwd). " *
         "Use the local tools to inspect and change files and run commands. " *
+        "Write idiomatic Julia and keep code free of comments. " *
         "Read relevant AGENTS.md and skill instructions when applicable. " *
         "Live Julia feature modules can be changed or added without restarting; " *
-        "see src/HotReload.jl and src/LiveFeatures.jl for the hook interface. " *
+        "the hook interface is described in src/HotReload.jl. " *
         (isempty(get(ENV, "JULIAFOREVER_PROFILE", "")) ?
-         "The live feature module is src/LiveFeatures.jl. " :
+         "The live feature directory is $(joinpath(ChatGPTAuth.ensure_dir(), "features")); " *
+         "it starts empty and a new module there is loaded on the next reload. " :
          "The active live feature directory is $(joinpath(ENV["JULIAFOREVER_PROFILE"], "features")). ") *
         "Changes to the core runtime, existing types, or other files require a restart."
     end
     body = Dict("model" => session.model, "instructions" => instructions, "input" => session.input,
-                "tools" => Any[TOOLS...; HotReload.tool_schemas(generation)...], "store" => false, "stream" => true,
+                "tools" => Any[local_tools(); HotReload.tool_schemas(generation)...], "store" => false, "stream" => true,
                 "include" => ["reasoning.encrypted_content"])
-    session.model == "gpt-6.1-terra" && (body["reasoning"] = Dict("effort" => "max"))
+    reasoning = session.model == "gpt-6.1-terra"
+    reasoning && (body["reasoning"] = Dict("effort" => "max"))
     complete = Ref{Any}(nothing)
     failed = Ref{Any}(nothing)
     streamed_items = Any[]
     callback = function(event)
         event.data == "[DONE]" && return
         data = JSON.parse(event.data)
-        type = get(data, "type", "")
-        if type == "response.output_text.delta"
+        event_type = get(data, "type", "")
+        if event_type == "response.output_text.delta"
             emit(:delta, String(get(data, "delta", "")))
-        elseif type == "response.output_item.done"
+        elseif event_type == "response.output_item.done"
             push!(streamed_items, data["item"])
-        elseif type == "response.completed"
+        elseif event_type == "response.completed"
             complete[] = data["response"]
-        elseif type in ("response.failed", "response.incomplete", "error")
+        elseif event_type in ("response.failed", "response.incomplete", "error")
             failed[] = data
         end
     end
@@ -396,15 +426,14 @@ function inference(session::Session, emit::Function, generation, control::TurnCo
         control.cancelled[] && throw(Cancelled())
         control.context = context
     end
-    # Give each stream its own connection pool so cancelling one builder does
-    # not close another builder's connection.
     client = HTTP.Client(; prefer_http2=false, cookiejar=nothing)
     response = try
-        HTTP.post(API * "/responses", ["Authorization" => "Bearer " * token,
+        HTTP.post(session.config.api * "/responses", ["Authorization" => "Bearer " * token,
                                       "Content-Type" => "application/json", "Accept" => "text/event-stream"],
                   JSON.json(body); client=client, sse_callback=callback, status_exception=false, redirect=false,
-                  retry=false, protocol=:h1, request_timeout=session.remember ? 0 : 300,
-                  read_idle_timeout=120, context=context)
+                  retry=false, protocol=:h1,
+                  request_timeout=session.remember ? 0 : (reasoning ? 900 : 300),
+                  read_idle_timeout=reasoning ? 900 : 120, context=context)
     catch
         control.cancelled[] && throw(Cancelled())
         rethrow()
@@ -472,7 +501,7 @@ function run_turn!(session::Session, prompt::String, emit::Function;
                     "Error: " * sprint(showerror, error)
                 end
             end
-            output_text = limit_output(output_text)
+            output_text = limit_output(session, output_text)
             result_item = Dict("type" => "function_call_output", "call_id" => call["call_id"], "output" => output_text)
             push!(session.input, result_item)
             append_entry!(session, "tool_result", result_item)

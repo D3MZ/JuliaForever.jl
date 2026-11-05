@@ -4,23 +4,25 @@ using Tachikoma
 using JSON
 @tachikoma_app
 
+include("Settings.jl")
 include("ChatGPTAuth.jl")
 include("HotReload.jl")
 include("NativeAgent.jl")
 include("BuildCore.jl")
 include("CharmStyle.jl")
 include("Editor.jl")
+import .Settings
 import .ChatGPTAuth
 import .NativeAgent
 import .BuildCore
 import .CharmStyle
 
-const AUTH_OPTIONS = ["Sign in with an account", "Sign in with an API key"]
+auth_options() = ["Sign in with an account", "Sign in with an API key"]
 account_options() = ChatGPTAuth.saved_registration() === nothing ?
     ["ChatGPT", "Anthropic", "Google", "Other provider"] :
     ["ChatGPT", "ChatGPT (sign in again)", "Anthropic", "Google", "Other provider"]
 
-list(items) = SelectableList(collect(items); focused=true, highlight_style=CharmStyle.ACTIVE_STYLE, marker='>')
+list(items) = SelectableList(collect(items); focused=true, highlight_style=CharmStyle.THEME.active, marker='>')
 
 @kwdef mutable struct ChatEntry
     kind::Symbol
@@ -50,13 +52,13 @@ end
 
 @kwdef mutable struct Menu <: Model
     page::Symbol = :auth
-    choices::SelectableList = list(AUTH_OPTIONS)
+    choices::SelectableList = list(auth_options())
     picks::Dict{Symbol,Int} = Dict{Symbol,Int}()
     button::Button = CharmStyle.button("Continue")
     focus::Symbol = :content
     notice::String = ""
     flow::Union{Nothing,ChatGPTAuth.Login} = nothing
-    catalog::Vector{NamedTuple{(:id, :name, :window),Tuple{String,String,Int}}} = []
+    catalog::Vector{NativeAgent.ModelInfo} = NativeAgent.ModelInfo[]
     filtered::Vector{Int} = Int[]
     selected_model::Int = 0
     styled_pick::Int = -1
@@ -98,7 +100,7 @@ function set_focus!(menu::Menu, focus::Symbol)
     menu.feature_search.focused = active
     menu.harness_name.focused = active
     menu.choices.marker = active ? '>' : ' '
-    menu.choices.highlight_style = active ? CharmStyle.ACTIVE_STYLE : CharmStyle.TEXT_STYLE
+    menu.choices.highlight_style = active ? CharmStyle.THEME.active : CharmStyle.THEME.text
 end
 
 function show_page!(menu::Menu, page::Symbol, options=String[])
@@ -120,14 +122,14 @@ end
 function refresh_choices!(menu::Menu)
     picked = menu.page == :models ? something(findfirst(==(menu.selected_model), menu.filtered), 0) : get(menu.picks, menu.page, 0)
     if menu.styled_pick != picked
-        menu.choices.items = [ListItem(item.content, i == picked ? CharmStyle.ACTIVE_STYLE : CharmStyle.TEXT_STYLE;
+        menu.choices.items = [ListItem(item.content, i == picked ? CharmStyle.THEME.active : CharmStyle.THEME.text;
                                       prefix=i == picked ? "✓ " : "• ",
-                                      prefix_style=i == picked ? CharmStyle.ACTIVE_STYLE : CharmStyle.DIM_STYLE)
+                                      prefix_style=i == picked ? CharmStyle.THEME.active : CharmStyle.THEME.dim)
                               for (i, item) in enumerate(menu.choices.items)]
         menu.styled_pick = picked
     end
     if menu.focus != :content
-        menu.choices.highlight_style = menu.choices.selected == picked ? CharmStyle.ACTIVE_STYLE : CharmStyle.TEXT_STYLE
+        menu.choices.highlight_style = menu.choices.selected == picked ? CharmStyle.THEME.active : CharmStyle.THEME.text
     end
 end
 
@@ -363,7 +365,7 @@ function go_back!(menu::Menu)
     if menu.page == :auth
         menu.quit = true
     elseif menu.page == :accounts
-        show_page!(menu, :auth, AUTH_OPTIONS)
+        show_page!(menu, :auth, auth_options())
     elseif menu.page == :waiting
         menu.flow === nothing || ChatGPTAuth.cancel!(menu.flow)
         menu.flow = nothing
@@ -391,16 +393,6 @@ end
 
 function update!(menu::Menu, event::KeyEvent)
     menu.page == :chat && HotReload.on_key!(menu, event) && return
-    # Keep the core delivery shortcuts available if a generated adapter misses
-    # Tachikoma's concrete key encoding. Only the selected feature enables them.
-    if menu.page == :chat && menu.busy && event.action != Tachikoma.key_release &&
-       (event.key == :enter || (event.key == :ctrl && event.char == 'g'))
-        generation = HotReload.snapshot()
-        if generation !== nothing && any(pair -> basename(first(pair)) == "steer-queue.jl", generation.sources)
-            queue_prompt!(menu, event.key == :enter ? :steer : :queue)
-            return
-        end
-    end
     command = menu.page == :chat || (menu.page in (:models, :features, :name) && menu.focus == :content) ? editor_command(event) : nothing
     if command === :ignore
         return
@@ -505,14 +497,14 @@ function choices_view!(menu::Menu, rect::Rect, buffer::Buffer)
     render(menu.choices, rect, buffer)
     row = menu.choices.selected - menu.choices.offset - 1
     if menu.focus == :content && !isempty(menu.choices.items) && 0 <= row < rect.height && rect.width > 0
-        set_char!(buffer, rect.x, rect.y + row, '>', CharmStyle.POINTER_STYLE)
+        set_char!(buffer, rect.x, rect.y + row, '>', CharmStyle.THEME.pointer)
     end
 end
 
 function button_view!(menu::Menu, frame::Frame, left::Int, top::Int, width::Int)
     menu.button.last_area = Rect()
     frame.area.y <= top <= bottom(frame.area) || return
-    put!(frame.buffer, frame.area, left, top, menu.focus == :continue ? "> " : "  ", CharmStyle.POINTER_STYLE)
+    put!(frame.buffer, frame.area, left, top, menu.focus == :continue ? "> " : "  ", CharmStyle.THEME.pointer)
     button_width = min(textwidth(menu.button.label) + 4, max(0, width - 2))
     render(menu.button, Rect(left + 2, top, button_width, 1), frame.buffer)
 end
@@ -526,12 +518,12 @@ function choice_view!(menu::Menu, frame::Frame)
     width = max(textwidth(title), textwidth(footer), textwidth(menu.notice),
                 maximum((textwidth(item.content) + 6 for item in menu.choices.items); init=0))
     left, top, width = position(area, width, rows + 6)
-    put!(buffer, area, left, top, title, CharmStyle.TITLE_STYLE)
+    put!(buffer, area, left, top, title, CharmStyle.THEME.title)
     menu.choices.offset = clamp(menu.choices.offset, 0, max(0, length(menu.choices.items) - rows))
     choices_view!(menu, Rect(left, top + 2, width, rows), buffer)
-    isempty(menu.notice) || put!(buffer, area, left, top + rows + 2, menu.notice, CharmStyle.ERROR_STYLE)
+    isempty(menu.notice) || put!(buffer, area, left, top + rows + 2, menu.notice, CharmStyle.THEME.error)
     button_view!(menu, frame, left, top + rows + 4, width)
-    put!(buffer, area, left, top + rows + 6, footer, CharmStyle.DIM_STYLE)
+    put!(buffer, area, left, top + rows + 6, footer, CharmStyle.THEME.dim)
 end
 
 function poll_login!(menu::Menu)
@@ -557,26 +549,25 @@ function status_view!(menu::Menu, frame::Frame)
         lines = ["$(spinner) Continue with ChatGPT in your browser.", "esc cancel"]
         width = maximum(textwidth, lines)
         left, top, _ = position(area, width, 3)
-        put!(buffer, area, left, top, lines[1], CharmStyle.TITLE_STYLE)
-        put!(buffer, area, left, top + 2, lines[2], CharmStyle.DIM_STYLE)
+        put!(buffer, area, left, top, lines[1], CharmStyle.THEME.title)
+        put!(buffer, area, left, top + 2, lines[2], CharmStyle.THEME.dim)
         return
     end
     title = menu.page == :connected ? "Signed in to ChatGPT." : "ChatGPT sign-in needs attention."
     lines = [menu.notice, "Credentials are stored locally."]
     width = max(textwidth(title), maximum(textwidth, lines), textwidth("enter activate  esc exit"))
     left, top, width = position(area, width, 7)
-    put!(buffer, area, left, top, title, CharmStyle.TITLE_STYLE)
+    put!(buffer, area, left, top, title, CharmStyle.THEME.title)
     for (i, line) in enumerate(lines)
-        put!(buffer, area, left, top + i, line, CharmStyle.DIM_STYLE)
+        put!(buffer, area, left, top + i, line, CharmStyle.THEME.dim)
     end
     button_view!(menu, frame, left, top + 5, width)
-    put!(buffer, area, left, top + 7, "enter activate  esc exit", CharmStyle.DIM_STYLE)
+    put!(buffer, area, left, top + 7, "enter activate  esc exit", CharmStyle.THEME.dim)
 end
 
 function poll_pending!(menu::Menu)
     events = menu.pending
     (events === nothing || !isready(events)) && return
-    # Bound each batch so a fast producer cannot monopolize the input loop.
     deltas = IOBuffer()
     for _ in 1:256
         isready(events) || break
@@ -644,13 +635,13 @@ function model_view!(menu::Menu, frame::Frame)
     rows = min(10, max(1, length(menu.choices.items)), max(1, area.height - 9))
     width = min(72, area.width)
     left, top, width = position(area, width, rows + 8)
-    put!(buffer, area, left, top, "Select a model:", CharmStyle.TITLE_STYLE)
-    put!(buffer, area, left, top + 2, "Search:", CharmStyle.POINTER_STYLE)
+    put!(buffer, area, left, top, "Select a model:", CharmStyle.THEME.title)
+    put!(buffer, area, left, top + 2, "Search:", CharmStyle.THEME.pointer)
     render(menu.search, Rect(left + 8, top + 2, max(0, width - 8), 1), buffer)
     choices_view!(menu, Rect(left, top + 3, width, rows), buffer)
-    isempty(menu.notice) || put!(buffer, area, left, top + rows + 3, menu.notice, CharmStyle.ERROR_STYLE)
+    isempty(menu.notice) || put!(buffer, area, left, top + rows + 3, menu.notice, CharmStyle.THEME.error)
     button_view!(menu, frame, left, top + rows + 5, width)
-    put!(buffer, area, left, top + rows + 7, "type to search  ↑↓ move  enter select  tab focus  esc back", CharmStyle.DIM_STYLE)
+    put!(buffer, area, left, top + rows + 7, "type to search  ↑↓ move  enter select  tab focus  esc back", CharmStyle.THEME.dim)
 end
 
 function feature_view!(menu::Menu, frame::Frame)
@@ -662,9 +653,9 @@ function feature_view!(menu::Menu, frame::Frame)
             recipe = BuildCore.RECIPES[i]
             job = get(state.jobs, recipe.id, nothing)
             marker = job === nothing ? "• " : job.state == :done ? "✓ " : job.state == :failed ? "! " : "… "
-            style = job === nothing ? CharmStyle.DIM_STYLE : job.state == :failed ? CharmStyle.ERROR_STYLE : CharmStyle.ACTIVE_STYLE
+            style = job === nothing ? CharmStyle.THEME.dim : job.state == :failed ? CharmStyle.THEME.error : CharmStyle.THEME.active
             suffix = job === nothing ? "" : job.state == :running ? "  building" : job.state == :failed ? "  failed" : "  ready"
-            ListItem(recipe.name * suffix, CharmStyle.TEXT_STYLE; prefix=marker, prefix_style=style)
+            ListItem(recipe.name * suffix, CharmStyle.THEME.text; prefix=marker, prefix_style=style)
         end for i in menu.feature_filtered]
         menu.feature_signature = signature
     end
@@ -672,30 +663,30 @@ function feature_view!(menu::Menu, frame::Frame)
     rows = min(10, max(1, length(menu.choices.items)), max(1, area.height - 9))
     width = min(72, area.width)
     left, top, width = position(area, width, rows + 8)
-    put!(buffer, area, left, top, "Build your features:", CharmStyle.TITLE_STYLE)
-    put!(buffer, area, left, top + 2, "Search:", CharmStyle.POINTER_STYLE)
+    put!(buffer, area, left, top, "Build your features:", CharmStyle.THEME.title)
+    put!(buffer, area, left, top + 2, "Search:", CharmStyle.THEME.pointer)
     render(menu.feature_search, Rect(left + 8, top + 2, max(0, width - 8), 1), buffer)
     choices_view!(menu, Rect(left, top + 3, width, rows), buffer)
     if !isempty(menu.feature_filtered)
         recipe = BuildCore.RECIPES[menu.feature_filtered[menu.choices.selected]]
         job = get(state.jobs, recipe.id, nothing)
         message = job !== nothing && job.state == :failed ? job.error : menu.notice
-        isempty(message) || put!(buffer, area, left, top + rows + 3, message, CharmStyle.ERROR_STYLE)
+        isempty(message) || put!(buffer, area, left, top + rows + 3, message, CharmStyle.THEME.error)
     end
     button_view!(menu, frame, left, top + rows + 5, width)
-    put!(buffer, area, left, top + rows + 7, "type to search  ↑↓ move  enter toggle  tab focus  esc back", CharmStyle.DIM_STYLE)
+    put!(buffer, area, left, top + rows + 7, "type to search  ↑↓ move  enter toggle  tab focus  esc back", CharmStyle.THEME.dim)
 end
 
 function name_view!(menu::Menu, frame::Frame)
     area, buffer = frame.area, frame.buffer
     width = min(72, area.width)
     left, top, width = position(area, width, 9)
-    put!(buffer, area, left, top, "Name your harness:", CharmStyle.TITLE_STYLE)
+    put!(buffer, area, left, top, "Name your harness:", CharmStyle.THEME.title)
     render(menu.harness_name, Rect(left, top + 2, max(0, width), 1), buffer)
-    put!(buffer, area, left, top + 4, "Use this name as a command in your terminal.", CharmStyle.DIM_STYLE)
-    isempty(menu.notice) || put!(buffer, area, left, top + 5, menu.notice, CharmStyle.ERROR_STYLE)
+    put!(buffer, area, left, top + 4, "Use this name as a command in your terminal.", CharmStyle.THEME.dim)
+    isempty(menu.notice) || put!(buffer, area, left, top + 5, menu.notice, CharmStyle.THEME.error)
     button_view!(menu, frame, left, top + 7, width)
-    put!(buffer, area, left, top + 9, "tab focus  enter activate  esc back", CharmStyle.DIM_STYLE)
+    put!(buffer, area, left, top + 9, "tab focus  enter activate  esc back", CharmStyle.THEME.dim)
 end
 
 function building_view!(menu::Menu, frame::Frame)
@@ -708,18 +699,18 @@ function building_view!(menu::Menu, frame::Frame)
     width = min(72, area.width)
     left, top, width = position(area, width, 9)
     title = state.state == :failed ? "Build needs attention" : "Building your harness…"
-    put!(buffer, area, left, top, title, state.state == :failed ? CharmStyle.ERROR_STYLE : CharmStyle.TITLE_STYLE)
+    put!(buffer, area, left, top, title, state.state == :failed ? CharmStyle.THEME.error : CharmStyle.THEME.title)
     done = count(j -> j.state == :done, values(state.jobs)) + Int(state.build_done) + Int(state.alias_done)
     total = length(state.jobs) + 2
     render(CharmStyle.Progress(done / total), Rect(left, top + 2, width, 1), buffer)
     if state.state == :failed
-        put!(buffer, area, left, top + 4, state.error, CharmStyle.ERROR_STYLE)
+        put!(buffer, area, left, top + 4, state.error, CharmStyle.THEME.error)
     else
         seconds = BuildCore.estimate(menu.builder)
         estimate = seconds === nothing ? "Estimating time…" : "About $(ceil(Int, seconds))s remaining"
-        put!(buffer, area, left, top + 4, "$done / $total complete  ·  $estimate", CharmStyle.DIM_STYLE)
+        put!(buffer, area, left, top + 4, "$done / $total complete  ·  $estimate", CharmStyle.THEME.dim)
     end
-    put!(buffer, area, left, top + 7, "esc back", CharmStyle.DIM_STYLE)
+    put!(buffer, area, left, top + 7, "esc back", CharmStyle.THEME.dim)
 end
 
 function wrap_lines(text::AbstractString, width::Int)
@@ -749,7 +740,6 @@ function wrap_lines(text::AbstractString, width::Int)
         end
         start, limit = firstindex(line), ncodeunits(line) + 1
         if all(b -> 0x20 <= b <= 0x7e, codeunits(line))
-            # Printable ASCII has one column per byte; avoid grapheme allocations.
             while start < limit
                 stop = min(start + width, limit)
                 if stop < limit
@@ -769,21 +759,21 @@ function wrap_lines(text::AbstractString, width::Int)
             continue
         end
         while start < limit
-            stop, next, last_space, columns = start, start, 0, 0
+            stop, next_index, last_space, columns = start, start, 0, 0
             seen_nonspace = false
             for glyph in Base.Unicode.graphemes(SubString(line, start))
-                next += ncodeunits(glyph)
+                next_index += ncodeunits(glyph)
                 glyph_width = textwidth(glyph)
                 columns + glyph_width > width && break
                 columns += glyph_width
-                stop = next
+                stop = next_index
                 if glyph == " "
                     seen_nonspace && (last_space = stop)
                 else
                     seen_nonspace = true
                 end
             end
-            stop == start && (stop = next)
+            stop == start && (stop = next_index)
             stop < limit && last_space != 0 && (stop = last_space)
             push!(lines, String(SubString(line, start, prevind(line, stop))))
             start = stop
@@ -791,8 +781,6 @@ function wrap_lines(text::AbstractString, width::Int)
     end
     lines
 end
-
-wrap_text(text::AbstractString, width::Int) = join(wrap_lines(text, width), '\n')
 
 function invalidate_chat!(menu::Menu, from::Int=1)
     layout = menu.layout
@@ -820,7 +808,6 @@ function wrapped_lines(text::AbstractString, width::Int)
     wrap_lines(chomp(text), max(1, width))
 end
 
-# Bound collapsed previews before wrapping, including a single very long line.
 function output_preview(text::String, width::Int, limit::Int)
     lines = String[]
     more = false
@@ -842,7 +829,6 @@ end
 function chat_entry_lines(entry::ChatEntry, width::Int, expanded::Bool)
     inset = width >= 24 ? (entry.kind == :tool ? 3 : 1) : 0
     surface = entry.kind == :user ? :user : entry.kind == :tool ? :tool : :none
-    # One cell of padding and two cells for the marker on each line.
     body_width = max(1, width - 2 * inset - 3)
     rows = ChatLine[]
     function add_lines(text, marker, marker_style, text_style)
@@ -857,33 +843,33 @@ function chat_entry_lines(entry::ChatEntry, width::Int, expanded::Bool)
         header = entry.name * "  " * state * (isempty(summary) ? "" : "  " * summary)
         header_lines, header_more = output_preview(header, body_width, 2)
         for line in header_lines
-            push!(rows, ChatLine([Span("  ", CharmStyle.TOOL_DIM), Span(String(line), CharmStyle.TOOL_TEXT)], surface, inset))
+            push!(rows, ChatLine([Span("  ", CharmStyle.THEME.tool_dim), Span(String(line), CharmStyle.THEME.tool_text)], surface, inset))
         end
-        header_more && push!(rows, ChatLine([Span("  …", CharmStyle.TOOL_DIM)], surface, inset))
+        header_more && push!(rows, ChatLine([Span("  …", CharmStyle.THEME.tool_dim)], surface, inset))
         if expanded && !isempty(entry.arguments)
             args = try JSON.json(JSON.parse(entry.arguments); pretty=2) catch; entry.arguments end
-            add_lines(args, "  ", CharmStyle.TOOL_DIM, CharmStyle.TOOL_DIM)
+            add_lines(args, "  ", CharmStyle.THEME.tool_dim, CharmStyle.THEME.tool_dim)
         end
         if entry.output !== nothing && !isempty(entry.output)
             if expanded
                 isempty(entry.arguments) || push!(rows, ChatLine(Span[], surface, inset))
-                add_lines(entry.output, "  ", CharmStyle.TOOL_DIM,
-                          entry.status == :error ? CharmStyle.TOOL_ERROR : CharmStyle.TOOL_DIM)
+                add_lines(entry.output, "  ", CharmStyle.THEME.tool_dim,
+                          entry.status == :error ? CharmStyle.THEME.tool_error : CharmStyle.THEME.tool_dim)
             else
                 preview, more = output_preview(entry.output, body_width, 2)
                 for line in preview
-                    push!(rows, ChatLine([Span("  ", CharmStyle.TOOL_DIM),
-                                          Span(String(line), entry.status == :error ? CharmStyle.TOOL_ERROR : CharmStyle.TOOL_DIM)], surface, inset))
+                    push!(rows, ChatLine([Span("  ", CharmStyle.THEME.tool_dim),
+                                          Span(String(line), entry.status == :error ? CharmStyle.THEME.tool_error : CharmStyle.THEME.tool_dim)], surface, inset))
                 end
-                more && push!(rows, ChatLine([Span("  …", CharmStyle.TOOL_DIM)], surface, inset))
+                more && push!(rows, ChatLine([Span("  …", CharmStyle.THEME.tool_dim)], surface, inset))
             end
         end
     elseif entry.kind == :user
-        add_lines(entry.text, "❯ ", CharmStyle.USER_MARK, CharmStyle.TEXT_STYLE)
+        add_lines(entry.text, "❯ ", CharmStyle.THEME.user_mark, CharmStyle.THEME.text)
     elseif entry.kind == :agent
-        add_lines(entry.text, "✦ ", CharmStyle.AGENT_MARK, CharmStyle.TEXT_STYLE)
+        add_lines(entry.text, "✦ ", CharmStyle.THEME.agent_mark, CharmStyle.THEME.text)
     else
-        style = entry.kind == :error ? CharmStyle.ERROR_STYLE : CharmStyle.DIM_STYLE
+        style = entry.kind == :error ? CharmStyle.THEME.error : CharmStyle.THEME.dim
         add_lines(entry.text, entry.kind == :error ? "! " : "· ", style, style)
     end
     rows
@@ -935,8 +921,6 @@ function chat_layout!(menu::Menu, width::Int)
     if layout.streaming !== text || layout.streaming_separator != separator
         if !failed && ncodeunits(text) >= 64_000 && Threads.nthreads() > 1
             if layout.stream_task === nothing
-                # Large responses are laid out off the input thread. Keep the last
-                # completed view visible and coalesce newer deltas into the next job.
                 layout.stream_task = Threads.@spawn (text, width, separator, streaming_rows(text, width, separator))
             end
         else
@@ -953,12 +937,12 @@ function chat_view!(menu::Menu, frame::Frame)
     if area.width < 6 || area.height < 6
         menu.chat_area = Rect()
         area.width > 0 && area.height > 0 &&
-            put!(buffer, area, area.x, area.y, "Resize terminal", CharmStyle.DIM_STYLE)
+            put!(buffer, area, area.x, area.y, "Resize terminal", CharmStyle.THEME.dim)
         return
     end
     left, top, width, height = area.x, area.y, area.width, area.height
     model = menu.session.model
-    put!(buffer, area, left, top, "JuliaForever · " * model, CharmStyle.TITLE_STYLE)
+    put!(buffer, area, left, top, "JuliaForever · " * model, CharmStyle.THEME.title)
     available = height - 6
     layout = chat_layout!(menu, width)
     fixed = length(layout.lines)
@@ -975,7 +959,7 @@ function chat_view!(menu::Menu, frame::Frame)
             line = i <= fixed ? layout.lines[i] : layout.streaming_lines[i - fixed]
             y = menu.chat_area.y + row - 1
             if line.surface != :none
-                style = line.surface == :user ? CharmStyle.USER_SURFACE : CharmStyle.TOOL_SURFACE
+                style = line.surface == :user ? CharmStyle.THEME.user_surface : CharmStyle.THEME.tool_surface
                 set_style!(buffer, Rect(left + line.inset, y, width - 2 * line.inset, 1), style)
             end
             x = left + line.inset + 1
@@ -986,16 +970,16 @@ function chat_view!(menu::Menu, frame::Frame)
     end
     if maximum_scroll > 0
         indicator = (menu.scroll < maximum_scroll ? "↑" : "") * (menu.scroll > 0 ? " ↓" : "")
-        put!(buffer, area, max(left, left + width - textwidth(indicator)), top, indicator, CharmStyle.DIM_STYLE)
+        put!(buffer, area, max(left, left + width - textwidth(indicator)), top, indicator, CharmStyle.THEME.dim)
     end
     prompt_y = top + height - 3
-    put!(buffer, area, left, prompt_y, menu.busy ? "…" : "❯", CharmStyle.POINTER_STYLE)
+    put!(buffer, area, left, prompt_y, menu.busy ? "…" : "❯", CharmStyle.THEME.pointer)
     render(menu.prompt, Rect(left + 2, prompt_y, max(0, width - 2), 1), buffer)
     footer = menu.busy ? "…  ↑↓ scroll  ctrl+o tools" : "enter send  ↑↓ scroll  ctrl+o tools  esc models"
     feature_footer = HotReload.footer(menu)
     feature_footer isa AbstractString && !isempty(feature_footer) && (footer = String(feature_footer))
     isempty(menu.notice) || (footer = menu.notice)
-    put!(buffer, area, left, top + height - 1, footer, CharmStyle.DIM_STYLE)
+    put!(buffer, area, left, top + height - 1, footer, CharmStyle.THEME.dim)
 end
 
 function view(menu::Menu, frame::Frame)
@@ -1018,7 +1002,7 @@ function view(menu::Menu, frame::Frame)
         chat_view!(menu, frame)
     elseif menu.page in (:loading, :opening)
         left, top, width = position(frame.area, 36, 3)
-        put!(frame.buffer, frame.area, left, top, menu.page == :opening ? "Opening harness…" : "Loading models…", CharmStyle.TITLE_STYLE)
+        put!(frame.buffer, frame.area, left, top, menu.page == :opening ? "Opening harness…" : "Loading models…", CharmStyle.THEME.title)
         if frame.area.y <= top + 2 <= bottom(frame.area)
             render(CharmStyle.Progress(nothing), Rect(left, top + 2, width, 1), frame.buffer)
         end
@@ -1027,9 +1011,6 @@ function view(menu::Menu, frame::Frame)
     end
 end
 
-# Live features are loaded into a fresh module at runtime, so package
-# precompilation cannot compile their input callback. Compile its actual method
-# without invoking it, before the first real keystroke reaches the UI.
 function warm_live_editor!(menu::Menu)
     generation = HotReload.snapshot()
     generation === nothing && return
@@ -1038,15 +1019,23 @@ function warm_live_editor!(menu::Menu)
             callback = Base.invokelatest(getfield, source, :on_key!)
             Base.invokelatest(precompile, callback, (typeof(menu), KeyEvent, Dict{Symbol,Any}))
         catch
-            # A custom feature's errors are reported by the normal hook on use.
         end
     end
 end
 
+function feature_dir()
+    profile = get(ENV, "JULIAFOREVER_PROFILE", "")
+    isempty(profile) ? joinpath(ChatGPTAuth.ensure_dir(), "features") : joinpath(profile, "features")
+end
+
 function main()
     profile = get(ENV, "JULIAFOREVER_PROFILE", "")
-    feature_path = isempty(profile) ? joinpath(@__DIR__, "LiveFeatures.jl") : joinpath(profile, "features")
-    !isempty(profile) && !isdir(feature_path) && error("Harness feature directory not found: $feature_path")
+    feature_path = feature_dir()
+    if isempty(profile)
+        mkpath(feature_path; mode=0o700)
+    elseif !isdir(feature_path)
+        error("Harness feature directory not found: $feature_path")
+    end
     HotReload.start!(@__MODULE__, feature_path)
     menu = Menu()
     warm_live_editor!(menu)

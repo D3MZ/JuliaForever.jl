@@ -1,11 +1,8 @@
-# Editing is kept in the app rather than depending on another agent's editor.
-# TextInput stores Unicode characters (not UTF-8 byte offsets).
-mutable struct EditorState
-    undo::Vector{Tuple{Vector{Char},Int}}
-    kill::Vector{Char}
-    last_action::Symbol
+@kwdef mutable struct EditorState
+    undo::Vector{Tuple{Vector{Char},Int}} = Tuple{Vector{Char},Int}[]
+    kill::Vector{Char} = Char[]
+    last_action::Symbol = :none
 end
-EditorState() = EditorState(Tuple{Vector{Char},Int}[], Char[], :none)
 
 function reset_editor!(state::EditorState)
     empty!(state.undo)
@@ -21,9 +18,6 @@ function save_edit!(state::EditorState, input::TextInput, action::Symbol)
     state.last_action = action
 end
 
-# Tachikoma's KeyEvent intentionally does not retain modifiers. Its raw-input
-# capture lets us recover the few modified keys needed by the editor without
-# replacing its parser or confusing Option-generated international text.
 function raw_editor_command(raw::AbstractVector{UInt8})
     n = length(raw)
     n >= 2 && raw[1] == 0x1b || return nothing
@@ -37,7 +31,6 @@ function raw_editor_command(raw::AbstractVector{UInt8})
     raw[2] == UInt8('[') || return nothing
     final = raw[end]
     final in (UInt8('u'), UInt8('C'), UInt8('D'), UInt8('H'), UInt8('F'), UInt8('~')) || return nothing
-    # CSI key[:alternate];modifier[:event];associated-text final
     key, modifier, field = 0, 0, 1
     reading = true
     has_modifier = false
@@ -83,9 +76,6 @@ function raw_editor_command(raw::AbstractVector{UInt8})
             key == Int('d') && return :kill_word_forward
         end
     end
-    # Unimplemented modified Enter/Escape/Tab must not accidentally submit,
-    # navigate, or change focus. Option+printable keys with associated text
-    # still go to the parser for international keyboard layouts.
     final == UInt8('u') && key in (9, 13, 27, 57344, 57345, 57346) && return :ignore
     return nothing
 end
@@ -103,8 +93,6 @@ function editor_command(event::KeyEvent)
     c == 'f' && return :right
     c == 'd' && return :delete_forward
     c == 'w' && return :kill_word_back
-    # Ghostty's default Cmd+Delete emits exactly Ctrl+U. Clearing the complete
-    # single-line input honors Cmd+Delete even when the cursor is in the middle.
     c == 'u' && return :clear_line
     c == 'k' && return :kill_to_end
     c == 'y' && return :yank
@@ -171,8 +159,6 @@ function edit_input!(input::TextInput, state::EditorState, event::KeyEvent, comm
     elseif command === :word_right
         input.cursor = word_right(input); state.last_action = :none
     elseif command === :clear_line
-        # Clearing on both sides of the cursor is a distinct kill; combining it
-        # with a preceding one would reorder text when subsequently yanked.
         state.last_action = :none
         kill_range!(input, state, 1, length(input.buffer); backward=true)
     elseif command === :kill_to_end

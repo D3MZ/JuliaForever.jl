@@ -2,7 +2,7 @@
 
 julia_version = "1.13.3"
 manifest_format = "2.1"
-project_hash = "58b6f0ec5857a26800e10daaf0b4a6472f0187af"
+project_hash = "71036527b31c58ceb4c603c4b7b3719e92544426"
 
 [[deps.ArgTools]]
 uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
@@ -90,7 +90,7 @@ uuid = "d850fbd6-035d-5a70-a269-1ca2e636ac6c"
 version = "1.2.0"
 
 [[deps.JuliaForever]]
-deps = ["Base64", "Dates", "HTTP", "JSON", "JWTs", "PrecompileTools", "Random", "SHA", "Tachikoma", "UUIDs"]
+deps = ["Base64", "Dates", "HTTP", "JSON", "JWTs", "PrecompileTools", "Random", "SHA", "TOML", "Tachikoma", "UUIDs"]
 path = "."
 uuid = "cc5801bd-c32c-4b6f-8ee2-a2931de95fe8"
 version = "0.1.0"

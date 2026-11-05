@@ -4,8 +4,6 @@ on:
   push:
   workflow_dispatch:
 
-# The generated branch is separate from working branches; GITHUB_TOKEN pushes
-# do not trigger another workflow. The job is skipped if the repository is private.
 permissions:
   contents: write
 
@@ -22,10 +20,10 @@ jobs:
       GOMAXPROCS: '4'
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-      - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
+      - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9
         with:
           version: '1.10'
       - name: Install Hercules
