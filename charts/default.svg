@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
+<title id="title">Julia code history</title>
+<desc id="desc">Stacked hourly cohorts of surviving Julia lines along the first-parent Git history.</desc>
+<defs><linearGradient id="cohorts">
+<stop offset="0.00%" stop-color="#7571f9"/>
+<stop offset="20.00%" stop-color="#3599e8"/>
+<stop offset="40.00%" stop-color="#02cf92"/>
+<stop offset="60.00%" stop-color="#c5d959"/>
+<stop offset="80.00%" stop-color="#f5ab57"/>
+<stop offset="100.00%" stop-color="#f780e2"/>
+</linearGradient></defs>
+<rect width="1200" height="650" fill="#20232b"/>
+<g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,DejaVu Sans,sans-serif">
+<text x="108" y="64" fill="#c9c8ff" font-size="30" font-weight="700">Julia code history</text>
+<text x="108" y="96" fill="#a6abb8" font-size="15">Surviving lines by the hour they were last changed</text>
+<text x="1138" y="64" text-anchor="end" fill="#e4e5eb" font-size="26" font-weight="700">2,900 lines</text>
+<text x="1138" y="96" text-anchor="end" fill="#a6abb8" font-size="14">latest committed snapshot</text>
+<path d="M108.00 444.00 H1138.00" stroke="#3a3e49" stroke-width="1"/>
+<text x="92" y="444.00" text-anchor="end" dominant-baseline="middle" fill="#a6abb8" font-size="13">0</text>
+<path d="M108.00 375.50 H1138.00" stroke="#3a3e49" stroke-width="1"/>
+<text x="92" y="375.50" text-anchor="end" dominant-baseline="middle" fill="#a6abb8" font-size="13">725</text>
+<path d="M108.00 307.00 H1138.00" stroke="#3a3e49" stroke-width="1"/>
+<text x="92" y="307.00" text-anchor="end" dominant-baseline="middle" fill="#a6abb8" font-size="13">1,450</text>
+<path d="M108.00 238.50 H1138.00" stroke="#3a3e49" stroke-width="1"/>
+<text x="92" y="238.50" text-anchor="end" dominant-baseline="middle" fill="#a6abb8" font-size="13">2,175</text>
+<path d="M108.00 170.00 H1138.00" stroke="#3a3e49" stroke-width="1"/>
+<text x="92" y="170.00" text-anchor="end" dominant-baseline="middle" fill="#a6abb8" font-size="13">2,900</text>
+<path fill="#6a78f6" d="M143.52 412.25 H179.03 V420.38 H285.59 V423.97 H356.62 L356.62 444.00 H143.52 Z"/>
+<path fill="#5e7ff3" d="M179.03 392.22 H285.59 V402.81 H356.62 L356.62 423.97 H285.59 V420.38 H179.03 Z"/>
+<path fill="#3c95ea" d="M285.59 381.17 H356.62 L356.62 402.81 H285.59 Z"/>
+<path fill="#28a6d2" d="M356.62 323.53 H889.38 V433.61 H924.90 V434.36 H1102.48 V434.74 H1138.00 L1138.00 444.00 H356.62 Z"/>
+<path fill="#f2ae57" d="M889.38 338.46 H924.90 V341.77 H1102.48 V349.52 H1138.00 L1138.00 434.74 H1102.48 V434.36 H924.90 V433.61 H889.38 Z"/>
+<path fill="#f5a666" d="M924.90 330.81 H1102.48 V338.84 H1138.00 L1138.00 349.52 H1102.48 V341.77 H924.90 Z"/>
+<path fill="#f780e2" d="M1102.48 170.00 H1138.00 L1138.00 338.84 H1102.48 Z"/>
+<text x="108.00" y="473" text-anchor="start" fill="#a6abb8" font-size="13">Nov 03  20:00</text>
+<text x="356.62" y="473" text-anchor="middle" fill="#a6abb8" font-size="13">Nov 04  03:00</text>
+<text x="605.24" y="473" text-anchor="middle" fill="#a6abb8" font-size="13">Nov 04  10:00</text>
+<text x="889.38" y="473" text-anchor="middle" fill="#a6abb8" font-size="13">Nov 04  18:00</text>
+<text x="1138.00" y="473" text-anchor="end" fill="#a6abb8" font-size="13">Nov 05  01:00</text>
+<text x="108" y="529" fill="#c5c8d2" font-size="13" font-weight="700" letter-spacing="1">COHORT · LAST CHANGED</text>
+<rect x="108" y="546" width="1030" height="12" rx="6" fill="url(#cohorts)"/>
+<text x="108" y="581" fill="#a6abb8" font-size="13">Nov 03  20:00 UTC</text>
+<text x="1138" y="581" text-anchor="end" fill="#a6abb8" font-size="13">Nov 05  00:00 UTC</text>
+<text x="108" y="623" fill="#8f95a3" font-size="13">Hercules · first-parent history · Julia files, including tests · end-of-hour snapshots</text>
+</g></svg>
