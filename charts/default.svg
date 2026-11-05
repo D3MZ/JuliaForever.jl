@@ -13,33 +13,34 @@
 <g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,DejaVu Sans,sans-serif">
 <text x="108" y="64" fill="#c9c8ff" font-size="30" font-weight="700">Julia code history</text>
 <text x="108" y="96" fill="#a6abb8" font-size="15">Surviving lines by the hour they were last changed</text>
-<text x="1138" y="64" text-anchor="end" fill="#e4e5eb" font-size="26" font-weight="700">2,900 lines</text>
+<text x="1138" y="64" text-anchor="end" fill="#e4e5eb" font-size="26" font-weight="700">3,689 lines</text>
 <text x="1138" y="96" text-anchor="end" fill="#a6abb8" font-size="14">latest committed snapshot</text>
 <path d="M108.00 444.00 H1138.00" stroke="#3a3e49" stroke-width="1"/>
 <text x="92" y="444.00" text-anchor="end" dominant-baseline="middle" fill="#a6abb8" font-size="13">0</text>
-<path d="M108.00 375.50 H1138.00" stroke="#3a3e49" stroke-width="1"/>
-<text x="92" y="375.50" text-anchor="end" dominant-baseline="middle" fill="#a6abb8" font-size="13">725</text>
-<path d="M108.00 307.00 H1138.00" stroke="#3a3e49" stroke-width="1"/>
-<text x="92" y="307.00" text-anchor="end" dominant-baseline="middle" fill="#a6abb8" font-size="13">1,450</text>
-<path d="M108.00 238.50 H1138.00" stroke="#3a3e49" stroke-width="1"/>
-<text x="92" y="238.50" text-anchor="end" dominant-baseline="middle" fill="#a6abb8" font-size="13">2,175</text>
+<path d="M108.00 375.52 H1138.00" stroke="#3a3e49" stroke-width="1"/>
+<text x="92" y="375.52" text-anchor="end" dominant-baseline="middle" fill="#a6abb8" font-size="13">922</text>
+<path d="M108.00 307.04 H1138.00" stroke="#3a3e49" stroke-width="1"/>
+<text x="92" y="307.04" text-anchor="end" dominant-baseline="middle" fill="#a6abb8" font-size="13">1,844</text>
+<path d="M108.00 238.48 H1138.00" stroke="#3a3e49" stroke-width="1"/>
+<text x="92" y="238.48" text-anchor="end" dominant-baseline="middle" fill="#a6abb8" font-size="13">2,767</text>
 <path d="M108.00 170.00 H1138.00" stroke="#3a3e49" stroke-width="1"/>
-<text x="92" y="170.00" text-anchor="end" dominant-baseline="middle" fill="#a6abb8" font-size="13">2,900</text>
-<path fill="#6a78f6" d="M143.52 412.25 H179.03 V420.38 H285.59 V423.97 H356.62 L356.62 444.00 H143.52 Z"/>
-<path fill="#5e7ff3" d="M179.03 392.22 H285.59 V402.81 H356.62 L356.62 423.97 H285.59 V420.38 H179.03 Z"/>
-<path fill="#3c95ea" d="M285.59 381.17 H356.62 L356.62 402.81 H285.59 Z"/>
-<path fill="#28a6d2" d="M356.62 323.53 H889.38 V433.61 H924.90 V434.36 H1102.48 V434.74 H1138.00 L1138.00 444.00 H356.62 Z"/>
-<path fill="#f2ae57" d="M889.38 338.46 H924.90 V341.77 H1102.48 V349.52 H1138.00 L1138.00 434.74 H1102.48 V434.36 H924.90 V433.61 H889.38 Z"/>
-<path fill="#f5a666" d="M924.90 330.81 H1102.48 V338.84 H1138.00 L1138.00 349.52 H1102.48 V341.77 H924.90 Z"/>
-<path fill="#f780e2" d="M1102.48 170.00 H1138.00 L1138.00 338.84 H1102.48 Z"/>
+<text x="92" y="170.00" text-anchor="end" dominant-baseline="middle" fill="#a6abb8" font-size="13">3,689</text>
+<path fill="#6e75f7" d="M129.46 419.04 H150.92 V425.43 H215.29 V428.25 H258.21 L258.21 444.00 H129.46 Z"/>
+<path fill="#677af5" d="M150.92 403.30 H215.29 V411.62 H258.21 L258.21 428.25 H215.29 V425.43 H150.92 Z"/>
+<path fill="#5386f0" d="M215.29 394.61 H258.21 L258.21 411.62 H215.29 Z"/>
+<path fill="#458fec" d="M258.21 349.30 H580.08 V435.83 H601.54 V436.42 H708.83 V436.72 H1138.00 L1138.00 444.00 H258.21 Z"/>
+<path fill="#44d27f" d="M580.08 361.03 H601.54 V363.63 H708.83 V369.73 H1116.54 V373.07 H1138.00 L1138.00 436.72 H708.83 V436.42 H601.54 V435.83 H580.08 Z"/>
+<path fill="#59d379" d="M601.54 355.02 H708.83 V361.33 H1116.54 V364.82 H1138.00 L1138.00 373.07 H1116.54 V369.73 H708.83 V363.63 H601.54 Z"/>
+<path fill="#c1d95a" d="M708.83 228.60 H1116.54 V237.74 H1138.00 L1138.00 364.82 H1116.54 V361.33 H708.83 Z"/>
+<path fill="#f780e2" d="M1116.54 170.00 H1138.00 L1138.00 237.74 H1116.54 Z"/>
 <text x="108.00" y="473" text-anchor="start" fill="#a6abb8" font-size="13">Nov 03  20:00</text>
-<text x="356.62" y="473" text-anchor="middle" fill="#a6abb8" font-size="13">Nov 04  03:00</text>
-<text x="605.24" y="473" text-anchor="middle" fill="#a6abb8" font-size="13">Nov 04  10:00</text>
-<text x="889.38" y="473" text-anchor="middle" fill="#a6abb8" font-size="13">Nov 04  18:00</text>
-<text x="1138.00" y="473" text-anchor="end" fill="#a6abb8" font-size="13">Nov 05  01:00</text>
+<text x="365.50" y="473" text-anchor="middle" fill="#a6abb8" font-size="13">Nov 04  08:00</text>
+<text x="623.00" y="473" text-anchor="middle" fill="#a6abb8" font-size="13">Nov 04  20:00</text>
+<text x="880.50" y="473" text-anchor="middle" fill="#a6abb8" font-size="13">Nov 05  08:00</text>
+<text x="1138.00" y="473" text-anchor="end" fill="#a6abb8" font-size="13">Nov 05  20:00</text>
 <text x="108" y="529" fill="#c5c8d2" font-size="13" font-weight="700" letter-spacing="1">COHORT · LAST CHANGED</text>
 <rect x="108" y="546" width="1030" height="12" rx="6" fill="url(#cohorts)"/>
 <text x="108" y="581" fill="#a6abb8" font-size="13">Nov 03  20:00 UTC</text>
-<text x="1138" y="581" text-anchor="end" fill="#a6abb8" font-size="13">Nov 05  00:00 UTC</text>
+<text x="1138" y="581" text-anchor="end" fill="#a6abb8" font-size="13">Nov 05  19:00 UTC</text>
 <text x="108" y="623" fill="#8f95a3" font-size="13">Hercules · first-parent history · Julia files, including tests · end-of-hour snapshots</text>
 </g></svg>
