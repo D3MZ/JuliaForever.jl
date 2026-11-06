@@ -519,6 +519,9 @@ function run_turn!(session::Session, prompt::String, emit::Function;
             emit(:rollover, "Continuing in a new session using the previous session logs.")
         end
         if !isempty(steering)
+            # Start the steered response on a visible boundary: the UI flushes its
+            # streaming text so the new answer does not concatenate onto the old one.
+            emit(:boundary, "")
             foreach(p -> add_user!(session, p), steering)
             continue
         end
