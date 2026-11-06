@@ -1027,7 +1027,7 @@ function chat_view!(menu::Menu, frame::Frame)
     # Live features add only their own affordances; the core composer keys stay visible.
     feature_footer = HotReload.footer(menu)
     if feature_footer isa AbstractString && !isempty(feature_footer)
-        footer = String(feature_footer) * "  " * footer
+        footer = footer * "  " * String(feature_footer)
     end
     isempty(menu.notice) || (footer = menu.notice)
     put!(buffer, area, left, top + height - 1, footer, CharmStyle.THEME.dim)
