@@ -1024,7 +1024,6 @@ function chat_view!(menu::Menu, frame::Frame)
     put!(buffer, area, left, prompt_y, menu.busy ? "…" : "❯", CharmStyle.THEME.pointer)
     render(menu.prompt, Rect(left + 2, prompt_y, max(0, width - 2), 1), buffer)
     footer = menu.busy ? "…  ↑↓ scroll  ctrl+o tools" : "enter send  ↑↓ scroll  ctrl+o tools  esc models"
-    # Live features add only their own affordances; the core composer keys stay visible.
     feature_footer = HotReload.footer(menu)
     if feature_footer isa AbstractString && !isempty(feature_footer)
         footer = footer * "  " * String(feature_footer)

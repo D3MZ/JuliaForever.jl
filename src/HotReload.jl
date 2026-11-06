@@ -101,8 +101,6 @@ function reload!(manager::Manager, sources::Vector{Pair{String,String}}; announc
         end
     end
 
-    # Retire old code before publishing its replacement. Persistent state stays
-    # attached to the path; unchanged modules are reused without lifecycle calls.
     for (mod, state, replacing) in retired
         hook = if replacing && Base.invokelatest(isdefined, mod, :on_reload!)
             :on_reload!
