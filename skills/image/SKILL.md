@@ -18,12 +18,14 @@ tool_schemas() must return these two function schemas, with "strict" => true,
 Describe in each description that the image goes to the subscription and that session history is not
 modified. run_tool routes by name; any other name returns "Error: Unknown live tool ...".
 
-Credentials: prefer a Codex credential from joinpath(homedir(), ".codex", "auth.json"):
-its tokens.access_token when it is a printable header value, plus tokens.account_id when present.
-Otherwise use App.ChatGPTAuth.access_token() with no account header. Never print, log or return
-tokens or account ids, and sanitize provider error text: remove bearer values, token-like words,
-account ids, UUIDs, data URLs and long base64 runs, cap the detail length, and never surface an HTTP
-exception message because it can contain request headers. Report your own short message instead.
+Credentials: generate_image prefers a Codex credential from joinpath(homedir(), ".codex",
+"auth.json"): its tokens.access_token when it is a printable header value, plus tokens.account_id when
+present. Otherwise use App.ChatGPTAuth.access_token() with no account header. describe_image uses
+App.ChatGPTAuth.access_token() only, because the Codex token is rejected by api.openai.com. Never
+print, log or return tokens or account ids, and sanitize provider error text: remove bearer values,
+token-like words, account ids, UUIDs, data URLs and long base64 runs, cap the detail length, and never
+surface an HTTP exception message because it can contain request headers. Report your own short
+message instead.
 
 generate_image:
 - Require a path ending in .png, an existing parent directory, and nothing already at the path (file
@@ -48,7 +50,9 @@ generate_image:
 
 describe_image:
 - Read at most 20 MiB and require a PNG, JPEG, GIF or WebP signature.
-- POST to "https://api.openai.com/v1/responses" with the same SSE headers, model = session.model,
+- POST to "https://api.openai.com/v1/responses" with App.ChatGPTAuth.access_token() in Authorization
+  Bearer, "originator" => "JuliaForever", "OpenAI-Beta" => "responses=experimental", Content-Type
+  application/json, Accept text/event-stream, and no ChatGPT-Account-ID. Body: model = session.model,
   store false, stream true, instructions "Answer the user's question about the image.", and one user
   message with an input_text item (the question, or "Describe this image clearly and concisely."
   when it is null or blank) and an input_image item whose image_url is a data URL built from the
@@ -57,5 +61,5 @@ describe_image:
   output_text parts from response.output instead. Return the description text. Use connect_timeout
   15, request_timeout 240 and read_idle_timeout 120.
 
-on_key!, on_frame!, footer and shutdown! must be defined no-ops returning false, nothing, "" and
-nothing: this feature has no keyboard or footer behavior.
+on_key!, on_frame!, footer, on_reload! and shutdown! must be defined no-ops returning false, nothing,
+"", nothing and nothing: this feature has no keyboard or footer behavior.

@@ -52,9 +52,12 @@ failed state while keeping the saved audio path.
   neighbouring characters are not whitespace, then App.Tachikoma._run_validator!(menu.prompt).
 - Keep usable recordings private on disk until text is actually inserted. A result that arrives after
   cancellation or for a different session is not inserted; report the saved path so Ctrl+R can retry.
-- footer reports the phase concisely: starting, recording with the 10 minute cap and stop/cancel keys,
-  stopping, transcribing, canceling with audio retained, saved audio with Ctrl+R retry and Escape
-  dismiss, and otherwise the idle composer shortcuts shared with the host.
+- footer reports only this feature's own status and composer affordance, and otherwise an empty
+  string. Return exactly: "mic: starting · esc cancel" while starting; "mic: recording (10 min max)
+  · ctrl+r stop · esc cancel" while recording; "mic: stopping · esc cancel" while stopping;
+  "mic: transcribing · esc cancel" while transcribing; "mic: canceling · audio kept" while
+  canceling; "mic: audio saved · ctrl+r retry · esc dismiss" while failed; and "ctrl+r record"
+  otherwise. The host appends its own composer and scrolling keys, so do not repeat them.
 - on_frame! drains the job channel, applies those transitions, and must never block the UI thread.
   shutdown! cancels workers, signals the recorder with SIGINT then SIGKILL, and returns without
   waiting more than about 4 seconds total.

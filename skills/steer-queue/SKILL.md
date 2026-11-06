@@ -23,7 +23,8 @@ on_key!(menu, event, state) is the whole feature:
 - In every other case return false, so ordinary typing, Enter while idle, arrows, scrolling, Escape
   and focus keys keep working.
 
-footer returns exactly "enter steer  ctrl+g queue  ↑↓ scroll  ctrl+o tools" while menu.busy and an
-empty string otherwise. The host agent loop already implements delivery, interruption and the
-composer clearing performed by App.queue_prompt!; do not store prompts in state and do not add
-notices of your own. on_frame! and shutdown! are no-ops.
+footer returns exactly "enter steer  ctrl+g queue" while menu.busy and an empty string otherwise.
+The host adds its own composer and scrolling keys, so do not repeat them. The host agent loop
+already implements delivery, interruption and the composer clearing performed by App.queue_prompt!;
+do not store prompts in state and do not add notices of your own. on_frame!, on_reload! and
+shutdown! are no-ops.
