@@ -8,12 +8,14 @@ include("Settings.jl")
 include("ChatGPTAuth.jl")
 include("HotReload.jl")
 include("NativeAgent.jl")
+include("Skills.jl")
 include("BuildCore.jl")
 include("CharmStyle.jl")
 include("Editor.jl")
 import .Settings
 import .ChatGPTAuth
 import .NativeAgent
+import .Skills
 import .BuildCore
 import .CharmStyle
 
@@ -71,8 +73,10 @@ end
     name_editor::EditorState = EditorState()
     prompt_editor::EditorState = EditorState()
     builder::Union{Nothing,BuildCore.BuildSession} = nothing
-    feature_filtered::Vector{Int} = collect(eachindex(BuildCore.RECIPES))
+    feature_filtered::Vector{Int} = Int[]
     feature_signature::String = ""
+    skill_scan::Union{Nothing,Task} = nothing
+    next_skill_scan::Float64 = 0.0
     pending::Union{Nothing,Channel{Any}} = nothing
     session::Union{Nothing,NativeAgent.Session} = nothing
     transcript::Vector{ChatEntry} = ChatEntry[]
@@ -222,24 +226,65 @@ function show_features!(menu::Menu)
         menu.builder = BuildCore.BuildSession(model.id, model.window)
         Tachikoma.clear!(menu.feature_search)
         reset_editor!(menu.feature_editor)
-        menu.feature_filtered = collect(eachindex(BuildCore.RECIPES))
+    else
+        BuildCore.refresh_skills!(menu.builder)
     end
+    menu.feature_filtered = collect(eachindex(menu.builder.skills))
     menu.feature_signature = ""
-    show_page!(menu, :features, [BuildCore.RECIPES[i].name for i in menu.feature_filtered])
+    menu.skill_scan = nothing
+    menu.next_skill_scan = time() + 1
+    show_page!(menu, :features, [menu.builder.skills[i].name for i in menu.feature_filtered])
+    filter_features!(menu)
+    isempty(menu.builder.skill_errors) || (menu.notice = first(menu.builder.skill_errors))
 end
 
 function filter_features!(menu::Menu)
     words = split(lowercase(strip(Tachikoma.text(menu.feature_search))))
-    menu.feature_filtered = [i for (i, recipe) in enumerate(BuildCore.RECIPES) if
+    menu.feature_filtered = [i for (i, recipe) in enumerate(menu.builder.skills) if
                              all(word -> occursin(word, lowercase(recipe.name * " " * recipe.description)), words)]
-    menu.choices = list([BuildCore.RECIPES[i].name for i in menu.feature_filtered])
+    menu.choices = list([menu.builder.skills[i].name for i in menu.feature_filtered])
     menu.feature_signature = ""
     set_focus!(menu, menu.focus)
 end
 
+function poll_skills!(menu::Menu)
+    scan = menu.skill_scan
+    if scan !== nothing && istaskdone(scan)
+        menu.skill_scan = nothing
+        catalog = try
+            fetch(scan)
+        catch
+            menu.notice = "Could not discover skills."
+            nothing
+        end
+        if catalog !== nothing
+            builder = menu.builder
+            selected = isempty(menu.feature_filtered) ? nothing :
+                       builder.skills[menu.feature_filtered[menu.choices.selected]].id
+            had_errors = !isempty(builder.skill_errors)
+            if BuildCore.refresh_skills!(builder, catalog)
+                filter_features!(menu)
+                if selected !== nothing
+                    index = findfirst(i -> builder.skills[i].id == selected, menu.feature_filtered)
+                    index === nothing || (menu.choices.selected = index)
+                end
+                if !isempty(builder.skill_errors)
+                    menu.notice = first(builder.skill_errors)
+                elseif had_errors
+                    menu.notice = ""
+                end
+            end
+        end
+    end
+    if menu.skill_scan === nothing && time() >= menu.next_skill_scan
+        menu.skill_scan = Threads.@spawn Skills.discover()
+        menu.next_skill_scan = time() + 1
+    end
+end
+
 function toggle_feature!(menu::Menu)
     isempty(menu.feature_filtered) && return
-    recipe = BuildCore.RECIPES[menu.feature_filtered[menu.choices.selected]]
+    recipe = menu.builder.skills[menu.feature_filtered[menu.choices.selected]]
     state = BuildCore.snapshot(menu.builder)
     if haskey(state.jobs, recipe.id)
         BuildCore.remove_feature!(menu.builder, recipe.id)
@@ -645,12 +690,13 @@ function model_view!(menu::Menu, frame::Frame)
 end
 
 function feature_view!(menu::Menu, frame::Frame)
+    poll_skills!(menu)
     state = BuildCore.snapshot(menu.builder)
-    signature = join([string(i, ':', haskey(state.jobs, BuildCore.RECIPES[i].id) ?
-                            state.jobs[BuildCore.RECIPES[i].id].state : :off) for i in menu.feature_filtered], ',')
+    signature = join([string(i, ':', haskey(state.jobs, menu.builder.skills[i].id) ?
+                            state.jobs[menu.builder.skills[i].id].state : :off) for i in menu.feature_filtered], ',')
     if signature != menu.feature_signature
         menu.choices.items = [begin
-            recipe = BuildCore.RECIPES[i]
+            recipe = menu.builder.skills[i]
             job = get(state.jobs, recipe.id, nothing)
             marker = job === nothing ? "• " : job.state == :done ? "✓ " : job.state == :failed ? "! " : "… "
             style = job === nothing ? CharmStyle.THEME.dim : job.state == :failed ? CharmStyle.THEME.error : CharmStyle.THEME.active
@@ -667,12 +713,13 @@ function feature_view!(menu::Menu, frame::Frame)
     put!(buffer, area, left, top + 2, "Search:", CharmStyle.THEME.pointer)
     render(menu.feature_search, Rect(left + 8, top + 2, max(0, width - 8), 1), buffer)
     choices_view!(menu, Rect(left, top + 3, width, rows), buffer)
+    message = menu.notice
     if !isempty(menu.feature_filtered)
-        recipe = BuildCore.RECIPES[menu.feature_filtered[menu.choices.selected]]
+        recipe = menu.builder.skills[menu.feature_filtered[menu.choices.selected]]
         job = get(state.jobs, recipe.id, nothing)
-        message = job !== nothing && job.state == :failed ? job.error : menu.notice
-        isempty(message) || put!(buffer, area, left, top + rows + 3, message, CharmStyle.THEME.error)
+        job !== nothing && job.state == :failed && (message = job.error)
     end
+    isempty(message) || put!(buffer, area, left, top + rows + 3, message, CharmStyle.THEME.error)
     button_view!(menu, frame, left, top + rows + 5, width)
     put!(buffer, area, left, top + rows + 7, "type to search  ↑↓ move  enter toggle  tab focus  esc back", CharmStyle.THEME.dim)
 end

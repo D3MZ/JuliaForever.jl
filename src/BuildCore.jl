@@ -4,22 +4,8 @@ using JSON
 import ..ChatGPTAuth
 import ..HotReload
 import ..NativeAgent
+import ..Skills
 
-@kwdef struct Recipe
-    id::String
-    name::String
-    description::String
-    tools::Vector{Pair{String,Vector{String}}} = Pair{String,Vector{String}}[]
-end
-
-const RECIPES = [
-    Recipe(id="steer-queue", name="Steer / queue", description="Steer a running turn or queue a follow-up."),
-    Recipe(id="image", name="Image generation", description="Generate images with the Codex subscription.",
-           tools=["generate_image" => ["prompt", "path", "host_model"],
-                  "describe_image" => ["path", "question"]]),
-    Recipe(id="microphone", name="Microphone", description="Record and transcribe with the Codex subscription.",
-           tools=["transcribe_audio" => ["path"]]),
-]
 const ROOT = normpath(joinpath(@__DIR__, ".."))
 bin_dir() = abspath(expanduser(get(ENV, "JULIAFOREVER_BIN", joinpath(homedir(), ".local", "bin"))))
 
@@ -30,11 +16,14 @@ mutable struct FeatureJob
     control::NativeAgent.TurnControl
     task::Union{Nothing,Task}
     error::String
+    tools::Vector{String}
 end
 
 mutable struct BuildSession
     model::String
     window::Int
+    skills::Vector{Skills.Skill}
+    skill_errors::Vector{String}
     scratch::String
     lock::ReentrantLock
     jobs::Dict{String,FeatureJob}
@@ -61,9 +50,10 @@ function load_durations()
 end
 
 function BuildSession(model::String, window::Int)
+    catalog = Skills.discover()
     scratch = mktempdir(; prefix="juliaforever-build-")
     chmod(scratch, 0o700)
-    BuildSession(model, window, scratch, ReentrantLock(), Dict{String,FeatureJob}(), Task[],
+    BuildSession(model, window, catalog.skills, catalog.errors, scratch, ReentrantLock(), Dict{String,FeatureJob}(), Task[],
                  load_durations(), :idle, "", 0, false, false, 0.0, "")
 end
 
@@ -75,10 +65,25 @@ function record_duration!(builder::BuildSession, key::String, seconds::Real)
     try ChatGPTAuth.save_json("build-durations.json", builder.durations) catch end
 end
 
-function recipe(id::String)
-    i = findfirst(r -> r.id == id, RECIPES)
-    i === nothing && error("Unknown feature: $id")
-    RECIPES[i]
+function refresh_skills!(builder::BuildSession, catalog=Skills.discover())
+    lock(builder.lock) do
+        present = Set(skill.id for skill in catalog.skills)
+        append!(catalog.skills, [skill for skill in builder.skills
+                                if haskey(builder.jobs, skill.id) && !(skill.id in present)])
+        sort!(catalog.skills; by=s -> (s.order, lowercase(s.name), s.id))
+        changed = [(s.path, s.source) for s in builder.skills] != [(s.path, s.source) for s in catalog.skills] ||
+                  builder.skill_errors != catalog.errors
+        builder.skills, builder.skill_errors = catalog.skills, catalog.errors
+        changed
+    end
+end
+
+function skill(builder::BuildSession, id::String)
+    lock(builder.lock) do
+        i = findfirst(s -> s.id == id, builder.skills)
+        i === nothing && error("Unknown skill: $id")
+        builder.skills[i]
+    end
 end
 
 const HOST = """
@@ -108,204 +113,78 @@ Host interface available through App (the JuliaForever module):
   nest the record under a "function" key, and do not omit "name" or the top-level "strict".
 """
 
-function contract(selected::Recipe)
-    if selected.id == "steer-queue"
-        return """
-Deliver steering and queued follow-ups from the composer while a turn is running.
-
-tool_schemas() must return an empty vector: this feature exposes no agent tools.
-run_tool must accept any name and return an empty string.
-
-on_key!(menu, event, state) is the whole feature:
-- Ignore key releases: return false when event.action is App.Tachikoma.key_release.
-- While menu.busy and event.key is :enter: read the composer with App.Tachikoma.text(menu.prompt).
-  When its stripped text is empty, consume the key and return true without doing more. Otherwise call
-  App.queue_prompt!(menu, :steer) and return true.
-- While menu.busy and event.key is :ctrl with event.char equal to 'g': call
-  App.queue_prompt!(menu, :queue) and return true. Do not advertise Option+Enter; terminals may not
-  distinguish its modifiers.
-- In every other case return false, so ordinary typing, Enter while idle, arrows, scrolling, Escape
-  and focus keys keep working.
-
-footer returns exactly "enter steer  ctrl+g queue  ↑↓ scroll  ctrl+o tools" while menu.busy and an
-empty string otherwise. The host agent loop already implements delivery, interruption and the
-composer clearing performed by App.queue_prompt!; do not store prompts in state and do not add
-notices of your own. on_frame! and shutdown! are no-ops.
-"""
-    elseif selected.id == "image"
-        return """
-Image generation and image description through the ChatGPT/Codex subscription, exposed as exactly
-two agent tools.
-
-tool_schemas() must return these two function schemas, with "strict" => true,
-"additionalProperties" => false, and required parameters in this order:
-1. generate_image: prompt (string), path (string, new .png output path relative to session.cwd or
-   absolute), host_model (["string", "null"], null means gpt-6.1-sol).
-2. describe_image: path (string), question (["string", "null"]).
-Describe in each description that the image goes to the subscription and that session history is not
-modified. run_tool routes by name; any other name returns "Error: Unknown live tool ...".
-
-Credentials: prefer a Codex credential from joinpath(homedir(), ".codex", "auth.json"):
-its tokens.access_token when it is a printable header value, plus tokens.account_id when present.
-Otherwise use App.ChatGPTAuth.access_token() with no account header. Never print, log or return
-tokens or account ids, and sanitize provider error text: remove bearer values, token-like words,
-account ids, UUIDs, data URLs and long base64 runs, cap the detail length, and never surface an HTTP
-exception message because it can contain request headers. Report your own short message instead.
-
-generate_image:
-- Require a path ending in .png, an existing parent directory, and nothing already at the path (file
-  or symlink); otherwise return "Error: ...".
-- POST to "https://chatgpt.com/backend-api/codex/responses" as an SSE stream with headers
-  Authorization Bearer, "originator" => "JuliaForever", "OpenAI-Beta" => "responses=experimental",
-  Content-Type application/json, Accept text/event-stream, User-Agent "juliaforever-image/1.0",
-  plus ChatGPT-Account-ID when the credential has an account.
-- Body: model is host_model when it is non-empty text else "gpt-6.1-sol"; store false; stream true;
-  instructions "Generate the requested image. Do not add extra prose."; one user message whose
-  content is one input_text item; tools containing {"type":"image_generation",
-  "model":"gpt-image-2","size":"1024x1024"}; tool_choice {"type":"image_generation"}.
-- Events: response.output_item.done may carry an item whose type is "image_generation_call" with a
-  base64 result; response.completed may repeat those items in response.output; response.failed,
-  response.incomplete and error report failure. Ignore event.data "[DONE]" and treat malformed JSON
-  as a failure. Require a completed stream, a non-empty result, at most 24 MiB of base64, valid
-  base64, and a complete PNG (signature plus IEND trailer).
-- Publish through a private temporary file in the destination directory and a hard link so an
-  existing file is never overwritten, removing the temporary file in all cases.
-- Success returns "Saved PNG: " * path. Use connect_timeout 15, request_timeout 300,
-  read_idle_timeout 180, max_sse_line_bytes 33554432 and max_sse_event_bytes 67108864.
-
-describe_image:
-- Read at most 20 MiB and require a PNG, JPEG, GIF or WebP signature.
-- POST to "https://api.openai.com/v1/responses" with the same SSE headers, model = session.model,
-  store false, stream true, instructions "Answer the user's question about the image.", and one user
-  message with an input_text item (the question, or "Describe this image clearly and concisely."
-  when it is null or blank) and an input_image item whose image_url is a data URL built from the
-  detected MIME type and the base64 bytes.
-- Accumulate response.output_text.delta text. If the stream completes with no deltas, take the
-  output_text parts from response.output instead. Return the description text. Use connect_timeout
-  15, request_timeout 240 and read_idle_timeout 120.
-
-on_key!, on_frame!, footer and shutdown! must be defined no-ops returning false, nothing, "" and
-nothing: this feature has no keyboard or footer behavior.
-"""
-    end
-    return """
-Microphone recording and transcription through the ChatGPT/Codex subscription, exposed as one tool
-and a Ctrl+R recording flow.
-
-tool_schemas() must return exactly one function schema with "strict" => true,
-"additionalProperties" => false: transcribe_audio with required parameter path (string, relative to
-session.cwd or absolute). It transcribes an existing file and never uses or deletes the microphone.
-run_tool routes transcribe_audio and returns "Error: Unknown live tool ..." for other names.
-
-Transcription request:
-- Require a regular file larger than 44 bytes and at most 25 MiB.
-- POST multipart to "https://chatgpt.com/backend-api/transcribe" with header field name "file" and a
-  neutral filename derived from the extension, an audio MIME type for wav, mp3, mp4, m4a, mpeg,
-  mpga, webm, ogg or flac, and otherwise application/octet-stream. The service rejects aiff, so
-  report "Error: Unsupported audio format." for it rather than uploading. Headers: Authorization
-  Bearer, "originator" => "Codex Desktop", Accept application/json, plus ChatGPT-Account-ID when the
-  credential has one. Prefer the Codex credential in joinpath(homedir(), ".codex", "auth.json"),
-  else App.ChatGPTAuth.access_token(); never print tokens or account ids.
-- Response JSON field "text" must be non-empty text. Use connect timeout 15, request timeout 180,
-  redirect=false, retry=false, proxy=HTTP.ProxyConfig(), and cancel through an
-  HTTP.RequestContext when the user cancels (HTTP.canceled(context) distinguishes cancellation).
-- On 401 or 403 with the Codex credential, retry once with the app token when it differs. Sanitize
-  every error: no bearer values, account ids, UUIDs, data URLs or long base64 runs.
-
-capture (or the retry path) starts a Threads task that owns a job Dict with an events channel and an
-atomic Int action (0 running, 1 stop requested, 2 cancel, 3 shutdown); the UI thread drains events in
-on_frame!. Record on macOS only, with Sys.which("ffmpeg"); return a clear failure when ffmpeg or
-avfoundation is missing. Write to a new .wav file in joinpath(App.ChatGPTAuth.ensure_dir(),
-"recordings"), created with mode 0o700 and private files, using:
-ffmpeg -hide_banner -loglevel error -nostdin -f avfoundation -i :default -t 600 -ac 1 -ar 16000
--c:a pcm_s16le -f wav -y FILE
-Run it detached from stdin, keep stderr in a temporary log for diagnostics, cap the recording at 10
-minutes, and stop with SIGINT so ffmpeg finalizes the WAV header; escalate to SIGKILL after 3 seconds.
-A recording is usable when it is a file larger than 44 bytes.
-
-UI behavior:
-- Ctrl+R (event.key :ctrl, event.char 'r') starts recording when idle, stops when recording, retries
-the upload when the previous attempt failed, and is ignored otherwise. Ignore key releases, and for
-legacy terminals ignore repeated Ctrl+R bytes within 0.75 seconds.
-- Escape cancels an active recording, upload or stop and keeps usable audio; Escape dismisses a
-failed state while keeping the saved audio path.
-- Insert the transcription into the composer at the cursor with App.save_edit! before splicing
-  characters, replacing control characters with spaces and adding a separating space only when the
-  neighbouring characters are not whitespace, then App.Tachikoma._run_validator!(menu.prompt).
-- Keep usable recordings private on disk until text is actually inserted. A result that arrives after
-  cancellation or for a different session is not inserted; report the saved path so Ctrl+R can retry.
-- footer reports the phase concisely: starting, recording with the 10 minute cap and stop/cancel keys,
-  stopping, transcribing, canceling with audio retained, saved audio with Ctrl+R retry and Escape
-  dismiss, and otherwise the idle composer shortcuts shared with the host.
-- on_frame! drains the job channel, applies those transitions, and must never block the UI thread.
-  shutdown! cancels workers, signals the recorder with SIGINT then SIGKILL, and returns without
-  waiting more than about 4 seconds total.
-
-State is the persistent Dict{Symbol,Any} passed to every hook: keep the microphone phase, job, saved
-path and last notice there so an active recording survives a feature reload. on_reload!
-must preserve compatible active recording/upload workers and release only generation-specific
-resources. shutdown! still cancels workers on removal or exit.
-"""
-end
-
-function build_prompt(selected::Recipe)
+function build_prompt(selected::Skills.Skill, available::Vector{Skills.Skill})
+    catalog = join(["- $(s.id): $(replace(s.description, r"\s+" => " ")) ($(s.path))"
+                    for s in available if s.id != selected.id], '\n')
     "Build the $(selected.name) feature for JuliaForever in this isolated working directory. " *
+    "Follow the selected skill below; its SKILL.md and supporting files are also in the skill directory. " *
     "Write the complete idiomatic Julia implementation yourself to feature.jl using your local tools; " *
-    "no tests, documentation, or code comments. There is no reference implementation to copy and no " *
-    "other feature source to read. " *
+    "no tests, documentation, or code comments. " *
     "The file is included into a fresh module with a constant App referring to JuliaForever. " *
     "It must define seven top-level functions: tool_schemas(), run_tool(session,name,args,state), " *
     "on_key!(menu,event,state), on_frame!(menu,state), footer(menu,state), shutdown!(state), " *
-    "and on_reload!(state), " *
-    "including no-ops the contract does not otherwise use. Hooks may use App, Base, and packages " *
-    "accessible through App. state is a persistent Dict{Symbol,Any} unique to this feature that " *
-    "survives reloads; only Base and host values belong in it. on_reload! runs on the retiring " *
-    "module before changed code becomes active: release only version-owned resources and preserve " *
-    "compatible ongoing work, especially microphone recording and uploads. shutdown! stops all " *
-    "work when a feature is removed or the harness exits. Without on_reload!, replacement calls " *
-    "the old shutdown! for safety. Return false from unhandled on_key! " *
-    "and an empty string from footer when no footer is needed. A feature file is self-contained: " *
-    "helper files are not installed. Do not edit files outside this working directory. " *
-    "This is an integration task: write feature.jl directly. Do not inspect unrelated files, search " *
-    "recursively, read session logs, run tests, or explore the repository. The host interface " *
-    "section below is complete; do not read package or standard library sources to verify it.\n\n" *
-    HOST * "\n" * contract(selected)
+    "and on_reload!(state), including no-ops the skill does not otherwise use. " *
+    "Hooks may use App, Base, and packages accessible through App. state is a persistent " *
+    "Dict{Symbol,Any} unique to this feature that survives reloads; only Base and host values " *
+    "belong in it. on_reload! runs on the retiring module before changed code becomes active: " *
+    "release only version-owned resources and preserve compatible ongoing work. shutdown! stops " *
+    "all work when a feature is removed or the harness exits. Without on_reload!, replacement calls " *
+    "the old shutdown! for safety. Return false from unhandled on_key! and an empty string from " *
+    "footer when no footer is needed. A feature file is self-contained: helper files are not " *
+    "installed. Do not edit files outside this working directory. Use the selected skill and its " *
+    "supporting files. Other discovered skills are listed by name, description and SKILL.md path; " *
+    "read any that are relevant, including their referenced files. Avoid unrelated discovery or " *
+    "large tool output.\n\n" * HOST * "\nSelected skill:\n" * selected.instructions *
+    "\n\nOther discovered skills:\n" * (isempty(catalog) ? "(none)" : catalog)
 end
 
-function check_feature(selected::Recipe, generation)
+function check_feature(selected::Skills.Skill, generation)
     expected = selected.tools
-    Set(keys(generation.names)) == Set(first.(expected)) ||
+    expected === nothing || Set(keys(generation.names)) == Set(first.(expected)) ||
         error("The feature returned the wrong tool schemas.")
-    schemas = Dict(get(schema, "name", "") => schema for schema in generation.schemas)
-    for (name, parameters) in expected
-        schema = schemas[name]
+    expected_by_name = expected === nothing ? nothing : Dict(expected)
+    for schema in generation.schemas
+        name = schema["name"]
         get(schema, "strict", false) === true || error("The $name schema must be strict.")
-        properties = get(get(schema, "parameters", nothing), "properties", nothing)
+        parameters = get(schema, "parameters", nothing)
+        parameters isa AbstractDict && get(parameters, "type", "") == "object" ||
+            error("The $name schema must have object parameters.")
+        properties = get(parameters, "properties", nothing)
         properties isa AbstractDict || error("The $name schema has no object parameters.")
-        Set(keys(properties)) == Set(parameters) || error("The $name schema has the wrong properties.")
-        required = get(schema["parameters"], "required", nothing)
-        (required isa AbstractVector && sort(String.(required)) == sort(parameters)) ||
+        required = get(parameters, "required", nothing)
+        required isa AbstractVector && all(p -> p isa AbstractString, required) &&
+            allunique(required) && Set(required) == Set(keys(properties)) ||
             error("The $name schema has the wrong required parameters.")
-        get(schema["parameters"], "additionalProperties", nothing) === false ||
+        get(parameters, "additionalProperties", nothing) === false ||
             error("The $name schema must reject additional properties.")
+        if expected_by_name !== nothing
+            Set(keys(properties)) == Set(expected_by_name[name]) ||
+                error("The $name schema has the wrong properties.")
+        end
     end
     generation
 end
 
 function start_feature!(builder::BuildSession, id::String)
-    selected = recipe(id)
+    selected = skill(builder, id)
+    available = lock(builder.lock) do
+        copy(builder.skills)
+    end
     job = lock(builder.lock) do
         haskey(builder.jobs, id) && return nothing
         dir = mktempdir(builder.scratch; prefix=id * "-")
-        j = FeatureJob(:running, time(), dir, NativeAgent.TurnControl(), nothing, "")
+        j = FeatureJob(:running, time(), dir, NativeAgent.TurnControl(), nothing, "", String[])
         builder.jobs[id] = j
         j
     end
     job === nothing && return
     task = Threads.@spawn begin
         try
+            skill_dir = joinpath(job.dir, "skill")
+            cp(dirname(selected.path), skill_dir)
+            write(joinpath(skill_dir, "SKILL.md"), selected.source)
             session = NativeAgent.Session(builder.model, builder.window, job.dir; remember=false)
-            NativeAgent.run_turn!(session, build_prompt(selected), (kind, value) -> nothing;
+            NativeAgent.run_turn!(session, build_prompt(selected, available), (kind, value) -> nothing;
                                   control=job.control, live=false)
             job.control.cancelled[] && throw(NativeAgent.Cancelled())
             path = joinpath(job.dir, "feature.jl")
@@ -318,6 +197,7 @@ function start_feature!(builder::BuildSession, id::String)
             check_feature(selected, generation)
             lock(builder.lock) do
                 if get(builder.jobs, id, nothing) === job && !job.control.cancelled[]
+                    job.tools = collect(keys(generation.names))
                     job.state = :done
                     record_duration!(builder, id, time() - job.started)
                 end
@@ -356,7 +236,7 @@ end
 
 function snapshot(builder::BuildSession)
     lock(builder.lock) do
-        jobs = Dict(id => (state=j.state, error=j.error) for (id, j) in builder.jobs)
+        jobs = Dict(id => (state=j.state, error=j.error, tools=copy(j.tools)) for (id, j) in builder.jobs)
         (jobs=jobs, state=builder.final_state, error=builder.final_error,
          build_done=builder.build_done, alias_done=builder.alias_done,
          install_dir=builder.install_dir)
@@ -425,12 +305,18 @@ function start_finalize!(builder::BuildSession, name::String)
                     builder.final_token == token || throw(NativeAgent.Cancelled())
                 end
                 failed = [(id, j) for (id, j) in state.jobs if j.state == :failed]
-                isempty(failed) || error("$(recipe(first(failed)[1]).name): $(first(failed)[2].error)")
+                isempty(failed) || error("$(skill(builder, first(failed)[1]).name): $(first(failed)[2].error)")
                 any(j -> j.state == :running, values(state.jobs)) || break
                 sleep(0.1)
             end
             state = snapshot(builder)
             all(j -> j.state == :done, values(state.jobs)) || error("A selected feature is not ready.")
+            owners = Dict{String,String}()
+            for (id, job) in state.jobs, name in job.tools
+                previous = get(owners, name, nothing)
+                previous === nothing || error("Tool '$name' is provided by both $(skill(builder, previous).name) and $(skill(builder, id).name).")
+                owners[name] = id
+            end
             lock(builder.lock) do
                 builder.final_token == token || throw(NativeAgent.Cancelled())
                 builder.final_state = :building

@@ -2,7 +2,7 @@
 
 julia_version = "1.13.3"
 manifest_format = "2.1"
-project_hash = "71036527b31c58ceb4c603c4b7b3719e92544426"
+project_hash = "2231ac21db699383a6fb9e177baaef791bf4e4c9"
 
 [[deps.ArgTools]]
 uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
@@ -67,6 +67,13 @@ deps = ["Markdown"]
 uuid = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
 version = "1.11.0"
 
+[[deps.JLLWrappers]]
+deps = ["Artifacts", "Preferences"]
+git-tree-sha1 = "7204148362dafe5fe6a273f855b8ccbe4df8173e"
+registries = "General"
+uuid = "692b3bcd-3c85-4b1f-b108-f13ce0eb3210"
+version = "1.8.0"
+
 [[deps.JSON]]
 deps = ["Dates", "Logging", "Parsers", "PrecompileTools", "StructUtils", "UUIDs", "Unicode"]
 git-tree-sha1 = "06d90f699285d055e34f0b014636a75a17ff2252"
@@ -90,7 +97,7 @@ uuid = "d850fbd6-035d-5a70-a269-1ca2e636ac6c"
 version = "1.2.0"
 
 [[deps.JuliaForever]]
-deps = ["Base64", "Dates", "HTTP", "JSON", "JWTs", "PrecompileTools", "Random", "SHA", "TOML", "Tachikoma", "UUIDs"]
+deps = ["Base64", "Dates", "HTTP", "JSON", "JWTs", "PrecompileTools", "Random", "SHA", "TOML", "Tachikoma", "UUIDs", "YAML"]
 path = "."
 uuid = "cc5801bd-c32c-4b6f-8ee2-a2931de95fe8"
 version = "0.1.0"
@@ -128,6 +135,13 @@ version = "1.11.104+0"
 [[deps.Libdl]]
 uuid = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
 version = "1.11.0"
+
+[[deps.Libiconv_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "be484f5c92fad0bd8acfef35fe017900b0b73809"
+registries = "General"
+uuid = "94ce4f54-9a6c-5748-9c1c-f9c7231a4531"
+version = "1.18.0+0"
 
 [[deps.Logging]]
 uuid = "56ddb016-857b-54e1-b83d-db4d58db5568"
@@ -220,6 +234,13 @@ version = "1.11.0"
 uuid = "6462fe0b-24de-5631-8697-dd941f90decc"
 version = "1.11.0"
 
+[[deps.StringEncodings]]
+deps = ["Libiconv_jll"]
+git-tree-sha1 = "b765e46ba27ecf6b44faf70df40c57aa3a547dcb"
+registries = "General"
+uuid = "69024149-9ee7-55f6-a4c4-859efe599b68"
+version = "0.3.7"
+
 [[deps.StructUtils]]
 deps = ["Dates", "UUIDs"]
 git-tree-sha1 = "b04bfab37484defe300b2f9ed64469abab2431ff"
@@ -300,6 +321,13 @@ version = "1.11.0"
 [[deps.Unicode]]
 uuid = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
 version = "1.11.0"
+
+[[deps.YAML]]
+deps = ["Base64", "Dates", "Printf", "StringEncodings"]
+git-tree-sha1 = "9c685a6e94e255019e2bf9486318147cd42fe34a"
+registries = "General"
+uuid = "ddb6d928-2868-570f-bddf-ab3f9cf99eb6"
+version = "0.4.17"
 
 [[deps.Zlib_jll]]
 deps = ["Libdl"]
