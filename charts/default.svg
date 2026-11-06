@@ -13,7 +13,7 @@
 <g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,DejaVu Sans,sans-serif">
 <text x="108" y="64" fill="#c9c8ff" font-size="30" font-weight="700">Julia code history</text>
 <text x="108" y="96" fill="#a6abb8" font-size="15">Surviving lines by the hour they were last changed</text>
-<text x="1138" y="64" text-anchor="end" fill="#e4e5eb" font-size="26" font-weight="700">3,306 lines</text>
+<text x="1138" y="64" text-anchor="end" fill="#e4e5eb" font-size="26" font-weight="700">3,308 lines</text>
 <text x="1138" y="96" text-anchor="end" fill="#a6abb8" font-size="14">latest committed snapshot</text>
 <path d="M108.00 444.00 H1138.00" stroke="#3a3e49" stroke-width="1"/>
 <text x="92" y="444.00" text-anchor="end" dominant-baseline="middle" fill="#a6abb8" font-size="13">0</text>
@@ -31,11 +31,11 @@
 <path fill="#4b8bee" d="M241.52 349.30 H527.63 V435.83 H546.70 V436.42 H642.07 V436.72 H1080.78 V436.87 H1138.00 L1138.00 444.00 H241.52 Z"/>
 <path fill="#11d08e" d="M527.63 361.03 H546.70 V363.63 H642.07 V369.73 H1004.48 V373.07 H1080.78 V378.42 H1118.93 V378.49 H1138.00 L1138.00 436.87 H1080.78 V436.72 H642.07 V436.42 H546.70 V435.83 H527.63 Z"/>
 <path fill="#23d188" d="M546.70 355.02 H642.07 V361.33 H1004.48 V364.82 H1080.78 V373.66 H1118.93 V373.74 H1138.00 L1138.00 378.49 H1118.93 V378.42 H1080.78 V373.07 H1004.48 V369.73 H642.07 V363.63 H546.70 Z"/>
-<path fill="#7fd56d" d="M642.07 228.60 H1004.48 V237.74 H1080.78 V307.11 H1099.85 V307.19 H1118.93 V307.26 H1138.00 L1138.00 373.74 H1118.93 V373.66 H1080.78 V364.82 H1004.48 V361.33 H642.07 Z"/>
-<path fill="#f69893" d="M1004.48 170.00 H1080.78 V249.25 H1099.85 V251.26 H1118.93 V251.33 H1138.00 L1138.00 307.26 H1118.93 V307.19 H1099.85 V307.11 H1080.78 V237.74 H1004.48 Z"/>
-<path fill="#f788c8" d="M1080.78 200.97 H1099.85 V216.20 H1118.93 V216.42 H1138.00 L1138.00 251.33 H1118.93 V251.26 H1099.85 V249.25 H1080.78 Z"/>
-<path fill="#f784d5" d="M1099.85 199.64 H1118.93 V200.08 H1138.00 L1138.00 216.42 H1118.93 V216.20 H1099.85 Z"/>
-<path fill="#f780e2" d="M1118.93 198.45 H1138.00 L1138.00 200.08 H1118.93 Z"/>
+<path fill="#7fd56d" d="M642.07 228.60 H1004.48 V237.74 H1080.78 V307.11 H1099.85 V307.19 H1118.93 V307.33 H1138.00 L1138.00 373.74 H1118.93 V373.66 H1080.78 V364.82 H1004.48 V361.33 H642.07 Z"/>
+<path fill="#f69893" d="M1004.48 170.00 H1080.78 V249.25 H1099.85 V251.26 H1118.93 V251.41 H1138.00 L1138.00 307.33 H1118.93 V307.19 H1099.85 V307.11 H1080.78 V237.74 H1004.48 Z"/>
+<path fill="#f788c8" d="M1080.78 200.97 H1099.85 V216.20 H1118.93 V216.50 H1138.00 L1138.00 251.41 H1118.93 V251.26 H1099.85 V249.25 H1080.78 Z"/>
+<path fill="#f784d5" d="M1099.85 199.64 H1118.93 V200.16 H1138.00 L1138.00 216.50 H1118.93 V216.20 H1099.85 Z"/>
+<path fill="#f780e2" d="M1118.93 198.30 H1138.00 L1138.00 200.16 H1118.93 Z"/>
 <text x="108.00" y="473" text-anchor="start" fill="#a6abb8" font-size="13">Nov 03  20:00</text>
 <text x="375.04" y="473" text-anchor="middle" fill="#a6abb8" font-size="13">Nov 04  10:00</text>
 <text x="623.00" y="473" text-anchor="middle" fill="#a6abb8" font-size="13">Nov 04  23:00</text>
