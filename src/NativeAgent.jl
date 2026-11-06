@@ -98,6 +98,27 @@ function response_error(response)
     ProviderError("OpenAI HTTP $(response.status): $(strip(detail))$suffix")
 end
 
+function stream_error(event::AbstractDict)
+    kind = get(event, "type", "")
+    prefix = kind == "response.incomplete" ? "Response incomplete" : "Response failed"
+    response = get(event, "response", nothing)
+    payload = response isa AbstractDict ? response : event
+    detail = get(payload, "error", nothing)
+    detail isa AbstractDict || (detail = get(event, "error", nothing))
+    detail isa AbstractDict || (detail = kind == "error" ? event : get(payload, "incomplete_details", nothing))
+    detail isa AbstractDict || return ProviderError(prefix * ".")
+    code = get(detail, "code", get(detail, "reason", nothing))
+    message = get(detail, "message", nothing)
+    parts = String[]
+    if code isa AbstractString && !isempty(strip(code))
+        push!(parts, first(strip(replace(code, r"\s+" => " ")), 96))
+    end
+    if message isa AbstractString && !isempty(strip(message))
+        push!(parts, first(strip(replace(message, r"\s+" => " ")), 512))
+    end
+    ProviderError(isempty(parts) ? prefix * "." : prefix * ": " * join(parts, " "))
+end
+
 function models(config::Config=agent_config())
     token = ChatGPTAuth.access_token()
     response = HTTP.get(config.api * "/models", ["Authorization" => "Bearer " * token];
@@ -445,7 +466,7 @@ function inference(session::Session, emit::Function, generation, control::TurnCo
     end
     control.cancelled[] && throw(Cancelled())
     response.status == 200 || throw(response_error(response))
-    failed[] === nothing || throw(ProviderError("Response failed: " * JSON.json(failed[])))
+    failed[] === nothing || throw(stream_error(failed[]))
     complete[] === nothing && throw(ProviderError("The response stream ended before completion."))
     isempty(get(complete[], "output", [])) && (complete[]["output"] = streamed_items)
     complete[]
