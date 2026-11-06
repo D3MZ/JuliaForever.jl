@@ -93,7 +93,7 @@ function editor_command(event::KeyEvent)
     c == 'f' && return :right
     c == 'd' && return :delete_forward
     c == 'w' && return :kill_word_back
-    c == 'u' && return :clear_line
+    c == 'u' && return :kill_to_start
     c == 'k' && return :kill_to_end
     c == 'y' && return :yank
     c in ('_', '\x7f') && return :undo
@@ -161,6 +161,8 @@ function edit_input!(input::TextInput, state::EditorState, event::KeyEvent, comm
     elseif command === :clear_line
         state.last_action = :none
         kill_range!(input, state, 1, length(input.buffer); backward=true)
+    elseif command === :kill_to_start
+        kill_range!(input, state, 1, input.cursor; backward=true)
     elseif command === :kill_to_end
         kill_range!(input, state, input.cursor + 1, length(input.buffer))
     elseif command === :kill_word_back
